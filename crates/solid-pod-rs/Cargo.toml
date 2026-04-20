@@ -57,6 +57,10 @@ k256 = { version = "0.13", features = ["schnorr"], optional = true }
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
 lru = { version = "0.12", optional = true }
 
+# Sprint 7 A: rate-limit primitive — parking_lot for the LRU bucket
+# mutex (low contention, Send + Sync, already in dep tree via reqwest).
+parking_lot = { version = "0.12", optional = true }
+
 # Sprint 6 C: RFC 9421 HTTP Message Signatures for outgoing webhook
 # deliveries (Solid Notifications 0.2 §5). Gated behind
 # `webhook-signing` (which implies `jss-v04`).
@@ -111,12 +115,30 @@ webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand"]
 # and std::sync::RwLock for the cache.
 did-nostr = ["jss-v04", "security-primitives"]
 
+# Sprint 7 A: rate-limit primitive. Library exposes a `RateLimiter`
+# trait plus an LRU-backed reference implementation. CORS support is
+# gated under `jss-v04` (no new deps). Enabling `rate-limit` pulls in
+# `lru` + `parking_lot`.
+rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot"]
+
+# Sprint 7 B: pod-level quota policy. Ships `FsQuotaStore` backed by
+# `.quota.json` sidecars; integrates with the config loader via
+# `JSS_DEFAULT_QUOTA`. `multitenant` and `parse_size` live in the
+# always-on `jss-v04` umbrella; this flag only gates the FS adapter
+# (which shares serde_json + tokio::fs already pulled in by the crate,
+# no new deps).
+quota = ["jss-v04", "config-loader"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 actix-web = "4"
 wiremock = "0.6"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Sprint 7 D: integration tests drive the server binary's actix `App`
+# through `test::init_service`. Dev-dependency only — never ships in
+# the library's public surface.
+solid-pod-rs-server = { path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }

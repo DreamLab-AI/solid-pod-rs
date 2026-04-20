@@ -4,6 +4,114 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — 2026-04-20 (Sprint 7 — operator surface + server route table)
+
+### Added — operator-surface primitives
+
+- `security/rate_limit.rs` (`RateLimiter` trait + sliding-window
+  `LruRateLimiter` reference impl). Per-route + per-subject buckets
+  (`Ip`, `WebId`, `Custom`); LRU cap (default 4 096 keys) bounds
+  memory under churn; `RateLimitDecision::Deny` carries
+  `retry_after_secs`. Feature `rate-limit` (gates the LRU impl;
+  trait is always compiled).
+- `security/cors.rs` (`CorsPolicy` + `CorsPolicy::from_env`). Reads
+  `CORS_ALLOWED_ORIGINS`, `CORS_ALLOW_CREDENTIALS`, `CORS_MAX_AGE`.
+  Default `expose_headers` includes `WAC-Allow`, `Link`, `ETag`,
+  `Accept-Patch`, `Accept-Post`, `Updates-Via`. Wildcard +
+  credentials degrades to echoing the concrete origin per Fetch
+  spec; `Vary: Origin` always set so caches don't leak.
+- `quota/mod.rs` (`QuotaPolicy` trait + `FsQuotaStore`). Per-pod
+  `.quota.json` sidecar; `record` + `reconcile` mirror JSS
+  `quota.js`. `PodError::QuotaExceeded` propagates the breach.
+  Feature `quota` (gates the FS impl + the error variant).
+- `multitenant.rs` (`PodResolver` trait + `PathResolver` default +
+  `SubdomainResolver`). Subdomain mode maps `alice.example.org/foo`
+  → `(pod=Some("alice"), storage_path="/foo")`. Double-pass `..`
+  scrub mirrors JSS `urlToPathWithPod`. Unknown subdomain
+  gracefully degrades to path-based (no 400 — JSS parity).
+- `config::sources::parse_size` — accepts `50MB`, `1.5GB`, raw
+  integer bytes; SI multiplier (1000-based) per the test
+  fixtures. Wired so `JSS_DEFAULT_QUOTA` env var decodes via
+  `parse_size`.
+- `interop::nodeinfo_discovery` + `interop::nodeinfo_2_1` — JSON
+  helpers for `/.well-known/nodeinfo` + `/.well-known/nodeinfo/2.1`
+  per nodeinfo.diaspora.software §3 + §6. `protocols` advertises
+  both `solid` and `activitypub`.
+
+### Added — `solid-pod-rs-server` route table
+
+- Library extracted: `crates/solid-pod-rs-server/src/lib.rs`
+  exposes `pub fn build_app(state)` so handlers are testable via
+  `actix_web::test::init_service` without a real network port.
+  Binary `main.rs` becomes a thin entry point.
+- Handlers added:
+  - `POST /{tail:.*}/` — Slug-resolved child creation in container
+    via `ldp::resolve_slug`; emits `Location:` header.
+  - `PATCH /{tail:.*}` — dialect dispatch on `Content-Type`
+    (`text/n3`, `application/sparql-update`, `application/json-patch+json`);
+    PATCH-creates-resource path returns 201 via
+    `ldp::apply_patch_to_absent`.
+  - `OPTIONS /{tail:.*}` — `Allow` / `Accept-Post` (containers) /
+    `Accept-Patch` / `Accept-Ranges` from `ldp::options_for`.
+  - `GET /.well-known/solid` — discovery doc.
+  - `GET /.well-known/webfinger` — JRD.
+  - `GET /.well-known/nodeinfo` + `/.well-known/nodeinfo/2.1`.
+  - `GET /.well-known/did/nostr/{pubkey}.json` (gated `did-nostr`).
+- **WAC enforcement on writes** (PUT/POST/PATCH/DELETE) via
+  `wac::evaluate_access_ctx_with_registry` — was GET-only at
+  alpha.1. 401 on anonymous, 403 on authenticated denial, both
+  carry `WAC-Allow` header.
+- **`PathTraversalGuard` middleware** — explicit percent-decode +
+  `..` segment check (single AND double-encoded). Belt-and-braces
+  on top of `actix_web::middleware::NormalizePath`.
+- **`DotfileGuard` middleware** — wraps the existing
+  `DotfileAllowlist` primitive into the request pipeline.
+- **Explicit body-size cap** — `JSS_MAX_REQUEST_BODY` (via
+  `parse_size`) registers an `actix_web::web::PayloadConfig`.
+  Default 50 MiB. PUTs over the cap return 413 explicitly rather
+  than relying on actix defaults.
+- **`--mashlib-cdn` CLI flag** — plumbed into `AppState`. Static
+  asset wiring deferred to a follow-up.
+
+### Added — optional TLS
+
+- `solid-pod-rs-server` gains feature `tls`; when set and both
+  `JSS_SSL_KEY` + `JSS_SSL_CERT` env vars are populated, server
+  binds via `actix_web::HttpServer::bind_rustls_0_23`. Falls back
+  to plain bind when either var is absent.
+
+### Tests
+
+- ~54 new tests across 8 new files:
+  - `rate_limit_lru.rs` (5), `cors_preflight.rs` (6).
+  - `quota_fs.rs` (5), `tenancy_subdomain.rs` (6),
+    `config_size_parsing.rs` (6).
+  - `nodeinfo_jss.rs` (7).
+  - `server_routes_jss.rs` (12), `server_security.rs` (7).
+- Total tests now well past 480 across the workspace with all
+  Sprint 7 features enabled
+  (`oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr,webhook-signing,did-nostr,rate-limit,quota`).
+
+### New Cargo features
+
+- `rate-limit` — sliding-window LRU rate limiter (`lru` +
+  `parking_lot`).
+- `quota` — pod-quota filesystem adapter (`config-loader`).
+- `tls` (in `solid-pod-rs-server`) — `rustls` + `rustls-pemfile`.
+
+### Known follow-ups (queued for Sprint 8 / GA)
+
+- CORS + rate-limit middleware not yet wired into the server's
+  actix middleware stack — primitives are in `state` but not
+  `.wrap()`ed. Trivial follow-up once the `Transform` adapter
+  lands.
+- `--mashlib-cdn` flag plumbed; static-asset routes not mounted.
+- xtask CTH harness — invoke `solid/conformance-test-harness`
+  against the new server binary.
+- Module re-export polish: `lib.rs` re-exports for `quota::*`,
+  `multitenant::*`, `security::cors::*`, `security::rate_limit::*`
+  exposed via `pub use`.
+
 ## Unreleased — 2026-04-20 (Sprint 6 — WAC 2.0, LDP gaps, webhook signing, did:nostr)
 
 ### Added — WAC 2.0 conditions framework

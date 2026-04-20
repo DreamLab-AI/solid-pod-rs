@@ -461,3 +461,55 @@ pub mod did_nostr {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// NodeInfo 2.1 (Sprint 7 C)
+// ---------------------------------------------------------------------------
+
+/// `/.well-known/nodeinfo` discovery document (JSON), per
+/// nodeinfo.diaspora.software §6. Points clients at one or more
+/// versioned NodeInfo docs.
+pub fn nodeinfo_discovery(base_url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "links": [
+            {
+                "rel": "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                "href": format!(
+                    "{}/.well-known/nodeinfo/2.1",
+                    base_url.trim_end_matches('/')
+                )
+            }
+        ]
+    })
+}
+
+/// `/.well-known/nodeinfo/2.1` content document, per
+/// nodeinfo.diaspora.software §3 (schema 2.1).
+pub fn nodeinfo_2_1(
+    software_name: &str,
+    software_version: &str,
+    open_registrations: bool,
+    total_users: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "version": "2.1",
+        "software": {
+            "name": software_name,
+            "version": software_version,
+            "repository": "https://github.com/dreamlab-ai/solid-pod-rs",
+            "homepage": "https://github.com/dreamlab-ai/solid-pod-rs"
+        },
+        "protocols": ["solid", "activitypub"],
+        "services": {
+            "inbound": [],
+            "outbound": []
+        },
+        "openRegistrations": open_registrations,
+        "usage": {
+            "users": {
+                "total": total_users
+            }
+        },
+        "metadata": {}
+    })
+}

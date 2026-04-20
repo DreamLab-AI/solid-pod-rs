@@ -1,39 +1,21 @@
 //! `solid-pod-rs-server` — drop-in JSS replacement binary.
 //!
-//! Thin actix-web shell over [`solid_pod_rs`]. Enforces the F7 library-
-//! server split described in ADR-056 §D3 and
-//! [`docs/design/jss-parity/06-library-surface-context.md`]:
-//!
-//! - Library (`solid-pod-rs`) owns protocol semantics (LDP, WAC, WebID,
-//!   Notifications, OIDC, NIP-98, security primitives, config schema).
-//! - This binary owns the HTTP transport, tokio runtime, CLI, config
-//!   loader wiring, and signal handling.
-//!
-//! ## Runtime
-//!
-//! 1. Parse CLI flags via [`clap`] (config path, log level, port
-//!    override).
-//! 2. Initialise tracing (stderr JSON or pretty depending on env).
-//! 3. Load [`ServerConfig`] via the F6 [`ConfigLoader`]:
-//!    Defaults → file → env (JSS_*).
-//! 4. Build the storage backend from `config.storage`.
-//! 5. Construct [`AppState`] and bind [`actix_web::HttpServer`] to
-//!    `config.server.host:config.server.port`.
-//! 6. Wait for SIGTERM / SIGINT and shut down gracefully.
+//! Thin actix-web shell over [`solid_pod_rs`]. HTTP wiring and the full
+//! route table live in [`solid_pod_rs_server::build_app`]; this file
+//! owns only the process entry point: CLI parsing, tracing
+//! initialisation, config loading, storage construction, signal
+//! handling, and (optionally) TLS.
 
 use std::sync::Arc;
 
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
+use actix_web::HttpServer;
 use anyhow::Context;
-use bytes::Bytes;
 use clap::Parser;
 use solid_pod_rs::{
-    auth::nip98,
     config::{ConfigLoader, ServerConfig, StorageBackendConfig},
-    ldp::{self, LdpContainerOps},
     storage::{fs::FsBackend, memory::MemoryBackend, Storage},
-    wac, PodError,
 };
+use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -49,8 +31,7 @@ use tracing::{info, warn};
     long_about = None,
 )]
 struct Cli {
-    /// Path to a JSS-compatible `config.json` file. Optional: the
-    /// loader still runs with defaults + env if absent.
+    /// Path to a JSS-compatible `config.json` file. Optional.
     #[arg(long, short = 'c', env = "JSS_CONFIG")]
     config: Option<String>,
 
@@ -63,31 +44,31 @@ struct Cli {
     port: Option<u16>,
 
     /// Tracing filter directive. Defaults to `info` if unset.
-    ///
-    /// Examples: `debug`, `solid_pod_rs=debug,info`.
     #[arg(long, env = "RUST_LOG")]
     log: Option<String>,
-}
 
-// ---------------------------------------------------------------------------
-// Shared app state
-// ---------------------------------------------------------------------------
+    /// Optional mashlib CDN URL. When set the server redirects `/` and
+    /// the mashlib asset paths to the CDN. Default bakes the
+    /// `unpkg.com/mashlib@2.0.0/dist` path for compatibility with JSS.
+    #[arg(long, env = "JSS_MASHLIB_CDN")]
+    mashlib_cdn: Option<String>,
 
-/// Actix-web shared state. Wraps the library's typed primitives behind
-/// an `Arc<dyn Storage>` so handlers remain transport-thin.
-#[derive(Clone)]
-struct AppState {
-    storage: Arc<dyn Storage>,
+    /// Optional TLS key PEM path. When set together with
+    /// `--ssl-cert`, the server binds via rustls on the chosen port.
+    #[cfg(feature = "tls")]
+    #[arg(long, env = "JSS_SSL_KEY")]
+    ssl_key: Option<String>,
+
+    /// Optional TLS certificate PEM path.
+    #[cfg(feature = "tls")]
+    #[arg(long, env = "JSS_SSL_CERT")]
+    ssl_cert: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Storage construction
 // ---------------------------------------------------------------------------
 
-/// Materialise a boxed [`Storage`] from a [`StorageBackendConfig`]
-/// snapshot. `s3` is accepted at the config layer but deferred here:
-/// the `s3-backend` feature lives in the library crate and is not
-/// enabled by default for the server binary.
 async fn build_storage(cfg: &StorageBackendConfig) -> anyhow::Result<Arc<dyn Storage>> {
     match cfg {
         StorageBackendConfig::Fs { root } => {
@@ -111,156 +92,32 @@ async fn build_storage(cfg: &StorageBackendConfig) -> anyhow::Result<Arc<dyn Sto
     }
 }
 
-// ---------------------------------------------------------------------------
-// Auth helper — shared across handlers
-// ---------------------------------------------------------------------------
+#[cfg(feature = "tls")]
+fn load_rustls_config(
+    cert_path: &str,
+    key_path: &str,
+) -> anyhow::Result<rustls::ServerConfig> {
+    use std::fs::File;
+    use std::io::BufReader;
 
-/// Attempt NIP-98 bearer verification; returns the pubkey on success.
-/// Any failure is treated as "no authenticated agent" — WAC will apply
-/// public-agent rules.
-async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
-    let header = req
-        .headers()
-        .get(actix_web::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())?;
-    let url = format!(
-        "http://{}{}",
-        req.connection_info().host(),
-        req.uri().path()
-    );
-    nip98::verify(header, &url, req.method().as_str(), None)
-        .await
-        .ok()
-}
+    let cert_file = File::open(cert_path)
+        .with_context(|| format!("open SSL cert {cert_path}"))?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse SSL cert chain")?;
 
-// ---------------------------------------------------------------------------
-// Handler utilities
-// ---------------------------------------------------------------------------
+    let key_file = File::open(key_path)
+        .with_context(|| format!("open SSL key {key_path}"))?;
+    let mut key_reader = BufReader::new(key_file);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .context("parse SSL private key")?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {key_path}"))?;
 
-fn set_link_headers(rsp: &mut HttpResponse, path: &str) {
-    let links = ldp::link_headers(path).join(", ");
-    if let Ok(value) = actix_web::http::header::HeaderValue::from_str(&links) {
-        rsp.headers_mut().insert(
-            actix_web::http::header::HeaderName::from_static("link"),
-            value,
-        );
-    }
-}
-
-fn set_wac_allow(rsp: &mut HttpResponse, header_value: &str) {
-    if let Ok(v) = actix_web::http::header::HeaderValue::from_str(header_value) {
-        rsp.headers_mut().insert(
-            actix_web::http::header::HeaderName::from_static("wac-allow"),
-            v,
-        );
-    }
-}
-
-fn to_actix(e: PodError) -> actix_web::Error {
-    match e {
-        PodError::NotFound(_) => actix_web::error::ErrorNotFound(e.to_string()),
-        _ => actix_web::error::ErrorInternalServerError(e.to_string()),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Handlers (GET/HEAD/PUT/DELETE)
-// ---------------------------------------------------------------------------
-
-async fn handle_get(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let path = req.uri().path().to_string();
-    let auth_pk = extract_pubkey(&req).await;
-    let agent_uri = auth_pk.as_ref().map(|pk| format!("did:nostr:{pk}"));
-    let wac_allow = wac::wac_allow_header(None, agent_uri.as_deref(), &path);
-
-    if ldp::is_container(&path) {
-        let v = state
-            .storage
-            .container_representation(&path)
-            .await
-            .map_err(to_actix)?;
-        let mut rsp = HttpResponse::Ok().json(v);
-        rsp.headers_mut().insert(
-            actix_web::http::header::CONTENT_TYPE,
-            actix_web::http::header::HeaderValue::from_static("application/ld+json"),
-        );
-        set_wac_allow(&mut rsp, &wac_allow);
-        set_link_headers(&mut rsp, &path);
-        return Ok(rsp);
-    }
-
-    match state.storage.get(&path).await {
-        Ok((body, meta)) => {
-            let mut rsp = HttpResponse::Ok().body(body.to_vec());
-            rsp.headers_mut().insert(
-                actix_web::http::header::CONTENT_TYPE,
-                actix_web::http::header::HeaderValue::from_str(&meta.content_type).unwrap_or_else(
-                    |_| {
-                        actix_web::http::header::HeaderValue::from_static(
-                            "application/octet-stream",
-                        )
-                    },
-                ),
-            );
-            if let Ok(etag) = actix_web::http::header::HeaderValue::from_str(&format!(
-                "\"{}\"",
-                meta.etag
-            )) {
-                rsp.headers_mut()
-                    .insert(actix_web::http::header::ETAG, etag);
-            }
-            set_wac_allow(&mut rsp, &wac_allow);
-            set_link_headers(&mut rsp, &path);
-            Ok(rsp)
-        }
-        Err(PodError::NotFound(_)) => Ok(HttpResponse::NotFound().finish()),
-        Err(e) => Err(to_actix(e)),
-    }
-}
-
-async fn handle_put(
-    req: HttpRequest,
-    body: web::Bytes,
-    state: web::Data<AppState>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let path = req.uri().path().to_string();
-    if ldp::is_container(&path) {
-        return Ok(HttpResponse::MethodNotAllowed().body("cannot PUT to a container"));
-    }
-    let ct = req
-        .headers()
-        .get(actix_web::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/octet-stream");
-    let meta = state
-        .storage
-        .put(&path, Bytes::from(body.to_vec()), ct)
-        .await
-        .map_err(to_actix)?;
-    let mut rsp = HttpResponse::Created().finish();
-    if let Ok(etag) =
-        actix_web::http::header::HeaderValue::from_str(&format!("\"{}\"", meta.etag))
-    {
-        rsp.headers_mut()
-            .insert(actix_web::http::header::ETAG, etag);
-    }
-    set_link_headers(&mut rsp, &path);
-    Ok(rsp)
-}
-
-async fn handle_delete(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let path = req.uri().path().to_string();
-    match state.storage.delete(&path).await {
-        Ok(()) => Ok(HttpResponse::NoContent().finish()),
-        Err(PodError::NotFound(_)) => Ok(HttpResponse::NotFound().finish()),
-        Err(e) => Err(to_actix(e)),
-    }
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("build rustls server config")
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +128,6 @@ async fn handle_delete(
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Tracing — honour --log > RUST_LOG > "info".
     let filter = cli
         .log
         .clone()
@@ -282,7 +138,6 @@ async fn main() -> anyhow::Result<()> {
         .with_target(true)
         .init();
 
-    // F6 layered config load.
     let mut loader = ConfigLoader::new().with_defaults();
     if let Some(path) = cli.config.as_deref() {
         loader = loader.with_file(path);
@@ -293,7 +148,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("load server config")?;
 
-    // CLI flag overrides (highest precedence per F6 semantics).
     if let Some(host) = cli.host.clone() {
         cfg.server.host = host;
     }
@@ -306,33 +160,58 @@ async fn main() -> anyhow::Result<()> {
     let port = cfg.server.port;
     let bind_addr = format!("{host}:{port}");
 
-    // Materialise storage + app state.
     let storage = build_storage(&cfg.storage).await?;
-    let state = AppState { storage };
+    let base_url = cfg
+        .server
+        .base_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{bind_addr}"));
 
-    // Warn about features the operator asked for but this build can't serve.
+    let mut state = AppState::new(storage);
+    state.nodeinfo = NodeInfoMeta {
+        software_name: "solid-pod-rs-server".into(),
+        software_version: env!("CARGO_PKG_VERSION").into(),
+        open_registrations: false,
+        total_users: 0,
+        base_url,
+    };
+    state.mashlib_cdn = cli
+        .mashlib_cdn
+        .clone()
+        .or_else(|| std::env::var("JSS_MASHLIB_CDN").ok());
+
     if !cfg.auth.oidc_enabled {
         warn!("auth.oidc_enabled=false — DPoP / OIDC routes disabled");
     }
 
     info!(%bind_addr, "solid-pod-rs-server starting");
 
-    let server = HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(state.clone()))
-            .route("/{tail:.*}", web::get().to(handle_get))
-            .route("/{tail:.*}", web::head().to(handle_get))
-            .route("/{tail:.*}", web::put().to(handle_put))
-            .route("/{tail:.*}", web::delete().to(handle_delete))
-    })
-    .bind(&bind_addr)
-    .with_context(|| format!("bind {bind_addr}"))?
-    .shutdown_timeout(30)
-    .run();
+    let state_factory = state.clone();
+    let server_builder = HttpServer::new(move || build_app(state_factory.clone()));
 
+    #[cfg(feature = "tls")]
+    let server = {
+        match (cli.ssl_key.as_deref(), cli.ssl_cert.as_deref()) {
+            (Some(key), Some(cert)) => {
+                let rustls_cfg = load_rustls_config(cert, key)?;
+                server_builder
+                    .bind_rustls_0_23(&bind_addr, rustls_cfg)
+                    .with_context(|| format!("bind_rustls {bind_addr}"))?
+            }
+            _ => server_builder
+                .bind(&bind_addr)
+                .with_context(|| format!("bind {bind_addr}"))?,
+        }
+    };
+
+    #[cfg(not(feature = "tls"))]
+    let server = server_builder
+        .bind(&bind_addr)
+        .with_context(|| format!("bind {bind_addr}"))?;
+
+    let server = server.shutdown_timeout(30).run();
     let server_handle = server.handle();
 
-    // Supervisor task for SIGTERM / SIGINT → graceful shutdown.
     let shutdown = tokio::spawn(async move {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -351,8 +230,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolves when the process receives SIGTERM on Unix. On other
-/// platforms, this future is pending forever.
 #[cfg(unix)]
 async fn terminate_signal() {
     use tokio::signal::unix::{signal, SignalKind};

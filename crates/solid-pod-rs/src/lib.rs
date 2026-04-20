@@ -41,8 +41,10 @@ pub mod error;
 pub mod interop;
 pub mod ldp;
 pub mod metrics;
+pub mod multitenant;
 pub mod notifications;
 pub mod provision;
+pub mod quota;
 pub mod security;
 pub mod storage;
 pub mod wac;
@@ -81,10 +83,15 @@ pub use interop::{
     dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,
     Nip05Document, SolidWellKnown, WebFingerJrd, WebFingerLink,
 };
+pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
 pub use provision::{
     check_admin_override, provision_pod, AdminOverride, ProvisionOutcome, ProvisionPlan,
     QuotaTracker,
 };
+pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
+
+#[cfg(feature = "quota")]
+pub use quota::FsQuotaStore;
 pub use webid::{
     extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer,
     validate_webid_html,

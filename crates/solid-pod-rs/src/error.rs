@@ -60,6 +60,13 @@ pub enum PodError {
 
     #[error("bad request: {0}")]
     BadRequest(String),
+
+    /// Sprint 7: pod-level byte quota exceeded. Wraps the detailed
+    /// [`crate::quota::QuotaExceeded`] struct so consumers can surface
+    /// pod name / used / limit in their HTTP response bodies.
+    #[cfg(feature = "quota")]
+    #[error(transparent)]
+    QuotaExceeded(#[from] crate::quota::QuotaExceeded),
 }
 
 impl From<notify::Error> for PodError {

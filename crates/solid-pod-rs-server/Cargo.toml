@@ -13,6 +13,10 @@ keywords = ["solid", "pod", "server", "nostr", "agpl"]
 categories = ["web-programming::http-server", "command-line-utilities"]
 readme = "README.md"
 
+[lib]
+name = "solid_pod_rs_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "solid-pod-rs-server"
 path = "src/main.rs"
@@ -33,12 +37,42 @@ clap = { version = "4", features = ["derive", "env"] }
 # Request/response helpers.
 bytes = "1"
 
+# Percent-decoding for the defence-in-depth path-traversal middleware.
+percent-encoding = "2"
+
+# Async traits for middleware plumbing.
+async-trait = "0.1"
+futures-util = "0.3"
+
+# Serde for discovery payload construction when sibling interop helpers
+# are not feature-gated.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Tracing / logging.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error wiring.
 anyhow = "1"
+
+# Optional TLS (rustls). Gated by the `tls` feature so default builds
+# keep the dependency surface minimal.
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "ring"] }
+rustls-pemfile = { version = "2", optional = true }
+
+[features]
+# Feature umbrella toggles for the server binary.
+default = []
+
+# TLS via rustls (actix-web's `rustls-0_23` integration).
+tls = ["dep:rustls", "dep:rustls-pemfile", "actix-web/rustls-0_23"]
+
+# Forwarded Sprint-7 sibling features — pass-through to `solid-pod-rs`.
+rate-limit = ["solid-pod-rs/rate-limit"]
+quota = ["solid-pod-rs/quota"]
+did-nostr = ["solid-pod-rs/did-nostr"]
+security-primitives = ["solid-pod-rs/security-primitives"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

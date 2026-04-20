@@ -47,8 +47,15 @@
 //! all private/loopback/link-local space; dotfile allowlist permits
 //! only `.acl` and `.meta`.
 
+pub mod cors;
 pub mod dotfile;
+pub mod rate_limit;
 pub mod ssrf;
 
+pub use cors::{AllowedOrigins, CorsPolicy};
 pub use dotfile::{DotfileAllowlist, DotfileError};
+pub use rate_limit::{RateLimitDecision, RateLimitKey, RateLimitSubject, RateLimiter};
 pub use ssrf::{IpClass, SsrfError, SsrfPolicy};
+
+#[cfg(feature = "rate-limit")]
+pub use rate_limit::LruRateLimiter;

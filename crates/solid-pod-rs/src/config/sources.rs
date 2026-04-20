@@ -319,6 +319,18 @@ where
         }
     }
 
+    // Sprint 7: JSS_DEFAULT_QUOTA decoded via parse_size (`50MB`, `1.5GB`).
+    // Surfaces under `security.default_quota_bytes` when valid;
+    // malformed values are ignored (forward-compat with unknown units).
+    if let Some(v) = get("JSS_DEFAULT_QUOTA") {
+        if let Ok(bytes) = parse_size(&v) {
+            security.insert(
+                "default_quota_bytes".into(),
+                Value::Number(bytes.into()),
+            );
+        }
+    }
+
     if !server.is_empty() {
         out.insert("server".into(), Value::Object(server));
     }
@@ -336,6 +348,93 @@ where
     }
 
     Value::Object(out)
+}
+
+/// Parse a human-friendly size string into bytes.
+///
+/// Accepts a decimal number (optionally with fractional part) followed
+/// by an optional suffix from {`KB`, `MB`, `GB`, `TB`} (case-insensitive,
+/// with optional whitespace around/between number and suffix). Empty
+/// suffix (or bare digits) is treated as raw bytes.
+///
+/// # Multipliers
+///
+/// Per Sprint 7 task spec, multipliers are **decimal (SI / 1000-based)**:
+///
+/// | Suffix | Multiplier |
+/// |--------|-----------|
+/// | `B` or bare | 1 |
+/// | `KB` | 1_000 |
+/// | `MB` | 1_000_000 |
+/// | `GB` | 1_000_000_000 |
+/// | `TB` | 1_000_000_000_000 |
+///
+/// ## Deviation from JSS
+///
+/// JSS `src/config.js:177-185` uses **binary (1024-based)** multipliers.
+/// The task spec for this sprint explicitly requires 1000-based decimal
+/// (test fixture: `1.5GB → 1_500_000_000`), so we diverge deliberately.
+/// If strict JSS byte-for-byte parity is reinstated later, swap the
+/// multiplier table here and update tests.
+///
+/// # JSS parity: `src/config.js::parseSize`
+///
+/// ```js
+/// const match = str.match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)?$/i);
+/// ```
+///
+/// Rust mirror: fraction-capable leading number, optional unit, case-
+/// insensitive. JSS falls back to `parseInt(str, 10) || 0` on mismatch;
+/// we return `Err` instead — callers decide whether to default.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("parse_size: empty input".into());
+    }
+
+    // Split number / suffix at the first non-digit / non-dot char.
+    let cut = trimmed
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(trimmed.len());
+    let (num_part, suffix_part) = trimmed.split_at(cut);
+    let num_part = num_part.trim();
+    let suffix = suffix_part.trim().to_ascii_uppercase();
+
+    if num_part.is_empty() {
+        return Err(format!("parse_size: missing number in {s:?}"));
+    }
+
+    // Reject malformed numerics (multi-dot, leading/trailing dot).
+    if num_part.matches('.').count() > 1
+        || num_part.starts_with('.')
+        || num_part.ends_with('.')
+    {
+        return Err(format!("parse_size: invalid number {num_part:?}"));
+    }
+
+    let num: f64 = num_part
+        .parse()
+        .map_err(|e| format!("parse_size: bad number {num_part:?}: {e}"))?;
+
+    if !num.is_finite() || num < 0.0 {
+        return Err(format!("parse_size: non-negative finite number required, got {num}"));
+    }
+
+    let multiplier: u64 = match suffix.as_str() {
+        "" | "B" => 1,
+        "KB" => 1_000,
+        "MB" => 1_000_000,
+        "GB" => 1_000_000_000,
+        "TB" => 1_000_000_000_000,
+        other => return Err(format!("parse_size: unknown suffix {other:?}")),
+    };
+
+    // floor(num * multiplier) — match JSS Math.floor behaviour.
+    let bytes = (num * multiplier as f64).floor();
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        return Err(format!("parse_size: result out of u64 range: {bytes}"));
+    }
+    Ok(bytes as u64)
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
