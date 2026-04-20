@@ -1,0 +1,29 @@
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Coverage / benches
+*.profraw
+tarpaulin-report.*
+/criterion
+/flamegraph.svg
+perf.data*
+
+# Docs build
+/book
