@@ -1,8 +1,9 @@
 # JSS ↔ solid-pod-rs Parity Checklist
 
-Tracks every Solid protocol feature implemented by the JavaScript
-Solid Server (JSS, vendored at `references/community-solid-server/`)
-against solid-pod-rs. Updated every time a feature ships or regresses.
+Tracks every Solid protocol feature implemented by
+JavaScriptSolidServer (JSS, vendored at
+`references/javascript-solid-server/`) against solid-pod-rs. Updated
+every time a feature ships or regresses.
 
 ## Status key
 

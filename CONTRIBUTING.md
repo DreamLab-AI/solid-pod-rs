@@ -60,7 +60,7 @@ Backends should:
 
 ## Parity checklist
 
-Any feature port from the Community Solid Server (JSS) reference
+Any feature port from the JavaScriptSolidServer (JSS) reference
 implementation must update `PARITY-CHECKLIST.md` to reflect its new
 status. The checklist is the contract between this crate and the
 wider Solid ecosystem — it is not a formality.

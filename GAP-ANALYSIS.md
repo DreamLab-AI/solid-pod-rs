@@ -1,16 +1,18 @@
-# Gap Analysis — solid-pod-rs vs Community Solid Server (JSS)
+# Gap Analysis — solid-pod-rs vs JavaScriptSolidServer (JSS)
 
 This document enumerates, feature by feature, where solid-pod-rs
-currently stands relative to the **Community Solid Server** (JSS, also
-known as CSS) reference implementation. It also records the deferral
-rationale for every gap and the target milestone at which each will
-close.
+currently stands relative to the **JavaScriptSolidServer** (JSS)
+reference implementation. It also records the deferral rationale for
+every gap and the target milestone at which each will close.
 
-> JSS is the de facto Solid Protocol reference. It has been maintained
-> since 2020 by the Solid project and implements a superset of the
-> specifications. solid-pod-rs aims for behavioural parity on the
+> JSS is a JavaScript Solid Protocol reference implementation
+> (AGPL-3.0-only) maintained by the JavaScriptSolidServer
+> contributors. solid-pod-rs aims for behavioural parity on the
 > protocol surface while deliberately narrowing scope on operator
 > and UI concerns that are better served by orthogonal Rust crates.
+> solid-pod-rs is NOT a derivative work of JSS's JavaScript source;
+> see `NOTICE` §"Licence relationship to JavaScriptSolidServer (JSS)"
+> for the full independence claims.
 
 The authoritative spec tracker is
 [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md). This document is the
@@ -450,7 +452,7 @@ on the shared protocol surface.
 ## References
 
 - Parity checklist: [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)
-- JSS: <https://github.com/CommunitySolidServer/CommunitySolidServer>
+- JSS: <https://github.com/JavaScriptSolidServer/JavaScriptSolidServer>
 - Solid Protocol 0.11: <https://solidproject.org/TR/protocol>
 - WAC: <https://solidproject.org/TR/wac>
 - Solid-OIDC 0.1: <https://solidproject.org/TR/oidc>
