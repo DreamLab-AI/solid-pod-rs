@@ -809,7 +809,9 @@ async fn jss_options_container_advertises_accept_post_and_ranges() {
     use solid_pod_rs::options_for;
     let o = options_for("/photos/");
     assert!(o.accept_post.is_some());
-    assert_eq!(o.accept_ranges, "bytes");
+    // JSS parity: containers advertise `Accept-Ranges: none` because
+    // the representation is server-generated RDF, not byte-rangeable.
+    assert_eq!(o.accept_ranges, "none");
     assert!(o.allow.contains(&"POST"));
     assert!(!o.allow.contains(&"PUT"));
 }
@@ -945,11 +947,15 @@ async fn jss_meta_sidecar_link_always_present_on_non_meta_resources() {
 #[tokio::test]
 async fn jss_slug_safe_names_pass_through_unchanged() {
     use solid_pod_rs::ldp::resolve_slug;
-    let out = resolve_slug("/photos/", Some("cat.jpg"));
+    let out = resolve_slug("/photos/", Some("cat.jpg")).unwrap();
     assert_eq!(out, "/photos/cat.jpg");
-    // Path traversal rejection
+    // Path traversal rejection — JSS parity now returns 400 Bad Request
+    // instead of silently rewriting to a UUID.
     let bad = resolve_slug("/photos/", Some("../secret"));
-    assert!(!bad.contains(".."));
+    assert!(matches!(
+        bad,
+        Err(solid_pod_rs::error::PodError::BadRequest(_))
+    ));
 }
 
 // PATCH dialect detection: JSON Patch is now recognised.

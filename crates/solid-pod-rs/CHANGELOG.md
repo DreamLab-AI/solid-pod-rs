@@ -4,6 +4,137 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — 2026-04-20 (Sprint 6 — WAC 2.0, LDP gaps, webhook signing, did:nostr)
+
+### Added — WAC 2.0 conditions framework
+
+- New `acl:condition` predicate plus `acl:ClientCondition` and
+  `acl:IssuerCondition` evaluators (https://webacl.org/secure-access-conditions/).
+- `wac::Condition` enum with `serde(other)` fail-closed sentinel —
+  unknown condition types parse but evaluate to `NotApplicable`,
+  which the evaluator treats as deny (WAC 2.0 §5).
+- `ConditionRegistry`, `RequestContext`, `EmptyDispatcher`, plus
+  `ClientConditionEvaluator` and `IssuerConditionEvaluator` for
+  per-request gate decisions.
+- `wac::validate_for_write(&AclDocument, &ConditionRegistry)` — handler
+  hook that returns `UnsupportedCondition` so the binder can emit a
+  422 `application/problem+json` per WAC 2.0.
+- `wac_allow_header_with_dispatcher` — request-scoped variant that
+  omits gated modes from `WAC-Allow` when the relevant condition
+  evaluates to `NotApplicable`.
+
+### Changed — `wac.rs` split into `wac/`
+
+- 908-line `wac.rs` decomposed into nine focused sub-modules
+  (`mod`, `document`, `evaluator`, `parser`, `serializer`,
+  `conditions`, `client`, `issuer`, `resolver`, plus the existing
+  `origin`). Every file is now under the 500-line CLAUDE.md ceiling.
+- `evaluate_access` / `evaluate_access_with_groups` retained as
+  `pub use` re-exports; new `evaluate_access_ctx` and
+  `evaluate_access_ctx_with_registry` accept a `RequestContext` for
+  conditions wiring.
+
+### Added — webhook RFC 9421 signing
+
+- New `notifications/signing.rs` module: Ed25519-backed RFC 9421
+  HTTP Message Signatures over `@method`, `@target-uri`,
+  `content-type`, `content-digest` (RFC 9530), `date`,
+  `x-solid-notification-id`. Sign + verify symmetric so receivers
+  can re-use the verifier.
+- `WebhookChannelManager` extended with `signer`, `max_attempts`,
+  `max_backoff`, `circuit_threshold`, plus circuit-breaker state.
+  Builder methods for each.
+- Delivery semantics overhauled:
+  - 2xx → success.
+  - 410 Gone → fatal drop.
+  - 4xx (other) → retain subscription, retry as transient.
+  - 429 / 5xx → exponential back-off with ±20 % clamped jitter,
+    `Retry-After` honoured (seconds and HTTP-date forms).
+  - Network error → same as 5xx.
+  - Circuit opens after `circuit_threshold` consecutive failures;
+    sub stays alive but is paused until reset.
+- New feature flag `webhook-signing` (implies `jss-v04`); pulls in
+  `ed25519-dalek`, `httpdate`, optional `rand` for OS jitter.
+
+### Added — did:nostr resolver
+
+- `interop::did_nostr` (gated `did-nostr`):
+  - `did_nostr_well_known_url(origin, pubkey)` mirrors JSS
+    `.well-known/did/nostr/<pubkey>.json`.
+  - `did_nostr_document(pubkey, also_known_as)` builds the Tier-1
+    DID Doc with a `NostrSchnorrKey2024` verification method.
+  - `DidNostrResolver` performs bidirectional resolution: fetch DID
+    Doc, walk `alsoKnownAs`, fetch each candidate WebID profile,
+    verify a back-link via `owl:sameAs` or `schema:sameAs`. SSRF-
+    checked at every outbound. 5 min success / 60 s failure TTL
+    cache mirroring JSS.
+- Closes mesh-rank E.4 without instantiating the empty
+  `solid-pod-rs-nostr` crate (Auth + Operator inspector
+  recommendation).
+
+### Added — LDP hidden gaps
+
+- `resolve_slug` now returns `Result<String, PodError::BadRequest>`;
+  rejects `/`, `..`, `\0`, lengths > 255 bytes, and any character
+  outside `[A-Za-z0-9._-]`. Absent slug still falls back to UUID.
+- `options_for(path)` branches `Accept-Ranges` on container vs
+  resource — containers get `none`, resources get `bytes`. Closes
+  PARITY row 23.
+- `not_found_headers(path, conneg_enabled)` — JSS-parity helper
+  emitting `Allow` (no DELETE), `Accept-Put`, `Accept-Post`
+  (containers only), `Link rel=acl`, `Vary`.
+- `vary_header(conneg_enabled)` — explicit primitive.
+- `apply_patch_to_absent(dialect, body)` + new `PatchCreateOutcome`
+  enum so callers can issue 201 vs 204 on PATCH-creates-resource.
+- `parse_range_header_v2` returning `RangeOutcome::{Full, Partial,
+  NotSatisfiable}` so empty resources + Range requests yield 416
+  rather than 412. The original `parse_range_header` retained for
+  callers that don't need the new distinction.
+- New `PodError::BadRequest(String)` variant (used by slug + ACL
+  parser bounds).
+
+### Added — WAC parser bounds
+
+- `MAX_ACL_BYTES = 1 MiB` (configurable via `JSS_MAX_ACL_BYTES`)
+  enforced on Turtle ACL parse — defends against O(n²) splitter
+  blowup on multi-MB inputs.
+- `MAX_ACL_JSON_DEPTH = 32` enforced on JSON-LD ACL parse via a
+  pre-parse depth-counted JSON skim — defends against
+  stack-overflow recursion bombs (200-level deep crafted input
+  rejected within 5 ms).
+
+### Fixed — DPoP iat-skew connective
+
+- `oidc::verify_dpop_proof_core` (`src/oidc/mod.rs:517`) used `&&`
+  on two mutually-exclusive `saturating_sub` branches, so the
+  iat-skew gate was unreachable — any iat outside tolerance
+  authenticated. Switched to `||`. Filed by the Sprint 6 coverage
+  agent via an `#[ignore]` test that was promoted to a real test
+  alongside the source fix.
+
+### Tests
+
+- ~90 new tests added across 11 new files:
+  - `wac2_conditions.rs` (8), `wac_validate_for_write.rs` (3) —
+    WAC 2.0 framework.
+  - `webhook_signing.rs` (3), `webhook_retry.rs` (4) — RFC 9421 +
+    delivery.
+  - `did_nostr_resolver.rs` (6) — bidirectional resolver.
+  - `ldp_slug_jss.rs` (9), `ldp_headers_jss.rs` (8),
+    `ldp_patch_create_jss.rs` (4), `ldp_range_jss.rs` (5),
+    `wac_parser_bounds.rs` (5) — LDP hidden gaps + parser DoS caps.
+  - `oidc_mod_direct.rs` (13), `notifications_mod_direct.rs` (11),
+    `nip98_extended.rs` (4), `oidc_integration.rs` (5) — mesh-and-
+    QE-flagged zero-test modules brought to ≥85 % line coverage.
+- **Total in-tree test count: 436 passing across 32 suites** with
+  `oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr,webhook-signing,did-nostr`.
+
+### New Cargo features
+
+- `webhook-signing` — Ed25519 signing via `ed25519-dalek`, RFC 9421
+  profile.
+- `did-nostr` — bidirectional resolver in `interop`.
+
 ## Unreleased — 2026-04-20 (Sprint 5 security remediation)
 
 ### Security (P0 fixes — CVE-class)

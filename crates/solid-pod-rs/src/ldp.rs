@@ -115,16 +115,48 @@ pub fn link_headers(path: &str) -> Vec<String> {
     out
 }
 
+/// Maximum byte length of a client-supplied `Slug` header. JSS caps at
+/// 255 bytes (POSIX filename limit); we match for interop.
+pub const MAX_SLUG_BYTES: usize = 255;
+
 /// Resolve the target path when POSTing to a container.
-pub fn resolve_slug(container: &str, slug: Option<&str>) -> String {
-    let name = slug
-        .filter(|s| !s.is_empty() && !s.contains('/') && !s.contains(".."))
-        .map(String::from)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    if container.ends_with('/') {
-        format!("{container}{name}")
-    } else {
-        format!("{container}/{name}")
+///
+/// Validation rules (JSS parity):
+/// * `Slug` absent or empty → UUID-v4 fallback.
+/// * Non-empty `Slug` must be ≤ 255 bytes, must not contain `/`, `..`,
+///   or `\0`, and every character must match `[A-Za-z0-9._-]`.
+///
+/// Invalid slugs return `Err(PodError::BadRequest)` so the client sees a
+/// `400` and can correct, instead of silently receiving a UUID path.
+pub fn resolve_slug(container: &str, slug: Option<&str>) -> Result<String, PodError> {
+    let join = |name: &str| {
+        if container.ends_with('/') {
+            format!("{container}{name}")
+        } else {
+            format!("{container}/{name}")
+        }
+    };
+    match slug {
+        Some(s) if !s.is_empty() => {
+            if s.len() > MAX_SLUG_BYTES {
+                return Err(PodError::BadRequest(format!(
+                    "slug exceeds {MAX_SLUG_BYTES} bytes"
+                )));
+            }
+            if s.contains('/') || s.contains("..") || s.contains('\0') {
+                return Err(PodError::BadRequest(format!("invalid slug: {s:?}")));
+            }
+            if !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            {
+                return Err(PodError::BadRequest(format!(
+                    "slug contains disallowed character: {s:?}"
+                )));
+            }
+            Ok(join(s))
+        }
+        _ => Ok(join(&uuid::Uuid::new_v4().to_string())),
     }
 }
 
@@ -1331,6 +1363,68 @@ pub fn parse_range_header(
     Ok(Some(range))
 }
 
+/// Outcome of evaluating `Range:` against a known resource length.
+/// `Full` → 200 (no `Range:` header); `Partial` → 206; `NotSatisfiable`
+/// → 416 (not 412, which the old [`parse_range_header`] conflated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeOutcome {
+    Full,
+    Partial(ByteRange),
+    NotSatisfiable,
+}
+
+/// JSS-parity range parser. Same grammar as [`parse_range_header`] but
+/// maps "empty body + header present" and "range past end" to
+/// `NotSatisfiable`. Malformed headers still return `Err` so callers
+/// can reply `400`.
+pub fn parse_range_header_v2(
+    header: Option<&str>,
+    total: u64,
+) -> Result<RangeOutcome, PodError> {
+    let raw = match header {
+        Some(v) if !v.trim().is_empty() => v.trim(),
+        _ => return Ok(RangeOutcome::Full),
+    };
+    let spec = raw
+        .strip_prefix("bytes=")
+        .ok_or_else(|| PodError::Unsupported(format!("unsupported Range unit: {raw}")))?;
+    if spec.contains(',') {
+        return Err(PodError::Unsupported("multi-range not supported".into()));
+    }
+    let (start_s, end_s) = spec
+        .split_once('-')
+        .ok_or_else(|| PodError::Unsupported(format!("malformed Range: {spec}")))?;
+    if total == 0 {
+        return Ok(RangeOutcome::NotSatisfiable);
+    }
+    let range = if start_s.is_empty() {
+        let suffix: u64 = end_s
+            .parse()
+            .map_err(|e| PodError::Unsupported(format!("range suffix parse: {e}")))?;
+        if suffix == 0 {
+            return Ok(RangeOutcome::NotSatisfiable);
+        }
+        ByteRange { start: total.saturating_sub(suffix), end: total - 1 }
+    } else {
+        let start: u64 = start_s
+            .parse()
+            .map_err(|e| PodError::Unsupported(format!("range start parse: {e}")))?;
+        let end = if end_s.is_empty() {
+            total - 1
+        } else {
+            let v: u64 = end_s
+                .parse()
+                .map_err(|e| PodError::Unsupported(format!("range end parse: {e}")))?;
+            v.min(total - 1)
+        };
+        if start > end || start >= total {
+            return Ok(RangeOutcome::NotSatisfiable);
+        }
+        ByteRange { start, end }
+    };
+    Ok(RangeOutcome::Partial(range))
+}
+
 /// Slice a body buffer to a byte range. The slice is a zero-copy
 /// view; callers are expected to `copy_from_slice` or similar when
 /// returning it through an HTTP framework.
@@ -1376,7 +1470,54 @@ pub fn options_for(path: &str) -> OptionsResponse {
         allow,
         accept_post: if container { Some(ACCEPT_POST) } else { None },
         accept_patch: ACCEPT_PATCH,
-        accept_ranges: "bytes",
+        // Containers are not byte-rangeable — they render server-side
+        // RDF representations. Only leaf resources carry bytes that a
+        // `Range:` request can meaningfully slice. JSS advertises
+        // `Accept-Ranges: none` on containers; we match.
+        accept_ranges: if container { "none" } else { "bytes" },
+    }
+}
+
+/// Build the header set returned on `404 Not Found` for an LDP path.
+///
+/// JSS emits a rich discovery header set on 404 so that clients can
+/// drive a PUT-to-create or POST-to-container flow without a second
+/// OPTIONS round trip:
+///
+/// * `Allow` — methods the server will *accept* on this path. DELETE is
+///   intentionally omitted because the resource does not exist.
+/// * `Accept-Put: */*` — PUT accepts any content type (spec default).
+/// * `Link: <path.acl>; rel="acl"` — ACL discovery.
+/// * `Vary` — includes `Accept` when content negotiation is enabled so
+///   caches key on it.
+/// * `Accept-Post` — only for containers; advertises the RDF formats
+///   usable as POST bodies.
+pub fn not_found_headers(path: &str, conneg_enabled: bool) -> Vec<(&'static str, String)> {
+    let container = is_container(path);
+    let mut h: Vec<(&'static str, String)> = Vec::with_capacity(6);
+    h.push(("Allow", "GET, HEAD, OPTIONS, PUT, PATCH".into()));
+    h.push(("Accept-Put", "*/*".into()));
+    h.push(("Accept-Patch", ACCEPT_PATCH.into()));
+    h.push((
+        "Link",
+        format!("<{}.acl>; rel=\"acl\"", path.trim_end_matches('/')),
+    ));
+    h.push(("Vary", vary_header(conneg_enabled).into()));
+    if container {
+        h.push(("Accept-Post", ACCEPT_POST.into()));
+    }
+    h
+}
+
+/// Value of the `Vary:` header depending on whether content negotiation
+/// is enabled. `Authorization` and `Origin` are always listed so shared
+/// caches never collapse an authenticated and an anonymous response
+/// onto the same cache entry.
+pub fn vary_header(conneg_enabled: bool) -> &'static str {
+    if conneg_enabled {
+        "Accept, Authorization, Origin"
+    } else {
+        "Authorization, Origin"
     }
 }
 
@@ -1593,6 +1734,64 @@ pub fn patch_dialect_from_mime(mime: &str) -> Option<PatchDialect> {
         }
         "application/json-patch+json" => Some(PatchDialect::JsonPatch),
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PATCH against absent resource (JSS parity).
+//
+// JSS seeds an empty graph when a PATCH targets a path that does not
+// yet exist and returns `201 Created`. JSON Patch is deliberately
+// rejected on absent resources because RFC 6902 operates on an existing
+// JSON document and `add`/`replace` at the root (`""`) would silently
+// accept any shape — better to make the client issue a PUT first.
+// ---------------------------------------------------------------------------
+
+/// Outcome of applying a PATCH to a path that had no prior resource.
+///
+/// * `Created { .. }` — graph was seeded successfully; caller should
+///   persist it and respond with `201 Created`.
+/// * `Applied { .. }` — unused on the absent path today but reserved so
+///   callers can match exhaustively in the same enum they use for the
+///   non-absent code path.
+#[derive(Debug)]
+pub enum PatchCreateOutcome {
+    /// Patch applied to a newly-seeded empty graph.
+    Created { inserted: usize, graph: Graph },
+    /// Patch applied to an existing graph (for symmetry; not produced
+    /// by `apply_patch_to_absent`).
+    Applied {
+        inserted: usize,
+        deleted: usize,
+        graph: Graph,
+    },
+}
+
+/// Apply a PATCH document to an absent resource by seeding an empty
+/// graph and running the dialect-specific patcher. JSON Patch is
+/// unsupported in this path.
+pub fn apply_patch_to_absent(
+    dialect: PatchDialect,
+    body: &str,
+) -> Result<PatchCreateOutcome, PodError> {
+    match dialect {
+        PatchDialect::N3 => {
+            let outcome = apply_n3_patch(Graph::new(), body)?;
+            Ok(PatchCreateOutcome::Created {
+                inserted: outcome.inserted,
+                graph: outcome.graph,
+            })
+        }
+        PatchDialect::SparqlUpdate => {
+            let outcome = apply_sparql_patch(Graph::new(), body)?;
+            Ok(PatchCreateOutcome::Created {
+                inserted: outcome.inserted,
+                graph: outcome.graph,
+            })
+        }
+        PatchDialect::JsonPatch => Err(PodError::Unsupported(
+            "JSON Patch on absent resource".into(),
+        )),
     }
 }
 
@@ -1831,14 +2030,14 @@ mod tests {
 
     #[test]
     fn slug_uses_valid_value() {
-        let out = resolve_slug("/photos/", Some("cat.jpg"));
+        let out = resolve_slug("/photos/", Some("cat.jpg")).unwrap();
         assert_eq!(out, "/photos/cat.jpg");
     }
 
     #[test]
     fn slug_rejects_slashes() {
-        let out = resolve_slug("/photos/", Some("a/b"));
-        assert!(!out.contains("a/b"));
+        let err = resolve_slug("/photos/", Some("a/b"));
+        assert!(matches!(err, Err(PodError::BadRequest(_))));
     }
 
     #[test]
@@ -1925,7 +2124,10 @@ mod tests {
         let o = options_for("/photos/");
         assert!(o.allow.contains(&"POST"));
         assert!(o.accept_post.is_some());
-        assert_eq!(o.accept_ranges, "bytes");
+        // JSS parity: containers advertise `Accept-Ranges: none` because
+        // container representations are server-generated RDF, not
+        // byte-rangeable.
+        assert_eq!(o.accept_ranges, "none");
     }
 
     #[test]

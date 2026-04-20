@@ -34,6 +34,13 @@ use crate::storage::StorageEvent;
 #[cfg(feature = "legacy-notifications")]
 pub mod legacy;
 
+// Sprint 6 C: RFC 9421 HTTP Message Signatures for webhook deliveries.
+// Gated behind `webhook-signing`; when disabled, the signer pathway is
+// compiled out entirely and the manager remains drop-in compatible
+// with older consumers.
+#[cfg(feature = "webhook-signing")]
+pub mod signing;
+
 /// `as:` type URIs per Activity Streams 2.0.
 pub mod as_ns {
     pub const CONTEXT: &str = "https://www.w3.org/ns/activitystreams";
@@ -295,14 +302,39 @@ pub enum WebhookDelivery {
 /// Webhook notification channel with built-in retry logic. The
 /// manager keeps an internal map of subscriptions → target URL, and
 /// `deliver_all()` POSTs the Activity Streams payload to each target.
+///
+/// Sprint 6 C additions (ADR-058):
+/// * Optional RFC 9421 HTTP Message Signatures via [`Self::with_signer`].
+/// * `Retry-After` honoured on 429.
+/// * 410 Gone treated as `FatalDrop`; other 4xx retried as transient.
+/// * Full-jitter exponential back-off bounded by `max_backoff`.
+/// * Simple per-manager circuit breaker — consecutive failures are
+///   counted across `deliver_one` calls; once the threshold is reached
+///   further calls short-circuit to [`WebhookDelivery::TransientRetry`]
+///   with a `circuit open` reason until a successful delivery resets
+///   the counter.
 #[derive(Clone)]
 pub struct WebhookChannelManager {
     client: reqwest::Client,
     subscriptions: Arc<RwLock<HashMap<String, Subscription>>>,
     /// Exponential backoff base (starting delay). Default 500ms.
     pub retry_base: Duration,
-    /// Max retry attempts on 5xx. Default 3.
+    /// Max retry attempts on 5xx. Default 3 (preserved for backward
+    /// compat; tests that exercise Sprint 6 semantics call
+    /// `with_max_attempts` explicitly).
     pub max_retries: u32,
+    /// Cap on a single back-off wait. Default 1h.
+    pub max_backoff: Duration,
+    /// Sprint 6 C: consecutive failures before the circuit opens.
+    pub circuit_threshold: u32,
+    /// Current consecutive-failure counter; shared across clones so a
+    /// single logical channel shares breaker state.
+    consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
+    /// Optional RFC 9421 signer. `None` leaves requests unsigned
+    /// (legacy behaviour) and emits a one-shot `tracing::warn` on
+    /// first use.
+    #[cfg(feature = "webhook-signing")]
+    signer: Option<signing::SignerConfig>,
 }
 
 impl Default for WebhookChannelManager {
@@ -321,18 +353,71 @@ impl WebhookChannelManager {
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             retry_base: Duration::from_millis(500),
             max_retries: 3,
+            max_backoff: Duration::from_secs(3600),
+            circuit_threshold: 10,
+            consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            #[cfg(feature = "webhook-signing")]
+            signer: None,
         }
     }
 
     /// Create a manager with a specific `reqwest::Client` (used in
     /// tests with wiremock).
     pub fn with_client(client: reqwest::Client) -> Self {
-        Self {
-            client,
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
-            retry_base: Duration::from_millis(500),
-            max_retries: 3,
-        }
+        let mut m = Self::new();
+        m.client = client;
+        m
+    }
+
+    /// Sprint 6 C: attach an RFC 9421 signer. Subsequent deliveries
+    /// attach `Signature-Input` / `Signature` headers.
+    #[cfg(feature = "webhook-signing")]
+    pub fn with_signer(mut self, signer: signing::SignerConfig) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// Override the max attempts (1 == no retries). Default 5.
+    pub fn with_max_attempts(mut self, attempts: u32) -> Self {
+        // Internally we still carry `max_retries` so older public API
+        // callers keep working. `max_retries` is the *retry* count,
+        // i.e. one less than the total attempts.
+        self.max_retries = attempts.saturating_sub(1);
+        self
+    }
+
+    /// Override the maximum single back-off wait. Default 1h.
+    pub fn with_max_backoff(mut self, max: Duration) -> Self {
+        self.max_backoff = max;
+        self
+    }
+
+    /// Override the consecutive-failure threshold that opens the
+    /// breaker. Default 10.
+    pub fn with_circuit_threshold(mut self, threshold: u32) -> Self {
+        self.circuit_threshold = threshold;
+        self
+    }
+
+    /// True iff the breaker is currently open.
+    pub fn circuit_open(&self) -> bool {
+        self.consecutive_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= self.circuit_threshold
+    }
+
+    /// Current consecutive-failure count. Public for observability and
+    /// tests.
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Reset the consecutive-failure counter (e.g. after operator
+    /// intervention). Test hook, also exposed for admin UIs.
+    pub fn reset_circuit(&self) {
+        self.consecutive_failures
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub async fn subscribe(&self, topic: &str, target_url: &str) -> Subscription {
@@ -357,50 +442,210 @@ impl WebhookChannelManager {
         self.subscriptions.read().await.len()
     }
 
-    /// Deliver a single event to a single webhook URL, with retries.
+    /// Parse an HTTP `Retry-After` header value — either a
+    /// delta-seconds integer (RFC 7231 §7.1.3) or an HTTP-date.
+    fn parse_retry_after(raw: &str) -> Option<Duration> {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            return Some(Duration::from_secs(secs));
+        }
+        #[cfg(feature = "webhook-signing")]
+        {
+            if let Ok(when) = httpdate::parse_http_date(raw.trim()) {
+                if let Ok(delta) = when.duration_since(std::time::SystemTime::now()) {
+                    return Some(delta);
+                }
+            }
+        }
+        None
+    }
+
+    /// Full-jitter back-off: a random value in `[0.8 * cap, cap]`
+    /// where `cap = min(base * 2^attempt, max_backoff)`. The 20%
+    /// jitter window is what `tests/webhook_retry.rs::webhook_jitter_within_window`
+    /// asserts. Public for testability — not stable API.
+    #[doc(hidden)]
+    pub fn compute_backoff(&self, attempt: u32) -> Duration {
+        let exp = self
+            .retry_base
+            .saturating_mul(2u32.saturating_pow(attempt.min(20)));
+        let cap = std::cmp::min(exp, self.max_backoff);
+        // Jitter: pick a factor in [0.8, 1.0] so each back-off stays
+        // within 20% of the deterministic ceiling (tests assert the
+        // ±20% window). Uses the OS RNG when `webhook-signing` pulls
+        // `rand` in, otherwise falls back to a cheap time-based
+        // perturbation good enough for the jitter test.
+        let factor = jitter_factor();
+        let nanos = (cap.as_nanos() as f64 * factor) as u128;
+        Duration::from_nanos(nanos.min(u64::MAX as u128) as u64)
+    }
+
+    /// Build and send a single HTTP request, optionally signed.
+    async fn send_once(
+        &self,
+        url: &str,
+        note: &ChangeNotification,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let body = serde_json::to_vec(note).unwrap_or_default();
+        #[cfg(feature = "webhook-signing")]
+        let notification_id = note.id.clone();
+        #[cfg_attr(not(feature = "webhook-signing"), allow(unused_mut))]
+        let mut req = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/ld+json");
+
+        #[cfg(feature = "webhook-signing")]
+        {
+            if let Some(cfg) = &self.signer {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                let signed = signing::sign_request(
+                    cfg,
+                    "POST",
+                    url,
+                    "application/ld+json",
+                    &body,
+                    &notification_id,
+                    now,
+                );
+                // send_once rebuilds the Content-Type header itself;
+                // attach every *other* header from the signer.
+                for (name, value) in &signed.headers {
+                    if name.eq_ignore_ascii_case("content-type") {
+                        continue;
+                    }
+                    req = req.header(name.as_str(), value.as_str());
+                }
+            } else {
+                tracing::warn!(
+                    "webhook manager delivering {} unsigned — consider configuring a SignerConfig",
+                    url
+                );
+            }
+        }
+
+        req.body(body).send().await
+    }
+
+    /// Deliver a single event to a single webhook URL, with full
+    /// Sprint 6 C retry / back-off / circuit-breaker semantics.
     pub async fn deliver_one(
         &self,
         url: &str,
         note: &ChangeNotification,
     ) -> WebhookDelivery {
+        // Circuit breaker — bail before touching the network if open.
+        if self.circuit_open() {
+            return WebhookDelivery::TransientRetry {
+                reason: "circuit open".to_string(),
+            };
+        }
+
+        let total_attempts = self.max_retries.saturating_add(1);
         let mut attempt = 0u32;
         loop {
-            let resp = self
-                .client
-                .post(url)
-                .header("Content-Type", "application/ld+json")
-                .json(note)
-                .send()
-                .await;
-
+            let resp = self.send_once(url, note).await;
             match resp {
                 Ok(r) => {
                     let status = r.status().as_u16();
+                    // 2xx — success resets the breaker.
                     if r.status().is_success() {
+                        self.consecutive_failures
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
                         return WebhookDelivery::Delivered { status };
                     }
-                    if r.status().is_client_error() {
+                    // 410 Gone — receiver asked to be unsubscribed.
+                    if status == 410 {
+                        self.consecutive_failures
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
                         return WebhookDelivery::FatalDrop { status };
                     }
-                    if attempt >= self.max_retries {
+                    // 429 — honour Retry-After then retry.
+                    if status == 429 {
+                        let retry_after = r
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(Self::parse_retry_after)
+                            .unwrap_or_else(|| self.compute_backoff(attempt));
+                        attempt += 1;
+                        if attempt >= total_attempts {
+                            self.record_failure();
+                            return WebhookDelivery::TransientRetry {
+                                reason: format!("429 after {attempt} attempts"),
+                            };
+                        }
+                        tokio::time::sleep(
+                            retry_after.min(self.max_backoff),
+                        )
+                        .await;
+                        continue;
+                    }
+                    // 5xx (incl. 503 with Retry-After) — retry with
+                    // back-off, honouring Retry-After if present.
+                    if r.status().is_server_error() {
+                        let wait = r
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(Self::parse_retry_after)
+                            .unwrap_or_else(|| self.compute_backoff(attempt));
+                        attempt += 1;
+                        if attempt >= total_attempts {
+                            self.record_failure();
+                            return WebhookDelivery::TransientRetry {
+                                reason: format!("5xx after {attempt} attempts"),
+                            };
+                        }
+                        tokio::time::sleep(wait.min(self.max_backoff)).await;
+                        continue;
+                    }
+                    // Other 4xx (401/403/404/422/…) — subscription
+                    // stays alive; retry with back-off.
+                    if r.status().is_client_error() {
+                        let wait = self.compute_backoff(attempt);
+                        attempt += 1;
+                        if attempt >= total_attempts {
+                            self.record_failure();
+                            return WebhookDelivery::TransientRetry {
+                                reason: format!("{status} after {attempt} attempts"),
+                            };
+                        }
+                        tokio::time::sleep(wait.min(self.max_backoff)).await;
+                        continue;
+                    }
+                    // 3xx/1xx — treat as transient.
+                    let wait = self.compute_backoff(attempt);
+                    attempt += 1;
+                    if attempt >= total_attempts {
+                        self.record_failure();
                         return WebhookDelivery::TransientRetry {
-                            reason: format!("5xx after {attempt} retries"),
+                            reason: format!("status {status} after {attempt} attempts"),
                         };
                     }
-                    tokio::time::sleep(self.retry_base * 2u32.pow(attempt)).await;
-                    attempt += 1;
+                    tokio::time::sleep(wait.min(self.max_backoff)).await;
                 }
                 Err(e) => {
-                    if attempt >= self.max_retries {
+                    // Network error — same treatment as 5xx.
+                    let wait = self.compute_backoff(attempt);
+                    attempt += 1;
+                    if attempt >= total_attempts {
+                        self.record_failure();
                         return WebhookDelivery::TransientRetry {
                             reason: format!("network error: {e}"),
                         };
                     }
-                    tokio::time::sleep(self.retry_base * 2u32.pow(attempt)).await;
-                    attempt += 1;
+                    tokio::time::sleep(wait.min(self.max_backoff)).await;
                 }
             }
         }
+    }
+
+    fn record_failure(&self) {
+        self.consecutive_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Deliver the notification to every matching subscription.
@@ -507,6 +752,40 @@ pub fn discovery_document(pod_base: &str) -> serde_json::Value {
             }
         ]
     })
+}
+
+// ---------------------------------------------------------------------------
+// Jitter helper — Sprint 6 C. Returns a multiplier in [0.8, 1.0]. When
+// the `webhook-signing` feature is enabled we use the `rand` OS RNG;
+// otherwise we derive a deterministic-but-varying factor from the
+// monotonic clock, which gives enough dispersion across a hundred
+// trials for the back-off jitter test to pass without a new
+// always-on dependency.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "webhook-signing")]
+fn jitter_factor() -> f64 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(0.8_f64..1.0_f64)
+}
+
+#[cfg(not(feature = "webhook-signing"))]
+fn jitter_factor() -> f64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Splitmix64 step seeded by the monotonic nanoseconds.
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    let seed = {
+        let n = std::time::Instant::now().elapsed().as_nanos() as u64;
+        let prev = SEED.fetch_add(n | 1, Ordering::Relaxed);
+        prev.wrapping_add(n).wrapping_add(0x9E3779B97F4A7C15)
+    };
+    let mut x = seed;
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^= x >> 31;
+    // Map to [0.8, 1.0).
+    let unit = (x >> 11) as f64 / (1u64 << 53) as f64;
+    0.8 + unit * 0.2
 }
 
 // ---------------------------------------------------------------------------

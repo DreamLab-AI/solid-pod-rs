@@ -514,7 +514,11 @@ fn verify_dpop_proof_core(
             claims.htu, expected_htu
         )));
     }
-    if now.saturating_sub(claims.iat) > skew && claims.iat.saturating_sub(now) > skew {
+    // The two saturating_sub branches are mutually exclusive (one
+    // returns 0 unless the other is 0), so an `&&` here was always
+    // false and the gate never fired. Use `||` so iat outside
+    // tolerance in either direction trips the rejection.
+    if now.saturating_sub(claims.iat) > skew || claims.iat.saturating_sub(now) > skew {
         return Err(PodError::Nip98("DPoP iat outside tolerance".into()));
     }
 

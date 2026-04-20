@@ -725,6 +725,7 @@ fn struct_literal_authorization_works() {
         mode: Some(IdOrIds::Single(IdRef {
             id: "acl:Read".into(),
         })),
+        condition: None,
     };
     let doc = AclDocument {
         context: None,

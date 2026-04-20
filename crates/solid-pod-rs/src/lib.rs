@@ -70,11 +70,12 @@ pub use wac::{
     StaticGroupMembership,
 };
 pub use ldp::{
-    apply_json_patch, apply_n3_patch, apply_sparql_patch, evaluate_preconditions, link_headers,
-    negotiate_format, options_for, parse_range_header, patch_dialect_from_mime,
-    server_managed_triples, slice_range, ByteRange, ConditionalOutcome, ContainerRepresentation,
-    Graph, OptionsResponse, PatchDialect, PatchOutcome, PreferHeader, RdfFormat, Term, Triple,
-    ACCEPT_PATCH, ACCEPT_POST,
+    apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch,
+    evaluate_preconditions, link_headers, negotiate_format, not_found_headers, options_for,
+    parse_range_header, parse_range_header_v2, patch_dialect_from_mime, server_managed_triples,
+    slice_range, vary_header, ByteRange, ConditionalOutcome, ContainerRepresentation, Graph,
+    OptionsResponse, PatchCreateOutcome, PatchDialect, PatchOutcome, PreferHeader, RangeOutcome,
+    RdfFormat, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
 };
 pub use interop::{
     dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,

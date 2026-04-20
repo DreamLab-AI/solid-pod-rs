@@ -57,6 +57,9 @@ pub enum PodError {
 
     #[error("unsupported: {0}")]
     Unsupported(String),
+
+    #[error("bad request: {0}")]
+    BadRequest(String),
 }
 
 impl From<notify::Error> for PodError {

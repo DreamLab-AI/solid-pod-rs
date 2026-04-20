@@ -246,3 +246,218 @@ mod tests {
         assert_eq!(s.webid, "https://me/profile#me");
     }
 }
+
+// ---------------------------------------------------------------------------
+// did:nostr resolver (Sprint 6 D)
+// ---------------------------------------------------------------------------
+
+/// did:nostr resolver — DID-Doc publication + bidirectional
+/// `alsoKnownAs`/`owl:sameAs` verification.
+///
+/// Mirrors `JavaScriptSolidServer/src/auth/did-nostr.js`: given
+/// `did:nostr:<pubkey>` hosted on an origin, fetch
+/// `https://<origin>/.well-known/did/nostr/<pubkey>.json`, iterate the
+/// `alsoKnownAs` entries, fetch each candidate WebID profile, and
+/// verify it carries an `owl:sameAs` / `schema:sameAs` back-link to
+/// `did:nostr:<pubkey>`. Only a verified WebID is returned.
+///
+/// Defence-in-depth: every outbound request (DID Doc + each WebID
+/// candidate) runs through the configured [`SsrfPolicy`] before
+/// network I/O. A small in-memory TTL cache covers both success and
+/// negative results so a dark origin does not hammer the downstream.
+#[cfg(feature = "did-nostr")]
+pub mod did_nostr {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+    use std::time::{Duration, Instant};
+
+    use reqwest::Client;
+    use serde::{Deserialize, Serialize};
+    use url::Url;
+
+    use crate::security::ssrf::SsrfPolicy;
+
+    /// Compose the well-known DID Doc location for a Nostr pubkey
+    /// hosted on a given origin. Mirrors JSS `did-nostr.js:79` where
+    /// the resolver URL is `<base>/<pubkey>.json`.
+    pub fn did_nostr_well_known_url(origin: &str, pubkey: &str) -> String {
+        format!(
+            "{}/.well-known/did/nostr/{}.json",
+            origin.trim_end_matches('/'),
+            pubkey
+        )
+    }
+
+    /// Build a minimal DID Doc for publication at the well-known URL.
+    /// Tier-1 schema (matches JSS): `id`, `alsoKnownAs`, and a single
+    /// `verificationMethod` entry of type `NostrSchnorrKey2024` derived
+    /// from the x-only pubkey.
+    pub fn did_nostr_document(pubkey: &str, also_known_as: &[String]) -> serde_json::Value {
+        serde_json::json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": format!("did:nostr:{}", pubkey),
+            "alsoKnownAs": also_known_as,
+            "verificationMethod": [{
+                "id": format!("did:nostr:{}#nostr-schnorr", pubkey),
+                "type": "NostrSchnorrKey2024",
+                "controller": format!("did:nostr:{}", pubkey),
+                "publicKeyHex": pubkey,
+            }]
+        })
+    }
+
+    /// Parsed DID Doc. Only the subset of fields relevant to WebID
+    /// resolution is typed; unknown fields are ignored.
+    #[derive(Debug, Clone, Deserialize, Serialize)]
+    pub struct DidNostrDoc {
+        pub id: String,
+        #[serde(default, rename = "alsoKnownAs")]
+        pub also_known_as: Vec<String>,
+    }
+
+    /// TTL-cached `did:nostr:<pubkey>` → WebID resolver with per-hop
+    /// SSRF enforcement.
+    pub struct DidNostrResolver {
+        ssrf: Arc<SsrfPolicy>,
+        client: Client,
+        cache: Arc<RwLock<HashMap<String, CachedEntry>>>,
+        success_ttl: Duration,
+        failure_ttl: Duration,
+    }
+
+    struct CachedEntry {
+        fetched: Instant,
+        web_id: Option<String>,
+    }
+
+    impl DidNostrResolver {
+        /// Construct a resolver with the default HTTP client (10 s
+        /// timeout) and TTLs matching JSS (5 min success, 1 min
+        /// failure).
+        pub fn new(ssrf: Arc<SsrfPolicy>) -> Self {
+            let client = Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| Client::new());
+            Self {
+                ssrf,
+                client,
+                cache: Arc::new(RwLock::new(HashMap::new())),
+                success_ttl: Duration::from_secs(300),
+                failure_ttl: Duration::from_secs(60),
+            }
+        }
+
+        /// Override the default success / failure cache TTLs.
+        pub fn with_ttls(mut self, success: Duration, failure: Duration) -> Self {
+            self.success_ttl = success;
+            self.failure_ttl = failure;
+            self
+        }
+
+        /// Resolve `did:nostr:<pubkey>` against `origin` to a verified
+        /// WebID. Returns `None` if:
+        ///
+        /// - SSRF policy denies the origin or any WebID candidate.
+        /// - DID Doc fetch fails or the doc's `id` does not match
+        ///   `did:nostr:<pubkey>`.
+        /// - `alsoKnownAs` is empty.
+        /// - No candidate WebID carries a back-link (`owl:sameAs` or
+        ///   `schema:sameAs`) to the same `did:nostr:<pubkey>`.
+        ///
+        /// Both success and failure are cached; subsequent calls
+        /// within the matching TTL are served from memory without
+        /// network I/O.
+        pub async fn resolve(&self, origin: &str, pubkey: &str) -> Option<String> {
+            let cache_key = format!("{origin}|{pubkey}");
+
+            // Cache lookup (read lock).
+            if let Ok(guard) = self.cache.read() {
+                if let Some(entry) = guard.get(&cache_key) {
+                    let ttl = if entry.web_id.is_some() {
+                        self.success_ttl
+                    } else {
+                        self.failure_ttl
+                    };
+                    if entry.fetched.elapsed() < ttl {
+                        return entry.web_id.clone();
+                    }
+                }
+            }
+
+            let result = self.resolve_uncached(origin, pubkey).await;
+
+            if let Ok(mut guard) = self.cache.write() {
+                guard.insert(
+                    cache_key,
+                    CachedEntry {
+                        fetched: Instant::now(),
+                        web_id: result.clone(),
+                    },
+                );
+            }
+
+            result
+        }
+
+        async fn resolve_uncached(&self, origin: &str, pubkey: &str) -> Option<String> {
+            // 1. SSRF check on origin.
+            let origin_url = Url::parse(origin).ok()?;
+            self.ssrf.resolve_and_check(&origin_url).await.ok()?;
+
+            // 2. Fetch DID Doc.
+            let url = did_nostr_well_known_url(origin, pubkey);
+            let resp = self
+                .client
+                .get(&url)
+                .header("accept", "application/did+json, application/json")
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?;
+            let doc: DidNostrDoc = resp.json().await.ok()?;
+
+            if doc.id != format!("did:nostr:{pubkey}") {
+                return None;
+            }
+
+            // 3. Iterate candidates; return the first verified WebID.
+            let did_iri = format!("did:nostr:{pubkey}");
+            for candidate in &doc.also_known_as {
+                if let Some(web_id) = self.try_candidate(candidate, &did_iri).await {
+                    return Some(web_id);
+                }
+            }
+            None
+        }
+
+        async fn try_candidate(&self, candidate: &str, did_iri: &str) -> Option<String> {
+            let url = Url::parse(candidate).ok()?;
+            self.ssrf.resolve_and_check(&url).await.ok()?;
+            let resp = self
+                .client
+                .get(url.as_str())
+                .header("accept", "text/turtle, application/ld+json")
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?;
+            let body = resp.text().await.ok()?;
+
+            // Back-link check — literal string match suffices for the
+            // bidirectional guarantee because the DID IRI is by spec a
+            // verbatim literal (no relativisation in either RDF flavour).
+            let has_predicate = body.contains("owl:sameAs")
+                || body.contains("schema:sameAs")
+                || body.contains("http://www.w3.org/2002/07/owl#sameAs")
+                || body.contains("https://schema.org/sameAs");
+            if has_predicate && body.contains(did_iri) {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        }
+    }
+}

@@ -57,6 +57,13 @@ k256 = { version = "0.13", features = ["schnorr"], optional = true }
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
 lru = { version = "0.12", optional = true }
 
+# Sprint 6 C: RFC 9421 HTTP Message Signatures for outgoing webhook
+# deliveries (Solid Notifications 0.2 §5). Gated behind
+# `webhook-signing` (which implies `jss-v04`).
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+httpdate = { version = "1", optional = true }
+rand = { version = "0.8", optional = true }
+
 [features]
 default = ["fs-backend", "memory-backend"]
 fs-backend = []
@@ -92,6 +99,17 @@ dpop-replay-cache = ["oidc", "jss-v04", "dep:lru"]
 # always compiled (lightweight struct definitions); this feature flag
 # is the consumer-facing toggle for binary-layer wiring.
 config-loader = ["jss-v04"]
+
+# Sprint 6 C: RFC 9421 HTTP Message Signatures on outgoing webhook
+# deliveries, Retry-After handling, circuit breaker. Consumers opt in.
+webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand"]
+
+# Sprint 6 D: did:nostr resolver (DID-Doc ↔ WebID bidirectional
+# alsoKnownAs/owl:sameAs verification). Surfaces under
+# `solid_pod_rs::interop::did_nostr`. No new crate dependencies: uses
+# the reqwest + serde + url stack already pulled in by the library,
+# and std::sync::RwLock for the cache.
+did-nostr = ["jss-v04", "security-primitives"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
