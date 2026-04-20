@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
 use base64::Engine;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use solid_pod_rs::oidc::{
     replay::{DpopReplayCache, ReplayError, DEFAULT_MAX_SIZE, DEFAULT_TTL_SECS},
     verify_dpop_proof, DpopClaims, Jwk,
@@ -44,7 +45,11 @@ fn test_jwk(secret: &[u8]) -> Jwk {
 
 fn build_dpop_proof(secret: &[u8], jwk: &Jwk, htu: &str, htm: &str, iat: u64, jti: &str) -> String {
     // jsonwebtoken does not let us set `typ` + `jwk` object together
-    // via the `Header` struct, so assemble the header + body manually.
+    // via the `Header` struct, so assemble the header + body manually
+    // and sign with HMAC-SHA256 directly. (Pre-Sprint-5 this helper
+    // spliced a signature produced from a *different* signing input,
+    // which only worked because the pod never verified signatures.
+    // P0-1 now requires the signature to cryptographically match.)
     let header_json = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "HS256",
@@ -61,19 +66,12 @@ fn build_dpop_proof(secret: &[u8], jwk: &Jwk, htu: &str, htm: &str, iat: u64, jt
     };
     let body_b64 = BASE64_URL.encode(serde_json::to_string(&claims).unwrap());
 
-    // Sign the header.body pair with HS256. We reuse `jsonwebtoken`
-    // for signing only, then splice its signature onto our manually
-    // assembled header.body input.
     let signing_input = format!("{header_b64}.{body_b64}");
-    let header = Header::new(Algorithm::HS256);
-    let sig = encode(
-        &header,
-        &claims,
-        &EncodingKey::from_secret(secret),
-    )
-    .unwrap();
-    let sig_part = sig.split('.').nth(2).unwrap().to_string();
-    format!("{signing_input}.{sig_part}")
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(signing_input.as_bytes());
+    let sig = mac.finalize().into_bytes();
+    let sig_b64 = BASE64_URL.encode(sig);
+    format!("{signing_input}.{sig_b64}")
 }
 
 // ---------------------------------------------------------------------------

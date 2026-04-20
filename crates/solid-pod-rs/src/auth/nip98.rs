@@ -233,6 +233,35 @@ mod tests {
         BASE64.encode(serde_json::to_string(event).unwrap().as_bytes())
     }
 
+    /// Deterministic test keypair. Under `nip98-schnorr` this returns a
+    /// real BIP-340 signing key whose x-only pubkey is returned as hex.
+    /// Without the feature, returns the legacy `"a".repeat(64)` placeholder.
+    #[cfg(feature = "nip98-schnorr")]
+    fn test_signing_key() -> (k256::schnorr::SigningKey, String) {
+        // Deterministic 32-byte seed — not all seeds produce a valid
+        // Schnorr key, but this one does (secp256k1 is ~99.9% acceptance).
+        let seed = [0x42u8; 32];
+        let sk = k256::schnorr::SigningKey::from_bytes(&seed)
+            .expect("seed produces valid Schnorr signing key");
+        let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+        (sk, pubkey_hex)
+    }
+
+    #[cfg(not(feature = "nip98-schnorr"))]
+    fn test_pubkey() -> String {
+        "a".repeat(64)
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    fn test_pubkey() -> String {
+        test_signing_key().1
+    }
+
+    /// Build a canonically-hashed, properly-signed (when feature on) event.
+    ///
+    /// - `id` is always computed from the NIP-01 canonical serialisation.
+    /// - `sig` is a real BIP-340 Schnorr signature when `nip98-schnorr` is
+    ///   enabled, otherwise a 128-hex-zero placeholder (not verified).
     fn valid_event(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> serde_json::Value {
         let mut tags = vec![
             vec!["u".to_string(), url.to_string()],
@@ -241,14 +270,54 @@ mod tests {
         if let Some(b) = body {
             tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
         }
+
+        let pubkey = test_pubkey();
+        let kind = 27235u64;
+        let content = String::new();
+
+        // Build a Nip98Event purely to reuse `compute_event_id` —
+        // that's the canonical NIP-01 hash and the single source of truth.
+        let skeleton = Nip98Event {
+            id: String::new(),
+            pubkey: pubkey.clone(),
+            created_at: ts,
+            kind,
+            tags: tags.clone(),
+            content: content.clone(),
+            sig: String::new(),
+        };
+        let id = compute_event_id(&skeleton);
+
+        let sig = {
+            #[cfg(feature = "nip98-schnorr")]
+            {
+                // Match the verifier: `verify_schnorr_signature` calls
+                // `VerifyingKey::verify(id_bytes, sig)`, and k256's
+                // `Verifier` impl hashes the input via
+                // `Sha256::new_with_prefix`. The paired `Signer::try_sign`
+                // does the same, so signing over `id_bytes` with that
+                // trait produces a matching signature.
+                use k256::schnorr::signature::Signer;
+                let (sk, _) = test_signing_key();
+                let id_bytes: Vec<u8> = hex::decode(&id).expect("id is valid hex");
+                let signature: k256::schnorr::Signature =
+                    sk.sign(&id_bytes);
+                hex::encode(signature.to_bytes())
+            }
+            #[cfg(not(feature = "nip98-schnorr"))]
+            {
+                "0".repeat(128)
+            }
+        };
+
         serde_json::json!({
-            "id": "0".repeat(64),
-            "pubkey": "a".repeat(64),
+            "id": id,
+            "pubkey": pubkey,
             "created_at": ts,
-            "kind": 27235,
+            "kind": kind,
             "tags": tags,
-            "content": "",
-            "sig": "0".repeat(128),
+            "content": content,
+            "sig": sig,
         })
     }
 
@@ -264,7 +333,7 @@ mod tests {
         let ev = valid_event("https://api.example.com/x", "GET", ts, None);
         let hdr = authorization_header(&encode_event(&ev));
         let r = verify_at(&hdr, "https://api.example.com/x", "GET", None, ts).unwrap();
-        assert_eq!(r.pubkey, "a".repeat(64));
+        assert_eq!(r.pubkey, test_pubkey());
         assert_eq!(r.url, "https://api.example.com/x");
     }
 

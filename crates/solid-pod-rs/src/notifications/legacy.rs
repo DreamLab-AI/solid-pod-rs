@@ -35,8 +35,35 @@
 //! The F7 library-server boundary applies: this crate never mounts
 //! itself into an HTTP router. The example binders in
 //! `examples/embed_in_actix.rs` show the consumer wiring.
+//!
+//! ## Subscription authorisation (Sprint 5, P0-3 / CVE-NOTIF-001)
+//!
+//! [`LegacyNotificationChannel::subscribe`] refuses a subscription
+//! unless **both**
+//!
+//! 1. the target URL's origin matches the configured
+//!    [`with_server_origin`](LegacyNotificationChannel::with_server_origin)
+//!    (if set), **and**
+//! 2. the configured [`SubscriptionAuthorizer`] returns `Ok(())`.
+//!
+//! The default authorizer is [`DenyAllAuthorizer`] — **fail-closed**.
+//! A channel constructed with no explicit authorizer will reject every
+//! `sub` frame with `err <uri> forbidden`. Consumers that want
+//! anonymous-accessible notifications (public demo pods, tests) must
+//! opt in explicitly by calling
+//! [`with_authorizer`](LegacyNotificationChannel::with_authorizer) with
+//! [`AllowAllAuthorizer`] or their own policy object.
+//!
+//! Production deployments should wire a
+//! [`SubscriptionAuthorizer`] that calls
+//! `crate::wac::evaluate_access(..., AccessMode::Read)` against the
+//! resolved target URI, using the WebID supplied via
+//! [`with_web_id`](LegacyNotificationChannel::with_web_id). That mirrors
+//! JSS' `WebSocketHandler#authorize` hook (see
+//! `JavaScriptSolidServer/src/notifications/websocket.js`).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast::{error::RecvError, Receiver};
@@ -92,6 +119,70 @@ impl SolidZeroOp {
 }
 
 // ---------------------------------------------------------------------------
+// SubscriptionAuthorizer — WAC read enforcement hook (P0-3, Sprint 5)
+// ---------------------------------------------------------------------------
+
+/// Reason a [`SubscriptionAuthorizer`] refused a target. Mapped to the
+/// single JSS-recognised wire token `forbidden` on the way out — JSS
+/// clients (SolidOS mashlib) only decode that one denial keyword, so
+/// new dashed tokens would be silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenyReason {
+    /// WAC evaluation denied read access to the target resource.
+    Forbidden,
+    /// The target's origin did not match the server origin. Reported
+    /// separately from [`Forbidden`] so callers can log or meter
+    /// cross-origin attack traffic distinctly.
+    CrossOrigin,
+}
+
+/// Policy object consulted by
+/// [`LegacyNotificationChannel::subscribe`] before a subscription is
+/// accepted. Implementations should call
+/// `crate::wac::evaluate_access(target, subject, AccessMode::Read)` and
+/// translate the result to `Ok(())` or `Err(DenyReason::Forbidden)`.
+///
+/// Sync, by deliberate design: the `subscribe` call path is sync (the
+/// broadcast layer above it is sync), and the WAC evaluator is
+/// in-memory. Implementations that need async (e.g. fetching remote
+/// ACL docs) should block on their runtime's `block_on` or precompute
+/// an access matrix at connection-upgrade time and hand this trait a
+/// read-only cache.
+pub trait SubscriptionAuthorizer: Send + Sync {
+    /// Decide whether `subject` (the resolved WebID, or `None` for an
+    /// anonymous WebSocket connection) may read — and therefore
+    /// subscribe to change events on — `target` (absolute URL of the
+    /// resource whose fan-out the client is asking for).
+    fn check(&self, target: &str, subject: Option<&str>) -> Result<(), DenyReason>;
+}
+
+/// Permissive authorizer. Use only for explicit "no auth" deployments
+/// (e.g. public demo pods that want to broadcast change events to
+/// anyone) or in tests where the WAC surface is out of scope. **Never
+/// the default.**
+pub struct AllowAllAuthorizer;
+
+impl SubscriptionAuthorizer for AllowAllAuthorizer {
+    fn check(&self, _: &str, _: Option<&str>) -> Result<(), DenyReason> {
+        Ok(())
+    }
+}
+
+/// Fail-closed authorizer — denies everything. This is the default
+/// installed by [`LegacyNotificationChannel::new`] to guarantee that a
+/// mis-configured server never silently broadcasts change events to
+/// un-authorised clients. Production deployments MUST replace this
+/// with a real WAC-backed authorizer via
+/// [`LegacyNotificationChannel::with_authorizer`].
+pub struct DenyAllAuthorizer;
+
+impl SubscriptionAuthorizer for DenyAllAuthorizer {
+    fn check(&self, _: &str, _: Option<&str>) -> Result<(), DenyReason> {
+        Err(DenyReason::Forbidden)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LegacyNotificationChannel
 // ---------------------------------------------------------------------------
 
@@ -132,10 +223,27 @@ pub struct LegacyNotificationChannel {
     url_cap_bytes: usize,
     max_subs_per_conn: usize,
     heartbeat_interval: Duration,
+    /// Authorizer consulted on every `subscribe`. Default:
+    /// [`DenyAllAuthorizer`] (fail-closed). See module docs.
+    authorizer: Arc<dyn SubscriptionAuthorizer>,
+    /// Server origin (`<scheme>://<host>[:<port>]`). When `Some`, the
+    /// target URL's origin must match exactly or the subscription is
+    /// rejected with `forbidden`. `None` disables the same-origin
+    /// check (intended for embedded test pods only).
+    server_origin: Option<String>,
+    /// Resolved WebID of the upstream WebSocket connection, passed to
+    /// the authorizer. `None` = anonymous.
+    web_id: Option<String>,
 }
 
 impl LegacyNotificationChannel {
     /// New channel bound to an upstream broadcast of storage events.
+    ///
+    /// The authorizer defaults to [`DenyAllAuthorizer`] — the returned
+    /// channel will reject every subscription until the caller swaps
+    /// in a real policy via [`with_authorizer`](Self::with_authorizer).
+    /// This is deliberate: a fresh channel must never broadcast change
+    /// events to un-authenticated clients.
     pub fn new(storage_events: Receiver<StorageEvent>) -> Self {
         Self {
             storage_events,
@@ -143,6 +251,9 @@ impl LegacyNotificationChannel {
             url_cap_bytes: MAX_URL_LENGTH,
             max_subs_per_conn: MAX_SUBSCRIPTIONS_PER_CONNECTION,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
+            authorizer: Arc::new(DenyAllAuthorizer),
+            server_origin: None,
+            web_id: None,
         }
     }
 
@@ -164,6 +275,32 @@ impl LegacyNotificationChannel {
         self
     }
 
+    /// Install the [`SubscriptionAuthorizer`] consulted on every
+    /// `subscribe`. Production deployments MUST call this with a
+    /// WAC-backed policy; the default is [`DenyAllAuthorizer`].
+    pub fn with_authorizer(mut self, authorizer: Arc<dyn SubscriptionAuthorizer>) -> Self {
+        self.authorizer = authorizer;
+        self
+    }
+
+    /// Configure the server origin for the same-origin check. Pass the
+    /// canonical `<scheme>://<host>[:<port>]` form — e.g.
+    /// `"https://pod.example.org"` or `"http://localhost:3000"`.
+    /// Any `subscribe` target whose parsed origin differs is rejected
+    /// with `forbidden` before the authorizer is even consulted.
+    pub fn with_server_origin(mut self, origin: String) -> Self {
+        self.server_origin = Some(origin);
+        self
+    }
+
+    /// Set the WebID associated with this connection. Passed to the
+    /// authorizer as the `subject` argument. `None` = anonymous (the
+    /// authorizer decides whether public access is allowed).
+    pub fn with_web_id(mut self, web_id: Option<String>) -> Self {
+        self.web_id = web_id;
+        self
+    }
+
     /// Current heartbeat interval.
     pub fn heartbeat_interval(&self) -> Duration {
         self.heartbeat_interval
@@ -180,17 +317,71 @@ impl LegacyNotificationChannel {
     }
 
     /// Attempt to register a subscription for `target`. Returns `Err`
-    /// (the wire-format `err` line payload) if the target violates
-    /// invariants.
+    /// (the wire-format `err` line payload) if the target violates any
+    /// invariant.
+    ///
+    /// Checks run in this order:
+    ///
+    /// 1. URL byte-length cap — `err <truncated> url-too-long`.
+    /// 2. Same-origin check (if [`with_server_origin`](Self::with_server_origin)
+    ///    was set) — `err <uri> forbidden`.
+    /// 3. Per-connection subscription cap — `err <uri> subscription-limit`.
+    /// 4. [`SubscriptionAuthorizer::check`] — `err <uri> forbidden`.
+    ///
+    /// The denial token `forbidden` is the only one JSS clients
+    /// (SolidOS mashlib) recognise, so both same-origin and WAC
+    /// denials collapse to the same wire frame. `url-too-long` and
+    /// `subscription-limit` are JSS-divergent by inheritance (see
+    /// Sprint 4 notifications inspector finding); they are preserved
+    /// here to keep existing tests green and will be revisited in
+    /// Sprint 6.
     pub fn subscribe(&mut self, target: String) -> Result<(), String> {
+        // 1) URL cap.
         if target.len() > self.url_cap_bytes {
             return Err(format!("err {} url-too-long", truncate(&target, 64)));
         }
+
+        // 2) Same-origin check. Only enforced when `server_origin` is
+        //    set; embedded test pods may leave it off. A parse failure
+        //    on the target is treated as a cross-origin refusal — an
+        //    un-parseable URL cannot prove same-origin.
+        if let Some(server_origin) = &self.server_origin {
+            match url::Url::parse(&target) {
+                Ok(parsed) => {
+                    let host = parsed.host_str().unwrap_or("");
+                    let port_suffix = parsed
+                        .port()
+                        .map(|p| format!(":{p}"))
+                        .unwrap_or_default();
+                    let target_origin =
+                        format!("{}://{}{}", parsed.scheme(), host, port_suffix);
+                    if &target_origin != server_origin {
+                        return Err(format!("err {target} forbidden"));
+                    }
+                }
+                Err(_) => {
+                    return Err(format!("err {target} forbidden"));
+                }
+            }
+        }
+
+        // 3) Per-connection subscription cap.
         if self.subscriptions.len() >= self.max_subs_per_conn
             && !self.subscriptions.contains(&target)
         {
             return Err(format!("err {} subscription-limit", target));
         }
+
+        // 4) WAC / authorizer check. Fail-closed default
+        //    ([`DenyAllAuthorizer`]) means a freshly-constructed
+        //    channel rejects everything here.
+        match self.authorizer.check(&target, self.web_id.as_deref()) {
+            Ok(()) => {}
+            Err(DenyReason::Forbidden | DenyReason::CrossOrigin) => {
+                return Err(format!("err {target} forbidden"));
+            }
+        }
+
         self.subscriptions.insert(target);
         Ok(())
     }
@@ -369,7 +560,12 @@ mod tests {
     #[test]
     fn subscription_cap_rejects_over_limit() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx).with_subscription_cap(2);
+        // Explicit AllowAll preserves pre-P0-3 semantics for this cap
+        // test — the fail-closed default would otherwise swallow every
+        // `subscribe` with `forbidden` before the cap is hit.
+        let mut chan = LegacyNotificationChannel::new(rx)
+            .with_authorizer(Arc::new(AllowAllAuthorizer))
+            .with_subscription_cap(2);
         assert!(chan.subscribe("https://p/a".into()).is_ok());
         assert!(chan.subscribe("https://p/b".into()).is_ok());
         let err = chan.subscribe("https://p/c".into()).unwrap_err();
@@ -381,7 +577,9 @@ mod tests {
     #[test]
     fn url_cap_rejects_over_limit() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx).with_url_cap(16);
+        let mut chan = LegacyNotificationChannel::new(rx)
+            .with_authorizer(Arc::new(AllowAllAuthorizer))
+            .with_url_cap(16);
         let err = chan
             .subscribe("https://pod.example.com/really/long/path".into())
             .unwrap_err();
@@ -392,7 +590,8 @@ mod tests {
     #[test]
     fn matches_subscription_prefix_and_exact() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         chan.subscribe("https://pod.example.com/foo/".into()).unwrap();
         chan.subscribe("https://pod.example.com/bar.ttl".into()).unwrap();
         assert!(chan.matches_subscription("https://pod.example.com/foo/"));
@@ -406,7 +605,8 @@ mod tests {
     #[test]
     fn unsubscribe_removes_target() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         chan.subscribe("https://p/x".into()).unwrap();
         chan.unsubscribe("https://p/x");
         assert_eq!(chan.subscription_count(), 0);

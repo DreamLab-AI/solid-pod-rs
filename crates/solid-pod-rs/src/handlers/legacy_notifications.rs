@@ -51,11 +51,14 @@
 //! and legacy clients simultaneous live fan-out from a single storage
 //! event source.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::notifications::legacy::{LegacyNotificationChannel, PROTOCOL_GREETING};
+use crate::notifications::legacy::{
+    LegacyNotificationChannel, SubscriptionAuthorizer, PROTOCOL_GREETING,
+};
 use crate::storage::StorageEvent;
 use tokio::sync::broadcast::Receiver;
 
@@ -104,6 +107,31 @@ impl LegacyWsDriver {
     /// Override the heartbeat interval (default 30 s).
     pub fn with_heartbeat(mut self, interval: Duration) -> Self {
         self.channel = self.channel.with_heartbeat(interval);
+        self
+    }
+
+    /// Install the [`SubscriptionAuthorizer`] consulted on every `sub`
+    /// frame. See
+    /// [`LegacyNotificationChannel::with_authorizer`]. The default
+    /// from the underlying channel is fail-closed (deny all), so this
+    /// MUST be called with a real policy in production.
+    pub fn with_authorizer(mut self, authorizer: Arc<dyn SubscriptionAuthorizer>) -> Self {
+        self.channel = self.channel.with_authorizer(authorizer);
+        self
+    }
+
+    /// Configure the server origin for the same-origin check. See
+    /// [`LegacyNotificationChannel::with_server_origin`].
+    pub fn with_server_origin(mut self, origin: String) -> Self {
+        self.channel = self.channel.with_server_origin(origin);
+        self
+    }
+
+    /// Set the resolved WebID for this connection, passed to the
+    /// authorizer on every `sub` check. See
+    /// [`LegacyNotificationChannel::with_web_id`].
+    pub fn with_web_id(mut self, web_id: Option<String>) -> Self {
+        self.channel = self.channel.with_web_id(web_id);
         self
     }
 
@@ -239,12 +267,14 @@ fn first_token(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notifications::legacy::AllowAllAuthorizer;
     use tokio::sync::broadcast;
 
     #[test]
     fn handle_line_sub_emits_ack() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         let frames = handle_line(&mut chan, "sub https://p/x");
         assert_eq!(frames, vec![OutboundFrame::Text("ack https://p/x".into())]);
         assert_eq!(chan.subscription_count(), 1);
@@ -253,7 +283,8 @@ mod tests {
     #[test]
     fn handle_line_unsub_is_silent() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         chan.subscribe("https://p/x".into()).unwrap();
         let frames = handle_line(&mut chan, "unsub https://p/x");
         assert!(frames.is_empty());
@@ -263,7 +294,8 @@ mod tests {
     #[test]
     fn handle_line_unknown_opcode_closes() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         let frames = handle_line(&mut chan, "wat foo");
         assert_eq!(frames.len(), 1);
         assert!(matches!(frames[0], OutboundFrame::Close(_)));
@@ -272,7 +304,8 @@ mod tests {
     #[test]
     fn handle_line_blank_is_noop() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx);
+        let mut chan =
+            LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
         assert!(handle_line(&mut chan, "").is_empty());
         assert!(handle_line(&mut chan, "   ").is_empty());
     }
@@ -280,7 +313,9 @@ mod tests {
     #[test]
     fn handle_line_sub_over_cap_emits_err() {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-        let mut chan = LegacyNotificationChannel::new(rx).with_subscription_cap(1);
+        let mut chan = LegacyNotificationChannel::new(rx)
+            .with_authorizer(Arc::new(AllowAllAuthorizer))
+            .with_subscription_cap(1);
         let _ = handle_line(&mut chan, "sub https://p/a");
         let frames = handle_line(&mut chan, "sub https://p/b");
         assert_eq!(frames.len(), 1);

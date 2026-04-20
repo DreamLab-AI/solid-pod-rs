@@ -837,37 +837,63 @@ pub fn apply_n3_patch(target: Graph, patch: &str) -> Result<PatchOutcome, PodErr
 }
 
 fn extract_block(source: &str, keywords: &[&str]) -> Option<String> {
+    // Treat the keyword match as a word boundary on the left (so
+    // `solid:inserts` matches but `InsertDeletePatch` does not), and
+    // require the keyword to be followed — ignoring whitespace — by
+    // an opening brace. This prevents the `insert`/`delete` substrings
+    // inside `solid:InsertDeletePatch` from being mistaken for block
+    // keywords.
     let lower = source.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
     for kw in keywords {
         let needle = kw.to_ascii_lowercase();
         let mut search_from = 0usize;
         while let Some(pos) = lower[search_from..].find(&needle) {
             let abs = search_from + pos;
             let after_kw = abs + needle.len();
-            // Look for the opening brace.
-            if let Some(rel) = source[after_kw..].find('{') {
-                let open = after_kw + rel;
-                // Find the matching close brace.
-                let mut depth = 0i32;
-                let mut end = None;
-                for (i, c) in source[open..].char_indices() {
-                    match c {
-                        '{' => depth += 1,
-                        '}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = Some(open + i + 1);
-                                break;
-                            }
+            search_from = abs + needle.len();
+
+            // Left boundary: the char before must not be an ASCII
+            // alphanumeric (so we don't match inside a longer word).
+            // Colons and underscores are allowed so `solid:inserts`
+            // still matches after the `solid:` prefix.
+            let left_ok = if abs == 0 {
+                true
+            } else {
+                let prev = bytes[abs - 1];
+                !(prev.is_ascii_alphanumeric() || prev == b'_')
+            };
+            if !left_ok {
+                continue;
+            }
+
+            // The next non-whitespace char must be `{`.
+            let tail = &source[after_kw..];
+            let trimmed = tail.trim_start();
+            if !trimmed.starts_with('{') {
+                continue;
+            }
+            let open = after_kw + (tail.len() - trimmed.len());
+
+            // Find the matching close brace.
+            let mut depth = 0i32;
+            let mut end = None;
+            for (i, c) in source[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(open + i + 1);
+                            break;
                         }
-                        _ => {}
                     }
-                }
-                if let Some(e) = end {
-                    return Some(source[open..e].to_string());
+                    _ => {}
                 }
             }
-            search_from = abs + needle.len();
+            if let Some(e) = end {
+                return Some(source[open..e].to_string());
+            }
         }
     }
     None
@@ -892,6 +918,21 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
     let parsed = Update::parse(update, None)
         .map_err(|e| PodError::Unsupported(format!("SPARQL parse error: {e}")))?;
 
+    // Our in-crate `Term::literal` helper stores plain literals with
+    // `datatype: None`, matching the N-Triples fast path. spargebra,
+    // however, canonicalises every plain (non-language-tagged) literal
+    // to `xsd:string` per RDF 1.1. Normalise back to `None` so graphs
+    // built via `Term::literal` compare equal to graphs produced by
+    // SPARQL parsing.
+    fn build_literal(value: String, datatype: Option<String>, language: Option<String>) -> Term {
+        let datatype = datatype.filter(|d| d != iri::XSD_STRING);
+        Term::Literal {
+            value,
+            datatype,
+            language,
+        }
+    }
+
     fn map_subject(s: &Subject) -> Option<Term> {
         match s {
             Subject::NamedNode(n) => Some(Term::Iri(n.as_str().to_string())),
@@ -907,17 +948,13 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
             SpTerm::Literal(lit) => {
                 let value = lit.value().to_string();
                 if let Some(lang) = lit.language() {
-                    Some(Term::Literal {
-                        value,
-                        datatype: None,
-                        language: Some(lang.to_string()),
-                    })
+                    Some(build_literal(value, None, Some(lang.to_string())))
                 } else {
-                    Some(Term::Literal {
+                    Some(build_literal(
                         value,
-                        datatype: Some(lit.datatype().as_str().to_string()),
-                        language: None,
-                    })
+                        Some(lit.datatype().as_str().to_string()),
+                        None,
+                    ))
                 }
             }
             #[allow(unreachable_patterns)]
@@ -937,17 +974,13 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
             GroundTerm::Literal(lit) => {
                 let value = lit.value().to_string();
                 if let Some(lang) = lit.language() {
-                    Some(Term::Literal {
-                        value,
-                        datatype: None,
-                        language: Some(lang.to_string()),
-                    })
+                    Some(build_literal(value, None, Some(lang.to_string())))
                 } else {
-                    Some(Term::Literal {
+                    Some(build_literal(
                         value,
-                        datatype: Some(lit.datatype().as_str().to_string()),
-                        language: None,
-                    })
+                        Some(lit.datatype().as_str().to_string()),
+                        None,
+                    ))
                 }
             }
             #[allow(unreachable_patterns)]
@@ -960,17 +993,13 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
             GroundTermPattern::Literal(lit) => {
                 let value = lit.value().to_string();
                 if let Some(lang) = lit.language() {
-                    Some(Term::Literal {
-                        value,
-                        datatype: None,
-                        language: Some(lang.to_string()),
-                    })
+                    Some(build_literal(value, None, Some(lang.to_string())))
                 } else {
-                    Some(Term::Literal {
+                    Some(build_literal(
                         value,
-                        datatype: Some(lit.datatype().as_str().to_string()),
-                        language: None,
-                    })
+                        Some(lit.datatype().as_str().to_string()),
+                        None,
+                    ))
                 }
             }
             _ => None,

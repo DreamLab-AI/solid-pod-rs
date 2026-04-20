@@ -20,9 +20,11 @@ authors = ["DreamLab-AI contributors"]
 rust-version = "1.75"
 
 # Shared lints kept deliberately minimal; each crate may tighten.
+# `priority = -1` keeps the group warning-level while individual lints
+# below it (none currently) can override at higher priority.
 [workspace.lints.rust]
 unsafe_code = "deny"
-rust_2018_idioms = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [profile.release]
 lto = "thin"

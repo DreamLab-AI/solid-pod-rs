@@ -4,6 +4,113 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — 2026-04-20 (Sprint 5 security remediation)
+
+### Security (P0 fixes — CVE-class)
+
+- **DPoP proof signature is now actually verified.** Previously
+  `verify_dpop_proof_core` (`src/oidc/mod.rs`) decoded the proof body
+  without verifying the JWT signature against `header.jwk` — any forged
+  proof authenticated. The function now dispatches on `header.alg`
+  (`ES256`/`RS256`/`EdDSA`), verifies via `DecodingKey::from_jwk`, and
+  rejects `alg=none`. RFC 9449 §4.3 conformance restored.
+- **OIDC access-token verification now dispatches on `header.alg`
+  against a `JwkSet`.** `verify_access_token` no longer hard-codes
+  `Algorithm::HS256`; the new signature accepts a `TokenVerifyKey`
+  (`Symmetric` for the test/dev path, `Asymmetric(JwkSet)` for
+  production OPs). `alg=none` is unconditionally rejected.
+- **JWK thumbprint is now RFC 7638 canonical.** `Jwk::thumbprint` was
+  built from a hand-rolled `format!()` JSON template; replaced with
+  `BTreeMap`-backed canonical serialisation so thumbprints match JSS
+  and any RFC-compliant verifier byte-for-byte. Locked by an RFC 7638
+  appendix-A test vector.
+- **SSRF-guarded JWKS + OIDC discovery fetcher (`src/oidc/jwks.rs`,
+  new).** `fetch_jwks(issuer, &SsrfPolicy, &Client)` runs the SSRF
+  policy on the issuer host, builds a per-call reqwest client with
+  `.resolve()` to pin the TCP connect to the approved IP (defeating
+  DNS rebinding between check and connect), re-runs the SSRF policy
+  on the discovered `jwks_uri` host (never reuses the issuer
+  approval), and caches results with a 900s TTL mirroring JSS.
+  Closes the F5 documentation/implementation gap.
+- **Legacy `solid-0.1` WebSocket now enforces a WAC read check on
+  every subscribe.** `LegacyNotificationChannel::subscribe` previously
+  permitted any client to subscribe to any URI. New
+  `SubscriptionAuthorizer` trait wires `wac::evaluate_access` for
+  `AccessMode::Read`; default authorizer is `DenyAllAuthorizer`
+  (fail-closed). Same-origin guard added. Denial frame literal is
+  now `forbidden`, matching JSS grammar exactly.
+
+### Fixed (pre-existing test + lint regressions cleared)
+
+- **`wac::path_matches` (`src/wac.rs`)** — `acl:accessTo` now matches
+  exact resource + direct children of a container target only (WAC
+  §4.2); previously it either matched all descendants (over-grant) or
+  failed root-rooted rules entirely. `acl:default` continues to apply
+  recursively.
+- **`wac::turtle_pop_term` (`src/wac.rs`)** — terminator set extended
+  from whitespace-only to `whitespace | ',' | ';' | ']' | ')'`. The
+  previous tokeniser welded trailing punctuation onto identifier
+  tokens (e.g. `acl:Write,`), silently dropping multi-mode rules.
+- **`ldp::extract_block` (`src/ldp.rs`)** — now requires a left word
+  boundary AND a `{`-following position before matching `inserts` /
+  `deletes` keywords. The previous greedy substring match treated
+  `solid:InsertDeletePatch` (which contains both keywords) as a
+  block delimiter, parsing both clauses from the same `{ … }`.
+- **SPARQL DELETE / INSERT data normalisation (`src/ldp.rs`)** —
+  `xsd:string` datatype on plain literals now strips back to `None`,
+  matching the `Term::literal` constructor and the N-Triples fast
+  path. Without this, `BTreeSet<Triple>` ordering diverged and
+  `DELETE DATA` reported zero deletions when the triple was present.
+- **NIP-98 test fixture (`src/auth/nip98.rs`)** — `valid_event` now
+  computes a real BIP-340 event id (and a real Schnorr signature when
+  `nip98-schnorr` is enabled). The previous `id: "0".repeat(64)`
+  placeholder caused id-mismatch failures whenever the verify path
+  computed the actual id.
+- **Workspace clippy** — `rust_2018_idioms` lint group now declares
+  `priority = -1` to coexist with future per-lint overrides; the
+  group-vs-lint priority error no longer blocks `-D warnings` CI.
+
+### Tests
+
+- 17 new tests across 5 new files exercise the P0 fixes:
+  `oidc_dpop_signature.rs` (3), `oidc_thumbprint_rfc7638.rs` (3),
+  `oidc_access_token_alg.rs` (3), `oidc_jwks_ssrf.rs` (4),
+  `legacy_wac_check.rs` (4).
+- Total in-tree test count: **346 passing** across 18 suites with the
+  full feature matrix
+  (`oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr`).
+
+### Documentation
+
+- Engineering report:
+  [`docs/explanation/jss-parity-upgrade-2026-04-20.md`](docs/explanation/jss-parity-upgrade-2026-04-20.md)
+  (six-inspector mesh against the real JSS, 12 sections, 31
+  actionable items, PARITY-CHECKLIST corrections).
+- QE addendum:
+  [`docs/explanation/jss-parity-upgrade-2026-04-20-QE-ADDENDUM.md`](docs/explanation/jss-parity-upgrade-2026-04-20-QE-ADDENDUM.md)
+  (Agentic QE Fleet validation, +1 P0 / +7 P1, per-module
+  quality-gate matrix, test-first sequencing for the 3-sprint plan
+  to v0.4.0 GA).
+- `PARITY-CHECKLIST.md`: Sprint 5 corrections table; 5 new rows
+  (53–56 for WAC 2.0 conditions, 62b for DPoP signature). Top-line
+  parity recalibrated from a claimed 76% to a verified 59% — the
+  drop reflects honest accounting, not regression.
+
+### Dev-dependencies
+
+- `p256`, `pkcs8` (for ES256 keypair generation in OIDC tests).
+- `hmac` (for the dpop-replay test helper that previously spliced an
+  unsigned signature; now computes a real HMAC).
+
+### Known follow-ups (queued for Sprint 6 + Sprint 7)
+
+See the engineering report and QE addendum. Headline items: WAC 2.0
+condition framework, `wac.rs` module split, RFC 9421 webhook signing,
+body-size cap, percent-decode path-traversal middleware in the
+binary crate, ACL JSON depth bomb cap, did:nostr resolver in
+`interop`, operator-surface primitives (rate-limit, CORS, quota,
+subdomain MT, TLS, NodeInfo 2.1), CTH harness in `xtask`.
+
 ## 0.4.0-alpha.1 — 2026-04-20
 
 ### Added

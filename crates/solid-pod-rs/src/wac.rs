@@ -129,10 +129,31 @@ fn normalize_path(path: &str) -> String {
 fn path_matches(rule_path: &str, resource_path: &str, is_default: bool) -> bool {
     let rule = normalize_path(rule_path);
     let resource = normalize_path(resource_path);
+    if resource == rule {
+        return true;
+    }
+    // `acl:accessTo` covers exact match plus direct children of a
+    // container target — NOT deep descendants (WAC §4.2; cf. tests
+    // `access_to_does_not_inherit_by_itself` and
+    // `access_to_on_container_covers_direct_children`).
+    // `acl:default`, by contrast, applies recursively.
     if !is_default {
-        resource == rule || resource.starts_with(&format!("{rule}/"))
+        // Direct-child rule: resource must be `<rule>/<one-segment>`
+        // with no further `/` after the prefix.
+        let prefix = if rule == "/" { String::from("/") } else { format!("{rule}/") };
+        if let Some(rest) = resource.strip_prefix(&prefix) {
+            return !rest.is_empty() && !rest.contains('/');
+        }
+        return false;
+    }
+    // Root default rule matches every descendant without producing the
+    // nonsensical "//" prefix that `format!("{rule}/")` yields when
+    // `rule` is already "/". For non-root default rules, a descendant
+    // must start with `rule` followed by a path separator.
+    if rule == "/" {
+        resource.starts_with('/')
     } else {
-        resource.starts_with(&format!("{rule}/")) || resource == rule
+        resource.starts_with(&format!("{rule}/"))
     }
 }
 
@@ -640,9 +661,14 @@ fn turtle_pop_term(input: &str) -> Option<(String, String)> {
         // literal — not expected at subject/predicate positions we care about.
         None
     } else {
-        // Identifier token terminated by whitespace.
+        // Identifier token terminated by whitespace *or* by Turtle
+        // punctuation (comma, semicolon, closing bracket, statement
+        // terminator). Without this, `acl:Write, acl:Control` would be
+        // parsed as a single token `acl:Write,` with the trailing comma
+        // welded to the IRI, defeating the comma-separated object-list
+        // handling in `parse_object_list`.
         let end = input
-            .find(|c: char| c.is_whitespace())
+            .find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ']' | ')'))
             .unwrap_or(input.len());
         Some((input[..end].to_string(), input[end..].to_string()))
     }

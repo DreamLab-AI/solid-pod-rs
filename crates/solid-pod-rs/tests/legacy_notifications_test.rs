@@ -7,10 +7,13 @@
 
 #![cfg(feature = "legacy-notifications")]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use solid_pod_rs::handlers::legacy_notifications::{LegacyWsDriver, OutboundFrame};
-use solid_pod_rs::notifications::legacy::{LegacyNotificationChannel, PROTOCOL_GREETING};
+use solid_pod_rs::notifications::legacy::{
+    AllowAllAuthorizer, LegacyNotificationChannel, PROTOCOL_GREETING,
+};
 use solid_pod_rs::storage::StorageEvent;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
@@ -46,7 +49,8 @@ fn f3c_parse_subscribe_rejects_malformed() {
 #[test]
 fn f3d_subscription_prefix_match() {
     let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-    let mut chan = LegacyNotificationChannel::new(rx);
+    let mut chan =
+        LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
     chan.subscribe("https://example.org/foo/".into()).unwrap();
 
     // Direct container match.
@@ -65,7 +69,7 @@ fn f3d_subscription_prefix_match() {
 #[tokio::test]
 async fn f3d_end_to_end_pub_fanout_to_container_subscriber() {
     let (tx, rx) = broadcast::channel::<StorageEvent>(16);
-    let driver = LegacyWsDriver::new(rx);
+    let driver = LegacyWsDriver::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
     let (in_tx, mut out_rx, task) = driver.split();
     let handle = tokio::spawn(task);
 

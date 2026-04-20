@@ -128,9 +128,10 @@ mod run {
         // --------------------------------------------------------------
         let at_secret = b"at-demo-secret";
         let at = issue_access_token(at_secret, issuer, &jkt, now + 3600, now)?;
+        let keyset = solid_pod_rs::oidc::TokenVerifyKey::Symmetric(at_secret.to_vec());
         let verified = verify_access_token(
             &at,
-            at_secret,
+            &keyset,
             issuer,
             &verified_dpop.jkt,
             now,

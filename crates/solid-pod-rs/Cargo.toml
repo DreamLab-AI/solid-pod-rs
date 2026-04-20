@@ -103,6 +103,14 @@ axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }
 
+# Sprint 5 P0: real ES256 keypairs for DPoP / access-token JWT tests.
+# Not pulled into the main library — tests only.
+p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+# HMAC-SHA256 for DPoP replay test fixtures (post-Sprint-5 the
+# signature is now verified so fixtures must produce real MACs).
+hmac = "0.12"
+
 # ---------------------------------------------------------------------------
 # Examples — runnable via `cargo run --example <name>`.
 # ---------------------------------------------------------------------------

@@ -20,13 +20,14 @@
 
 #![cfg(feature = "oidc")]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
 use base64::Engine;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::debug;
 
 use crate::error::PodError;
 
@@ -40,6 +41,9 @@ pub mod replay;
 pub use replay::{
     DpopReplayCache, ReplayError, ReplayRejectedCounter, DPOP_REPLAY_REJECTED_TOTAL,
 };
+
+// Sprint 5 P0-2: SSRF-guarded JWKS + OIDC discovery fetcher.
+pub mod jwks;
 
 // ---------------------------------------------------------------------------
 // Dynamic Client Registration (RFC 7591)
@@ -219,22 +223,86 @@ pub struct Jwk {
 impl Jwk {
     /// RFC 7638 JWK thumbprint — SHA-256 over the canonical JSON of
     /// the key-type-specific required members.
+    ///
+    /// # Canonicalisation
+    ///
+    /// Per RFC 7638 §3.2, the thumbprint input is the JSON encoding
+    /// of an object whose members are EXACTLY the required members
+    /// for the key type (any optional member — `alg`, `kid`, `use`,
+    /// etc. — is excluded) sorted lexicographically with no
+    /// whitespace. We build the object with `BTreeMap<&str, &str>`
+    /// + `serde_json::to_vec` to guarantee:
+    ///
+    /// - lexicographic ordering of member names,
+    /// - minimal whitespace (the `serde_json` default for `to_vec`),
+    /// - no stray members leaking in if the struct layout changes.
+    ///
+    /// # Key types
+    ///
+    /// - **EC** (RFC 7638 §3.2 example 2):
+    ///   `{"crv":...,"kty":"EC","x":...,"y":...}`
+    /// - **RSA** (RFC 7638 §3.1 worked example):
+    ///   `{"e":...,"kty":"RSA","n":...}`
+    /// - **OKP** (Ed25519 / Ed448):
+    ///   `{"crv":...,"kty":"OKP","x":...}`
+    /// - **oct** (symmetric — for test-only HS256 flows):
+    ///   `{"k":...,"kty":"oct"}`
+    ///
+    /// Unknown key types are rejected with [`PodError::Unsupported`].
     pub fn thumbprint(&self) -> Result<String, PodError> {
-        let canonical = match self.kty.as_str() {
+        let mut map: BTreeMap<&str, &str> = BTreeMap::new();
+        match self.kty.as_str() {
             "EC" => {
-                let crv = self.crv.as_deref().unwrap_or("");
-                let x = self.x.as_deref().unwrap_or("");
-                let y = self.y.as_deref().unwrap_or("");
-                format!(r#"{{"crv":"{crv}","kty":"EC","x":"{x}","y":"{y}"}}"#)
+                let crv = self
+                    .crv
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("EC JWK missing crv".into()))?;
+                let x = self
+                    .x
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("EC JWK missing x".into()))?;
+                let y = self
+                    .y
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("EC JWK missing y".into()))?;
+                map.insert("crv", crv);
+                map.insert("kty", "EC");
+                map.insert("x", x);
+                map.insert("y", y);
             }
             "RSA" => {
-                let e = self.e.as_deref().unwrap_or("");
-                let n = self.n.as_deref().unwrap_or("");
-                format!(r#"{{"e":"{e}","kty":"RSA","n":"{n}"}}"#)
+                let e = self
+                    .e
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("RSA JWK missing e".into()))?;
+                let n = self
+                    .n
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("RSA JWK missing n".into()))?;
+                map.insert("e", e);
+                map.insert("kty", "RSA");
+                map.insert("n", n);
+            }
+            "OKP" => {
+                let crv = self
+                    .crv
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("OKP JWK missing crv".into()))?;
+                let x = self
+                    .x
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("OKP JWK missing x".into()))?;
+                map.insert("crv", crv);
+                map.insert("kty", "OKP");
+                map.insert("x", x);
             }
             "oct" => {
-                let k = self.k.as_deref().unwrap_or("");
-                format!(r#"{{"k":"{k}","kty":"oct"}}"#)
+                let k = self
+                    .k
+                    .as_deref()
+                    .ok_or_else(|| PodError::Unsupported("oct JWK missing k".into()))?;
+                map.insert("k", k);
+                map.insert("kty", "oct");
             }
             other => {
                 return Err(PodError::Unsupported(format!(
@@ -242,7 +310,9 @@ impl Jwk {
                 )));
             }
         };
-        let hash = Sha256::digest(canonical.as_bytes());
+        let bytes = serde_json::to_vec(&map)
+            .map_err(|e| PodError::Nip98(format!("JWK thumbprint canonical JSON: {e}")))?;
+        let hash = Sha256::digest(&bytes);
         Ok(BASE64_URL.encode(hash))
     }
 }
@@ -340,6 +410,25 @@ pub fn verify_dpop_proof(
 
 /// Core DPoP proof verification — shared between the feature-gated
 /// async wrapper and the feature-off sync form above.
+///
+/// # Security invariants
+///
+/// 1. **Signature verified** against `header.jwk`. A proof whose
+///    signature does not match the embedded public key is rejected
+///    before any claim is trusted. This is the difference between a
+///    DPoP proof (authenticated) and arbitrary JSON.
+///
+/// 2. **Algorithm whitelist.** The `alg` header MUST be one of
+///    ES256, RS256, EdDSA. `alg=none` is unconditionally rejected.
+///    HS256 is only accepted when the `jwk.kty` is `oct` (test/dev
+///    path); asymmetric JWKs signed with HS256 are rejected to block
+///    the classic alg-confusion attack (public key fed as an HMAC
+///    secret).
+///
+/// 3. **Thumbprint derived from the JWK**, not the alg — [`DpopVerified::jkt`]
+///    is RFC 7638 over the canonical member set of `header.jwk`, so
+///    the pod binds the access token's `cnf.jkt` to the same key
+///    that actually signed this proof.
 fn verify_dpop_proof_core(
     proof: &str,
     expected_htu: &str,
@@ -356,25 +445,62 @@ fn verify_dpop_proof_core(
         .jwk
         .as_ref()
         .ok_or_else(|| PodError::Nip98("DPoP header missing jwk".into()))?;
-    // Round-trip via serde_json so we get our local `Jwk` shape.
+
+    // Two views of the same jwk: one in our local `Jwk` shape for
+    // thumbprint computation, one in jsonwebtoken's shape for signing
+    // key construction. The local parse is also what catches
+    // structurally broken jwks (missing x/y for EC, etc.) before we
+    // try to build a DecodingKey from them.
     let jwk_val = serde_json::to_value(jwk_json)
         .map_err(|e| PodError::Nip98(format!("DPoP jwk serialisation failed: {e}")))?;
-    let jwk: Jwk = serde_json::from_value(jwk_val)
+    let jwk: Jwk = serde_json::from_value(jwk_val.clone())
         .map_err(|e| PodError::Nip98(format!("DPoP jwk parse failed: {e}")))?;
     let jkt = jwk.thumbprint()?;
 
-    // Decode body without verifying signature — we only use the body
-    // metadata. Signature verification requires the JWK pubkey and is
-    // done separately below.
-    let parts: Vec<&str> = proof.split('.').collect();
-    if parts.len() != 3 {
-        return Err(PodError::Nip98("DPoP proof malformed".into()));
+    // Algorithm dispatch — reject anything we do not explicitly
+    // whitelist. `decode_header` above already rejects `alg=none`
+    // (jsonwebtoken's `Algorithm` enum has no `None` variant), but we
+    // assert it here too for defence in depth.
+    let alg = header.alg;
+    match alg {
+        Algorithm::ES256 | Algorithm::RS256 | Algorithm::EdDSA => {}
+        Algorithm::HS256 if jwk.kty == "oct" => {
+            // Test/dev path only. A `kty=oct` jwk is a symmetric key
+            // and therefore not useful for authenticated DPoP in
+            // production — but the Sprint-4 replay-cache tests rely
+            // on HS256 + oct, so we keep the path alive while still
+            // verifying the signature below.
+            debug!(
+                "DPoP proof using HS256+oct (test/dev path); \
+                not suitable for production"
+            );
+        }
+        other => {
+            return Err(PodError::Nip98(format!(
+                "DPoP alg {other:?} is not permitted (ES256/RS256/EdDSA only; \
+                HS256 test-path requires kty=oct)"
+            )));
+        }
     }
-    let body_bytes = BASE64_URL
-        .decode(parts[1])
-        .map_err(|e| PodError::Nip98(format!("DPoP body base64 decode failed: {e}")))?;
-    let claims: DpopClaims = serde_json::from_slice(&body_bytes)
-        .map_err(|e| PodError::Nip98(format!("DPoP claims parse failed: {e}")))?;
+
+    // Build the signing key from the embedded jwk, then have
+    // `jsonwebtoken::decode` verify the signature AND return the
+    // claim set in a single shot. Anything that doesn't match is
+    // surfaced as a signature failure.
+    let jwt_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk_val)
+        .map_err(|e| PodError::Nip98(format!("DPoP jwk → jsonwebtoken parse failed: {e}")))?;
+    let key = DecodingKey::from_jwk(&jwt_jwk)
+        .map_err(|e| PodError::Nip98(format!("DPoP jwk → DecodingKey failed: {e}")))?;
+
+    let mut validation = Validation::new(alg);
+    validation.required_spec_claims.clear();
+    validation.validate_exp = false; // DPoP proofs have no `exp`
+    validation.validate_aud = false;
+
+    let data = decode::<DpopClaims>(proof, &key, &validation).map_err(|e| {
+        PodError::Nip98(format!("DPoP proof signature verification failed: {e}"))
+    })?;
+    let claims = data.claims;
 
     if claims.htm.to_uppercase() != expected_htm.to_uppercase() {
         return Err(PodError::Nip98(format!(
@@ -444,22 +570,123 @@ pub struct AccessTokenVerified {
     pub exp: u64,
 }
 
-/// Verify an access token against an HS256 secret (test path), check
-/// the `cnf.jkt` against the DPoP proof's thumbprint, and extract the
-/// WebID.
+/// Key material supplied to [`verify_access_token`].
+///
+/// Production deployments MUST use `Asymmetric(JwkSet)` populated
+/// from the IdP's `jwks_uri`. The symmetric variant exists only for
+/// tests and local dev fixtures — if an external OIDC issuer ever
+/// returns a token with `alg=HS256`, [`verify_access_token`] refuses
+/// to verify it against an asymmetric keyset.
+#[derive(Debug, Clone)]
+pub enum TokenVerifyKey {
+    /// Shared secret path. HMAC-SHA256 only. Intended for integration
+    /// tests that issue their own tokens.
+    Symmetric(Vec<u8>),
+    /// Public-key path. The JWK set is usually fetched from the IdP's
+    /// `jwks_uri` and rotated on cache expiry.
+    Asymmetric(jsonwebtoken::jwk::JwkSet),
+}
+
+/// Verify a Solid-OIDC access token.
+///
+/// # Security invariants
+///
+/// 1. **Header-alg dispatch.** The token's `alg` header drives which
+///    verification path runs. `alg=none` is unconditionally rejected
+///    (jsonwebtoken's `Algorithm` enum has no `None` variant — decode
+///    fails early). `HS256` is accepted only under
+///    [`TokenVerifyKey::Symmetric`]; any attempt to verify an HS256
+///    token against an asymmetric keyset is refused with an explicit
+///    "HS256 not permitted for external OIDC" error. This blocks the
+///    alg-confusion attack where an RSA public key is re-used as an
+///    HMAC secret.
+///
+/// 2. **Asymmetric keys are selected by `kid`** from the configured
+///    [`jsonwebtoken::jwk::JwkSet`], falling back to a match on
+///    algorithm family when the token omits `kid`.
+///
+/// 3. **`cnf.jkt` MUST match the DPoP thumbprint** passed by the
+///    caller. This is the Solid-OIDC bearer-bound-to-DPoP invariant.
+///
+/// 4. **`exp` is checked manually** so the error is a
+///    [`PodError::Nip98`] — callers surface this as a `401` with an
+///    RFC 6750 `error="invalid_token"` challenge.
 pub fn verify_access_token(
     token: &str,
-    secret: &[u8],
+    keyset: &TokenVerifyKey,
     expected_issuer: &str,
     dpop_jkt: &str,
     now: u64,
 ) -> Result<AccessTokenVerified, PodError> {
-    let mut validation = Validation::new(Algorithm::HS256);
+    let header = decode_header(token)
+        .map_err(|e| PodError::Nip98(format!("access token header decode failed: {e}")))?;
+    let alg = header.alg;
+
+    // Resolve a DecodingKey based on (alg, keyset).
+    let key = match (alg, keyset) {
+        // Symmetric test path.
+        (Algorithm::HS256, TokenVerifyKey::Symmetric(secret)) => {
+            DecodingKey::from_secret(secret)
+        }
+        (Algorithm::HS256, TokenVerifyKey::Asymmetric(_)) => {
+            return Err(PodError::Nip98(
+                "HS256 not permitted for external OIDC — asymmetric keyset required".into(),
+            ));
+        }
+
+        // Asymmetric production path.
+        (Algorithm::RS256, TokenVerifyKey::Asymmetric(set))
+        | (Algorithm::ES256, TokenVerifyKey::Asymmetric(set))
+        | (Algorithm::EdDSA, TokenVerifyKey::Asymmetric(set)) => {
+            // Prefer exact `kid` match; fall back to the first JWK
+            // that advertises the same algorithm family.
+            let jwk = if let Some(kid) = header.kid.as_deref() {
+                set.find(kid).ok_or_else(|| {
+                    PodError::Nip98(format!(
+                        "access token kid '{kid}' not present in configured JwkSet"
+                    ))
+                })?
+            } else {
+                set.keys
+                    .iter()
+                    .find(|j| {
+                        j.common
+                            .key_algorithm
+                            .and_then(|k| k.to_string().parse::<Algorithm>().ok())
+                            == Some(alg)
+                    })
+                    .ok_or_else(|| {
+                        PodError::Nip98(format!(
+                            "access token alg {alg:?} has no matching JWK in keyset"
+                        ))
+                    })?
+            };
+            DecodingKey::from_jwk(jwk)
+                .map_err(|e| PodError::Nip98(format!("JwkSet → DecodingKey failed: {e}")))?
+        }
+        (Algorithm::RS256, TokenVerifyKey::Symmetric(_))
+        | (Algorithm::ES256, TokenVerifyKey::Symmetric(_))
+        | (Algorithm::EdDSA, TokenVerifyKey::Symmetric(_)) => {
+            return Err(PodError::Nip98(format!(
+                "access token uses asymmetric alg {alg:?} but only a symmetric \
+                keyset is configured"
+            )));
+        }
+
+        (other, _) => {
+            return Err(PodError::Nip98(format!(
+                "access token alg {other:?} not permitted (ES256/RS256/EdDSA \
+                for production, HS256 for test-only)"
+            )));
+        }
+    };
+
+    let mut validation = Validation::new(alg);
     validation.set_issuer(&[expected_issuer]);
     validation.validate_exp = false; // we check manually to return `Nip98`
     validation.validate_aud = false; // Solid-OIDC allows arbitrary aud
 
-    let data = decode::<SolidOidcClaims>(token, &DecodingKey::from_secret(secret), &validation)
+    let data = decode::<SolidOidcClaims>(token, &key, &validation)
         .map_err(|e| PodError::Nip98(format!("access token decode failed: {e}")))?;
     let claims = data.claims;
 
@@ -472,7 +699,9 @@ pub fn verify_access_token(
         .as_ref()
         .ok_or_else(|| PodError::Nip98("access token missing cnf".into()))?;
     if cnf.jkt != dpop_jkt {
-        return Err(PodError::Nip98("cnf.jkt does not match DPoP thumbprint".into()));
+        return Err(PodError::Nip98(
+            "cnf.jkt does not match DPoP thumbprint".into(),
+        ));
     }
 
     let webid = extract_webid(&claims)?;
@@ -484,6 +713,25 @@ pub fn verify_access_token(
         scope: claims.scope,
         exp: claims.exp,
     })
+}
+
+/// Backwards-compat shim — delegates to [`verify_access_token`] with
+/// a [`TokenVerifyKey::Symmetric`] keyset. New code should call the
+/// dispatching form directly; this exists so pre-Sprint-5 integration
+/// tests keep compiling.
+#[deprecated(
+    since = "0.4.0-alpha.2",
+    note = "use verify_access_token with TokenVerifyKey::Symmetric"
+)]
+pub fn verify_access_token_hs256(
+    token: &str,
+    secret: &[u8],
+    expected_issuer: &str,
+    dpop_jkt: &str,
+    now: u64,
+) -> Result<AccessTokenVerified, PodError> {
+    let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+    verify_access_token(token, &ks, expected_issuer, dpop_jkt, now)
 }
 
 /// Extract a WebID from an access-token claim set. Prefers the
@@ -661,12 +909,14 @@ mod tests {
         jkt: &str,
         exp: u64,
     ) -> String {
+        // `saturating_sub` avoids overflow when tests set `exp=100`
+        // to force the expired path without caring about `iat`.
         let claims = SolidOidcClaims {
             iss: issuer.to_string(),
             sub: "https://me.example/profile#me".into(),
             aud: serde_json::json!("solid"),
             exp,
-            iat: exp - 3600,
+            iat: exp.saturating_sub(3600),
             webid: Some("https://me.example/profile#me".into()),
             client_id: Some("client-123".into()),
             cnf: Some(CnfClaim {
@@ -687,8 +937,9 @@ mod tests {
         let secret = b"test-secret";
         let jkt = "THUMB-OK";
         let token = issue_hs256_access_token(secret, "https://op", jkt, 9_999_999_999);
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
         let verified =
-            verify_access_token(&token, secret, "https://op", jkt, 1_700_000_000).unwrap();
+            verify_access_token(&token, &ks, "https://op", jkt, 1_700_000_000).unwrap();
         assert_eq!(verified.webid, "https://me.example/profile#me");
         assert_eq!(verified.client_id.as_deref(), Some("client-123"));
     }
@@ -697,7 +948,8 @@ mod tests {
     fn access_token_rejects_wrong_jkt() {
         let secret = b"test-secret";
         let token = issue_hs256_access_token(secret, "https://op", "THUMB-OK", 9_999_999_999);
-        let err = verify_access_token(&token, secret, "https://op", "WRONG", 1_700_000_000)
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let err = verify_access_token(&token, &ks, "https://op", "WRONG", 1_700_000_000)
             .err()
             .unwrap();
         assert!(matches!(err, PodError::Nip98(_)));
@@ -707,7 +959,8 @@ mod tests {
     fn access_token_rejects_expired() {
         let secret = b"test-secret";
         let token = issue_hs256_access_token(secret, "https://op", "T", 100);
-        let err = verify_access_token(&token, secret, "https://op", "T", 1_700_000_000)
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let err = verify_access_token(&token, &ks, "https://op", "T", 1_700_000_000)
             .err()
             .unwrap();
         assert!(matches!(err, PodError::Nip98(_)));
