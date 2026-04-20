@@ -36,9 +36,18 @@ pub mod storage;
 pub mod wac;
 pub mod webid;
 
+#[cfg(feature = "oidc")]
+pub mod oidc;
+
 // Re-exports for ergonomic consumers.
 pub use error::PodError;
 pub use storage::{ResourceMeta, Storage, StorageEvent};
 pub use wac::{
-    evaluate_access, method_to_mode, mode_name, wac_allow_header, AccessMode, AclDocument,
+    evaluate_access, evaluate_access_with_groups, method_to_mode, mode_name, wac_allow_header,
+    AccessMode, AclDocument, GroupMembership, StaticGroupMembership,
+};
+pub use ldp::{
+    apply_n3_patch, apply_sparql_patch, link_headers, negotiate_format, patch_dialect_from_mime,
+    server_managed_triples, ContainerRepresentation, Graph, PatchDialect, PatchOutcome,
+    PreferHeader, RdfFormat, Term, Triple, ACCEPT_POST,
 };

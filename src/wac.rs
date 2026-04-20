@@ -56,6 +56,12 @@ pub struct AclAuthorization {
     #[serde(rename = "acl:agentClass")]
     pub agent_class: Option<IdOrIds>,
 
+    #[serde(rename = "acl:agentGroup")]
+    pub agent_group: Option<IdOrIds>,
+
+    #[serde(rename = "acl:origin")]
+    pub origin: Option<IdOrIds>,
+
     #[serde(rename = "acl:accessTo")]
     pub access_to: Option<IdOrIds>,
 
@@ -133,7 +139,16 @@ fn get_modes(auth: &AclAuthorization) -> Vec<AccessMode> {
     modes
 }
 
+#[allow(dead_code)]
 fn agent_matches(auth: &AclAuthorization, agent_uri: Option<&str>) -> bool {
+    agent_matches_with_groups(auth, agent_uri, &NoGroupMembership)
+}
+
+fn agent_matches_with_groups(
+    auth: &AclAuthorization,
+    agent_uri: Option<&str>,
+    groups: &dyn GroupMembership,
+) -> bool {
     let agents = get_ids(&auth.agent);
     if let Some(uri) = agent_uri {
         if agents.contains(&uri) {
@@ -151,7 +166,58 @@ fn agent_matches(auth: &AclAuthorization, agent_uri: Option<&str>) -> bool {
             return true;
         }
     }
+    if let Some(uri) = agent_uri {
+        for group_iri in get_ids(&auth.agent_group) {
+            if groups.is_member(group_iri, uri) {
+                return true;
+            }
+        }
+    }
     false
+}
+
+/// Synchronous group membership lookup used by `evaluate_access_with_groups`.
+///
+/// Implementors resolve an `acl:agentGroup` IRI (typically a
+/// `vcard:Group` document) against an agent WebID and return whether
+/// the agent is a member. The default implementation returns `false`
+/// for every call — consumer crates are expected to plug in their own
+/// resolver (e.g. by fetching the group document and inspecting
+/// `vcard:hasMember`).
+pub trait GroupMembership {
+    fn is_member(&self, group_iri: &str, agent_uri: &str) -> bool;
+}
+
+struct NoGroupMembership;
+impl GroupMembership for NoGroupMembership {
+    fn is_member(&self, _group_iri: &str, _agent_uri: &str) -> bool {
+        false
+    }
+}
+
+/// Static group-membership resolver used in tests and by pods that
+/// resolve group documents eagerly into an in-memory map.
+#[derive(Debug, Default, Clone)]
+pub struct StaticGroupMembership {
+    pub groups: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl StaticGroupMembership {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn add(&mut self, group_iri: impl Into<String>, members: Vec<String>) {
+        self.groups.insert(group_iri.into(), members);
+    }
+}
+
+impl GroupMembership for StaticGroupMembership {
+    fn is_member(&self, group_iri: &str, agent_uri: &str) -> bool {
+        self.groups
+            .get(group_iri)
+            .map(|m| m.iter().any(|x| x == agent_uri))
+            .unwrap_or(false)
+    }
 }
 
 /// Evaluate whether access should be granted.
@@ -160,6 +226,23 @@ pub fn evaluate_access(
     agent_uri: Option<&str>,
     resource_path: &str,
     required_mode: AccessMode,
+) -> bool {
+    evaluate_access_with_groups(
+        acl_doc,
+        agent_uri,
+        resource_path,
+        required_mode,
+        &NoGroupMembership,
+    )
+}
+
+/// Evaluate access with a caller-supplied group-membership resolver.
+pub fn evaluate_access_with_groups(
+    acl_doc: Option<&AclDocument>,
+    agent_uri: Option<&str>,
+    resource_path: &str,
+    required_mode: AccessMode,
+    groups: &dyn GroupMembership,
 ) -> bool {
     let graph = match acl_doc.and_then(|d| d.graph.as_ref()) {
         Some(g) => g,
@@ -170,7 +253,7 @@ pub fn evaluate_access(
         if !granted.contains(&required_mode) {
             continue;
         }
-        if !agent_matches(auth, agent_uri) {
+        if !agent_matches_with_groups(auth, agent_uri, groups) {
             continue;
         }
         for target in get_ids(&auth.access_to) {
@@ -296,6 +379,8 @@ mod tests {
             agent_class: Some(IdOrIds::Single(IdRef {
                 id: "foaf:Agent".into(),
             })),
+            agent_group: None,
+            origin: None,
             access_to: Some(IdOrIds::Single(IdRef { id: path.into() })),
             default: None,
             mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
@@ -322,6 +407,8 @@ mod tests {
                 id: "did:nostr:owner".into(),
             })),
             agent_class: None,
+            agent_group: None,
+            origin: None,
             access_to: Some(IdOrIds::Single(IdRef { id: "/".into() })),
             default: None,
             mode: Some(IdOrIds::Single(IdRef { id: "acl:Write".into() })),

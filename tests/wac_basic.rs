@@ -9,7 +9,7 @@ fn doc_from(json: &str) -> AclDocument {
 #[test]
 fn specific_agent_read_grants_that_agent() {
     let doc = doc_from(
-        r#"{
+        r##"{
             "@context": {"acl": "http://www.w3.org/ns/auth/acl#"},
             "@graph": [{
                 "@id": "#alice",
@@ -17,7 +17,7 @@ fn specific_agent_read_grants_that_agent() {
                 "acl:accessTo": {"@id": "/private/note"},
                 "acl:mode": {"@id": "acl:Read"}
             }]
-        }"#,
+        }"##,
     );
     assert!(evaluate_access(
         Some(&doc),
