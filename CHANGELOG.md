@@ -4,6 +4,24 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0-alpha.3 — 2026-04-20
+
+### Licence migration (BREAKING)
+
+- Licence changed from dual `MIT OR Apache-2.0` to `AGPL-3.0-only`.
+- Inherited from the JavaScriptSolidServer (JSS) ecosystem covenant; JSS
+  is AGPL-3.0, and solid-pod-rs preserves the network-service copyleft
+  protection rather than weakening it with a permissive relicence.
+- `LICENSE-MIT` and `LICENSE-APACHE` removed; `LICENSE` added with full
+  AGPL-3.0 text.
+- `Cargo.toml` `license` field updated to `"AGPL-3.0-only"`.
+- `NOTICE` rewritten to document AGPL covenant + full provenance chain.
+- `deny.toml` added with AGPL-3.0 on the allowlist for the dependency
+  graph; the denylist posture remains deny-by-default for anything not
+  on the allowlist.
+- Consumers: if you're operating solid-pod-rs as a network service, AGPL
+  §13 requires you to distribute corresponding source to your users.
+
 ## [0.3.0-alpha.2] — 2026-04-20
 
 ### Fixed

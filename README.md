@@ -4,7 +4,7 @@
 > Framework-agnostic library crate. Deny-by-default WAC. First-class Nostr auth.
 > Zero Node.js runtime dependency.
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](#licence)
 [![crates.io](https://img.shields.io/crates/v/solid-pod-rs.svg)](https://crates.io/crates/solid-pod-rs)
 [![docs.rs](https://img.shields.io/docsrs/solid-pod-rs)](https://docs.rs/solid-pod-rs)
 [![CI](https://github.com/dreamlab-ai/solid-pod-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/dreamlab-ai/solid-pod-rs/actions/workflows/ci.yml)
@@ -38,8 +38,8 @@ The Rust implementation originates from
 scratch); JSS is read as a reference-only resource for Solid
 Protocol behaviour. See [`NOTICE`](./NOTICE) §"Licence relationship
 to JavaScriptSolidServer (JSS)" for the full independence claims
-and the rationale for MIT/Apache-2.0 dual licensing despite JSS
-being AGPL.
+and the rationale for AGPL-3.0-only licensing inherited from the
+JSS ecosystem covenant.
 
 Upgrade from `alpha.1` → `alpha.2` is safe with zero API or
 behavioural deltas.
@@ -90,8 +90,8 @@ all of them.
    (path: `community-forum-rs/crates/pod-worker`). Community-forum-
    specific code (forum thread integration, Cloudflare Workers
    bindings, R2 specifics, CF-KV) was factored out during the
-   VisionClaw port. The licensed work is re-released under
-   MIT OR Apache-2.0 by the copyright holders.
+   VisionClaw port. The lineage is AGPL-3.0 throughout and the
+   licence is preserved here unchanged.
 
 3. **Design follows JavaScriptSolidServer (JSS)** — the
    reference JavaScript implementation at
@@ -115,10 +115,10 @@ all of them.
    overall stewardship of the Solid project. LDP is a W3C
    Recommendation. NIP-98 is a specification of the Nostr community.
 
-5. **Licence** — MIT OR Apache-2.0 dual-licence per Rust ecosystem
-   convention. This is compatible with (and deliberately not more
-   restrictive than) CSS's MIT licence; it is also compatible with
-   downstream AGPL-3.0 consumers that re-license.
+5. **Licence** — AGPL-3.0-only, inherited from the JavaScriptSolidServer
+   ecosystem covenant. solid-pod-rs preserves the network-service
+   copyleft protection JSS established; see §"Licence" below for the
+   operational consequences.
 
 See [`NOTICE`](./NOTICE) for the complete provenance record.
 
@@ -747,29 +747,28 @@ General Solid project:
 
 ## Licence
 
-Dual-licensed under either of:
+**AGPL-3.0-only** — inherited from the JavaScriptSolidServer ecosystem
+covenant.
 
-- MIT licence ([`LICENSE-MIT`](./LICENSE-MIT) or
-  <https://opensource.org/licenses/MIT>)
-- Apache Licence, Version 2.0 ([`LICENSE-APACHE`](./LICENSE-APACHE)
-  or <https://www.apache.org/licenses/LICENSE-2.0>)
+This means: if you operate solid-pod-rs as a network-accessible service,
+AGPL §13 requires you to make the corresponding source code available to
+your users under AGPL-3.0 or later. See [`LICENSE`](./LICENSE) and
+[`NOTICE`](./NOTICE) for full terms and provenance.
 
-at your option. This matches Rust ecosystem convention.
+If AGPL-3.0 is incompatible with your project's licence strategy, consider:
+- Contributing upstream rather than hard-forking
+- Using the crate in a sidecar architecture where AGPL obligations are
+  contained to the sidecar process
+- Running JSS itself (same licence; different language)
 
-JSS (the JavaScriptSolidServer reference) is licensed AGPL-3.0-only.
-solid-pod-rs is NOT a derivative work of JSS's JavaScript source, so
-the MIT/Apache-2.0 dual licensing is deliberate and consistent. See
-[`NOTICE`](./NOTICE) §"Licence relationship to JavaScriptSolidServer
-(JSS)" for the full rationale. Consumers bundling both solid-pod-rs
-and JSS together must verify their own compliance with AGPL-3.0's
-network-service clause for JSS.
+We welcome issues + PRs asking about specific compatibility scenarios.
 
 Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in the work by you, as defined in the
-Apache-2.0 licence, shall be dual licensed as above, without any
-additional terms or conditions.
+submitted for inclusion in the work by you shall be licensed under the
+same AGPL-3.0-only terms, without any additional terms or conditions.
 
-See [`NOTICE`](./NOTICE) for attribution details.
+See [`NOTICE`](./NOTICE) for attribution details and the full provenance
+chain.
 
 ---
 
