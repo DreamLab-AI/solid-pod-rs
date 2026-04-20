@@ -5,12 +5,46 @@ JavaScriptSolidServer (JSS), local clone at
 `/home/devuser/workspace/project/JavaScriptSolidServer/`. Canonical JSS
 surface: [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md). Prose companion: [`GAP-ANALYSIS.md`](./GAP-ANALYSIS.md).
 
-## Sprint 4 F7 update (2026-04-20)
+## Sprint 5 corrections + Sprint 4 F7 update (2026-04-20)
 
-**97 rows tracked. 60 present, 5 partial-parity, 9 semantic-difference, 19 missing, 4 net-new.**
+**Sprint 5 mesh-and-QE-fleet review** (see `docs/explanation/jss-parity-upgrade-2026-04-20.md`
+and the QE addendum) corrects multiple over-stated rows and adds 5 new
+rows for WAC 2.0 (`acl:condition`, ClientCondition, IssuerCondition,
+422-on-unknown, fail-closed) and the DPoP signature surface.
 
-**Parity percentage (present + net-new on spec surface): 74/97 = 76%.**
-**Parity percentage including partial-parity as half-credit: 76.5/97 = 79%.**
+**102 rows tracked. 56 present, 8 partial-parity, 10 semantic-difference, 24 missing, 4 net-new.**
+
+**Parity percentage (present + net-new on spec surface, conservative): 60/102 = 59%.**
+**Parity percentage including partial-parity as half-credit: 64/102 = 63%.**
+
+The downward revision from the Sprint 4 F7 numbers (76% → 59%) reflects
+**verified** rather than claimed parity. Rows where the library compiles
+the surface but no test exercises it have been demoted from `present`
+to `partial-parity`. See "Sprint 5 corrections" table below for the
+full list of revised rows.
+
+### Sprint 5 corrections table
+
+| Row | Was | Now | Reason |
+|---|---|---|---|
+| 23 | present | semantic-difference | `Accept-Ranges: bytes`/`none` — `options_for()` (ldp.rs:1336) hard-codes `"bytes"` even on containers |
+| 26 | partial-parity | partial-parity (binder-uninstrumented) | WAC-Allow header computed but `solid-pod-rs-server` does not emit it |
+| 28 | partial-parity | partial-parity (no primitive) | CORS — no library primitive at all (Sprint 7 §6.2) |
+| 33 | present | partial-parity | OPTIONS — body+204 missing |
+| 40 | semantic-difference | net-new (Rust strictly more conformant) | N3 Patch `where` failure 412 — JSS never invokes `validatePatch`, silently drops missing deletes |
+| 91 | present | partial-parity | solid-0.1 legacy notifications — per-sub WAC read check, ancestor-container fanout, `forbidden` literal frame all missing in alpha.1; P0-3 fix in Sprint 5 lands the WAC check |
+| 92 | present | partial-parity | Webhook delivery — no RFC 9421 signing, 4xx-instant-drop policy, no `Retry-After` |
+| 18 | net-new | header-only | `describedby` link emitted, but `.meta` GET returns 404 on both sides |
+
+### Sprint 5 NEW rows (WAC 2.0 + DPoP signature)
+
+| # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 53 | `acl:condition` framework (parser + evaluator) | `src/wac/parser.js:162`, `src/wac/checker.js:130-197` | **not implemented** — `AclAuthorization` (`src/wac.rs:51-78`) has no condition field; serde silently drops the triple → fail-OPEN | missing **(P0)** | — | Sprint 6 §3 lands. |
+| 54 | `acl:client*` / `acl:ClientCondition` (WAC 2.0) | **not implemented** | **not implemented** | missing **(P1)** | — | New webacl.org spec; Sprint 6. |
+| 55 | `acl:issuer*` / `acl:IssuerCondition` (WAC 2.0) | **not implemented** | **not implemented** | missing **(P1)** | — | New webacl.org spec; Sprint 6. |
+| 56 | 422 on PUT `.acl` with unknown condition type | n/a (JSS lacks unknown-condition concept) | **not implemented** | missing **(P1)** | — | WAC 2.0 §5 normative; Sprint 6. |
+| 62b | DPoP proof signature verification | `src/auth/solid-oidc.js:171-249` (jose `jwtVerify`) | **partial-parity** — header decoded, jwk thumbprint computed, **signature NOT verified** (`src/oidc/mod.rs:366-377`); only HS256 hard-coded path for access tokens | missing **(P0)** | `src/oidc/mod.rs:343-402, 457` | **CVE-class.** Sprint 5 P0-1 + P0-4 fix lands. |
 
 F7 landing flips rows 139 (CLI binary) and 140 (framework coupling) to
 `present`: the library-server split (ADR-056 §D3) delivers a standalone

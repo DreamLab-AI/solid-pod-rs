@@ -27,3 +27,16 @@ perf.data*
 
 # Docs build
 /book
+
+# JSS reference clone (read-only comparator, never tracked)
+/JavaScriptSolidServer/
+
+# AQE / Claude-Flow tooling artefacts (project-local, not source)
+/.agentic-qe/
+/.claude/
+/.claude-flow/
+/.swarm/
+/.mcp.json
+/CLAUDE.md
+/ruvector.db
+/ruvector.db-*
