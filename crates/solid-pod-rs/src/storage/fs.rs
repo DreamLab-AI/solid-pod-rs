@@ -90,16 +90,22 @@ impl FsBackend {
     ) -> Result<ResourceMeta, PodError> {
         let data_path = self.resolve(path)?;
         let meta_path = Self::meta_path(&data_path);
+        // JSS #294 parity: `.acl` / `.meta` (and `*.acl` / `*.meta`)
+        // have no Node-style extension, so sidecar-absent resources
+        // must fall back to `application/ld+json` before conneg rejects
+        // `application/octet-stream`.
+        let fallback_ct: &str =
+            crate::ldp::infer_dotfile_content_type(path).unwrap_or("application/octet-stream");
         let (content_type, links) = match fs::read(&meta_path).await {
             Ok(bytes) => {
                 let sidecar: MetaSidecar =
                     serde_json::from_slice(&bytes).unwrap_or_else(|_| MetaSidecar {
-                        content_type: "application/octet-stream".into(),
+                        content_type: fallback_ct.to_string(),
                         links: Vec::new(),
                     });
                 (sidecar.content_type, sidecar.links)
             }
-            Err(_) => ("application/octet-stream".to_string(), Vec::new()),
+            Err(_) => (fallback_ct.to_string(), Vec::new()),
         };
         Ok(ResourceMeta {
             etag,
@@ -331,6 +337,38 @@ mod tests {
         assert!(!fsb.exists("/f.txt").await.unwrap());
         let sidecar = dir.path().join("f.txt.meta.json");
         assert!(!sidecar.exists());
+    }
+
+    #[tokio::test]
+    async fn fs_backend_serves_acl_as_jsonld_without_sidecar() {
+        // Row 167 / JSS PR #294: a `.acl` resource written without a
+        // `.meta.json` sidecar must surface as `application/ld+json`,
+        // not `application/octet-stream` (which conneg would reject).
+        let dir = TempDir::new().unwrap();
+        let fsb = FsBackend::new(dir.path()).await.unwrap();
+        // Low-level write: bypass FsBackend::put so no sidecar is
+        // created — simulates a resource provisioned out-of-band or
+        // left behind after a sidecar crash.
+        fs::write(dir.path().join(".acl"), b"{}").await.unwrap();
+        let (_body, meta) = fsb.get("/.acl").await.unwrap();
+        assert_eq!(meta.content_type, "application/ld+json");
+
+        // Also cover `foo.acl` suffix form.
+        fs::write(dir.path().join("foo.acl"), b"{}").await.unwrap();
+        let (_, meta2) = fsb.get("/foo.acl").await.unwrap();
+        assert_eq!(meta2.content_type, "application/ld+json");
+
+        // And `.meta`.
+        fs::write(dir.path().join("bar.meta"), b"{}").await.unwrap();
+        let (_, meta3) = fsb.get("/bar.meta").await.unwrap();
+        assert_eq!(meta3.content_type, "application/ld+json");
+
+        // Non-dotfile still falls back to octet-stream when no sidecar.
+        fs::write(dir.path().join("plain.bin"), b"\x00\x01")
+            .await
+            .unwrap();
+        let (_, meta4) = fsb.get("/plain.bin").await.unwrap();
+        assert_eq!(meta4.content_type, "application/octet-stream");
     }
 
     #[tokio::test]

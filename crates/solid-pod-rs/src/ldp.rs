@@ -165,20 +165,15 @@ pub fn resolve_slug(container: &str, slug: Option<&str>) -> Result<String, PodEr
 // ---------------------------------------------------------------------------
 
 /// What portions of a container representation the client wants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ContainerRepresentation {
     /// Membership triples + metadata (default).
+    #[default]
     Full,
     /// `ldp:contains` + container metadata only.
     MinimalContainer,
     /// Only the list of contained IRIs, no server metadata.
     ContainedIRIsOnly,
-}
-
-impl Default for ContainerRepresentation {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 /// Parsed `Prefer` header value. Non-`return=representation` preferences
@@ -323,6 +318,107 @@ pub fn negotiate_format(accept: Option<&str>) -> RdfFormat {
         }
     }
     best.map(|(_, f)| f).unwrap_or(RdfFormat::Turtle)
+}
+
+/// Infer a content-type for auxiliary "dotfile" resources (`.acl`, `.meta`,
+/// and their `*.acl` / `*.meta` suffix variants) whose extension-based
+/// lookup would otherwise fail.
+///
+/// Mirrors JSS `src/util/Conversion.ts::getContentTypeFromExtension`
+/// post-PR #294 (commit `de02f15`), which patched the same class of bug
+/// arising from `path.extname('.acl') === ''` — leading-dot filenames
+/// have no "extension" in the Node sense, so the table lookup returned
+/// undefined and conneg rejected the resource.
+///
+/// Returns `Some("application/ld+json")` for canonical Solid ACL/meta
+/// resources; `None` otherwise (callers should fall back to
+/// `application/octet-stream`).
+///
+/// Matching rules (suffix-only, never substring):
+///   * basename is exactly `.acl` or `.meta`
+///   * basename ends with `.acl` or `.meta` (e.g. `foo.acl`, `data.meta`)
+///   * names that merely *contain* `.acl`/`.meta` mid-string
+///     (e.g. `not.aclfile`, `foo.acl.bak`) do NOT match.
+pub fn infer_dotfile_content_type(path: &str) -> Option<&'static str> {
+    // Extract the basename: strip trailing slashes, then take the last
+    // path segment. Empty input or a pure slash run yields None.
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let basename = trimmed
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())?;
+
+    // Suffix test, per JSS's `.acl` / `.meta` matcher. Includes the
+    // bare-name case (`.acl`, `.meta`) because `str::ends_with` is true
+    // for equal strings.
+    if basename.ends_with(".acl") || basename.ends_with(".meta") {
+        Some("application/ld+json")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod infer_dotfile_tests {
+    use super::infer_dotfile_content_type;
+
+    #[test]
+    fn infer_dotfile_content_type_acl_file_returns_jsonld() {
+        assert_eq!(
+            infer_dotfile_content_type("/.acl"),
+            Some("application/ld+json")
+        );
+        assert_eq!(
+            infer_dotfile_content_type("/pods/alice/foo.acl"),
+            Some("application/ld+json")
+        );
+        assert_eq!(
+            infer_dotfile_content_type(".acl"),
+            Some("application/ld+json")
+        );
+    }
+
+    #[test]
+    fn infer_dotfile_content_type_meta_file_returns_jsonld() {
+        assert_eq!(
+            infer_dotfile_content_type("/.meta"),
+            Some("application/ld+json")
+        );
+        assert_eq!(
+            infer_dotfile_content_type("/pods/alice/foo.meta"),
+            Some("application/ld+json")
+        );
+    }
+
+    #[test]
+    fn infer_dotfile_content_type_dotted_midname_returns_none() {
+        // Mid-name `.acl.` / `.meta.` must not trigger — JSS's suffix
+        // match would miss these too.
+        assert_eq!(infer_dotfile_content_type("/foo.acl.bak"), None);
+        assert_eq!(infer_dotfile_content_type("/foo.meta.bak"), None);
+    }
+
+    #[test]
+    fn infer_dotfile_content_type_substring_only_returns_none() {
+        // `.acl` / `.meta` appearing as a substring, not a suffix.
+        assert_eq!(infer_dotfile_content_type("/not.aclfile"), None);
+        assert_eq!(infer_dotfile_content_type("/some.metainfo"), None);
+        assert_eq!(infer_dotfile_content_type("/plain.txt"), None);
+    }
+
+    #[test]
+    fn infer_dotfile_content_type_trailing_slash_stripped() {
+        // Container path ending in `/` — strip before basename extract.
+        assert_eq!(
+            infer_dotfile_content_type("/pods/alice/foo.acl/"),
+            Some("application/ld+json")
+        );
+        assert_eq!(infer_dotfile_content_type("/"), None);
+        assert_eq!(infer_dotfile_content_type(""), None);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1445,12 +1541,15 @@ pub fn slice_range(body: &[u8], range: ByteRange) -> &[u8] {
 /// * `Accept-Patch` advertises supported PATCH dialects.
 /// * `Accept-Ranges: bytes` is always advertised so binary resources
 ///   can be sliced with `Range:` requests.
+/// * `Cache-Control` mirrors the RDF variant policy since OPTIONS
+///   responses describe the RDF-shaped conneg surface (JSS #315).
 #[derive(Debug, Clone)]
 pub struct OptionsResponse {
     pub allow: Vec<&'static str>,
     pub accept_post: Option<&'static str>,
     pub accept_patch: &'static str,
     pub accept_ranges: &'static str,
+    pub cache_control: &'static str,
 }
 
 /// `Accept-Patch` advertising the PATCH dialects supported.
@@ -1475,6 +1574,10 @@ pub fn options_for(path: &str) -> OptionsResponse {
         // `Range:` request can meaningfully slice. JSS advertises
         // `Accept-Ranges: none` on containers; we match.
         accept_ranges: if container { "none" } else { "bytes" },
+        // OPTIONS describes the RDF-shaped conneg surface on Solid
+        // resources. Shared caches must not fuse auth-variant responses,
+        // and clients revalidate via ETag on every use (JSS #315).
+        cache_control: CACHE_CONTROL_RDF,
     }
 }
 
@@ -1503,6 +1606,13 @@ pub fn not_found_headers(path: &str, conneg_enabled: bool) -> Vec<(&'static str,
         format!("<{}.acl>; rel=\"acl\"", path.trim_end_matches('/')),
     ));
     h.push(("Vary", vary_header(conneg_enabled).into()));
+    // When conneg is enabled, the 404 advertises an RDF-shaped future
+    // response surface (Allow/Accept-Post/Accept-Patch list RDF types).
+    // Emit RDF Cache-Control so intermediaries cannot fuse the 404 with
+    // a later 200 authenticated body. Mirrors JSS #315.
+    if conneg_enabled {
+        h.push(("Cache-Control", CACHE_CONTROL_RDF.into()));
+    }
     if container {
         h.push(("Accept-Post", ACCEPT_POST.into()));
     }
@@ -1518,6 +1628,54 @@ pub fn vary_header(conneg_enabled: bool) -> &'static str {
         "Accept, Authorization, Origin"
     } else {
         "Authorization, Origin"
+    }
+}
+
+/// RFC 7234 `Cache-Control` directive for RDF response variants.
+///
+/// Emits `private, no-cache, must-revalidate` so shared caches never
+/// serve one authenticated user's response to another. ETag-based
+/// revalidation stays cheap (304). Mirrors JSS `RDF_CACHE_CONTROL`
+/// in `src/handlers/resource.js` after PR #315 (commit 76fc5c6).
+/// Binary blobs (images, uploads) are NOT RDF and keep their default
+/// caching posture — callers decide.
+pub const CACHE_CONTROL_RDF: &str = "private, no-cache, must-revalidate";
+
+/// Return `true` if `content_type` identifies an RDF serialisation the
+/// server emits through content negotiation or stores natively. Matches
+/// the formats advertised in [`ACCEPT_POST`] plus `text/n3` and
+/// `application/trig` (JSS parity). Parameters (e.g. `; charset=utf-8`)
+/// are tolerated.
+pub fn is_rdf_content_type(content_type: &str) -> bool {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "text/turtle"
+            | "application/turtle"
+            | "application/x-turtle"
+            | "application/ld+json"
+            | "application/json+ld"
+            | "application/n-triples"
+            | "text/plain+ntriples"
+            | "text/n3"
+            | "application/trig"
+    )
+}
+
+/// Return the `Cache-Control` header value appropriate for a response
+/// of the supplied `content_type`, or `None` to leave the header
+/// unset. RDF variants always get [`CACHE_CONTROL_RDF`]; non-RDF
+/// payloads (binary blobs, images, etc.) are left to caller policy.
+pub fn cache_control_for(content_type: &str) -> Option<&'static str> {
+    if is_rdf_content_type(content_type) {
+        Some(CACHE_CONTROL_RDF)
+    } else {
+        None
     }
 }
 
@@ -2128,6 +2286,9 @@ mod tests {
         // container representations are server-generated RDF, not
         // byte-rangeable.
         assert_eq!(o.accept_ranges, "none");
+        // JSS parity row 157 (#315): OPTIONS carries the RDF cache
+        // directive so shared caches don't fuse auth variants.
+        assert_eq!(o.cache_control, "private, no-cache, must-revalidate");
     }
 
     #[test]
@@ -2139,6 +2300,74 @@ mod tests {
         assert!(o.accept_post.is_none());
         assert!(o.accept_patch.contains("sparql-update"));
         assert!(o.accept_patch.contains("json-patch"));
+        assert_eq!(o.cache_control, CACHE_CONTROL_RDF);
+    }
+
+    #[test]
+    fn cache_control_present_for_turtle() {
+        assert_eq!(
+            cache_control_for("text/turtle"),
+            Some("private, no-cache, must-revalidate")
+        );
+        assert_eq!(
+            cache_control_for("text/turtle; charset=utf-8"),
+            Some(CACHE_CONTROL_RDF)
+        );
+    }
+
+    #[test]
+    fn cache_control_present_for_jsonld() {
+        assert_eq!(
+            cache_control_for("application/ld+json"),
+            Some(CACHE_CONTROL_RDF)
+        );
+        assert_eq!(
+            cache_control_for("application/ld+json; profile=\"http://www.w3.org/ns/json-ld#compacted\""),
+            Some(CACHE_CONTROL_RDF)
+        );
+    }
+
+    #[test]
+    fn cache_control_present_for_ntriples() {
+        assert_eq!(
+            cache_control_for("application/n-triples"),
+            Some(CACHE_CONTROL_RDF)
+        );
+        assert_eq!(cache_control_for("text/n3"), Some(CACHE_CONTROL_RDF));
+        assert_eq!(
+            cache_control_for("application/trig"),
+            Some(CACHE_CONTROL_RDF)
+        );
+    }
+
+    #[test]
+    fn cache_control_absent_for_octet_stream() {
+        assert_eq!(cache_control_for("application/octet-stream"), None);
+        assert!(!is_rdf_content_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn cache_control_absent_for_image_png() {
+        assert_eq!(cache_control_for("image/png"), None);
+        assert_eq!(cache_control_for("image/jpeg"), None);
+        assert_eq!(cache_control_for("video/mp4"), None);
+        assert!(!is_rdf_content_type("image/png"));
+    }
+
+    #[test]
+    fn cache_control_not_found_headers_conneg_enabled_emits_rdf_directive() {
+        let h = not_found_headers("/data/thing", true);
+        let found = h
+            .iter()
+            .find(|(k, _)| *k == "Cache-Control")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(found, Some("private, no-cache, must-revalidate"));
+    }
+
+    #[test]
+    fn cache_control_not_found_headers_conneg_disabled_omits_directive() {
+        let h = not_found_headers("/data/thing", false);
+        assert!(h.iter().all(|(k, _)| *k != "Cache-Control"));
     }
 
     #[test]

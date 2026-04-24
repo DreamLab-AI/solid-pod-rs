@@ -19,6 +19,7 @@
 //! compiled so downstream crates can build their own backends without
 //! opting in to the FS one.
 
+#[cfg(feature = "quota")]
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -126,6 +127,13 @@ mod fs_impl {
             }
         }
 
+        /// Atomic sidecar write — mirrors JSS `saveQuota` (PR #309) which
+        /// closed an intermittent-500 race on concurrent PUTs. The write
+        /// goes to `.quota.json.tmp-<pid>-<nanos>` first, then is
+        /// renamed onto `.quota.json`; on POSIX the rename is atomic so
+        /// a concurrent reader never observes a half-written document
+        /// and a crash leaves at most an orphan `.tmp-*` that
+        /// [`Self::reconcile`] / startup sweep can clean up.
         async fn write_sidecar(&self, pod: &str, usage: &QuotaUsage) -> std::io::Result<()> {
             let path = self.quota_file(pod);
             if let Some(parent) = path.parent() {
@@ -134,7 +142,54 @@ mod fs_impl {
             let body = serde_json::to_vec_pretty(usage).map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e)
             })?;
-            fs::write(path, body).await
+            let tmp = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let pid = std::process::id();
+                let mut t = path.as_os_str().to_owned();
+                t.push(format!(".tmp-{pid}-{nanos}"));
+                PathBuf::from(t)
+            };
+            match fs::write(&tmp, &body).await {
+                Ok(()) => {}
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp).await;
+                    return Err(e);
+                }
+            }
+            if let Err(e) = fs::rename(&tmp, &path).await {
+                let _ = fs::remove_file(&tmp).await;
+                return Err(e);
+            }
+            Ok(())
+        }
+
+        /// Sweep stale tempfile orphans left by crashed writers.
+        ///
+        /// Called by [`Self::reconcile`] to match JSS's post-#310
+        /// behaviour of ignoring (and cleaning up) half-written quota
+        /// sidecars. Deletes any `.quota.json.tmp-*` under the pod root.
+        async fn sweep_quota_orphans(&self, pod: &str) -> std::io::Result<()> {
+            let dir = match self.quota_file(pod).parent() {
+                Some(p) => p.to_path_buf(),
+                None => return Ok(()),
+            };
+            let mut rd = match fs::read_dir(&dir).await {
+                Ok(r) => r,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            while let Some(entry) = rd.next_entry().await? {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with(".quota.json.tmp-") {
+                        let _ = fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+            Ok(())
         }
 
         /// Resolve the effective sidecar: on-disk value if present, else
@@ -245,6 +300,13 @@ mod fs_impl {
         }
 
         async fn reconcile(&self, pod: &str) -> std::io::Result<QuotaUsage> {
+            // JSS parity (post-#310): opportunistically clean up stale
+            // `.quota.json.tmp-*` orphans left by crashed writers
+            // BEFORE computing disk truth. Errors here are ignored —
+            // reconcile is best-effort and the authoritative write path
+            // at the bottom of this method will surface any IO failure
+            // that actually matters.
+            let _ = self.sweep_quota_orphans(pod).await;
             let actual = self.dir_size_boxed(&self.pod_dir(pod)).await?;
             let limit = match self.read_sidecar(pod).await? {
                 Some(u) if u.limit_bytes > 0 => u.limit_bytes,

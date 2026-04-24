@@ -196,6 +196,200 @@ async fn oidc_dpop_es256_valid_proof_authenticates() {
     assert_eq!(verified.jti, "valid-es256-0001");
 }
 
+// ---------------------------------------------------------------------------
+// Test 4 — HS256 with an asymmetric JWK is rejected (alg confusion).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dpop-replay-cache")]
+#[tokio::test]
+async fn oidc_dpop_rejects_hs256_with_ec_jwk() {
+    // Classic alg-confusion: attacker takes a genuine EC public key,
+    // advertises `alg=HS256` on the header, and signs the proof with
+    // HMAC using the EC key's public bytes as the shared secret. If
+    // the verifier switches on `alg` without cross-checking the JWK's
+    // kty, it will treat the public key as an HMAC secret and accept.
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let (_sk, jwk) = ec_p256_jwk_keypair();
+    let now = 1_700_000_000u64;
+    let claims = DpopClaims {
+        htu: "https://pod.example/resource".into(),
+        htm: "GET".into(),
+        iat: now,
+        jti: "alg-confusion-attack".into(),
+        ath: None,
+    };
+    let (h, b, signing_input) = dpop_parts(&jwk, "HS256", &claims);
+
+    // Sign using the JWK's `x` coordinate as a fake shared secret —
+    // that is what an alg-confusion attacker would do.
+    let x_bytes = BASE64_URL
+        .decode(jwk.x.as_deref().expect("jwk.x"))
+        .expect("x decodes");
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&x_bytes).expect("hmac key");
+    mac.update(signing_input.as_bytes());
+    let sig = BASE64_URL.encode(mac.finalize().into_bytes());
+    let proof = format!("{h}.{b}.{sig}");
+
+    let err = solid_pod_rs::oidc::verify_dpop_proof(
+        &proof,
+        "https://pod.example/resource",
+        "GET",
+        now,
+        60,
+        None,
+    )
+    .await
+    .expect_err("HS256 + EC jwk MUST be rejected");
+    match err {
+        PodError::Nip98(msg) => {
+            let low = msg.to_lowercase();
+            assert!(
+                low.contains("hs")
+                    || low.contains("permitted")
+                    || low.contains("symmetric")
+                    || low.contains("alg"),
+                "error must call out the alg-confusion rejection, got: {msg}",
+            );
+        }
+        other => panic!("unexpected error kind: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — happy path: real Ed25519 (EdDSA) signature verifies.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "dpop-replay-cache", feature = "webhook-signing"))]
+#[tokio::test]
+async fn oidc_dpop_eddsa_valid_proof_authenticates() {
+    use ed25519_dalek::{Signer as _, SigningKey as EdSigningKey};
+    use rand::rngs::OsRng;
+
+    let ed_sk = EdSigningKey::generate(&mut OsRng);
+    let ed_pk = ed_sk.verifying_key();
+    let jwk = Jwk {
+        kty: "OKP".into(),
+        alg: Some("EdDSA".into()),
+        kid: None,
+        use_: None,
+        crv: Some("Ed25519".into()),
+        x: Some(BASE64_URL.encode(ed_pk.to_bytes())),
+        y: None,
+        n: None,
+        e: None,
+        k: None,
+    };
+    let expected_jkt = jwk.thumbprint().expect("thumbprint");
+    let now = 1_700_000_000u64;
+    let claims = DpopClaims {
+        htu: "https://pod.example/resource".into(),
+        htm: "POST".into(),
+        iat: now,
+        jti: "valid-eddsa-0001".into(),
+        ath: None,
+    };
+    let (h, b, signing_input) = dpop_parts(&jwk, "EdDSA", &claims);
+    let sig = ed_sk.sign(signing_input.as_bytes());
+    let sig_b64 = BASE64_URL.encode(sig.to_bytes());
+    let proof = format!("{h}.{b}.{sig_b64}");
+
+    let verified = solid_pod_rs::oidc::verify_dpop_proof(
+        &proof,
+        "https://pod.example/resource",
+        "POST",
+        now,
+        60,
+        None,
+    )
+    .await
+    .expect("valid EdDSA DPoP proof must authenticate");
+    assert_eq!(verified.jkt, expected_jkt);
+    assert_eq!(verified.htm, "POST");
+    assert_eq!(verified.jti, "valid-eddsa-0001");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — ath binding enforced against access-token hash.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dpop-replay-cache")]
+#[tokio::test]
+async fn oidc_dpop_ath_binding_enforced() {
+    use sha2::{Digest, Sha256};
+
+    let (sk, jwk) = ec_p256_jwk_keypair();
+    let now = 1_700_000_000u64;
+
+    // Real access token bytes + the hash the RFC requires.
+    let access_token = "opaque-access-token-payload";
+    let ath_hash = BASE64_URL.encode(Sha256::digest(access_token.as_bytes()));
+
+    let good_claims = DpopClaims {
+        htu: "https://pod.example/resource".into(),
+        htm: "GET".into(),
+        iat: now,
+        jti: "ath-ok-0001".into(),
+        ath: Some(ath_hash.clone()),
+    };
+    let (h, b, signing_input) = dpop_parts(&jwk, "ES256", &good_claims);
+    let sig_b64 = sign_es256(&sk, &signing_input);
+    let proof = format!("{h}.{b}.{sig_b64}");
+
+    // 1. Correct hash passes.
+    let verified = solid_pod_rs::oidc::verify_dpop_proof_with_ath(
+        &proof,
+        "https://pod.example/resource",
+        "GET",
+        now,
+        60,
+        Some(&ath_hash),
+        None,
+    )
+    .await
+    .expect("matching ath must authenticate");
+    assert_eq!(verified.ath.as_deref(), Some(ath_hash.as_str()));
+
+    // 2. Wrong hash fails.
+    let err = solid_pod_rs::oidc::verify_dpop_proof_with_ath(
+        &proof,
+        "https://pod.example/resource",
+        "GET",
+        now,
+        60,
+        Some("DEADBEEF-not-the-real-hash"),
+        None,
+    )
+    .await
+    .expect_err("ath mismatch must reject");
+    assert!(matches!(err, PodError::Nip98(_)));
+
+    // 3. Missing `ath` on proof but required by caller fails.
+    let bare_claims = DpopClaims {
+        htu: "https://pod.example/resource".into(),
+        htm: "GET".into(),
+        iat: now,
+        jti: "ath-missing-0001".into(),
+        ath: None,
+    };
+    let (h2, b2, si2) = dpop_parts(&jwk, "ES256", &bare_claims);
+    let sig2 = sign_es256(&sk, &si2);
+    let proof2 = format!("{h2}.{b2}.{sig2}");
+    let err2 = solid_pod_rs::oidc::verify_dpop_proof_with_ath(
+        &proof2,
+        "https://pod.example/resource",
+        "GET",
+        now,
+        60,
+        Some(&ath_hash),
+        None,
+    )
+    .await
+    .expect_err("missing ath when expected must reject");
+    assert!(matches!(err2, PodError::Nip98(_)));
+}
+
 // Silence unused-dep warning in the rare case where neither async test
 // pulls these symbols in during a cross-feature build.
 #[allow(dead_code)]

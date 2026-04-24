@@ -111,8 +111,8 @@ pub mod serializer;
 
 pub use client::{ClientConditionBody, ClientConditionEvaluator};
 pub use conditions::{
-    validate_for_write, Condition, ConditionDispatcher, ConditionOutcome, ConditionRegistry,
-    EmptyDispatcher, RequestContext, UnsupportedCondition,
+    validate_acl_document, validate_for_write, Condition, ConditionDispatcher, ConditionOutcome,
+    ConditionRegistry, EmptyDispatcher, RequestContext, UnsupportedCondition,
 };
 pub use document::{AclAuthorization, AclDocument, IdOrIds, IdRef};
 pub use evaluator::{

@@ -36,6 +36,7 @@
 //! `reqwest`). Contention is O(1) per check; the critical section is
 //! the prune-and-push on a single bucket.
 
+#[cfg(feature = "rate-limit")]
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -55,6 +56,7 @@ pub enum RateLimitSubject<'a> {
     Custom(&'a str),
 }
 
+#[cfg(feature = "rate-limit")]
 impl RateLimitSubject<'_> {
     /// Canonical string representation, used as the bucket key.
     fn canonical(&self) -> String {
@@ -76,6 +78,7 @@ pub struct RateLimitKey<'a> {
     pub subject: RateLimitSubject<'a>,
 }
 
+#[cfg(feature = "rate-limit")]
 impl RateLimitKey<'_> {
     fn canonical(&self) -> String {
         format!("{}|{}", self.route, self.subject.canonical())

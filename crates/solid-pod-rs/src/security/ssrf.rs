@@ -415,6 +415,131 @@ fn env_csv(key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// --- Sprint 9: row 114 free-function primitives --------------------------
+//
+// The JSS upstream (`src/utils/ssrf.js:15-157`) exposes two plain functions:
+//   - `isSafeUrl(url)`   — sync URL-shape + IP-literal host check
+//   - `resolveAndCheck(host)` — async DNS lookup + per-IP policy check
+//
+// These mirror that shape on top of the Rust aggregate. They use a
+// maximally restrictive default policy (no toggles, no lists) so every
+// blocked class is actually blocked, matching JSS defaults.
+
+/// Sync primitive: accept a URL string, parse its shape, and refuse any
+/// URL whose host is either absent or an IP literal in a blocked class.
+///
+/// Does **not** perform DNS resolution — use [`resolve_and_check`] for
+/// that. Use this as a cheap pre-flight when you have a URL but not a
+/// DNS resolver in scope (e.g. config validation, audit log emission).
+///
+/// Blocked IP-literal hosts cover: RFC 1918 private (10/8, 172.16/12,
+/// 192.168/16), RFC 4193 unique-local (fc00::/7), loopback (127/8, ::1),
+/// link-local (169.254/16, fe80::/10), multicast (224/4, ff00::/8),
+/// cloud-metadata (169.254.169.254, fd00:ec2::254), and IETF-reserved
+/// ranges. Known cloud-metadata hostnames
+/// (`metadata.google.internal`, bare `metadata`) are also blocked
+/// without DNS resolution.
+///
+/// Upstream parity: `JavaScriptSolidServer/src/utils/ssrf.js:15-157`.
+pub fn is_safe_url(url: &str) -> Result<(), SsrfError> {
+    let parsed = Url::parse(url).map_err(|_| SsrfError::MissingHost(url.to_string()))?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| SsrfError::MissingHost(url.to_string()))?;
+
+    match host {
+        url::Host::Ipv4(v4) => check_ip_safe(&v4.to_string(), IpAddr::V4(v4)),
+        url::Host::Ipv6(v6) => check_ip_safe(&v6.to_string(), IpAddr::V6(v6)),
+        url::Host::Domain(d) => {
+            if is_known_metadata_hostname(d) {
+                return Err(SsrfError::BlockedClass {
+                    host: d.to_string(),
+                    ip: IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+                    class: IpClass::Reserved,
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Async primitive: resolve `host` via DNS and check every returned
+/// address against the restrictive default policy. Returns the first
+/// resolved address on success; if any resolved address is blocked the
+/// whole lookup is denied (we bind to the first address, so we must
+/// refuse as soon as any rebinding target is known-bad).
+///
+/// Accepts either `host` or `host:port`. When no port is supplied, a
+/// synthetic `:80` is used for the socket lookup — only the IP is
+/// consulted.
+///
+/// Upstream parity: `JavaScriptSolidServer/src/utils/ssrf.js:15-157`.
+pub async fn resolve_and_check(host: &str) -> Result<IpAddr, SsrfError> {
+    // Cloud-metadata hostname short-circuit: refuse without a lookup
+    // so operators cannot unintentionally leak metadata via a
+    // malicious DNS record.
+    if is_known_metadata_hostname(host) {
+        return Err(SsrfError::BlockedClass {
+            host: host.to_string(),
+            ip: IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            class: IpClass::Reserved,
+        });
+    }
+
+    let lookup_target = if host.contains(':') {
+        host.to_string()
+    } else {
+        format!("{host}:80")
+    };
+    let addrs = tokio::net::lookup_host(&lookup_target)
+        .await
+        .map_err(|e| SsrfError::DnsFailure {
+            host: host.to_string(),
+            source: e,
+        })?;
+
+    let mut first: Option<IpAddr> = None;
+    for sock in addrs {
+        let ip = sock.ip();
+        check_ip_safe(host, ip)?;
+        if first.is_none() {
+            first = Some(ip);
+        }
+    }
+    first.ok_or_else(|| SsrfError::NoAddresses {
+        host: host.to_string(),
+    })
+}
+
+fn check_ip_safe(host: &str, ip: IpAddr) -> Result<(), SsrfError> {
+    let class = SsrfPolicy::classify(ip);
+    match class {
+        IpClass::Public => Ok(()),
+        IpClass::Private
+        | IpClass::Loopback
+        | IpClass::LinkLocal
+        | IpClass::Multicast
+        | IpClass::Reserved => Err(SsrfError::BlockedClass {
+            host: host.to_string(),
+            ip,
+            class,
+        }),
+    }
+}
+
+fn is_known_metadata_hostname(host: &str) -> bool {
+    // Strip optional port suffix for the hostname match.
+    let host_only = host.split(':').next().unwrap_or(host);
+    let lc = host_only.to_ascii_lowercase();
+    // GCP publishes `metadata.google.internal` and `metadata` →
+    // 169.254.169.254. AWS and Azure both use the bare IP literal,
+    // which `check_ip_safe` already covers.
+    matches!(
+        lc.as_str(),
+        "metadata.google.internal" | "metadata" | "metadata.goog"
+    )
+}
+
 // --- unit tests ----------------------------------------------------------
 
 #[cfg(test)]
@@ -504,5 +629,105 @@ mod tests {
         assert!(!p.allow_private);
         assert!(!p.allow_loopback);
         assert!(!p.allow_link_local);
+    }
+
+    // ----- Sprint 9 row 114: free-function primitives -------------------
+
+    fn assert_blocked(url: &str, want_class: IpClass) {
+        match is_safe_url(url) {
+            Err(SsrfError::BlockedClass { class, .. }) => assert_eq!(
+                class, want_class,
+                "url {url} blocked with {class:?}, wanted {want_class:?}"
+            ),
+            Err(other) => panic!("url {url} rejected with unexpected error: {other}"),
+            Ok(()) => panic!("url {url} accepted but expected block for {want_class:?}"),
+        }
+    }
+
+    #[test]
+    fn blocks_rfc1918_addresses() {
+        let cases = [
+            "http://10.0.0.1/",
+            "http://10.255.255.255/",
+            "http://172.16.0.1/",
+            "http://172.31.255.255/",
+            "http://192.168.0.1/",
+            "http://192.168.255.255/",
+            "http://[fc00::1]/",
+            "http://[fd00::1]/",
+        ];
+        for url in cases {
+            assert_blocked(url, IpClass::Private);
+        }
+    }
+
+    #[test]
+    fn blocks_loopback() {
+        assert_blocked("http://127.0.0.1/", IpClass::Loopback);
+        assert_blocked("http://127.255.255.254/", IpClass::Loopback);
+        assert_blocked("http://[::1]/", IpClass::Loopback);
+    }
+
+    #[test]
+    fn blocks_link_local() {
+        assert_blocked("http://169.254.1.1/", IpClass::LinkLocal);
+        assert_blocked("http://169.254.254.254/", IpClass::LinkLocal);
+        assert_blocked("http://[fe80::1]/", IpClass::LinkLocal);
+    }
+
+    #[test]
+    fn blocks_aws_metadata_ip() {
+        // AWS/Azure/GCP all share the 169.254.169.254 literal.
+        assert_blocked("http://169.254.169.254/latest/meta-data/", IpClass::Reserved);
+        assert_blocked("http://[fd00:ec2::254]/latest/meta-data/", IpClass::Reserved);
+    }
+
+    #[tokio::test]
+    async fn blocks_aws_metadata_hostname() {
+        assert_blocked(
+            "http://metadata.google.internal/computeMetadata/v1/",
+            IpClass::Reserved,
+        );
+        match resolve_and_check("metadata.google.internal").await {
+            Err(SsrfError::BlockedClass { class, .. }) => assert_eq!(class, IpClass::Reserved),
+            other => panic!("expected BlockedClass for metadata.google.internal, got {other:?}"),
+        }
+        match resolve_and_check("metadata").await {
+            Err(SsrfError::BlockedClass { class, .. }) => assert_eq!(class, IpClass::Reserved),
+            other => panic!("expected BlockedClass for bare 'metadata', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allows_public_ipv4() {
+        assert!(is_safe_url("https://8.8.8.8/").is_ok());
+        assert!(is_safe_url("https://1.1.1.1/").is_ok());
+        assert!(is_safe_url("https://93.184.216.34/").is_ok());
+    }
+
+    #[test]
+    fn allows_public_ipv6() {
+        assert!(is_safe_url("https://[2001:4860:4860::8888]/").is_ok());
+        assert!(is_safe_url("https://[2606:4700:4700::1111]/").is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_url() {
+        match is_safe_url("not a url") {
+            Err(SsrfError::MissingHost(_)) => {}
+            other => panic!("expected MissingHost for malformed url, got {other:?}"),
+        }
+        match is_safe_url("") {
+            Err(SsrfError::MissingHost(_)) => {}
+            other => panic!("expected MissingHost for empty url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_http_without_host() {
+        match is_safe_url("file:///etc/passwd") {
+            Err(SsrfError::MissingHost(_)) => {}
+            other => panic!("expected MissingHost for file URL, got {other:?}"),
+        }
     }
 }

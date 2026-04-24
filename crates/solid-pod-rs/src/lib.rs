@@ -63,7 +63,10 @@ pub mod handlers;
 // Re-exports for ergonomic consumers.
 pub use error::PodError;
 pub use metrics::SecurityMetrics;
-pub use security::{DotfileAllowlist, DotfileError, IpClass, SsrfError, SsrfPolicy};
+pub use security::{
+    is_path_allowed, is_safe_url, resolve_and_check, DotfileAllowlist, DotfileError,
+    DotfilePathError, IpClass, SsrfError, SsrfPolicy,
+};
 pub use storage::{ResourceMeta, Storage, StorageEvent};
 pub use wac::{
     check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,
@@ -73,11 +76,12 @@ pub use wac::{
 };
 pub use ldp::{
     apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch,
-    evaluate_preconditions, link_headers, negotiate_format, not_found_headers, options_for,
-    parse_range_header, parse_range_header_v2, patch_dialect_from_mime, server_managed_triples,
-    slice_range, vary_header, ByteRange, ConditionalOutcome, ContainerRepresentation, Graph,
-    OptionsResponse, PatchCreateOutcome, PatchDialect, PatchOutcome, PreferHeader, RangeOutcome,
-    RdfFormat, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
+    cache_control_for, evaluate_preconditions, is_rdf_content_type, link_headers,
+    negotiate_format, not_found_headers, options_for, parse_range_header, parse_range_header_v2,
+    patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
+    ConditionalOutcome, ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome,
+    PatchDialect, PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, Term, Triple, ACCEPT_PATCH,
+    ACCEPT_POST, CACHE_CONTROL_RDF,
 };
 pub use interop::{
     dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,

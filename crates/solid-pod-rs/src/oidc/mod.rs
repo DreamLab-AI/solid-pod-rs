@@ -39,7 +39,8 @@ pub mod replay;
 
 #[cfg(feature = "dpop-replay-cache")]
 pub use replay::{
-    DpopReplayCache, ReplayError, ReplayRejectedCounter, DPOP_REPLAY_REJECTED_TOTAL,
+    DpopReplayCache, JtiReplayCache, ReplayError, ReplayRejectedCounter,
+    DPOP_REPLAY_REJECTED_TOTAL, JTI_DEFAULT_CAPACITY, JTI_DEFAULT_TTL,
 };
 
 // Sprint 5 P0-2: SSRF-guarded JWKS + OIDC discovery fetcher.
@@ -350,6 +351,11 @@ pub struct DpopVerified {
     pub htu: String,
     pub iat: u64,
     pub jti: String,
+    /// Access-token-hash claim if present on the proof (RFC 9449 §4.3).
+    /// When the caller passes an expected hash to
+    /// [`verify_dpop_proof_with_ath`] the value surfaced here is
+    /// guaranteed to equal it; otherwise it is the raw claim.
+    pub ath: Option<String>,
 }
 
 /// Verify a DPoP proof against an expected URL + method. The proof
@@ -374,7 +380,38 @@ pub async fn verify_dpop_proof(
     skew: u64,
     replay_cache: Option<&DpopReplayCache>,
 ) -> Result<DpopVerified, PodError> {
-    let verified = verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew)?;
+    verify_dpop_proof_with_ath(
+        proof,
+        expected_htu,
+        expected_htm,
+        now,
+        skew,
+        None,
+        replay_cache,
+    )
+    .await
+}
+
+/// Extended DPoP verification that ALSO enforces the RFC 9449 §4.3
+/// `ath` binding between the DPoP proof and the access token.
+///
+/// When `expected_ath` is `Some(hash)`, the proof MUST carry an `ath`
+/// claim whose value equals `hash` (base64url SHA-256 of the raw
+/// access-token bytes). When `expected_ath` is `None`, this behaves
+/// identically to [`verify_dpop_proof`] and preserves pre-Sprint-9
+/// call sites unchanged.
+#[cfg(feature = "dpop-replay-cache")]
+pub async fn verify_dpop_proof_with_ath(
+    proof: &str,
+    expected_htu: &str,
+    expected_htm: &str,
+    now: u64,
+    skew: u64,
+    expected_ath: Option<&str>,
+    replay_cache: Option<&DpopReplayCache>,
+) -> Result<DpopVerified, PodError> {
+    let verified =
+        verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew, expected_ath)?;
 
     // F5: replay check after signature/claim validation so we never
     // admit a tampered proof into the cache.
@@ -405,7 +442,21 @@ pub fn verify_dpop_proof(
     now: u64,
     skew: u64,
 ) -> Result<DpopVerified, PodError> {
-    verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew)
+    verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew, None)
+}
+
+/// Sync variant of [`verify_dpop_proof_with_ath`] for the
+/// no-replay-cache build.
+#[cfg(not(feature = "dpop-replay-cache"))]
+pub fn verify_dpop_proof_with_ath(
+    proof: &str,
+    expected_htu: &str,
+    expected_htm: &str,
+    now: u64,
+    skew: u64,
+    expected_ath: Option<&str>,
+) -> Result<DpopVerified, PodError> {
+    verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew, expected_ath)
 }
 
 /// Core DPoP proof verification — shared between the feature-gated
@@ -419,22 +470,39 @@ pub fn verify_dpop_proof(
 ///    DPoP proof (authenticated) and arbitrary JSON.
 ///
 /// 2. **Algorithm whitelist.** The `alg` header MUST be one of
-///    ES256, RS256, EdDSA. `alg=none` is unconditionally rejected.
-///    HS256 is only accepted when the `jwk.kty` is `oct` (test/dev
-///    path); asymmetric JWKs signed with HS256 are rejected to block
-///    the classic alg-confusion attack (public key fed as an HMAC
-///    secret).
+///    ES256, ES384, RS256, PS256, or EdDSA (RFC 9449 §5). `alg=none`,
+///    HS256, HS384 and HS512 are unconditionally rejected: symmetric
+///    MAC algorithms cannot authenticate a public-key JWK, and the
+///    alg-confusion attack (public key re-fed as an HMAC secret)
+///    only exists because some verifiers silently accept them. The
+///    one carve-out is `HS256 + kty=oct`, which is the test-only
+///    path the Sprint-4 replay-cache fixtures already rely on. Every
+///    other `(alg, kty)` combination returns `PodError::Nip98`.
+///
+///    `jsonwebtoken::Algorithm` does not expose ES512, so while the
+///    RFC lists it as a supported curve for DPoP, the Rust crate
+///    cannot build a `DecodingKey` for it; we therefore document it
+///    as out-of-scope for this build rather than silently mislabelling
+///    the crate's capability.
 ///
 /// 3. **Thumbprint derived from the JWK**, not the alg — [`DpopVerified::jkt`]
 ///    is RFC 7638 over the canonical member set of `header.jwk`, so
 ///    the pod binds the access token's `cnf.jkt` to the same key
 ///    that actually signed this proof.
+///
+/// 4. **`ath` binding (RFC 9449 §4.3).** When `expected_ath` is
+///    `Some(hash)`, the proof's `ath` claim MUST be present AND equal
+///    the caller-supplied hash in constant time. A proof that omits
+///    `ath` when one was expected is rejected, as is a mismatched
+///    hash. `None` disables the binding (used by endpoints that see a
+///    DPoP proof without an access token, e.g. the token endpoint).
 fn verify_dpop_proof_core(
     proof: &str,
     expected_htu: &str,
     expected_htm: &str,
     now: u64,
     skew: u64,
+    expected_ath: Option<&str>,
 ) -> Result<DpopVerified, PodError> {
     let header = decode_header(proof)
         .map_err(|e| PodError::Nip98(format!("DPoP header decode failed: {e}")))?;
@@ -461,9 +529,27 @@ fn verify_dpop_proof_core(
     // whitelist. `decode_header` above already rejects `alg=none`
     // (jsonwebtoken's `Algorithm` enum has no `None` variant), but we
     // assert it here too for defence in depth.
+    //
+    // RFC 9449 §5 lists ES256, ES384, ES512, PS256, PS384, PS512,
+    // RS256, RS384, RS512, EdDSA as permitted. jsonwebtoken 9.x
+    // exposes ES256, ES384, PS256, PS384, PS512, RS256, RS384, RS512,
+    // EdDSA (it does not expose ES512). We allow the crate's full
+    // asymmetric set so operators have the widest possible JWK
+    // compatibility without opening the HMAC alg-confusion door.
     let alg = header.alg;
     match alg {
-        Algorithm::ES256 | Algorithm::RS256 | Algorithm::EdDSA => {}
+        Algorithm::ES256
+        | Algorithm::ES384
+        | Algorithm::RS256
+        | Algorithm::RS384
+        | Algorithm::RS512
+        | Algorithm::PS256
+        | Algorithm::PS384
+        | Algorithm::PS512
+        | Algorithm::EdDSA => {
+            // Asymmetric family — signature is verified against
+            // `header.jwk` below. No further gating needed here.
+        }
         Algorithm::HS256 if jwk.kty == "oct" => {
             // Test/dev path only. A `kty=oct` jwk is a symmetric key
             // and therefore not useful for authenticated DPoP in
@@ -477,8 +563,9 @@ fn verify_dpop_proof_core(
         }
         other => {
             return Err(PodError::Nip98(format!(
-                "DPoP alg {other:?} is not permitted (ES256/RS256/EdDSA only; \
-                HS256 test-path requires kty=oct)"
+                "DPoP alg {other:?} is not permitted (RFC 9449 §5: ES256/ES384/\
+                RS256/RS384/RS512/PS256/PS384/PS512/EdDSA only; HS* symmetric \
+                algs are rejected — alg-confusion mitigation)"
             )));
         }
     }
@@ -522,13 +609,46 @@ fn verify_dpop_proof_core(
         return Err(PodError::Nip98("DPoP iat outside tolerance".into()));
     }
 
+    // RFC 9449 §4.3: when the proof is sent alongside an access
+    // token, the server MUST verify that the proof's `ath` claim is
+    // the base64url-encoded SHA-256 of the access token. We hand this
+    // off to the caller — only they hold the raw token bytes — but
+    // enforce the comparison in constant time so a malicious proof
+    // cannot use a timing oracle to learn the expected hash.
+    if let Some(want) = expected_ath {
+        let got = claims.ath.as_deref().ok_or_else(|| {
+            PodError::Nip98("DPoP proof missing ath but access token present".into())
+        })?;
+        if !constant_time_eq(got.as_bytes(), want.as_bytes()) {
+            return Err(PodError::Nip98(
+                "DPoP ath does not match access-token hash".into(),
+            ));
+        }
+    }
+
     Ok(DpopVerified {
         jkt,
         htm: claims.htm,
         htu: claims.htu,
         iat: claims.iat,
         jti: claims.jti,
+        ath: claims.ath,
     })
+}
+
+/// Constant-time byte comparison. Short-circuits on length mismatch
+/// (the length of the expected hash is not a secret — it is always
+/// 43 bytes for SHA-256 base64url — but we still fold every byte to
+/// keep the timing invariant simple to reason about).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn normalise_htu(u: &str) -> String {

@@ -53,9 +53,9 @@ pub mod rate_limit;
 pub mod ssrf;
 
 pub use cors::{AllowedOrigins, CorsPolicy};
-pub use dotfile::{DotfileAllowlist, DotfileError};
+pub use dotfile::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use rate_limit::{RateLimitDecision, RateLimitKey, RateLimitSubject, RateLimiter};
-pub use ssrf::{IpClass, SsrfError, SsrfPolicy};
+pub use ssrf::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
 
 #[cfg(feature = "rate-limit")]
 pub use rate_limit::LruRateLimiter;

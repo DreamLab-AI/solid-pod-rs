@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Construct via [`crate::config::loader::ConfigLoader`]; never mutate
 /// after construction. Reload swaps in a new snapshot atomically.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default)]
     pub server: ServerSection,
@@ -36,18 +36,6 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub security: SecurityConfig,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerSection::default(),
-            storage: StorageBackendConfig::default(),
-            auth: AuthConfig::default(),
-            notifications: NotificationsConfig::default(),
-            security: SecurityConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

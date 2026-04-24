@@ -147,6 +147,94 @@ impl Default for DotfileAllowlist {
     }
 }
 
+// --- Sprint 9: row 115 free-function primitive ---------------------------
+//
+// The JSS-parity row 115 deliverable is a plain string-path allowlist used
+// at framework-agnostic call sites (middleware, route guards, provision
+// dry-runs) where an owning `DotfileAllowlist` is not wired up. Semantics
+// are a superset of the default allowlist: Solid metadata sidecars
+// (`.acl`, `.meta`), the service container (`.well-known`), quota
+// sidecars (`.quota.json`), and resource-specific ACL/meta trailers
+// (`foo.acl`, `foo.meta`) are permitted. Every other leading-dot segment
+// blocks the whole path. `..` traversal is refused as defence-in-depth.
+
+/// Dotfile allowlist errors used by the row-115 free primitive.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
+pub enum DotfilePathError {
+    /// A path segment started with `.` and was not on the allowlist.
+    #[error("dotfile segment '{segment}' not allowed in path '{path}'")]
+    NotAllowed { segment: String, path: String },
+
+    /// A `..` (parent) segment was encountered — rejected as defence
+    /// in depth against directory traversal.
+    #[error("parent-directory traversal segment '..' not allowed in path '{0}'")]
+    ParentTraversal(String),
+
+    /// A non-UTF-8 or otherwise malformed segment (Solid paths are
+    /// UTF-8). Currently unreachable from `&str` but kept for
+    /// forward-compat with OsStr-keyed callers.
+    #[error("malformed path segment in '{0}'")]
+    Malformed(String),
+}
+
+const STATIC_ALLOWED_DOTFILES: &[&str] = &[
+    ".acl",
+    ".meta",
+    ".well-known",
+    ".quota.json",
+    // `.acl.meta` — meta sidecar for an ACL; authorised by the union of
+    // the two rules above but spelled out here so the match is O(1)
+    // without a trailing-suffix check on the main path.
+    ".acl.meta",
+];
+
+/// Decide whether `path` may be served, purely by inspecting its
+/// segments. Returns `Ok(())` when every segment is admissible.
+///
+/// A segment is admissible when any of the following hold:
+///   - it does not start with `.`
+///   - it is one of the statically-allowed dotfiles (`.acl`, `.meta`,
+///     `.well-known`, `.quota.json`)
+///
+/// Resource-specific ACL/metadata sidecars like `foo.acl` / `foo.meta`
+/// are admissible because their segment does not start with `.`; the
+/// trailing-suffix form is therefore handled implicitly by the
+/// first rule above.
+///
+/// Explicitly blocked:
+///   - `.env`, `.git`, `.ssh`, any other leading-dot name
+///   - `..` (parent-dir traversal) anywhere in the path
+///
+/// The check is applied to every segment: a blocked segment anywhere in
+/// the path fails the whole path (e.g. `/pod/.git/HEAD` is blocked).
+///
+/// Empty segments and `.` (current-dir) are ignored — they carry no
+/// authorisation information. Leading `/` is honoured as the root.
+///
+/// Upstream parity: `JavaScriptSolidServer/src/server.js:265-281` +
+/// Solid §Identity Provider service container rules.
+pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            return Err(DotfilePathError::ParentTraversal(path.to_string()));
+        }
+        if !segment.starts_with('.') {
+            continue;
+        }
+        if STATIC_ALLOWED_DOTFILES.contains(&segment) {
+            continue;
+        }
+        return Err(DotfilePathError::NotAllowed {
+            segment: segment.to_string(),
+            path: path.to_string(),
+        });
+    }
+    Ok(())
+}
+
 // --- helpers -------------------------------------------------------------
 
 fn parse_csv(raw: &str) -> Vec<String> {
@@ -221,5 +309,100 @@ mod tests {
     fn parent_dir_rejected() {
         let al = DotfileAllowlist::default();
         assert!(!al.is_allowed(&PathBuf::from("foo/..")));
+    }
+
+    // ----- Sprint 9 row 115: free-function primitive --------------------
+
+    #[test]
+    fn allows_acl_file() {
+        assert!(is_path_allowed("/.acl").is_ok());
+        assert!(is_path_allowed("/pod/.acl").is_ok());
+        assert!(is_path_allowed("/pod/container/.acl").is_ok());
+    }
+
+    #[test]
+    fn allows_meta_file() {
+        assert!(is_path_allowed("/.meta").is_ok());
+        assert!(is_path_allowed("/pod/.meta").is_ok());
+        assert!(is_path_allowed("/pod/container/.meta").is_ok());
+    }
+
+    #[test]
+    fn allows_well_known_subtree() {
+        assert!(is_path_allowed("/.well-known").is_ok());
+        assert!(is_path_allowed("/.well-known/openid-configuration").is_ok());
+        assert!(is_path_allowed("/.well-known/solid").is_ok());
+        assert!(is_path_allowed("/pod/.well-known/nested").is_ok());
+    }
+
+    #[test]
+    fn allows_quota_sidecar() {
+        assert!(is_path_allowed("/.quota.json").is_ok());
+        assert!(is_path_allowed("/pod/.quota.json").is_ok());
+        assert!(is_path_allowed("/pod/container/.quota.json").is_ok());
+    }
+
+    #[test]
+    fn allows_resource_specific_acl() {
+        // Resource-specific ACLs per Solid WAC: `foo.acl` is the ACL
+        // for `foo`. Segment does not start with `.` so admissible
+        // without consulting the dotfile allowlist.
+        assert!(is_path_allowed("/foo.acl").is_ok());
+        assert!(is_path_allowed("/foo.meta").is_ok());
+        assert!(is_path_allowed("/pod/data.ttl.acl").is_ok());
+        assert!(is_path_allowed("/pod/image.jpg.meta").is_ok());
+    }
+
+    #[test]
+    fn allows_normal_path() {
+        assert!(is_path_allowed("/foo/bar.ttl").is_ok());
+        assert!(is_path_allowed("/").is_ok());
+        assert!(is_path_allowed("/pod/data/doc.ttl").is_ok());
+        assert!(is_path_allowed("").is_ok());
+    }
+
+    #[test]
+    fn blocks_env_file() {
+        match is_path_allowed("/.env") {
+            Err(DotfilePathError::NotAllowed { segment, .. }) => assert_eq!(segment, ".env"),
+            other => panic!("expected NotAllowed for /.env, got {other:?}"),
+        }
+        assert!(is_path_allowed("/pod/.env").is_err());
+        assert!(is_path_allowed("/deep/path/.env").is_err());
+    }
+
+    #[test]
+    fn blocks_git_dir() {
+        match is_path_allowed("/pod/.git/config") {
+            Err(DotfilePathError::NotAllowed { segment, .. }) => assert_eq!(segment, ".git"),
+            other => panic!("expected NotAllowed for /pod/.git/config, got {other:?}"),
+        }
+        assert!(is_path_allowed("/.git").is_err());
+        assert!(is_path_allowed("/.git/HEAD").is_err());
+        assert!(is_path_allowed("/.ssh/id_rsa").is_err());
+    }
+
+    #[test]
+    fn blocks_hidden_file_anywhere() {
+        assert!(is_path_allowed("/foo/.hidden/bar.ttl").is_err());
+        assert!(is_path_allowed("/a/b/c/.secret").is_err());
+        assert!(is_path_allowed("/.DS_Store").is_err());
+        assert!(is_path_allowed("/pod/.npmrc").is_err());
+    }
+
+    #[test]
+    fn blocks_double_dot() {
+        match is_path_allowed("/pod/../etc/passwd") {
+            Err(DotfilePathError::ParentTraversal(_)) => {}
+            other => panic!("expected ParentTraversal for /pod/../etc/passwd, got {other:?}"),
+        }
+        assert!(matches!(
+            is_path_allowed(".."),
+            Err(DotfilePathError::ParentTraversal(_))
+        ));
+        assert!(matches!(
+            is_path_allowed("/a/../b"),
+            Err(DotfilePathError::ParentTraversal(_))
+        ));
     }
 }

@@ -283,6 +283,120 @@ pub static DPOP_REPLAY_REJECTED_TOTAL: ReplayRejectedCounter =
     ReplayRejectedCounter::new();
 
 // ---------------------------------------------------------------------------
+// Synchronous LRU+TTL replay primitive — Sprint 9 row 64.
+//
+// `JtiReplayCache` is the sync counterpart to `DpopReplayCache`. It
+// exposes a blocking `check_and_insert(jti, now)` API using
+// `SystemTime`, designed for callers that are not already inside a
+// Tokio runtime (CLI tools, sync middleware, benchmarks). Internals
+// are backed by `lru::LruCache` behind a `std::sync::Mutex` so clones
+// share state and the cache is `Send + Sync`.
+//
+// Defaults: 10_000 entries / 5 minute TTL — matches the RFC 9449
+// iat-skew window we recommend at the edge.
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex as StdMutex;
+use std::time::SystemTime;
+
+/// Default capacity for [`JtiReplayCache::default`]: 10_000 entries.
+pub const JTI_DEFAULT_CAPACITY: usize = 10_000;
+
+/// Default TTL for [`JtiReplayCache::default`]: 5 minutes.
+pub const JTI_DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Synchronous LRU+TTL replay cache (Sprint 9 row 64).
+///
+/// Primitive for detecting DPoP `jti` replays in sync call sites.
+/// Cheap to `Clone` — the underlying state lives behind an
+/// `Arc<Mutex<…>>` so clones share storage.
+#[derive(Debug, Clone)]
+pub struct JtiReplayCache {
+    inner: Arc<StdMutex<JtiInner>>,
+    ttl: Duration,
+    capacity: usize,
+}
+
+#[derive(Debug)]
+struct JtiInner {
+    entries: LruCache<String, SystemTime>,
+}
+
+impl JtiReplayCache {
+    /// Build a cache with the given capacity and TTL. Capacity is
+    /// clamped to at least 1.
+    pub fn new(capacity: usize, ttl: Duration) -> Self {
+        let cap = NonZeroUsize::new(capacity.max(1))
+            .expect("capacity clamped to >= 1 above");
+        Self {
+            inner: Arc::new(StdMutex::new(JtiInner {
+                entries: LruCache::new(cap),
+            })),
+            ttl,
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Configured TTL.
+    pub fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
+    /// Configured maximum entry count (post-clamp).
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Current entry count (after expired entries are skipped in-place
+    /// by `check_and_insert`; no separate sweep is required).
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .len()
+    }
+
+    /// `true` when no entries are tracked.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Check whether `jti` has been seen within TTL; if not, record it
+    /// under the supplied `now` and return `Ok(())`. If the `jti` was
+    /// already recorded within TTL, return [`ReplayError::Replayed`]
+    /// without refreshing the entry. Expired entries are transparently
+    /// overwritten.
+    pub fn check_and_insert(
+        &self,
+        jti: &str,
+        now: SystemTime,
+    ) -> Result<(), ReplayError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(&first_seen) = guard.entries.peek(jti) {
+            let age = now
+                .duration_since(first_seen)
+                .unwrap_or(Duration::ZERO);
+            if age < self.ttl {
+                return Err(ReplayError::Replayed { ttl: self.ttl });
+            }
+            // Expired — fall through to overwrite.
+        }
+        guard.entries.put(jti.to_string(), now);
+        Ok(())
+    }
+}
+
+impl Default for JtiReplayCache {
+    fn default() -> Self {
+        Self::new(JTI_DEFAULT_CAPACITY, JTI_DEFAULT_TTL)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests (module-local; integration coverage lives in
 // `tests/dpop_replay_test.rs`).
 // ---------------------------------------------------------------------------
