@@ -4,6 +4,54 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-alpha.1] - 2026-04-24 (Sprint 11 — top-10 roadmap closure)
+
+Parity vs JSS: **~100 % spec-normative** / **~97 % strict** on the
+121-row tracker. 835 workspace tests pass (↑ from 733 at Sprint 10);
+clippy `-D warnings --all-targets` clean; 0 security findings on
+new crypto surface.
+
+### Added
+
+- **`auth::self_signed::SelfSignedVerifier` trait + `CidVerifier`**
+  — row 152. Fan-out dispatcher accepting any of Nip98 / did:key /
+  future subject types, wired into `wac::issuer::IssuerCondition`
+  dispatch. Net-new — we ship LWS 1.0 SSI-CID ahead of JSS.
+- **`notifications::legacy::LegacyWebSocketSession`** — row 91.
+  Full solid-0.1 protocol (`sub`/`ack`/`err`/`pub`/`unsub`) with
+  per-subscription WAC Read re-check, 100 subs/conn cap, 2 KiB URL
+  cap, and ancestor-container fanout on publish. Feature
+  `legacy-notifications`.
+- **`config::ConfigLoader::from_file`** — rows 120–124. JSON / YAML /
+  TOML auto-detected by extension; `with_cli_overlay` at the top of
+  the precedence stack; `parse_size` extended with IEC binary
+  suffixes (`KiB`/`MiB`/`GiB`/`TiB`); 31 `JSS_*` env vars wired.
+  Feature `config-loader`.
+- **`multitenant::is_file_like_label`** — rows 125, 162. 15+
+  web-asset extensions, case-insensitive, short-circuits the
+  subdomain resolver.
+
+### Changed
+
+- PARITY-CHECKLIST.md: 14 rows promoted to `present`; sibling-crate
+  reality table updated with `solid-pod-rs-didkey` (858 LOC).
+- Row 60 JSS source: `src/auth/identity-normalizer.js` → the actual
+  JSS file `src/auth/nostr.js`.
+
+### Fixed
+
+- README code example: `FsStorage` → `FsBackend` (matches the
+  exported type).
+
+### Security
+
+- New crypto code (did:key + self-signed JWT) carries explicit
+  algorithm allowlists and `alg=none` hard-rejects. AQE
+  `security_scan_comprehensive` reports 0 vulnerabilities for both
+  `solid-pod-rs-didkey` and `solid-pod-rs-idp`.
+
+---
+
 ## [0.4.0-alpha.1] - 2026-04-24 (Sprint 8 + Sprint 9 consolidation)
 
 Snapshot at commit `2275146`. Parity vs JSS: **85 % spec-normative**

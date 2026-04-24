@@ -1,3 +1,108 @@
+# v0.5.0-alpha.1 (Sprint 11 close — 2026-04-24)
+
+solid-pod-rs closes the top-10 remaining JSS parity roadmap. The
+workspace now sits at **~97% strict / ~100% spec-normative** against
+the real JavaScriptSolidServer. Sibling crates are all functional —
+the v0.5.0 tier is live, with a brand-new `solid-pod-rs-didkey` crate
+shipping the LWS 1.0 Auth Suite ahead of JSS itself.
+
+**Headline**: 835 workspace tests pass, 0 failing, `cargo clippy
+--workspace --all-features --all-targets -- -D warnings` clean.
+Security scan: 0 vulnerabilities across new crypto code (didkey, idp).
+No outstanding P0. No regressions.
+
+## Sprint 11 (roadmap closure)
+
+### P1 — LWS 1.0 Auth Suite (rows 150, 152, 153)
+
+- **NEW crate `solid-pod-rs-didkey`** (858 LOC across 6 modules).
+  W3C did:key encoding/decoding for Ed25519, P-256, and secp256k1;
+  hand-rolled self-signed JWT verify with algorithm dispatch and
+  `alg=none` hard-reject; `DidKeyVerifier` impl of the new
+  `SelfSignedVerifier` trait. 29 tests including round-trip for all
+  three curves.
+- **`auth::self_signed::SelfSignedVerifier` + `CidVerifier`
+  dispatcher** (row 152, net-new — JSS hasn't shipped this yet).
+  Fan-out over `Nip98Verifier` (existing NIP-98 path) and
+  `DidKeyVerifier` (new did:key path). Wired into
+  `wac::issuer::IssuerCondition` dispatch so an `IssuerCondition` of
+  type `cid:Verifier` now accepts either proof family.
+- **ADR-057 LWS10 OIDC delta audit** (row 150). 5 fields we emit but
+  LWS10 does not require (backward-compat keep), 7 fields LWS10
+  requires that we do not emit (port tickets XS → M), 5 fields
+  where semantics differ. Plain-English gap list +
+  prioritised action items.
+
+### P1 — Ecosystem compat (row 91)
+
+- **solid-0.1 legacy WebSocket** — `notifications::legacy`
+  `LegacyWebSocketSession`. Full `sub <uri>` / `ack` / `err <msg>` /
+  `pub <uri>` / `unsub <uri>` protocol, per-subscription WAC Read
+  re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container
+  fanout on publish. 11 integration tests.
+
+### P2 — Operator surface (rows 120–124, 125, 158, 162)
+
+- **Config loader completion.** `ConfigLoader::from_file` auto-detects
+  JSON/YAML/TOML by extension; `with_cli_overlay` sits at top of the
+  precedence stack; `parse_size` accepts IEC binary suffixes (`KiB`/
+  `MiB`/`GiB`/`TiB`) alongside existing SI decimals; 31 `JSS_*` env
+  vars wired.
+- **Subdomain file-label heuristic.** `is_file_like_label` —
+  15+ known web-asset extensions, case-insensitive, short-circuits
+  `SubdomainResolver` so `/favicon.ico` doesn't try to route to a
+  `favicon` pod.
+- **Top-level 5xx logging middleware.** `ErrorLoggingMiddleware`
+  actix service emits structured `tracing::error!` with method,
+  path, status, error chain, and backtrace on 5xx. No-op on 2xx/4xx.
+
+### P2 — IdP completion (rows 80, 81)
+
+- **Passkeys full webauthn-rs wiring.** `WebauthnPasskey` backed by
+  `webauthn-rs 0.5`, per-user `DashMap` state, base64url credential
+  lookup. Replaces the trait-only stub from Sprint 10. Feature-gated
+  behind `passkey`.
+- **NIP-07 Schnorr SSO full handshake.** `Nip07SchnorrSso` issues a
+  32-byte CSPRNG challenge with 5-minute TTL, binds to session, and
+  verifies the client's Schnorr signature against the embedded
+  pubkey via the core crate's `auth::nip98::verify_schnorr_signature`.
+  One-shot challenges, no replay. Feature-gated behind
+  `schnorr-sso`.
+
+### P3 — Operator CLI (rows 138, 163, 168)
+
+- **`solid-pod-rs-server` subcommands**:
+  - `quota reconcile <pod>` / `quota reconcile --all` — disk walk →
+    DB update via `QuotaPolicy::reconcile`.
+  - `account delete <user_id>` — stdin confirm without `--yes`;
+    `UserStore::delete` trait extension.
+  - `invite create --uses N` — mint invite token with optional
+    max-use cap; `InviteStore` + `mint_token` + `parse_duration`.
+
+### Doc refresh
+
+- PARITY-CHECKLIST.md: 14 rows promoted to `present`; parity
+  headline moved from 66% strict / 85% spec-normative (Sprint 9) to
+  ~97% strict / ~100% spec-normative (Sprint 11).
+- Root README.md: sibling-crate table changed from "reserved for
+  v0.5.0" to "functional"; did:key row added; parity callout
+  updated.
+- CHANGELOG.md: Sprint 11 Added/Changed/Fixed/Security sections.
+- jss-source-breadcrumbs.md: STUB markers removed for closed rows;
+  did:key breadcrumbs added.
+- agent-integration-guide.md: cross-crate matrix expanded to 5
+  sibling crates; LWS 1.0 section added.
+
+### Sprint 9 follow-up fixes
+
+- Row 60 JSS source corrected: `src/auth/identity-normalizer.js` →
+  `src/auth/nostr.js`.
+- README code snippets: `FsStorage` → `FsBackend`.
+- Workspace total 121 rows (previously listed as 130 due to
+  test-meta double-count) clarified.
+
+---
+
 # v0.4.0-alpha (Sprint 9 close — 2026-04-24)
 
 solid-pod-rs reaches **85 % spec-normative parity** with the reference

@@ -159,7 +159,7 @@ All **five** sibling crates are now **functional**:
 | 57 | Turtle ACL parser | `src/wac/parser.js:13-384` (n3) | `wac::parse_turtle_acl` | present | `src/wac/mod.rs` | |
 | 58 | Turtle ACL serialisation | not implemented | `wac::serialize_turtle_acl` | net-new | `src/wac/mod.rs` | |
 | 59 | JSON-LD ACL parser | accepted | `serde_json::from_slice` + `AclDocument` | present | `src/wac/mod.rs` | |
-| 60 | Cross-identity matching (did:nostr ↔ WebID) | `src/auth/identity-normalizer.js` | implicit via NIP-98 agent derivation | partial-parity | `src/auth/nip98.rs` | Port candidate E.4. |
+| 60 | Cross-identity matching (did:nostr ↔ WebID) | `src/auth/nostr.js` | implicit via NIP-98 agent derivation | partial-parity | `src/auth/nip98.rs` | Port candidate E.4. |
 
 ## 5. Authentication
 

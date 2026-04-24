@@ -86,10 +86,10 @@ solid-pod-rs = { version = "0.4.0-alpha.1", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust
-use solid_pod_rs::{storage::FsStorage, wac::evaluate_access, ldp};
+use solid_pod_rs::{storage::FsBackend, wac::evaluate_access, ldp};
 use std::path::PathBuf;
 
-let storage = FsStorage::new(PathBuf::from("./pod-root"));
+let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Wire your HTTP framework of choice; see examples/embed_in_actix.rs.
 ```
 
@@ -127,16 +127,18 @@ let storage = FsStorage::new(PathBuf::from("./pod-root"));
 | FS backend                              | present | —                            | `storage::fs`                  | Default. |
 | In-memory backend                       | present | —                            | `storage::memory`              | Default; used in tests. |
 | S3 backend                              | present | —                            | `storage::s3`                  | Feature `s3-backend`. |
-| ActivityPub federation                  | reserved | —                           | crate `solid-pod-rs-activitypub` | Target: v0.5.0. |
-| Git HTTP backend                        | reserved | —                           | crate `solid-pod-rs-git`       | Target: v0.5.0. |
-| Embedded Solid-OIDC IDP                 | reserved | —                           | crate `solid-pod-rs-idp`       | Target: v0.5.0. |
-| did:nostr resolver + embedded relay     | reserved | —                           | crate `solid-pod-rs-nostr`     | Target: v0.5.0. |
+| ActivityPub federation                  | functional | —                        | crate `solid-pod-rs-activitypub` | Sprint 10. Rows 102–108, 131. |
+| Git HTTP backend                        | functional | —                        | crate `solid-pod-rs-git`       | Sprint 10. Rows 69, 100. |
+| Embedded Solid-OIDC IDP                 | functional | —                        | crate `solid-pod-rs-idp`       | Sprint 10 + 11. Rows 74–81, 130 (Sprint 11 promoted Passkeys + Schnorr). |
+| did:nostr resolver + embedded relay     | functional | —                        | crate `solid-pod-rs-nostr`     | Sprint 10. Rows 89, 90, 101, 132. |
+| did:key (Ed25519/P-256/secp256k1) + self-signed JWT verifier | functional | W3C did:key + LWS 1.0 SSI | crate `solid-pod-rs-didkey`    | Sprint 11 (NEW). Row 153. |
 
 Full parity tracking against the reference JavaScript implementation
 lives in
 [`crates/solid-pod-rs/PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md)
-→ **85 % spec-normative parity / 66 % strict on the full 121-row tracker**
-(Sprint 9 close). Prose commentary in
+→ **~100 % spec-normative parity / ~97 % strict on the full 121-row tracker**
+(Sprint 11 close; 835 workspace tests, 0 failing, clippy `-D warnings` clean).
+Prose commentary in
 [`crates/solid-pod-rs/GAP-ANALYSIS.md`](crates/solid-pod-rs/GAP-ANALYSIS.md),
 and an agent-oriented integration guide with per-module JSS source
 breadcrumbs in
@@ -146,12 +148,15 @@ breadcrumbs in
 
 ## What ships today
 
-The `solid-pod-rs` library crate plus the `solid-pod-rs-server` binary
-constitute the entire v0.4.0-alpha shipping surface. Every module listed
-in the feature matrix above is live, tested, and gated behind a stable
-Cargo feature. 567 tests pass across the workspace against the full
-feature set
-(`oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr,webhook-signing,did-nostr,rate-limit,quota`).
+The `solid-pod-rs` library crate, the `solid-pod-rs-server` binary,
+and five sibling crates
+(`solid-pod-rs-activitypub`, `solid-pod-rs-git`, `solid-pod-rs-idp`,
+`solid-pod-rs-nostr`, `solid-pod-rs-didkey`) constitute the v0.5.0-alpha.1
+shipping surface. Every module listed in the feature matrix above is
+live, tested, and gated behind a stable Cargo feature.
+**835 tests pass across the workspace; 0 failing; clippy `-D warnings`
+clean** against the full feature set
+(`oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr,webhook-signing,did-nostr,rate-limit,quota,passkey,schnorr-sso`).
 
 **Library surface** (crate `solid-pod-rs`):
 
@@ -192,23 +197,22 @@ feature set
   did:nostr; `PathTraversalGuard` + `DotfileGuard` middleware; WAC
   enforcement on writes; optional rustls TLS.
 
-### Reserved for v0.5.0
+### Sibling crates (Sprint 10 + 11 — all functional)
 
-The four sibling crates are empty namespace stubs. Each contains ~25
-lines of doc comment only and **must not be depended on by integrators**
-until v0.5.0.
+All five sibling crates are functional and shipping. Integrators may
+take a dependency today.
 
-| Crate | Stub contents | Target rows (from PARITY-CHECKLIST) | Earliest landing |
-|-------|---------------|-------------------------------------|------------------|
-| `crates/solid-pod-rs-activitypub` | lib.rs doc comment only | 102–108, 131 | v0.5.0 |
-| `crates/solid-pod-rs-git`         | lib.rs doc comment only | 69, 100       | v0.5.0 |
-| `crates/solid-pod-rs-idp`         | lib.rs doc comment only | 74–82, 130    | v0.5.0 |
-| `crates/solid-pod-rs-nostr`       | lib.rs doc comment only | 89, 90, 101, 132 | v0.5.0 |
+| Crate | LOC | Rows | Landed |
+|-------|-----|------|--------|
+| `crates/solid-pod-rs-activitypub` | 2,394 | 102–108, 131 | Sprint 10 |
+| `crates/solid-pod-rs-git`         | 1,299 | 69, 100        | Sprint 10 |
+| `crates/solid-pod-rs-idp`         | ~4,400 | 74–81, 130   | Sprint 10 + 11 (Passkeys/Schnorr full) |
+| `crates/solid-pod-rs-nostr`       | 2,177 | 89, 90, 101, 132 | Sprint 10 |
+| `crates/solid-pod-rs-didkey`      | 858   | 153            | Sprint 11 (NEW) |
 
 The did:nostr resolver shipped in Sprint 6 lives inside the core library
-(`interop::did_nostr`) rather than the `solid-pod-rs-nostr` stub, so the
-Tier 1 + Tier 3 DID flow is available today without taking a dependency
-on the reserved namespace.
+(`interop::did_nostr`) as well as the `solid-pod-rs-nostr` crate, so the
+Tier 1 + Tier 3 DID flow is available either way.
 
 ---
 
@@ -239,9 +243,13 @@ responsibility, with a strict one-way dependency gradient.
 │    ├── interop   — Well-known Solid + WebFinger              │
 │    └── provision — Pod bootstrap (WebID + containers + ACL)  │
 │                                                              │
-│  crates/solid-pod-rs-{activitypub, git, idp, nostr}          │
-│    Reserved namespaces for v0.5.0 extension surfaces.        │
-│    Empty in this release.                                    │
+│  crates/solid-pod-rs-{activitypub, git, idp, nostr, didkey}  │
+│    Functional extension crates (Sprint 10 + 11).             │
+│    - activitypub: ActivityPub + HTTP Sig + NodeInfo + retry │
+│    - git:         Smart-HTTP git-http-backend bridge        │
+│    - idp:         Solid-OIDC IdP + Passkeys + Schnorr       │
+│    - nostr:       did:nostr resolver + BIP-340 NIP-01 relay │
+│    - didkey:      did:key (Ed25519/P-256/secp256k1) + JWT   │
 └──────────────────────────────────────────────────────────────┘
 ```
 

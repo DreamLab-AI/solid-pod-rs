@@ -76,8 +76,12 @@ If you are looking for X, start here:
 | Host a webhook subscription | `src/notifications/mod.rs` § `WebhookChannelManager` (+ optional RFC 9421 via `src/notifications/signing.rs`) |
 | Generate a WebID profile | `src/webid.rs` § `generate_webid_html_with_issuer` |
 | Provision a pod | `src/provision.rs` § `provision_pod` |
-| Implement an IdP | ⏳ waiting on `solid-pod-rs-idp` (v0.5.0) |
-| Implement ActivityPub | ⏳ waiting on `solid-pod-rs-activitypub` (v0.5.0) |
+| Implement an IdP | `crates/solid-pod-rs-idp` — Solid-OIDC + Passkeys + Schnorr SSO (Sprint 11) |
+| Implement ActivityPub | `crates/solid-pod-rs-activitypub` — HTTP Sig + NodeInfo + retry delivery (Sprint 10) |
+| Implement a Git HTTP server | `crates/solid-pod-rs-git` — `git-http-backend` CGI bridge + Basic-nostr auth (Sprint 10) |
+| Implement a Nostr relay or did:nostr resolver | `crates/solid-pod-rs-nostr` — BIP-340, NIP-01/11/16 (Sprint 10) |
+| Verify a did:key self-signed JWT | `crates/solid-pod-rs-didkey` — Ed25519/P-256/secp256k1 (Sprint 11 NEW) |
+| Dispatch on a Controlled Identifier proof | `src/auth/self_signed.rs::CidVerifier` (Sprint 11 NEW) |
 | Write a test matching a JSS fixture | `tests/interop_jss.rs`, `tests/parity_close.rs` |
 | Quote a parity percentage | Re-read `PARITY-CHECKLIST.md` headline **before** quoting |
 
@@ -144,10 +148,11 @@ crates/
 │       ├── main.rs                     # CLI entry: clap + config + tracing + TLS + signals
 │       └── lib.rs                      # build_app: route table + middleware stack
 │
-├── solid-pod-rs-activitypub/           # STUB v0.5.0 — 24 lines, no code
-├── solid-pod-rs-git/                   # STUB v0.5.0 — 24 lines, no code
-├── solid-pod-rs-idp/                   # STUB v0.5.0 — 28 lines, no code
-└── solid-pod-rs-nostr/                 # STUB v0.5.0 — 25 lines, no code
+├── solid-pod-rs-activitypub/           # Sprint 10 — 2,394 LOC (HTTP Sig, NodeInfo, retry)
+├── solid-pod-rs-git/                   # Sprint 10 — 1,299 LOC (git-http-backend CGI bridge)
+├── solid-pod-rs-idp/                   # Sprint 10 + 11 — ~4,400 LOC (Solid-OIDC + Passkeys + Schnorr)
+├── solid-pod-rs-nostr/                 # Sprint 10 — 2,177 LOC (BIP-340, NIP-01/11/16)
+└── solid-pod-rs-didkey/                # Sprint 11 NEW — 858 LOC (Ed25519/P-256/secp256k1 did:key + JWT)
 ```
 
 ## Feature → module → JSS breadcrumbs
@@ -453,30 +458,64 @@ without touching `solid-pod-rs` source.
 | `PodResolver` | `src/multitenant.rs` | Map request path/host → `ResolvedPath` | `PathResolver`, `SubdomainResolver` | Hybrid path+subdomain, DNS-driven, custom tenant model |
 | `ConditionRegistry::register` | `src/wac/conditions.rs` | Dispatch table for WAC 2.0 `acl:condition` IRIs | Built-ins: `ClientCondition`, `IssuerCondition` (registered by `default_with_client_and_issuer`) | Custom WAC 2.0 condition types (hook for LWS10 SSI-CID) |
 
-Planned extension points (v0.5.0, not yet in tree):
+Landed extension points (Sprint 11):
 
 | Trait | Crate | Purpose |
 |---|---|---|
-| `SelfSignedVerifier` | `solid-pod-rs-didkey` + re-used by `solid-pod-rs-nostr` | Abstract over did:nostr + did:key + CID for `acl:issuer*` dispatch |
+| `SelfSignedVerifier` | core `src/auth/self_signed.rs` | Abstract over NIP-98 + did:key + CID for `acl:issuer*` dispatch. `CidVerifier` fans out. |
+| `DidKeyVerifier` impl | `solid-pod-rs-didkey` | Self-signed JWT over a did:key subject (Ed25519/P-256/secp256k1). |
+| `Nip98Verifier` impl | core `src/auth/self_signed.rs` | Adapter over existing `auth::nip98` path. |
+
+## LWS 1.0 Auth Suite (Sprint 11)
+
+The LWS 1.0 Auth Suite landed in Sprint 11. Three rows promoted to
+`present`:
+
+- **Row 150** — Solid-OIDC / LWS10 OIDC delta. `docs/adr/ADR-057-lws10-oidc-delta.md`
+  documents the field-level delta between the current Solid-OIDC
+  profile and the LWS10 FPWD (2026-04-23): 5 fields we emit that
+  LWS10 does not require, 7 fields LWS10 requires that we do not
+  emit, 5 fields where semantics differ. Each delta has a priority
+  (XS/S/M) and port ticket.
+- **Row 152** — SSI-CID (Controlled Identifiers). `src/auth/self_signed.rs`
+  ships `SelfSignedVerifier` and `CidVerifier` (fan-out dispatcher);
+  `wac::issuer::IssuerCondition` dispatches to it when the issuer
+  condition type is `cid:Verifier`. **Net-new vs JSS** — we ship
+  this first.
+- **Row 153** — SSI-did:key. New crate `solid-pod-rs-didkey` —
+  Ed25519/P-256/secp256k1 did:key encoding per W3C, hand-rolled JWT
+  verify with algorithm dispatch and `alg=none` hard-reject, and
+  `DidKeyVerifier` impl. **Net-new vs JSS** — JSS #86 still open.
+
+Consumer integration:
+
+```rust
+use solid_pod_rs::auth::self_signed::CidVerifier;
+use solid_pod_rs_didkey::DidKeyVerifier;
+
+let cid_verifier = CidVerifier::builder()
+    .with(DidKeyVerifier::new())
+    .with(solid_pod_rs::auth::self_signed::Nip98Verifier::default())
+    .build();
+
+// Plug into your WAC evaluator's issuer-condition registry.
+```
 
 ## Cross-crate matrix
 
-| Crate | Status | Rows | Target milestone | JSS equivalent | Notes |
+| Crate | Status | Rows | Milestone | JSS equivalent | Notes |
 |---|---|---|---|---|---|
-| `solid-pod-rs` | **landed** (~15,504 LOC in `src/`, 567 tests) | 74 present + 7 partial + 10 semantic-diff + 6 net-new + 1 present-by-absence | v0.4.x (current) | `src/ldp/`, `src/wac/`, `src/storage/`, `src/auth/*` (minus IdP+AP+git) | Main library; this guide's primary target. |
-| `solid-pod-rs-server` | **landed** (1,114 LOC) | rows 139, 140 | v0.4.x (current) | `bin/jss.js` + `src/server.js` | Actix-web binary with full route table. |
-| `solid-pod-rs-activitypub` | **STUB** (24 lines doc-only) | 102–108, 131 | v0.5.0 | `src/ap/**`, `src/ap/routes/**` | Reserved namespace. Do not assume any feature here is implemented. |
-| `solid-pod-rs-git` | **STUB** (24 lines doc-only) | 69, 100 | v0.5.0 | `src/handlers/git.js` | Reserved. Git HTTP backend + `Basic nostr:` auth forward. |
-| `solid-pod-rs-idp` | **STUB** (28 lines doc-only) | 74–82, 130 | v0.5.0 | `src/idp/**` | Reserved. Solid-OIDC provider (auth/token/me/reg/session + Passkeys + Schnorr SSO). |
-| `solid-pod-rs-nostr` | **STUB** (25 lines doc-only) | 89, 90, 101, 132 | v0.5.0 | `src/nostr/relay.js` + `src/auth/did-nostr.js` + did-resolver shape (JSS lacks a single `src/did/resolver.js` file — see unverified note in breadcrumbs doc) | Reserved. Nostr relay NIP-01/11/16 + did:nostr publish endpoint. |
+| `solid-pod-rs` | **landed** (~17k LOC, 835 workspace tests pass) | 108 present + 1 partial + 10 semantic-diff + 8 net-new + 1 present-by-absence | v0.5.0-alpha.1 | `src/ldp/`, `src/wac/`, `src/storage/`, `src/auth/*` | Main library; framework-agnostic. |
+| `solid-pod-rs-server` | **landed** (~2k LOC including CLI) | rows 139, 140, 158, 138, 163, 168 | v0.5.0-alpha.1 | `bin/jss.js` + `src/server.js` | Actix-web binary + operator CLI. |
+| `solid-pod-rs-activitypub` | **landed** (2,394 LOC, Sprint 10) | 102–108, 131 | v0.5.0-alpha.1 | `src/ap/**`, `src/ap/routes/**` | ActivityPub + draft-cavage v12 HTTP Sig + sqlx + retry delivery. |
+| `solid-pod-rs-git` | **landed** (1,299 LOC, Sprint 10) | 69, 100 | v0.5.0-alpha.1 | `src/handlers/git.js` | `git-http-backend` CGI bridge + `Basic nostr:` auth forward. |
+| `solid-pod-rs-idp` | **landed** (~4,400 LOC, Sprint 10 + 11) | 74–81, 130 | v0.5.0-alpha.1 | `src/idp/**` | Solid-OIDC provider + Passkeys (webauthn-rs) + NIP-07 Schnorr SSO. |
+| `solid-pod-rs-nostr` | **landed** (2,177 LOC, Sprint 10) | 89, 90, 101, 132 | v0.5.0-alpha.1 | `src/nostr/relay.js` + `src/auth/did-nostr.js` | BIP-340, NIP-01/11/16 relay, did:nostr ↔ WebID bidirectional resolver. |
+| `solid-pod-rs-didkey` | **landed NEW** (858 LOC, Sprint 11) | 153 (net-new 152) | v0.5.0-alpha.1 | (JSS #86 — not yet in JSS) | did:key (Ed25519/P-256/secp256k1) + self-signed JWT verify. |
 
-**Sibling-crate discipline.** These four crates exist on disk with
-Cargo.toml entries so that workspace members resolve and so the
-v0.5.0 namespace is reserved. They contain **no code**: each `lib.rs`
-is 24–28 lines of doc comments describing the scope and the parity
-rows that will move to `present` when the crate lands. Agents should
-**not** infer coverage from the crate's existence — the parity
-checklist is the authoritative tracker.
+**Sibling-crate discipline.** All five sibling crates are functional
+and may be depended on by integrators. Verify the parity row before
+quoting coverage — the checklist is the authoritative tracker.
 
 ## When implementing a new feature
 
@@ -519,12 +558,11 @@ checklist is the authoritative tracker.
 
 ## Common mistakes (for agents)
 
-- **Don't assume sibling crates are implemented.** The four
-  `solid-pod-rs-{activitypub,git,idp,nostr}` crates are **empty
-  stubs** as of Sprint 9. Any feature you'd expect to find there
-  (ActivityPub inbox, git HTTP, Solid-OIDC IdP, Nostr relay) is
-  **missing** and tracked by a parity row with target milestone
-  v0.5.0.
+- **Sibling crates are live (Sprint 10 + 11).** All five
+  `solid-pod-rs-{activitypub,git,idp,nostr,didkey}` crates are
+  functional. Before taking a dependency, still confirm the
+  relevant parity row — some features inside a sibling crate may
+  be `partial-parity` or feature-gated.
 - **Content-type comes from the sidecar, not the extension.**
   `FsBackend` stores metadata in a `.meta.json` sidecar; the content
   type of a resource is whatever the sidecar says. Dotfiles
@@ -583,7 +621,7 @@ persistent memory system for future sessions, use the namespace
 // Top-level guide pointer
 mcp__claude-flow__memory_store({
   key: "solid-pod-rs-agent-integration-guide",
-  value: "path=crates/solid-pod-rs/docs/reference/agent-integration-guide.md; version=Sprint-9-close; parity=66%/85%; rows=121; tests=567; sibling-crates-status=all-four-stubs-v0.5.0",
+  value: "path=crates/solid-pod-rs/docs/reference/agent-integration-guide.md; version=Sprint-11-close; parity=97%/~100%; rows=121; tests=835; sibling-crates-status=all-five-functional-including-didkey",
   namespace: "solid-pod-rs-integration"
 });
 
@@ -597,14 +635,14 @@ mcp__claude-flow__memory_store({
 // Parity checklist pointer
 mcp__claude-flow__memory_store({
   key: "solid-pod-rs-parity-checklist",
-  value: "path=crates/solid-pod-rs/PARITY-CHECKLIST.md; authoritative-row-tracker; 121-rows; sprint-9-close-2026-04-24",
+  value: "path=crates/solid-pod-rs/PARITY-CHECKLIST.md; authoritative-row-tracker; 121-rows; sprint-11-close-2026-04-24; strict=97%; spec-normative=~100%",
   namespace: "solid-pod-rs-integration"
 });
 
 // Sibling crate reminder
 mcp__claude-flow__memory_store({
-  key: "solid-pod-rs-sibling-crates-are-stubs",
-  value: "solid-pod-rs-activitypub/git/idp/nostr are empty stubs (24-28 lines lib.rs). Target milestone v0.5.0. Do NOT assume coverage.",
+  key: "solid-pod-rs-sibling-crates-are-functional",
+  value: "All five sibling crates are functional as of Sprint 11: activitypub (2,394 LOC), git (1,299 LOC), idp (~4,400 LOC incl. Passkeys/Schnorr), nostr (2,177 LOC), didkey (858 LOC NEW). Still verify the parity row per feature before quoting coverage.",
   namespace: "solid-pod-rs-integration"
 });
 ```

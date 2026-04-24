@@ -108,20 +108,28 @@ this surface):
 | `src/auth/webid-tls.js` | 270 | not implemented (legacy; ADR-053 defers) | 🚫 deferred | 70 |
 | `src/auth/middleware.js` | 430 | consumer binder (actix) in `crates/solid-pod-rs-server/src/lib.rs`; WAC-on-write + dotfile gate + rate-limit live in the binder | 🟡 (primitives in place) | 55, 72, 73, 141 |
 
-### IdP (Solid-OIDC provider — all reserved for v0.5.0)
+### IdP (Solid-OIDC provider — `solid-pod-rs-idp`, Sprint 10 + 11)
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/idp/index.js` | 431 | ⏳ `solid-pod-rs-idp` (STUB, 28 lines `lib.rs`) | ⏳ | 74 |
-| `src/idp/provider.js` | 455 | ⏳ `solid-pod-rs-idp` (STUB) — DCR + CID support | ⏳ | 75, 78 |
-| `src/idp/accounts.js` | 451 | ⏳ `solid-pod-rs-idp` (STUB) | ⏳ | 135 |
-| `src/idp/adapter.js` | 204 | ⏳ `solid-pod-rs-idp` (STUB) | ⏳ | 74 |
-| `src/idp/credentials.js` | 226 | ⏳ `solid-pod-rs-idp` (STUB) — email+password 10/min | ⏳ | 79 |
-| `src/idp/interactions.js` | 693 | ⏳ `solid-pod-rs-idp` (STUB) — includes Schnorr SSO handshake | ⏳ | 81 |
-| `src/idp/invites.js` | 181 | primitive in `src/provision.rs::check_admin_override` + `AdminOverride` (different shape) | 🟡 | 83, 163 |
-| `src/idp/keys.js` | 206 | ⏳ `solid-pod-rs-idp` (STUB) — JWKS signing keys | ⏳ | 77, 130 |
-| `src/idp/passkey.js` | 311 | ⏳ `solid-pod-rs-idp` (STUB) — WebAuthn | ⏳ | 80 |
-| `src/idp/views.js` | 952 | ⏳ `solid-pod-rs-idp` (STUB); HTML pages are also a consumer concern (row 82 is wontfix-in-crate) | ⏳ / 🚫 | 82 |
+| `src/idp/index.js` | 431 | `crates/solid-pod-rs-idp/src/provider.rs` + `axum_binder.rs` | ✅ | 74 |
+| `src/idp/provider.js` | 455 | `crates/solid-pod-rs-idp/src/provider.rs` + `registration.rs` — DCR + CID support | ✅ | 75, 78 |
+| `src/idp/accounts.js` | 451 | `crates/solid-pod-rs-idp/src/user_store.rs` | ✅ | 135 |
+| `src/idp/adapter.js` | 204 | `crates/solid-pod-rs-idp/src/session.rs` | ✅ | 74 |
+| `src/idp/credentials.js` | 226 | `crates/solid-pod-rs-idp/src/credentials.rs` — email+password flow | ✅ | 79 |
+| `src/idp/interactions.js` | 693 | `crates/solid-pod-rs-idp/src/schnorr.rs` — NIP-07 Schnorr SSO handshake | ✅ | 81 |
+| `src/idp/invites.js` | 181 | `crates/solid-pod-rs-idp/src/invites.rs` + `solid-pod-rs-server invite create` CLI | ✅ | 83, 163 |
+| `src/idp/keys.js` | 206 | `crates/solid-pod-rs-idp/src/jwks.rs` — JWKS with rotation | ✅ | 77, 130 |
+| `src/idp/passkey.js` | 311 | `crates/solid-pod-rs-idp/src/passkey.rs` — `webauthn-rs 0.5` backend (Sprint 11) | ✅ | 80 |
+| `src/idp/views.js` | 952 | HTML pages — wontfix-in-crate; row 82 explicit | 🚫 | 82 |
+
+### LWS 1.0 Auth Suite (Sprint 11)
+
+| JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
+|---|---|---|---|---|
+| `src/auth/solid-oidc.js` | — | `src/oidc/mod.rs` + `docs/adr/ADR-057-lws10-oidc-delta.md` | ✅ (delta audit) | 150 |
+| (not implemented in JSS; tracked in JSS #86) | — | `crates/solid-pod-rs-didkey/` — Ed25519/P-256/secp256k1 encoding + JWT verify + `DidKeyVerifier` | 🔄 net-new | 153 |
+| (not implemented in JSS) | — | `src/auth/self_signed.rs::{SelfSignedVerifier, CidVerifier}` + wiring into `wac::issuer::IssuerCondition` | 🔄 net-new | 152 |
 
 ### WebID
 
@@ -134,7 +142,7 @@ this surface):
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
 | `src/notifications/index.js` | 52 | `src/notifications/mod.rs` (`discovery_document`, `Notifications` trait, `InMemoryNotifications`) | ✅ / 🔄 (richer discovery) | 95, 96, 133 |
-| `src/notifications/websocket.js` | 273 | 🟡 `src/notifications/legacy.rs` + `src/handlers/legacy_notifications.rs` (feature `legacy-notifications`) — sub/ack frames present; per-sub WAC check + ancestor-container fanout not yet landed | 🟡 partial | 91 |
+| `src/notifications/websocket.js` | 273 | `src/notifications/legacy.rs::LegacyWebSocketSession` (feature `legacy-notifications`) — full sub/ack/err/pub/unsub protocol; per-sub WAC Read re-check; 100 subs/conn cap; 2 KiB URL cap; ancestor-container fanout on publish (Sprint 11) | ✅ | 91 |
 | `src/notifications/events.js` | 77 | `src/storage/fs.rs` watcher + `src/notifications/mod.rs::pump_from_storage` | ✅ | 99 |
 | (no JSS equivalent) | — | `src/notifications/mod.rs::WebSocketChannelManager` — Solid Notifications 0.2 WebSocketChannel2023 | 🔄 net-new | 92 |
 | (no JSS equivalent) | — | `src/notifications/mod.rs::WebhookChannelManager` + `src/notifications/signing.rs` (RFC 9421) | 🔄 net-new | 93, 97 |
@@ -152,26 +160,26 @@ this surface):
 | (JSS reference — no single file, JSS closest is `src/auth/did-nostr.js`) `/.well-known/did/nostr/:pubkey.json` | — | `src/interop.rs::did_nostr::did_nostr_well_known_url` + route in `crates/solid-pod-rs-server/src/lib.rs` (feature `did-nostr`) | ✅ (resolver); 🟡 (publisher via sibling) | 132 |
 | `src/notifications/index.js:43` (`/.well-known/solid/notifications` status) | (in 52) | `src/notifications/mod.rs::discovery_document` (full Solid Notifications 0.2 descriptor, richer than JSS status JSON) | 🔄 net-new | 95, 133 |
 
-### ActivityPub (all reserved for `solid-pod-rs-activitypub` v0.5.0 — except WebFinger)
+### ActivityPub (`solid-pod-rs-activitypub`, Sprint 10 — functional)
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/ap/index.js` | 217 | ⏳ `solid-pod-rs-activitypub` (STUB, 24 lines `lib.rs`). **Exception:** WebFinger lives in our `src/interop.rs`. | ⏳ / ✅ (webfinger only) | 102, 105 |
-| `src/ap/keys.js` | 64 | ⏳ `solid-pod-rs-activitypub` (STUB) | ⏳ | 102 |
-| `src/ap/store.js` | 276 | ⏳ `solid-pod-rs-activitypub` (STUB) — follower/following store | ⏳ | 107 |
-| `src/ap/routes/actor.js` | 70 | ⏳ `solid-pod-rs-activitypub` (STUB) | ⏳ | 102 |
-| `src/ap/routes/collections.js` | 46 | ⏳ `solid-pod-rs-activitypub` (STUB) | ⏳ | 104, 107 |
-| `src/ap/routes/inbox.js` | 247 | ⏳ `solid-pod-rs-activitypub` (STUB) — HTTP Signature verification pending | ⏳ | 103 |
-| `src/ap/routes/outbox.js` | 149 | ⏳ `solid-pod-rs-activitypub` (STUB) — federated delivery | ⏳ | 104 |
-| `src/ap/routes/mastodon.js` | 154 | ⏳ `solid-pod-rs-activitypub` (STUB) | ⏳ | 102, 108 |
-| `src/ap/routes/oauth.js` | 311 | ⏳ `solid-pod-rs-activitypub` (STUB) | ⏳ | 102 |
+| `src/ap/index.js` | 217 | `crates/solid-pod-rs-activitypub/src/lib.rs` + `discovery.rs`. WebFinger also lives in core `src/interop.rs`. | ✅ | 102, 105 |
+| `src/ap/keys.js` | 64 | `crates/solid-pod-rs-activitypub/src/http_sig.rs` — draft-cavage v12 | ✅ | 102 |
+| `src/ap/store.js` | 276 | `crates/solid-pod-rs-activitypub/src/store.rs` — sqlx follower/following store | ✅ | 107 |
+| `src/ap/routes/actor.js` | 70 | `crates/solid-pod-rs-activitypub/src/routes/actor.rs` | ✅ | 102 |
+| `src/ap/routes/collections.js` | 46 | `crates/solid-pod-rs-activitypub/src/routes/collections.rs` | ✅ | 104, 107 |
+| `src/ap/routes/inbox.js` | 247 | `crates/solid-pod-rs-activitypub/src/routes/inbox.rs` — HTTP Sig verify landed | ✅ | 103 |
+| `src/ap/routes/outbox.js` | 149 | `crates/solid-pod-rs-activitypub/src/routes/outbox.rs` — retry delivery | ✅ | 104 |
+| `src/ap/routes/mastodon.js` | 154 | `crates/solid-pod-rs-activitypub/src/routes/mastodon.rs` | ✅ | 102, 108 |
+| `src/ap/routes/oauth.js` | 311 | `crates/solid-pod-rs-activitypub/src/routes/oauth.rs` | ✅ | 102 |
 
-### Git HTTP backend (reserved for `solid-pod-rs-git` v0.5.0)
+### Git HTTP backend (`solid-pod-rs-git`, Sprint 10 — functional)
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/handlers/git.js` | 269 | ⏳ `solid-pod-rs-git` (STUB, 24 lines `lib.rs`) | ⏳ | 100 |
-| (WAC hook in `src/server.js:286-314`) | — | part of the ⏳ `solid-pod-rs-git` scope | ⏳ | 100 |
+| `src/handlers/git.js` | 269 | `crates/solid-pod-rs-git/src/cgi.rs` — `git-http-backend` bridge | ✅ | 100 |
+| (WAC hook in `src/server.js:286-314`) | — | `crates/solid-pod-rs-git/src/auth.rs::BasicNostrExtractor` delegates to core NIP-98 | ✅ | 100 |
 
 ### Storage and quota
 
@@ -189,12 +197,21 @@ this surface):
 | `src/utils/url.js` | 292 | `src/ldp.rs::infer_dotfile_content_type` (the "getContentType for dotfiles" portion) + URL helpers inline in relevant modules | 🟡 partial (we port the conneg-relevant parts) | 167 |
 | `src/utils/error-handler.js` | 24 | `src/error.rs::PodError` + consumer binder error mapping in `crates/solid-pod-rs-server/src/lib.rs` | ✅ | — |
 
-### Nostr relay (reserved for `solid-pod-rs-nostr` v0.5.0)
+### Nostr relay (`solid-pod-rs-nostr`, Sprint 10 — functional)
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/nostr/relay.js` | — | ⏳ `solid-pod-rs-nostr` (STUB, 25 lines `lib.rs`) | ⏳ | 101 |
-| ⚠️ (note: context mentioned `src/did/resolver.js` — that path **does not exist** in the JSS tree; the closest analog is `src/auth/did-nostr.js`) | — | ⏳ `solid-pod-rs-nostr` (STUB) for the publisher endpoint; resolver present in our `src/interop.rs::did_nostr` | ⏳ / ✅ | 89, 90, 132 |
+| `src/nostr/relay.js` | — | `crates/solid-pod-rs-nostr/src/relay.rs` — NIP-01 core + NIP-11 info + NIP-16 replaceable | ✅ | 101 |
+| (JSS closest analog `src/auth/did-nostr.js`) | — | `crates/solid-pod-rs-nostr/src/did.rs` (publisher, tier 1/3 DID Document) + core `src/interop.rs::did_nostr` (resolver) + `crates/solid-pod-rs-nostr/src/resolver.rs` (bidirectional WebID ↔ did:nostr) | ✅ | 89, 90, 132 |
+
+### did:key + self-signed JWT (`solid-pod-rs-didkey`, Sprint 11 — NEW)
+
+| JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
+|---|---|---|---|---|
+| (not implemented in JSS; tracked in JSS #86) | — | `crates/solid-pod-rs-didkey/src/did.rs` — W3C did:key Method encoding/decoding (multibase + multicodec) | 🔄 net-new | 153 |
+| (not implemented in JSS) | — | `crates/solid-pod-rs-didkey/src/pubkey.rs` — Ed25519 / P-256 / secp256k1 DER + raw-key parsing | 🔄 net-new | 153 |
+| (not implemented in JSS) | — | `crates/solid-pod-rs-didkey/src/jwt.rs` — hand-rolled self-signed JWT verify with algorithm dispatch and `alg=none` hard-reject | 🔄 net-new | 152, 153 |
+| (not implemented in JSS) | — | `crates/solid-pod-rs-didkey/src/verifier.rs` — `DidKeyVerifier` impl of core `SelfSignedVerifier` trait | 🔄 net-new | 152, 153 |
 
 ### DB (embedded SQLite used by JSS for AP state)
 
