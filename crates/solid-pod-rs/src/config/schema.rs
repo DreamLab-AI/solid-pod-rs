@@ -36,6 +36,64 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub security: SecurityConfig,
+
+    /// Sprint 11 (row 120-124): operator-facing extras that do not yet
+    /// have first-class sections on `ServerConfig`. The env-var overlay
+    /// writes here (e.g. `JSS_CORS_ALLOWED_ORIGINS`, `JSS_SUBDOMAINS`,
+    /// `JSS_BASE_DOMAIN`, `JSS_IDP_ENABLED`). Binaries consult this map
+    /// until a richer typed section supersedes it.
+    #[serde(default)]
+    pub extras: ExtrasConfig,
+}
+
+/// Flat bag for operator-facing knobs not yet promoted to a typed
+/// section. Each field is `#[serde(default)]` + `skip_serializing_if` so
+/// a pristine `ExtrasConfig` serialises to an empty object.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtrasConfig {
+    /// `JSS_CONNEG` — content-negotiation toggle. Default off until
+    /// promoted to its own typed section.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conneg_enabled: Option<bool>,
+
+    /// `JSS_CORS_ALLOWED_ORIGINS` — CSV list. Empty vec means unset.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cors_allowed_origins: Vec<String>,
+
+    /// `JSS_MAX_BODY_SIZE` / `JSS_MAX_REQUEST_BODY` — bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_body_size_bytes: Option<u64>,
+
+    /// `JSS_MAX_ACL_BYTES` — bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_acl_bytes: Option<u64>,
+
+    /// `JSS_RATE_LIMIT_WRITES_PER_MIN`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_writes_per_min: Option<u64>,
+
+    /// `JSS_SUBDOMAINS` — enable subdomain multi-tenancy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subdomains_enabled: Option<bool>,
+
+    /// `JSS_BASE_DOMAIN` — authoritative base domain when subdomains
+    /// are on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_domain: Option<String>,
+
+    /// `JSS_IDP_ENABLED` — local IdP service toggle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idp_enabled: Option<bool>,
+
+    /// `JSS_INVITE_ONLY` — restrict new pod registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_only: Option<bool>,
+
+    /// `JSS_ADMIN_KEY` — operator override token. Never serialise to
+    /// telemetry; this serde pass is solely for config reload symmetry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

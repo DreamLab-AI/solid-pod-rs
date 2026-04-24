@@ -68,6 +68,12 @@ ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
 httpdate = { version = "1", optional = true }
 rand = { version = "0.8", optional = true }
 
+# Sprint 11 (row 120-124): multi-format config loader. YAML + TOML are
+# optional so consumers that only care about JSON aren't dragged in.
+# Gated behind `config-loader`.
+serde_yaml = { version = "0.9", optional = true }
+toml = { version = "0.8", optional = true }
+
 [features]
 default = ["fs-backend", "memory-backend"]
 fs-backend = []
@@ -102,7 +108,11 @@ dpop-replay-cache = ["oidc", "jss-v04", "dep:lru"]
 # F6: JSS-compatible layered config loader. The `config` module is
 # always compiled (lightweight struct definitions); this feature flag
 # is the consumer-facing toggle for binary-layer wiring.
-config-loader = ["jss-v04"]
+#
+# Sprint 11 (row 120-124): extends with auto-detected YAML/TOML file
+# loading, env overlay, and CLI overlay. YAML/TOML deps are pulled in
+# only when this feature is enabled.
+config-loader = ["jss-v04", "dep:serde_yaml", "dep:toml"]
 
 # Sprint 6 C: RFC 9421 HTTP Message Signatures on outgoing webhook
 # deliveries, Retry-After handling, circuit breaker. Consumers opt in.
@@ -150,6 +160,10 @@ pkcs8 = { version = "0.10", features = ["pem"] }
 # HMAC-SHA256 for DPoP replay test fixtures (post-Sprint-5 the
 # signature is now verified so fixtures must produce real MACs).
 hmac = "0.12"
+# Sprint 11 row 152: real BIP-340 Schnorr signer for CID verifier
+# integration tests, which run with `nip98-schnorr` enabled via the
+# workspace's default feature cascade.
+k256 = { version = "0.13", features = ["schnorr"] }
 
 # ---------------------------------------------------------------------------
 # Examples — runnable via `cargo run --example <name>`.

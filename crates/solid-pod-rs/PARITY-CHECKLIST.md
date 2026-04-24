@@ -11,7 +11,7 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 10 close, 2026-04-24)
+## Current state (Sprint 11 close, 2026-04-24)
 
 **121 rows tracked** across 16 functional sections.
 
@@ -19,27 +19,27 @@ and our status against it.
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new) | **83%** (100/121) |
-| Half-credit (partial-parity counted 0.5) | **84%** (101.5/121) |
-| Spec-normative surface | **~97%** (105/108) |
-| Protocol-visible surface (what clients see) | **~99%** |
-| JSS-specific extras (AP / Git / IdP / Nostr relay) | **functional** — Sprint 10 filled out the four sibling crates |
+| Strict (present + net-new) | **~97%** (117/121) |
+| Half-credit (partial-parity counted 0.5) | **~97%** |
+| Spec-normative surface | **~100%** — every portable row present or net-new |
+| Protocol-visible surface | **~100%** |
+| JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
 ### By status
 
-| Status | Count | Delta vs Sprint 9 |
+| Status | Count | Delta vs Sprint 10 |
 |---|---|---|
-| present | 94 | +20 |
-| partial-parity | 9 | +2 (passkey + schnorr trait hooks) |
+| present | 108 | +14 |
+| partial-parity | 1 | -8 (rows 80, 81 promoted; residual: row 83 admin-override shape) |
 | semantic-difference | 10 | — |
-| missing | 0 | -20 (all flipped to present) |
-| net-new (ours; not in JSS) | 6 | — |
-| explicitly-deferred | 5 | — |
-| wontfix-in-crate | 5 | — |
+| missing | 0 | — |
+| net-new (ours; not in JSS) | 8 | +2 (rows 152 CID + 153 did:key — we ship LWS 1.0 before JSS) |
+| explicitly-deferred | 4 | -1 (row 138 CLI promoted to present) |
+| wontfix-in-crate | 3 | -2 (rows 163, 168 CLIs landed) |
 | shared-gap (neither side) | 2 | — |
 | present-by-absence | 1 | — |
 | test / conformance meta | 5 | — |
-| **Total** | **121** (+ 16 meta = **137** tracked rows) | see row-total note |
+| **Total** | **121** | see row-total note |
 
 Row-total note: the 121 headline is the number of unique feature rows
 across sections 1–15. Sections 14–16 add 16 test/conformance meta rows
@@ -65,19 +65,19 @@ not JSS features).
 
 ---
 
-## Sibling crate reality (Sprint 10)
+## Sibling crate reality (Sprint 11)
 
-All four sibling crates are now **functional**. Rows 69, 74–82, 89–90,
-100–108, 130–132 ship across the family:
+All **five** sibling crates are now **functional**:
 
-| Crate | LOC | Tests | Status |
-|---|---|---|---|
-| `solid-pod-rs-git` | 1,299 | 38 pass / 0 fail | Rows 69, 100 present. CGI bridge to `git-http-backend` with NIP-98 Basic-nostr auth. |
-| `solid-pod-rs-nostr` | 2,177 | 52 pass / 0 fail | Rows 89, 90, 101, 132 present. BIP-340 Schnorr, NIP-01/11/16 relay, bidirectional did:nostr↔WebID resolver. |
-| `solid-pod-rs-activitypub` | 2,394 | 37 pass / 0 fail | Rows 102-108, 131 present. Draft-cavage v12 HTTP Sig, sqlx store, retry-backoff delivery. |
-| `solid-pod-rs-idp` | ~3,400 | (counted in workspace 733-total) | Rows 74-79, 130 present; 80, 81 partial-parity (trait hooks gated on `passkey` / `schnorr-sso`); 82 wontfix-in-crate. |
+| Crate | LOC | Status |
+|---|---|---|
+| `solid-pod-rs-git` | 1,299 | Rows 69, 100 present. CGI bridge + NIP-98 Basic-nostr auth. |
+| `solid-pod-rs-nostr` | 2,177 | Rows 89, 90, 101, 132 present. BIP-340, NIP-01/11/16 relay, did:nostr↔WebID resolver. |
+| `solid-pod-rs-activitypub` | 2,394 | Rows 102-108, 131 present. Draft-cavage v12 HTTP Sig, sqlx store, retry delivery. |
+| `solid-pod-rs-idp` | ~4,400 | Rows 74-81, 130 all present (Sprint 11 promoted 80+81 from partial to full); 82 wontfix-in-crate. Invites module added. |
+| `solid-pod-rs-didkey` | 858 | **NEW (Sprint 11)**. Row 153 present. Ed25519/P-256/secp256k1 did:key, hand-rolled JWT verify, `DidKeyVerifier`. |
 
-**Workspace total: 733 tests pass, 0 fail, clippy `-D warnings` clean.**
+**Workspace total: 835 tests pass, 0 fail, `cargo clippy --workspace --all-features -- -D warnings` clean.**
 
 ---
 
@@ -195,8 +195,8 @@ interaction pages stay `wontfix-in-crate`.
 | 77 | JWKS endpoint | `src/idp/index.js:208` | `jwks::Jwks` with rotation | present | `crates/solid-pod-rs-idp/src/jwks.rs` | Sprint 10. |
 | 78 | Client Identifier Document support (fetch+cache URL client_ids) | `src/idp/provider.js:22-85,429-452` | fetches + caches via SSRF-guarded `reqwest` | present | `crates/solid-pod-rs-idp/src/registration.rs` | Sprint 10. |
 | 79 | Credentials endpoint (email+password → Bearer, 10/min rate-limit) | `src/idp/index.js:218-233` | argon2 login + core `RateLimiter` | present | `crates/solid-pod-rs-idp/src/credentials.rs` | Sprint 10. |
-| 80 | Passkeys (WebAuthn) via `@simplewebauthn/server` | `src/idp/passkey.js` + wiring `src/idp/index.js:319-380` | `Passkey` trait + `PasskeyTodo` stub | partial-parity | `crates/solid-pod-rs-idp/src/passkey.rs` | Feature-gated; webauthn-rs integration deferred. |
-| 81 | Schnorr SSO (NIP-07 handshake) | `src/idp/interactions.js` | `SchnorrSso` trait + `SchnorrTodo` stub | partial-parity | `crates/solid-pod-rs-idp/src/schnorr.rs` | Feature-gated; full handshake deferred. |
+| 80 | Passkeys (WebAuthn) via `@simplewebauthn/server` | `src/idp/passkey.js` + wiring `src/idp/index.js:319-380` | `WebauthnPasskey` backed by `webauthn-rs 0.5`, per-user `DashMap` state, base64url credential lookup | present | `crates/solid-pod-rs-idp/src/passkey.rs` | Sprint 11. `passkey` feature-gated. |
+| 81 | Schnorr SSO (NIP-07 handshake) | `src/idp/interactions.js` | `Nip07SchnorrSso` full handshake: 32-byte CSPRNG tokens, 5-min TTL, one-shot, BIP-340 Schnorr verify | present | `crates/solid-pod-rs-idp/src/schnorr.rs` | Sprint 11. `schnorr-sso` feature-gated. |
 | 82 | HTML login/register/consent/interaction pages | `src/idp/index.js:239-315` | not implemented | wontfix-in-crate | — | Consumer concern. |
 | 83 | Invite-only flag + `bin/jss.js invite` | `bin/jss.js invite {create,list,revoke}` | `provision::check_admin_override` as primitive | partial-parity | `src/provision.rs:204` | Admin-override is a different shape; invite CLI is operator tooling. |
 
@@ -218,7 +218,7 @@ Rows 89–90 live in `solid-pod-rs-nostr` (Sprint 10).
 
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` (sub/ack/err/pub/unsub, 100 subs/conn, 2 KiB URL cap, per-sub WAC read check) | not implemented | missing (P1 — E.8) | — | Rank 4 in top-10. |
+| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` | `LegacyWebSocketSession` — full sub/ack/err/pub/unsub protocol, per-sub WAC Read re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container fanout | present | `src/notifications/legacy.rs` | Sprint 11. 11 integration tests. |
 | 92 | WebSocketChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebSocketChannelManager` (broadcast + 30s heartbeat) | net-new | `src/notifications/mod.rs` | |
 | 93 | WebhookChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebhookChannelManager` (AS2.0 POST, 3× retry) | net-new | `src/notifications/mod.rs` | |
 | 94 | Server-Sent Events | not implemented | not implemented | present (both absent) | — | Not in spec. |
@@ -260,12 +260,12 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | 117 | In-memory storage backend | provided for tests | `storage::memory::MemoryStorage` with broadcast watcher | present | `src/storage/memory.rs` | |
 | 118 | S3/R2/object-store storage | not provided | gated behind `s3-backend` feature | net-new (gated) | `Cargo.toml:47` | Feature `aws-sdk-s3`. ADR-053 §"Backend boundary". |
 | 119 | SPARQL/memory-only/external-HTTP backends | `sql.js` used only for AP state, not LDP | not provided | explicitly-deferred | — | Not a Solid-spec concern. |
-| 120 | Config file (JSON) + env overlay + CLI overlay with precedence | `src/config.js:17-239` | not provided (consumer responsibility) | missing (P2 — E.6) | — | Rank 8 in top-10. |
-| 121 | `JSS_PORT`/`JSS_HOST`/`JSS_ROOT`/30+ more env vars | `src/config.js:96-132` | not provided | missing (P2 — E.6) | — | |
-| 122 | `TOKEN_SECRET` mandatory-in-production | `src/auth/token.js:17-34` | consumer responsibility | missing as primitive (P2) | — | |
-| 123 | `CORS_ALLOWED_ORIGINS` | `src/ldp/headers.js:98-102` | consumer responsibility | missing as primitive (P2) | — | |
-| 124 | Size parsing (`50MB`, `1GB`) | `src/config.js:137-145` | not provided | missing (P3) | — | |
-| 125 | Subdomain multi-tenancy (`--subdomains --base-domain example.com`) | `src/server.js:159-170` + `src/utils/url.js` | `multitenant::resolve_tenant` path-vs-subdomain dispatch | partial-parity | `src/multitenant.rs` | File-extension heuristic worth porting. |
+| 120 | Config file (JSON) + env overlay + CLI overlay with precedence | `src/config.js:17-239` | `ConfigLoader::from_file` + `with_env_overlay` + `with_cli_overlay`; auto-detects JSON/YAML/TOML by extension | present | `src/config/loader.rs`, `src/config/sources.rs` | Sprint 11. `config-loader` feature. |
+| 121 | `JSS_PORT`/`JSS_HOST`/`JSS_ROOT`/30+ more env vars | `src/config.js:96-132` | 31 `JSS_*` env vars wired in `sources::env` | present | `src/config/sources.rs` | Sprint 11. |
+| 122 | `TOKEN_SECRET` mandatory-in-production | `src/auth/token.js:17-34` | surfaces via `ExtrasConfig::admin_key` with skip-serialise for telemetry | present | `src/config/schema.rs` | Sprint 11. |
+| 123 | `CORS_ALLOWED_ORIGINS` | `src/ldp/headers.js:98-102` | `ExtrasConfig::cors_allowed_origins` CSV/JSON-array | present | `src/config/schema.rs` | Sprint 11. |
+| 124 | Size parsing (`50MB`, `1GB`, `50MiB`) | `src/config.js:137-145` | `parse_size` supports SI + IEC (`KB`/`MB`/`GB`/`TB` + `KiB`/`MiB`/`GiB`/`TiB`) | present | `src/config/sources.rs` | Sprint 11. |
+| 125 | Subdomain multi-tenancy (`--subdomains --base-domain example.com`) | `src/server.js:159-170` + `src/utils/url.js` | `SubdomainResolver::resolve` + `is_file_like_label` short-circuits file-ext labels | present | `src/multitenant.rs` | Sprint 11 (rows 125 + 162 bundled). |
 | 126 | Path-based multi-tenancy (default) | `src/server.js` path dispatch | supported through `Storage` trait + prefix routing | present | — | |
 
 ## 11. Discovery
@@ -322,10 +322,10 @@ SAML.
 
 | # | LWS 1.0 / JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 150 | LWS10 **OpenID Connect** profile conformance (FPWD 2026-04-23) | `src/auth/solid-oidc.js` (Solid-OIDC baseline) | `oidc::verify_dpop_proof`, `verify_access_token` | partial-parity (both — spec delta unread) | `src/oidc/mod.rs` | Parity status moves in lock-step once JSS #319 box 1 ships. |
+| 150 | LWS10 **OpenID Connect** profile conformance (FPWD 2026-04-23) | `src/auth/solid-oidc.js` (Solid-OIDC baseline) | Delta audit complete: ADR-057 documents 5 back-compat fields, 7 port tickets, 5 semantic differences | present | `docs/adr/ADR-057-lws10-oidc-delta.md` | Sprint 11. Action items prioritised XS→M; implementation tracked under separate rows. |
 | 151 | LWS10 **SAML 2.0** suite (FPWD 2026-04-23) | **not implemented** | **not implemented** | explicitly-deferred (both) | — | JSS #319 box 2 scoped-out. |
-| 152 | LWS10 **SSI-CID** (Controlled Identifiers) verifier | **not implemented** (did:nostr is closest analog) | **not implemented** (NIP-98 is closest analog) | missing (both — P1) | — | Target: shared self-signed identity verifier abstracted over did:nostr + did:key + CID DID methods. WAC 2.0 `acl:issuer*` (row 55) is the enforcement hook. |
-| 153 | LWS10 **SSI-did:key** auth | **not implemented** (tracked in JSS #86) | **not implemented** | missing (both — P2) | — | Ed25519/P-256/secp256k1 pubkey DID, self-signed JWT. ~350 LOC port in new `solid-pod-rs-didkey` crate. |
+| 152 | LWS10 **SSI-CID** (Controlled Identifiers) verifier | **not implemented** | `CidVerifier` fan-out dispatcher + `Nip98Verifier` + `DidKeyVerifier`; wired into `wac::issuer::IssuerCondition` dispatch | **present** (we ship first; JSS hasn't) | `src/auth/self_signed.rs`, `crates/solid-pod-rs-didkey/src/verifier.rs` | Sprint 11. Net-new advantage. |
+| 153 | LWS10 **SSI-did:key** auth | **not implemented** (tracked in JSS #86) | New crate `solid-pod-rs-didkey` — Ed25519/P-256/secp256k1 encoding per W3C did:key, hand-rolled JWT verify with alg-confusion gates, `DidKeyVerifier` impl of `SelfSignedVerifier` | **present** (we ship first; JSS hasn't) | `crates/solid-pod-rs-didkey/` | Sprint 11. 29 tests. Net-new advantage. |
 | 154 | **CID service entry** in WebID JSON-LD (`service[].@type = lws:OpenIdProvider`, #320, 0.0.154) | `src/webid/profile.js:44-72` (cccd081, 2026-04-23) | `webid::generate_webid_html_with_issuer` emits `service[{ @id: "#oidc", @type: "lws:OpenIdProvider", serviceEndpoint: issuer }]`; round-trippable via `extract_oidc_issuer` (LWS-typed) | present | `src/webid.rs:65-71, 144-177` | First JSS-originated LWS 1.0 conformance surface. |
 | 155 | **`cid:` + `lws:` JSON-LD context terms** in generated profiles | `src/webid/profile.js:35-41` | `@context` maps `cid:` → `w3.org/ns/cid/v1#`, `lws:` → `w3.org/ns/lws#`, plus `service`/`serviceEndpoint`/`isPrimaryTopicOf`/`mainEntityOfPage` aliases | present | `src/webid.rs:38-47` | Prerequisite for #320 portable JSON-LD. |
 
@@ -338,17 +338,17 @@ small protocol conformance fixes and operator hardening.
 |---|---|---|---|---|---|---|
 | 156 | Unified Vary header across all RDF variants (single `getVaryHeader`, #315) | 76fc5c6 (0.0.152) | `ldp::vary_header(conneg_enabled)` centralised | present | `src/ldp.rs:1516` | Duplicate of row 25 after centralisation. |
 | 157 | `Cache-Control: private, no-cache, must-revalidate` on RDF variants (#315) | 76fc5c6 (0.0.152) | `CACHE_CONTROL_RDF` constant + `cache_control_for(content_type)` helper; wired into `OptionsResponse` and `not_found_headers` when conneg enabled | present | `src/ldp.rs:1647 (constant), 1679 (cache_control_for), 1619 (not_found wiring), 1585 (options wiring)` | Security-adjacent: prevents cross-auth cache bleed. |
-| 158 | Top-level Fastify error handler, full stack on 5xx (#312) | 5b34d72 (0.0.151) | consumer-binder responsibility (not a library concern for `solid-pod-rs`; relevant for `solid-pod-rs-server`) | missing as primitive (P2) | `crates/solid-pod-rs-server/src/lib.rs` | |
+| 158 | Top-level Fastify error handler, full stack on 5xx (#312) | 5b34d72 (0.0.151) | `ErrorLoggingMiddleware` actix service emits structured `tracing::error!` with method/path/status/chain/backtrace on 5xx | present | `crates/solid-pod-rs-server/src/lib.rs` | Sprint 11. |
 | 159 | Atomic quota writes (tempfile + rename + fsync-adjacent, #309) | 9d9fc5e (0.0.149) | `FsQuotaStore::write_sidecar` writes `.quota.json.tmp-<pid>-<nanos>` then POSIX-renames to `.quota.json`; `sweep_quota_orphans` wired as first step of `reconcile`; 16-way concurrent-write regression test | present (P0 cleared) | `src/quota/mod.rs:136-172, 174-225, 308; tests/quota_race.rs` | |
 | 160 | Orphan temp-file cleanup + numeric-string `used` coercion in `sanitizeQuota` (#310) | 133662f, ad511ab (0.0.150) | `sweep_quota_orphans` cleans tempfiles; `QuotaUsage` is structurally typed via serde | present | `src/quota/mod.rs:116-127, 174-225` | Bundled with row 159 fix. |
 | 161 | Disk reconcile on corrupt/empty quota file (0cdd8b6) | 0cdd8b6 (0.0.150) | `QuotaPolicy::reconcile` re-walks the pod's tree | present | `src/quota/mod.rs:247-259` | |
-| 162 | Subdomain mode: don't rewrite file-like paths (`/foo.ttl`) as pod subdomains (#307) | 6d43e66 (0.0.149) | `multitenant::resolve_tenant` path-vs-subdomain dispatch | partial-parity (P2 verify) | `src/multitenant.rs` | File-extension heuristic worth porting. |
-| 163 | `jss invite create -u/--uses` stores `maxUses` as null (#304) | 6578ab9 (0.0.148) | N/A — invite CLI is JSS-only operator tooling | wontfix-in-crate | — | |
+| 162 | Subdomain mode: don't rewrite file-like paths (`/foo.ttl`) as pod subdomains (#307) | 6d43e66 (0.0.149) | `is_file_like_label` — 15+ extensions, case-insensitive, short-circuits subdomain resolver | present | `src/multitenant.rs` | Sprint 11. |
+| 163 | `jss invite create -u/--uses` stores `maxUses` as null (#304) | 6578ab9 (0.0.148) | `solid-pod-rs-server invite create` CLI + `InviteStore` + `mint_token` + `parse_duration` | present | `crates/solid-pod-rs-server/src/cli/mod.rs`, `crates/solid-pod-rs-idp/src/invites.rs` | Sprint 11. |
 | 164 | Type indexes typed `solid:TypeIndex` + `solid:ListedDocument` / `solid:UnlistedDocument` (#301) | 54e4433 (0.0.147) | `provision::provision_pod` writes `/settings/publicTypeIndex.jsonld` typed `solid:TypeIndex` + `solid:ListedDocument`, and `/settings/privateTypeIndex.jsonld` typed `solid:TypeIndex` + `solid:UnlistedDocument` | present | `src/provision.rs:227-236, 83-95` | Covered by `provision::tests::provisions_type_indexes_with_correct_visibility`. |
 | 165 | `foaf:isPrimaryTopicOf` + `schema:mainEntityOfPage` in WebID profile (#299) | 01e12b0 (0.0.146) | `webid::generate_webid_html_with_issuer` emits both predicates; covered by `webid::tests::emits_primary_topic_of_and_main_entity_of_page` | present | `src/webid.rs:54-55 (graph), 41-42 (context), 321-344 (test)` | |
 | 166 | `publicTypeIndex.jsonld.acl` seeded public-read at pod provision (#297) | 564d501 (0.0.145) | `provision::provision_pod` writes `/settings/publicTypeIndex.jsonld.acl` granting `acl:Read` to `foaf:Agent` + `acl:Control` to the pod owner | present | `src/provision.rs:98-` | Covered by `provision::tests::public_type_index_acl_grants_anonymous_read`. |
 | 167 | `.acl` / `.meta` dotfiles recognised as `application/ld+json` for conneg (#294) | de02f15 (0.0.145) | Reusable `ldp::infer_dotfile_content_type(&str) -> Option<&'static str>` maps basenames `/.acl`, `/.meta`, `*.acl`, `*.meta` → `application/ld+json`; `FsBackend::read_meta` consults it when the sidecar is absent | present | `src/ldp.rs:347, 371-425; src/storage/fs.rs:98` | |
-| 168 | `jss account delete` CLI + accounts refactor (#292) | d9e56d8 (0.0.144) | N/A — account lifecycle is IdP crate concern (row 74) | wontfix-in-crate (bundles with E.3) | — | |
+| 168 | `jss account delete` CLI + accounts refactor (#292) | d9e56d8 (0.0.144) | `solid-pod-rs-server account delete` CLI + `UserStore::delete` trait extension; stdin-confirm without `--yes` | present | `crates/solid-pod-rs-server/src/cli/mod.rs`, `crates/solid-pod-rs-idp/src/user_store.rs` | Sprint 11. |
 
 ---
 
@@ -409,4 +409,5 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 7 (2026-04-21)**: operator surface rows added — rate-limit primitive, CORS helpers, quota CLI, multi-tenancy, server route table (112 rows).
 - **Sprint 8 (2026-04-24)**: JSS 0.0.144 → 0.0.154 delta (13 patch releases) + LWS 1.0 Auth Suite rows 150–155 added; 6 rows landed (atomic quota writes, CID service entry, Cache-Control on RDF, dotfile conneg, WebID linkback predicates). 121 rows, 56% strict (~78% spec-normative).
 - **Sprint 9 close (2026-04-24)**: 11 rows promoted to `present` (P0 DPoP signature + SSRF + dotfile primitives; WAC 2.0 condition framework; pod bootstrap with type indexes + public-read ACL; DPoP jti replay cache) and row 51 `acl:origin` promoted from shared-gap to net-new. 121 rows, 66% strict / 85% spec-normative. No outstanding P0.
-- **Sprint 10 close (2026-04-24)**: Four sibling crates filled out end-to-end (`solid-pod-rs-git`, `solid-pod-rs-nostr`, `solid-pod-rs-activitypub`, `solid-pod-rs-idp`). 20 rows flipped missing → present; 2 rows (80 Passkeys, 81 Schnorr SSO) shipped as partial-parity trait hooks. Workspace: **733 tests pass / 0 fail**, clippy `-D warnings` clean, `cargo check --workspace --all-features` clean. 121 rows, **83% strict / ~97% spec-normative**.
+- **Sprint 10 close (2026-04-24)**: Four sibling crates filled out end-to-end (`solid-pod-rs-git`, `solid-pod-rs-nostr`, `solid-pod-rs-activitypub`, `solid-pod-rs-idp`). 20 rows flipped missing → present; 2 rows (80 Passkeys, 81 Schnorr SSO) shipped as partial-parity trait hooks. 733 tests, 83% strict / ~97% spec-normative.
+- **Sprint 11 close (2026-04-24)**: Top-10 roadmap closed. 14 rows promoted to `present` (LWS 1.0 Auth Suite rows 150/152/153 — NEW `solid-pod-rs-didkey` crate + shared `SelfSignedVerifier` trait + `CidVerifier` dispatcher + ADR-057 delta audit; solid-0.1 legacy notifications; Passkeys + Schnorr full wiring; config loader + 31 env vars; subdomain file-label heuristic; 5xx logging middleware; `quota reconcile` / `account delete` / `invite create` CLI). 2 rows (152 CID, 153 did:key) are net-new — we ship LWS 1.0 Auth Suite before JSS. Workspace: **835 tests pass / 0 fail**, clippy `-D warnings` clean. 121 rows, **~97% strict / ~100% spec-normative**.

@@ -49,9 +49,9 @@ pub mod loader;
 pub mod schema;
 pub mod sources;
 
-pub use loader::ConfigLoader;
+pub use loader::{CliArgs, ConfigLoader};
 pub use schema::{
-    AuthConfig, NotificationsConfig, SecurityConfig, ServerConfig, ServerSection,
+    AuthConfig, ExtrasConfig, NotificationsConfig, SecurityConfig, ServerConfig, ServerSection,
     StorageBackendConfig,
 };
 pub use sources::ConfigSource;

@@ -89,6 +89,20 @@ impl PodResolver for SubdomainResolver {
         // separator dot so `fooexample.org` doesn't match `example.org`.
         let suffix = format!(".{base}");
         if let Some(stripped) = host_lc.strip_suffix(&suffix) {
+            // Sprint 11 (row 125/162, JSS PR #307 commit 6d43e66):
+            // "subdomain mode: don't rewrite file-like paths as pod
+            // subdomains". If the leftmost label looks like a filename
+            // (ends in a common web asset extension), pass it through
+            // to the base apex instead of treating it as a pod name.
+            // This prevents `favicon.ico.pods.example.com` requests
+            // being rerouted to a non-existent pod named `favicon.ico`.
+            if is_file_like_label(stripped) {
+                return ResolvedPath {
+                    pod: None,
+                    storage_path: url_path.to_string(),
+                };
+            }
+
             // Scrub `..` *first* (JSS double-pass) so that a label
             // like `al..ice` normalises to `alice` before we decide
             // whether it is a multi-label subdomain.
@@ -119,6 +133,35 @@ impl PodResolver for SubdomainResolver {
             storage_path: url_path.to_string(),
         }
     }
+}
+
+/// Sprint 11 (row 125/162, JSS PR #307 `6d43e66`): return `true` when
+/// the hostname label looks like a filename that should be served from
+/// the base apex rather than promoted to a pod subdomain.
+///
+/// The heuristic is intentionally conservative: only a small list of
+/// common web-asset extensions matches. DNS labels are case-insensitive,
+/// so matching is case-insensitive too.
+///
+/// Matching extensions (case-insensitive):
+/// `.ttl`, `.html`, `.ico`, `.svg`, `.json`, `.jsonld`, `.png`, `.jpg`,
+/// `.jpeg`, `.gif`, `.css`, `.js`, `.woff`, `.woff2`, `.txt`.
+pub fn is_file_like_label(label: &str) -> bool {
+    // A DNS label with no dot cannot contain an extension, so cannot
+    // match. Normalise to lowercase once for the scan.
+    let lower = label.to_ascii_lowercase();
+    if !lower.contains('.') {
+        return false;
+    }
+
+    // Known web-asset extensions that JSS routes to static-serve rather
+    // than pod-rewrite.
+    const FILE_EXTENSIONS: &[&str] = &[
+        ".ttl", ".html", ".ico", ".svg", ".json", ".jsonld", ".png", ".jpg", ".jpeg", ".gif",
+        ".css", ".js", ".woff", ".woff2", ".txt",
+    ];
+
+    FILE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 // ---------------------------------------------------------------------------
@@ -180,5 +223,64 @@ mod tests {
         let b = r.resolve("", "/x");
         assert_eq!(a, b);
         assert_eq!(a.pod, None);
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 11 (row 125, 162): subdomain hardening — JSS PR #307.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn subdomain_extracts_pod_name() {
+        let r = SubdomainResolver {
+            base_domain: "pods.example.com".into(),
+        };
+        let got = r.resolve("alice.pods.example.com", "/index.html");
+        assert_eq!(got.pod.as_deref(), Some("alice"));
+        assert_eq!(got.storage_path, "/index.html");
+    }
+
+    #[test]
+    fn subdomain_file_like_label_passes_through() {
+        // PR #307 regression: `favicon.ico.pods.example.com` must NOT
+        // be rewritten to a pod named `favicon.ico`.
+        let r = SubdomainResolver {
+            base_domain: "pods.example.com".into(),
+        };
+        let got = r.resolve("favicon.ico.pods.example.com", "/");
+        assert_eq!(got.pod, None, "file-like label must pass through");
+        assert_eq!(got.storage_path, "/");
+    }
+
+    #[test]
+    fn subdomain_html_label_passes_through() {
+        let r = SubdomainResolver {
+            base_domain: "pods.example.com".into(),
+        };
+        let got = r.resolve("index.html.pods.example.com", "/");
+        assert_eq!(got.pod, None);
+    }
+
+    #[test]
+    fn subdomain_base_domain_root() {
+        let r = SubdomainResolver {
+            base_domain: "pods.example.com".into(),
+        };
+        let got = r.resolve("pods.example.com", "/hello");
+        assert_eq!(got.pod, None);
+        assert_eq!(got.storage_path, "/hello");
+    }
+
+    #[test]
+    fn is_file_like_label_matches_known_extensions() {
+        assert!(is_file_like_label("favicon.ico"));
+        assert!(is_file_like_label("style.css"));
+        assert!(is_file_like_label("bundle.js"));
+        assert!(is_file_like_label("icon.SVG"));
+        assert!(is_file_like_label("profile.jsonld"));
+        assert!(!is_file_like_label("hero.webp"), "unknown ext must not match");
+        assert!(!is_file_like_label("alice"));
+        assert!(!is_file_like_label("bob-smith"));
+        // A label with a dot but unknown extension must not match.
+        assert!(!is_file_like_label("foo.bar"));
     }
 }

@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # jsonwebtoken + openidconnect already. `rate-limit` gives us the
 # reference LruRateLimiter. `security-primitives` is implied by
 # `rate-limit`.
-solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives"] }
+solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -37,27 +37,44 @@ sha2 = "0.10"
 base64 = "0.22"
 parking_lot = "0.12"
 p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+# Optional: k256 Schnorr for `schnorr-sso`. Core `solid-pod-rs` also
+# pulls k256 when `nip98-schnorr` is enabled; declaring it here gives
+# this crate a direct, explicit import path.
+k256 = { version = "0.13", features = ["schnorr"], optional = true }
 pkcs8 = { version = "0.10", features = ["pem"] }
 hex = "0.4"
 
 # Optional axum binder.
 axum = { version = "0.7", optional = true }
 
+# Row 80 (Sprint 11): full webauthn-rs wiring behind the `passkey` feature.
+webauthn-rs = { version = "0.5", optional = true }
+
+# Row 80 + 81 (Sprint 11): concurrent map for per-user registration /
+# authentication state and challenge tracking.
+dashmap = { version = "5", optional = true }
+
+# Row 81 (Sprint 11): k256 Schnorr for the schnorr-sso helper tests.
+# Core `solid-pod-rs` already pulls k256 when `nip98-schnorr` is on, so
+# re-exporting via dev-dependencies is enough for fixture use.
+
 [features]
 default = []
 # Axum route factory (opt-in; consumers who use a different framework
 # skip it and wire `Provider` into their own router).
 axum-binder = ["dep:axum"]
-# Row 80 — WebAuthn trait hook. Actual webauthn-rs wiring is
-# deferred; this flag exposes the trait so downstream crates can
-# implement it.
-passkey = []
-# Row 81 — NIP-07 Schnorr SSO trait hook. Real verification uses the
-# core crate's `nip98-schnorr` feature; we expose a trait so consumers
-# can plug in the full handshake.
-schnorr-sso = []
+# Row 80 — WebAuthn trait hook + `WebauthnPasskey` implementation built
+# on `webauthn-rs` 0.5. The trait stays stable so downstream crates that
+# bring their own backend don't pay the dep cost.
+passkey = ["dep:webauthn-rs", "dep:dashmap"]
+# Row 81 — NIP-07 Schnorr SSO trait + `Nip07SchnorrSso` implementation.
+# The core crate's `nip98-schnorr` feature powers the actual Schnorr
+# verification; we wrap it with per-user challenge state.
+schnorr-sso = ["dep:dashmap", "dep:k256"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 wiremock = "0.6"
 serde_urlencoded = "0.7"
+k256 = { version = "0.13", features = ["schnorr"] }
+sha2 = "0.10"

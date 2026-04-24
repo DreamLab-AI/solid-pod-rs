@@ -6,18 +6,19 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use solid_pod_rs::security::dotfile::{DotfileAllowlist, ENV_DOTFILE_ALLOWLIST};
 use solid_pod_rs::security::ssrf::{
     IpClass, SsrfError, SsrfPolicy, ENV_SSRF_ALLOWLIST, ENV_SSRF_ALLOW_LINK_LOCAL,
     ENV_SSRF_ALLOW_LOOPBACK, ENV_SSRF_ALLOW_PRIVATE, ENV_SSRF_DENYLIST,
 };
+use tokio::sync::Mutex;
 use url::Url;
 
-// Serialise env-var tests. `parking_lot` would be cleaner but we stay
-// on std-only deps to keep the crate surface minimal.
-static ENV_GUARD: Mutex<()> = Mutex::new(());
+// Serialise env-var tests. Using `tokio::sync::Mutex` so tests may
+// hold the guard across `.await` without tripping
+// `clippy::await_holding_lock`.
+static ENV_GUARD: Mutex<()> = Mutex::const_new(());
 
 fn clear_ssrf_env() {
     for key in [
@@ -107,7 +108,7 @@ fn f1b_classify_ipv6_public() {
 
 #[tokio::test]
 async fn f1c_allowlist_permits_loopback() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.lock().await;
     clear_ssrf_env();
     std::env::set_var(ENV_SSRF_ALLOWLIST, "localhost");
 
@@ -135,7 +136,7 @@ async fn f1c_allowlist_permits_loopback() {
 
 #[tokio::test]
 async fn f1c_no_allowlist_blocks_loopback() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.lock().await;
     clear_ssrf_env();
 
     let policy = SsrfPolicy::from_env();
@@ -152,7 +153,7 @@ async fn f1c_no_allowlist_blocks_loopback() {
 
 #[tokio::test]
 async fn f1d_denylist_overrides_public() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.lock().await;
     clear_ssrf_env();
     // 1.0.0.1 is a stable public IPv4 address (Cloudflare); resolving
     // it directly (no DNS hop) keeps the test hermetic.
@@ -171,7 +172,7 @@ async fn f1d_denylist_overrides_public() {
 
 #[tokio::test]
 async fn f1e_loopback_url_rejected_when_default() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.lock().await;
     clear_ssrf_env();
 
     let policy = SsrfPolicy::from_env();
@@ -208,7 +209,7 @@ async fn f1_missing_host_is_rejected() {
 
 #[test]
 fn f2a_default_allowlist_permits_acl_and_meta() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.blocking_lock();
     clear_dotfile_env();
 
     let al = DotfileAllowlist::default();
@@ -220,7 +221,7 @@ fn f2a_default_allowlist_permits_acl_and_meta() {
 
 #[test]
 fn f2b_default_allowlist_blocks_env() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.blocking_lock();
     clear_dotfile_env();
 
     let al = DotfileAllowlist::default();
@@ -231,7 +232,7 @@ fn f2b_default_allowlist_blocks_env() {
 
 #[test]
 fn f2c_env_allowlist_permits_listed_entries() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.blocking_lock();
     clear_dotfile_env();
     std::env::set_var(ENV_DOTFILE_ALLOWLIST, ".env,.config");
 
@@ -248,7 +249,7 @@ fn f2c_env_allowlist_permits_listed_entries() {
 
 #[test]
 fn f2d_nested_dotfile_rejected() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.blocking_lock();
     clear_dotfile_env();
 
     let al = DotfileAllowlist::default();
@@ -258,7 +259,7 @@ fn f2d_nested_dotfile_rejected() {
 
 #[test]
 fn f2_env_without_dot_prefix_is_normalised() {
-    let _g = ENV_GUARD.lock().unwrap();
+    let _g = ENV_GUARD.blocking_lock();
     clear_dotfile_env();
     std::env::set_var(ENV_DOTFILE_ALLOWLIST, "notifications");
 

@@ -1,0 +1,48 @@
+[package]
+name = "solid-pod-rs-didkey"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+description = "did:key (Ed25519 / P-256 / secp256k1) self-signed JWT verifier for solid-pod-rs"
+keywords = ["solid", "did", "did-key", "jwt", "webid"]
+categories = ["web-programming", "cryptography"]
+readme = "README.md"
+
+[lib]
+name = "solid_pod_rs_didkey"
+path = "src/lib.rs"
+
+[dependencies]
+# Reuse the core SelfSignedVerifier trait + error types.
+solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["security-primitives"] }
+
+async-trait = "0.1"
+
+# did:key algorithms
+ed25519-dalek = "2"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+k256 = { version = "0.13", features = ["ecdsa", "schnorr"] }
+
+# Multibase + multicodec varint encoding for did:key
+multibase = "0.9"
+unsigned-varint = "0.8"
+
+# Base64url for JWT compact serialisation
+base64 = "0.22"
+
+# Serialisation + hashing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+tempfile = "3"
+rand = "0.8"

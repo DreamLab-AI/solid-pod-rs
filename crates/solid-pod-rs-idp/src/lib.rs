@@ -11,8 +11,8 @@
 //! | 77  | `/.well-known/jwks.json`    | present       |
 //! | 78  | Client Identifier Documents | present       |
 //! | 79  | Credentials flow + rate-lim | present       |
-//! | 80  | Passkeys / WebAuthn         | partial-parity (trait hook behind `passkey` feature) |
-//! | 81  | Schnorr SSO (NIP-07)        | partial-parity (trait hook behind `schnorr-sso`)     |
+//! | 80  | Passkeys / WebAuthn         | present (`WebauthnPasskey` via `passkey` feature — Sprint 11) |
+//! | 81  | Schnorr SSO (NIP-07)        | present (`Nip07SchnorrSso` via `schnorr-sso` — Sprint 11) |
 //! | 82  | HTML interaction pages      | wontfix-in-crate (operator view-layer choice; see README) |
 //! | 130 | JWKS publication (IdP side) | present       |
 //!
@@ -39,12 +39,14 @@
 //! - **HTML pages** — row 82. JSS bundles handlebars templates; this
 //!   crate leaves the view layer to the consumer. A minimal Askama /
 //!   Leptos adapter is trivially < 300 LOC on top of this crate.
-//! - **Full WebAuthn flow** — row 80. The `webauthn-rs` integration is
-//!   ~400 LOC of fixture wiring; we ship the trait shape so it can
-//!   be added in a follow-up sprint without breaking API.
-//! - **Full NIP-07 handshake** — row 81. Same story: trait hook now,
-//!   real verification lives behind the `schnorr-sso` feature in a
-//!   follow-up.
+//! - **Attestation-CA pinning for passkeys** — `WebauthnPasskey` uses
+//!   reasonable defaults (no CA pinning). Integrators who need
+//!   tighter policies implement [`passkey::PasskeyBackend`] directly
+//!   on their own `webauthn_rs::Webauthn` instance.
+//! - **npub ↔ WebID profile lookup** — `Nip07SchnorrSso` verifies the
+//!   Schnorr handshake and returns a `SchnorrAssertion`; resolving
+//!   that assertion to a Solid WebID is the consumer's job (a lookup
+//!   against the user store or a `did:nostr` resolver).
 
 #![warn(rust_2018_idioms)]
 #![forbid(unsafe_code)]
@@ -52,6 +54,7 @@
 pub mod credentials;
 pub mod discovery;
 pub mod error;
+pub mod invites;
 pub mod jwks;
 pub mod provider;
 pub mod registration;
@@ -71,6 +74,10 @@ pub mod axum_binder;
 pub use credentials::{login, CredentialsResponse, LoginError};
 pub use discovery::{build_discovery, DiscoveryDocument};
 pub use error::ProviderError;
+pub use invites::{
+    mint_token as mint_invite_token, parse_duration as parse_invite_duration, InMemoryInviteStore,
+    Invite, InviteStore, InviteStoreError,
+};
 pub use jwks::{Jwks, JwksError, SigningKey};
 pub use provider::{
     AuthorizeRequest, AuthorizeResponse, Provider, ProviderConfig, TokenRequest, TokenResponse,

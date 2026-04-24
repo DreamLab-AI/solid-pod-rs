@@ -15,7 +15,11 @@ use solid_pod_rs::{
     config::{ConfigLoader, ServerConfig, StorageBackendConfig},
     storage::{fs::FsBackend, memory::MemoryBackend, Storage},
 };
-use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta};
+use solid_pod_rs_server::{
+    build_app,
+    cli::{dispatch as dispatch_operator_cmd, OperatorCommand},
+    AppState, NodeInfoMeta,
+};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -63,6 +67,12 @@ struct Cli {
     #[cfg(feature = "tls")]
     #[arg(long, env = "JSS_SSL_CERT")]
     ssl_cert: Option<String>,
+
+    /// Operator subcommands (Sprint 11): `quota reconcile`,
+    /// `account delete`, `invite create`. When absent the binary runs
+    /// the HTTP server (default / existing behaviour).
+    #[command(subcommand)]
+    op: Option<OperatorCommand>,
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +147,12 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .with_target(true)
         .init();
+
+    // Sprint 11: operator subcommand short-circuit — no HTTP server
+    // lifecycle for one-shot admin commands.
+    if let Some(op) = cli.op {
+        return dispatch_operator_cmd(op).await;
+    }
 
     let mut loader = ConfigLoader::new().with_defaults();
     if let Some(path) = cli.config.as_deref() {

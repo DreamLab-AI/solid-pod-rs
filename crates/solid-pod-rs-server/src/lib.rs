@@ -37,6 +37,8 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
+pub mod cli;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -718,6 +720,122 @@ fn path_is_traversal(path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint 11 (row 158): top-level 5xx logging middleware.
+//
+// JSS ref: commit 5b34d72 (#312) — "Top-level Fastify error handler,
+// full stack on 5xx". Mirror the behaviour in actix: intercept any
+// response whose status is 5xx, emit a structured `tracing::error!`
+// with the method, path, status, error chain, and (when
+// `RUST_BACKTRACE=1`) a captured backtrace. The response body is not
+// altered; we only observe.
+// ---------------------------------------------------------------------------
+
+/// Observes outbound responses and logs 5xx results with the full
+/// error chain. Pass-through on 2xx/3xx/4xx. Shaped as an actix
+/// [`Transform`] so it slots into the middleware stack in
+/// [`build_app`].
+pub struct ErrorLoggingMiddleware;
+
+impl<S, B> Transform<S, ServiceRequest> for ErrorLoggingMiddleware
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type InitError = ();
+    type Transform = ErrorLoggingMiddlewareService<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(ErrorLoggingMiddlewareService { service }))
+    }
+}
+
+/// Per-request service instance produced by [`ErrorLoggingMiddleware`].
+pub struct ErrorLoggingMiddlewareService<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for ErrorLoggingMiddlewareService<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        // Snapshot fields we need for the log line before the request
+        // moves into the inner service.
+        let method = req.method().as_str().to_string();
+        let path = req.path().to_string();
+
+        let fut = self.service.call(req);
+        Box::pin(async move {
+            let response = fut.await?;
+            let status = response.status();
+            if status.is_server_error() {
+                log_5xx(&method, &path, status, response.response().error());
+            }
+            Ok(response)
+        })
+    }
+}
+
+/// Emit the structured 5xx log line. Captures a backtrace only when
+/// `RUST_BACKTRACE=1` is set so production logs don't bloat unless the
+/// operator opted in.
+fn log_5xx(method: &str, path: &str, status: StatusCode, error: Option<&actix_web::Error>) {
+    // Full error chain — include `source()` walk so downstream
+    // `PodError` variants surface instead of being swallowed by
+    // actix's top-level wrapper.
+    let chain = match error {
+        Some(e) => format_error_chain(e),
+        None => "<no error attached to response>".to_string(),
+    };
+
+    let backtrace = if std::env::var("RUST_BACKTRACE").ok().as_deref() == Some("1") {
+        Some(std::backtrace::Backtrace::force_capture().to_string())
+    } else {
+        None
+    };
+
+    tracing::error!(
+        target: "solid_pod_rs_server::http",
+        method = %method,
+        path = %path,
+        status = %status.as_u16(),
+        error.chain = %chain,
+        backtrace = backtrace.as_deref().unwrap_or(""),
+        "5xx response"
+    );
+}
+
+/// Walk an actix `Error` + its `source()` chain into a single
+/// human-readable string (one segment per cause, separated by ` -> `).
+///
+/// `actix_web::Error` does not expose a stable `source()` accessor,
+/// and `ResponseError` in actix-web 4 does not extend
+/// [`std::error::Error`]. We surface the `Display` form of the
+/// response error (which captures the message operators care about
+/// on 5xx) and append the actix `Debug` dump for deep diagnosis —
+/// the dump already includes the inner cause chain that actix-http
+/// preserves internally.
+fn format_error_chain(e: &actix_web::Error) -> String {
+    let summary = format!("{}", e.as_response_error());
+    let debug = format!("{e:?}");
+    if debug == summary || debug.is_empty() {
+        summary
+    } else {
+        format!("{summary} -> {debug}")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Dotfile allowlist middleware
 // ---------------------------------------------------------------------------
 
@@ -818,6 +936,11 @@ pub fn build_app(
     let mut app = App::new()
         .app_data(web::Data::new(state.clone()))
         .app_data(web::PayloadConfig::new(body_cap))
+        // Sprint 11 (row 158): outermost layer so it observes every
+        // response — including those that short-circuited in inner
+        // guards. Wrapping first means `wrap()` applies it last in
+        // actix's stack order.
+        .wrap(ErrorLoggingMiddleware)
         // `MergeOnly` collapses duplicate slashes (//a → /a) without
         // stripping the trailing slash, which is the container/resource
         // discriminator in LDP.

@@ -24,6 +24,12 @@ pub enum UserStoreError {
     /// Store-specific back-end failure (DB down, etc).
     #[error("backend: {0}")]
     Backend(String),
+
+    /// The store does not implement this operation. Surfaced by the
+    /// default [`UserStore::delete`] so that stores opting out of
+    /// Sprint-11 `account delete` still compile.
+    #[error("not implemented")]
+    NotImplemented,
 }
 
 /// User record. `password_hash` is an Argon2id PHC string.
@@ -66,6 +72,18 @@ pub trait UserStore: Send + Sync + 'static {
             .verify_password(password.as_bytes(), &parsed)
             .is_ok();
         Ok(ok)
+    }
+
+    /// Delete a user and every record they own (pods, WebID profile,
+    /// sessions). Mirrors JSS commit `d9e56d8` (#292).
+    ///
+    /// Default impl returns [`UserStoreError::NotImplemented`] so
+    /// existing stores compile unchanged; operators wire this on the
+    /// concrete store they ship. Returns `Ok(false)` when the `id` is
+    /// unknown (already deleted / never existed), `Ok(true)` when a
+    /// row was actually removed.
+    async fn delete(&self, _id: &str) -> Result<bool, UserStoreError> {
+        Err(UserStoreError::NotImplemented)
     }
 }
 
@@ -123,6 +141,22 @@ impl UserStore for InMemoryUserStore {
             .find(|u| u.id == id)
             .cloned())
     }
+
+    async fn delete(&self, id: &str) -> Result<bool, UserStoreError> {
+        let mut guard = self.inner.write();
+        // Find the keyed entry whose row matches this id and remove it.
+        let email_key = guard
+            .iter()
+            .find(|(_, u)| u.id == id)
+            .map(|(k, _)| k.clone());
+        match email_key {
+            Some(k) => {
+                guard.remove(&k);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +186,28 @@ mod tests {
 
         assert!(store.verify_password(&found, "correct-horse-battery-staple").await.unwrap());
         assert!(!store.verify_password(&found, "wrong-password").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn inmemory_delete_removes_user() {
+        let store = InMemoryUserStore::new();
+        store
+            .insert_user(
+                "u-del",
+                "del@example.com",
+                "https://del.example/profile#me",
+                None,
+                "pw",
+            )
+            .unwrap();
+        assert!(store.find_by_id("u-del").await.unwrap().is_some());
+
+        let removed = store.delete("u-del").await.unwrap();
+        assert!(removed, "first delete should return true");
+        assert!(store.find_by_id("u-del").await.unwrap().is_none());
+
+        let removed_again = store.delete("u-del").await.unwrap();
+        assert!(!removed_again, "second delete should return false");
     }
 
     #[tokio::test]

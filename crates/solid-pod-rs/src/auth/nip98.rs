@@ -225,6 +225,76 @@ pub fn authorization_header(token_b64: &str) -> String {
     format!("{NOSTR_PREFIX}{token_b64}")
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 11 row 152: SelfSignedVerifier adapter.
+//
+// Wraps `verify_at` in the CID verifier contract so NIP-98 is one of
+// the proof formats a `CidVerifier` can dispatch. The wire format is
+// the `Nostr <base64>` header exactly as produced by clients today —
+// the adapter strips the `Nostr ` prefix if the caller supplied the
+// raw header, or accepts the bare token otherwise.
+// ---------------------------------------------------------------------------
+
+use crate::auth::self_signed::{
+    ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
+};
+
+/// [`SelfSignedVerifier`] adapter for NIP-98.
+///
+/// Accepts either `Nostr <b64>` (raw header) or `<b64>` (already-stripped
+/// token). On success the returned subject is `urn:nip98:<pubkey>` with
+/// a `verification_method` of `urn:nip98:<pubkey>#key-0`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Nip98Verifier;
+
+#[async_trait::async_trait]
+impl SelfSignedVerifier for Nip98Verifier {
+    async fn verify(
+        &self,
+        envelope: &ProofEnvelope<'_>,
+    ) -> Result<Option<VerifiedSubject>, SelfSignedError> {
+        // Decide whether this looks like NIP-98. We accept either the
+        // full `Nostr <b64>` header OR a bare token that begins with a
+        // base64-ish byte — so the CID dispatcher can hand us either.
+        let looks_like_header = envelope.proof.starts_with(NOSTR_PREFIX);
+        let header = if looks_like_header {
+            envelope.proof.to_string()
+        } else {
+            format!("{NOSTR_PREFIX}{}", envelope.proof)
+        };
+
+        match verify_at(&header, envelope.uri, envelope.method, None, envelope.now_unix) {
+            Ok(v) => Ok(Some(VerifiedSubject {
+                did: format!("urn:nip98:{}", v.pubkey),
+                verification_method: format!("urn:nip98:{}#key-0", v.pubkey),
+            })),
+            // Header-shaped proof (`Nostr …`) that fails to parse — the
+            // client clearly intended a NIP-98 event, so surface the
+            // failure verbatim so the dispatcher stops.
+            Err(crate::error::PodError::Nip98(msg)) if looks_like_header => {
+                if msg.contains("timestamp") {
+                    Err(SelfSignedError::OutOfTimeWindow(msg))
+                } else if msg.contains("URL mismatch") || msg.contains("method mismatch") {
+                    Err(SelfSignedError::ScopeMismatch(msg))
+                } else if msg.contains("schnorr") || msg.contains("id mismatch") {
+                    Err(SelfSignedError::InvalidSignature(msg))
+                } else {
+                    Err(SelfSignedError::Malformed(msg))
+                }
+            }
+            // Bare (non-header) input — treat any structural failure as
+            // "not NIP-98, try the next verifier". Only surface errors
+            // for the well-formed-event-but-bad-signature case.
+            Err(_) if !looks_like_header => Ok(None),
+            Err(e) => Err(SelfSignedError::Malformed(e.to_string())),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "nip98"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

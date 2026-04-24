@@ -22,20 +22,23 @@ Parity rows flipped from `missing` → `present` (tracked in
 |  79 | `/idp/credentials` (email+password + rate-limit) | `src/idp/credentials.js`       |
 | 130 | JWKS publication (IdP side)          | `src/idp/keys.js`              |
 
-## What is `partial-parity`
+## WebAuthn + Schnorr SSO (rows 80, 81)
 
-These rows have **trait hooks** shipped so consumer crates can plug
-real implementations in without breaking `Provider`'s API. The
-default impls return `Err(Unimplemented)`; a follow-up sprint will
-land the real backends.
+Sprint 11 lands real backends for both rows:
 
-| Row | What's deferred                      | Why                            |
-|----:|--------------------------------------|--------------------------------|
-|  80 | Passkeys / WebAuthn — trait [`PasskeyBackend`] behind `passkey` feature | Real impl needs `webauthn-rs` (~400 LOC of attestation/assertion fixture wiring) |
-|  81 | Schnorr SSO (NIP-07) — trait [`SchnorrBackend`] behind `schnorr-sso` feature | Real impl needs `nip98-schnorr` feature chain + `did-nostr` WebID mapping from core |
+| Row | Backend | Feature flag | Notes |
+|----:|---------|--------------|-------|
+|  80 | [`WebauthnPasskey`] on top of `webauthn-rs` 0.5 | `passkey` | Reasonable defaults: user-verification required, `EdDSA`+`ES256`, single-step registration, in-memory challenge/credential store. Swap for a persistent store via a custom [`PasskeyBackend`] impl. |
+|  81 | [`Nip07SchnorrSso`] on top of core `nip98-schnorr` | `schnorr-sso` | 32-byte CSPRNG challenges, 5-minute default TTL, one-shot consume-on-verify. Canonical digest is `SHA-256(token ‖ user_id ‖ pubkey)`. |
 
-When the backend lands, nothing in `Provider` changes — the consumer
-passes a real `Arc<dyn PasskeyBackend>` instead of `Arc<NullPasskeyBackend>`.
+The trait types ([`PasskeyBackend`], [`SchnorrSso`]) stay stable so
+integrators who want to bring their own backend — e.g. attestation-
+pinned WebAuthn, or Redis-backed Schnorr state — can swap the default
+impl without touching `Provider`.
+
+The zero-op `PasskeyTodo` and `SchnorrTodo` types remain as
+`#[doc(hidden)]` fallbacks: useful for wiring a provider up in tests
+before deciding which backend to enable.
 
 ## What is `wontfix-in-crate`
 

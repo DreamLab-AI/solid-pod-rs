@@ -13,16 +13,16 @@
 //! - F6f: unknown JSON field → serde allows (tolerant)
 //! - F6g: missing required field → error with clear message
 //! - F6h: JSS_STORAGE_TYPE=memory + JSS_STORAGE_ROOT set → warning
-//!        logged, memory wins
+//!   logged, memory wins
 //!
 //! These tests mutate process env vars. Rust's test runner
 //! parallelises by default, so each env-touching test isolates the
 //! vars via a module-scoped `Mutex` guard.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use solid_pod_rs::config::{ConfigLoader, StorageBackendConfig};
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Env-var isolation
@@ -32,7 +32,7 @@ use solid_pod_rs::config::{ConfigLoader, StorageBackendConfig};
 // scope.
 // ---------------------------------------------------------------------------
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// All JSS_* env vars the loader knows about. We clear them before
 /// every env-driven test so earlier tests can't leak state.
@@ -83,7 +83,7 @@ fn fixture_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn f6a_defaults_produce_valid_config() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let cfg = ConfigLoader::new()
@@ -115,7 +115,7 @@ async fn f6a_defaults_produce_valid_config() {
 
 #[tokio::test]
 async fn f6b_json_file_overrides_defaults() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -148,7 +148,7 @@ async fn f6b_json_file_overrides_defaults() {
 
 #[tokio::test]
 async fn f6c_env_var_overrides_file() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -182,7 +182,7 @@ async fn f6c_env_var_overrides_file() {
 
 #[tokio::test]
 async fn f6d_jss_example_config_boots() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let cfg = ConfigLoader::new()
@@ -220,7 +220,7 @@ async fn f6d_jss_example_config_boots() {
 
 #[tokio::test]
 async fn f6e_invalid_port_in_file_is_error() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -252,7 +252,7 @@ async fn f6e_invalid_port_in_file_is_error() {
 
 #[tokio::test]
 async fn f6f_unknown_json_field_is_tolerated() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -288,7 +288,7 @@ async fn f6f_unknown_json_field_is_tolerated() {
 
 #[tokio::test]
 async fn f6g_missing_required_field_errors_with_clear_message() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -325,7 +325,7 @@ async fn f6g_missing_required_field_errors_with_clear_message() {
 
 #[tokio::test]
 async fn f6h_memory_type_with_root_warns_memory_wins() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     std::env::set_var("JSS_STORAGE_TYPE", "memory");
@@ -352,7 +352,7 @@ async fn f6h_memory_type_with_root_warns_memory_wins() {
 
 #[tokio::test]
 async fn full_precedence_chain() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
     // Default port is 3000.

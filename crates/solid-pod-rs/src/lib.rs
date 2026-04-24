@@ -61,6 +61,10 @@ pub mod oidc;
 pub mod handlers;
 
 // Re-exports for ergonomic consumers.
+pub use auth::nip98::Nip98Verifier;
+pub use auth::self_signed::{
+    CidVerifier, ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
+};
 pub use error::PodError;
 pub use metrics::SecurityMetrics;
 pub use security::{

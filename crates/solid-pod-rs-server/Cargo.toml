@@ -25,6 +25,16 @@ path = "src/main.rs"
 # Library core — the binary's sole non-transport dependency.
 solid-pod-rs = { path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
 
+# IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
+# dispatch into UserStore::delete and the new InviteStore trait.
+solid-pod-rs-idp = { path = "../solid-pod-rs-idp" }
+
+# Sprint-11 CLI: `invite create` surfaces invite records with
+# absolute expiry timestamps. Kept here rather than transitively
+# through solid-pod-rs so the server binary can build invite URLs
+# independently.
+chrono = { version = "0.4", features = ["clock"] }
+
 # HTTP transport.
 actix-web = "4"
 
@@ -76,3 +86,6 @@ security-primitives = ["solid-pod-rs/security-primitives"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+parking_lot = "0.12"
+async-trait = "0.1"

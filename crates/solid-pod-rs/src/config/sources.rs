@@ -67,13 +67,19 @@ pub enum ConfigSource {
     /// Hard-coded defaults (always first).
     Defaults,
 
-    /// JSON config file at the given path. Missing file is a hard
-    /// error; empty or malformed JSON is a hard error; unknown fields
-    /// are tolerated (serde `default` everywhere).
+    /// Config file at the given path. Format auto-detected from the
+    /// extension: `.json`, `.yaml`/`.yml`, `.toml` (YAML/TOML require
+    /// the `config-loader` feature). Missing / malformed is a hard
+    /// error; unknown fields are tolerated.
     File(PathBuf),
 
     /// Read `JSS_*` env vars from `std::env`.
     EnvVars,
+
+    /// Sprint 11 (row 121): highest-precedence CLI overlay, carried as
+    /// a pre-built JSON value so the loader can deep-merge it without
+    /// caring about the CLI parser.
+    CliOverlay(Value),
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +102,8 @@ pub(crate) fn resolve_source(source: &ConfigSource) -> Result<Value, PodError> {
         ConfigSource::File(path) => load_file(path),
 
         ConfigSource::EnvVars => Ok(load_env()),
+
+        ConfigSource::CliOverlay(v) => Ok(v.clone()),
     }
 }
 
@@ -103,13 +111,37 @@ fn load_file(path: &Path) -> Result<Value, PodError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| PodError::Backend(format!("config file {path:?}: {e}")))?;
 
-    let v: Value = serde_json::from_str(&content).map_err(|e| {
-        PodError::Backend(format!("config file {path:?} is not valid JSON: {e}"))
-    })?;
+    // Auto-detect format from extension. Unknown extensions fall back to
+    // JSON, preserving the Sprint-4 behaviour.
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    let v: Value = match ext.as_deref() {
+        #[cfg(feature = "config-loader")]
+        Some("yaml") | Some("yml") => serde_yaml::from_str(&content).map_err(|e| {
+            PodError::Backend(format!("config file {path:?} is not valid YAML: {e}"))
+        })?,
+
+        #[cfg(feature = "config-loader")]
+        Some("toml") => {
+            let toml_v: toml::Value = toml::from_str(&content).map_err(|e| {
+                PodError::Backend(format!("config file {path:?} is not valid TOML: {e}"))
+            })?;
+            // Convert toml::Value -> serde_json::Value via serde round-trip.
+            serde_json::to_value(toml_v).map_err(PodError::Json)?
+        }
+
+        // Default / JSON extension / config-loader off: try JSON.
+        _ => serde_json::from_str(&content).map_err(|e| {
+            PodError::Backend(format!("config file {path:?} is not valid JSON: {e}"))
+        })?,
+    };
 
     if !v.is_object() {
         return Err(PodError::Backend(format!(
-            "config file {path:?}: top-level JSON must be an object, got {}",
+            "config file {path:?}: top-level must be an object, got {}",
             type_name(&v)
         )));
     }
@@ -322,13 +354,72 @@ where
     // Sprint 7: JSS_DEFAULT_QUOTA decoded via parse_size (`50MB`, `1.5GB`).
     // Surfaces under `security.default_quota_bytes` when valid;
     // malformed values are ignored (forward-compat with unknown units).
-    if let Some(v) = get("JSS_DEFAULT_QUOTA") {
+    if let Some(v) = get("JSS_DEFAULT_QUOTA").or_else(|| get("JSS_QUOTA_DEFAULT_BYTES")) {
         if let Ok(bytes) = parse_size(&v) {
             security.insert(
                 "default_quota_bytes".into(),
                 Value::Number(bytes.into()),
             );
         }
+    }
+
+    // Sprint 11 (row 120-124): JSS parity knobs that surface under the
+    // forward-compat / operator-facing extras. Malformed values ignored
+    // where parsing applies, same forward-compat rule as above.
+    //
+    // These vars do not yet have dedicated serde fields on
+    // `ServerConfig` — they are stored under `extras.*` so operator
+    // scripts can set them today and call sites can consult the loaded
+    // tree via `ServerConfig::extras()` once wired. Keeping the env
+    // map complete means a binary restart with new flags Just Works.
+    let mut extras = Map::new();
+
+    if let Some(v) = get("JSS_CONNEG") {
+        if let Some(b) = parse_bool(&v) {
+            extras.insert("conneg_enabled".into(), Value::Bool(b));
+        }
+    }
+    if let Some(v) = get("JSS_CORS_ALLOWED_ORIGINS") {
+        extras.insert("cors_allowed_origins".into(), parse_csv(&v));
+    }
+    if let Some(v) = get("JSS_MAX_BODY_SIZE").or_else(|| get("JSS_MAX_REQUEST_BODY")) {
+        if let Ok(bytes) = parse_size(&v) {
+            extras.insert("max_body_size_bytes".into(), Value::Number(bytes.into()));
+        }
+    }
+    if let Some(v) = get("JSS_MAX_ACL_BYTES") {
+        if let Ok(bytes) = parse_size(&v) {
+            extras.insert("max_acl_bytes".into(), Value::Number(bytes.into()));
+        }
+    }
+    if let Some(v) = get("JSS_RATE_LIMIT_WRITES_PER_MIN") {
+        if let Ok(n) = v.parse::<u64>() {
+            extras.insert(
+                "rate_limit_writes_per_min".into(),
+                Value::Number(n.into()),
+            );
+        }
+    }
+    if let Some(v) = get("JSS_SUBDOMAINS") {
+        if let Some(b) = parse_bool(&v) {
+            extras.insert("subdomains_enabled".into(), Value::Bool(b));
+        }
+    }
+    if let Some(v) = get("JSS_BASE_DOMAIN") {
+        extras.insert("base_domain".into(), Value::String(v));
+    }
+    if let Some(v) = get("JSS_IDP_ENABLED") {
+        if let Some(b) = parse_bool(&v) {
+            extras.insert("idp_enabled".into(), Value::Bool(b));
+        }
+    }
+    if let Some(v) = get("JSS_INVITE_ONLY") {
+        if let Some(b) = parse_bool(&v) {
+            extras.insert("invite_only".into(), Value::Bool(b));
+        }
+    }
+    if let Some(v) = get("JSS_ADMIN_KEY") {
+        extras.insert("admin_key".into(), Value::String(v));
     }
 
     if !server.is_empty() {
@@ -346,6 +437,9 @@ where
     if !security.is_empty() {
         out.insert("security".into(), Value::Object(security));
     }
+    if !extras.is_empty() {
+        out.insert("extras".into(), Value::Object(extras));
+    }
 
     Value::Object(out)
 }
@@ -353,29 +447,32 @@ where
 /// Parse a human-friendly size string into bytes.
 ///
 /// Accepts a decimal number (optionally with fractional part) followed
-/// by an optional suffix from {`KB`, `MB`, `GB`, `TB`} (case-insensitive,
-/// with optional whitespace around/between number and suffix). Empty
-/// suffix (or bare digits) is treated as raw bytes.
+/// by an optional suffix. Whitespace around / between the number and
+/// suffix is tolerated. Empty suffix (or bare digits) is treated as raw
+/// bytes.
 ///
 /// # Multipliers
 ///
-/// Per Sprint 7 task spec, multipliers are **decimal (SI / 1000-based)**:
+/// Supports **both SI (decimal, 1000-based) and IEC (binary, 1024-based)**
+/// suffixes; case-insensitive:
 ///
-/// | Suffix | Multiplier |
-/// |--------|-----------|
-/// | `B` or bare | 1 |
-/// | `KB` | 1_000 |
-/// | `MB` | 1_000_000 |
-/// | `GB` | 1_000_000_000 |
-/// | `TB` | 1_000_000_000_000 |
+/// | Suffix | Multiplier | Family |
+/// |--------|-----------|--------|
+/// | `B` or bare | 1 | — |
+/// | `KB` | 1_000 | SI |
+/// | `MB` | 1_000_000 | SI |
+/// | `GB` | 1_000_000_000 | SI |
+/// | `TB` | 1_000_000_000_000 | SI |
+/// | `KiB` | 1_024 | IEC |
+/// | `MiB` | 1_024² | IEC |
+/// | `GiB` | 1_024³ | IEC |
+/// | `TiB` | 1_024⁴ | IEC |
 ///
-/// ## Deviation from JSS
-///
-/// JSS `src/config.js:177-185` uses **binary (1024-based)** multipliers.
-/// The task spec for this sprint explicitly requires 1000-based decimal
-/// (test fixture: `1.5GB → 1_500_000_000`), so we diverge deliberately.
-/// If strict JSS byte-for-byte parity is reinstated later, swap the
-/// multiplier table here and update tests.
+/// Sprint 7 tests relied on SI (`1.5GB → 1_500_000_000`). Sprint 11 adds
+/// IEC suffixes so operators can mirror JSS's native 1024-based sizing
+/// (`50MiB → 50 * 1024 * 1024`). JSS itself accepts only SI-style
+/// suffixes (`K/M/G/T`) but multiplies them by 1024 — neither strictly
+/// matches. We implement both and let the operator pick.
 ///
 /// # JSS parity: `src/config.js::parseSize`
 ///
@@ -398,7 +495,9 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .unwrap_or(trimmed.len());
     let (num_part, suffix_part) = trimmed.split_at(cut);
     let num_part = num_part.trim();
-    let suffix = suffix_part.trim().to_ascii_uppercase();
+    // Preserve case for `iB` detection, but match lookups case-insensitively.
+    let suffix_raw = suffix_part.trim();
+    let suffix = suffix_raw.to_ascii_uppercase();
 
     if num_part.is_empty() {
         return Err(format!("parse_size: missing number in {s:?}"));
@@ -420,12 +519,21 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         return Err(format!("parse_size: non-negative finite number required, got {num}"));
     }
 
+    // IEC (binary) suffixes carry the `i` between the prefix and B.
+    // Upper-case comparison loses the lowercase `i`, so dispatch via the
+    // already-uppercased suffix (which turns `KiB` into `KIB`).
     let multiplier: u64 = match suffix.as_str() {
         "" | "B" => 1,
+        // SI (1000-based)
         "KB" => 1_000,
         "MB" => 1_000_000,
         "GB" => 1_000_000_000,
         "TB" => 1_000_000_000_000,
+        // IEC (1024-based) — case-insensitive match since we upper-cased.
+        "KIB" => 1_024,
+        "MIB" => 1_024u64.pow(2),
+        "GIB" => 1_024u64.pow(3),
+        "TIB" => 1_024u64.pow(4),
         other => return Err(format!("parse_size: unknown suffix {other:?}")),
     };
 

@@ -6,6 +6,7 @@ members = [
     "crates/solid-pod-rs-git",
     "crates/solid-pod-rs-idp",
     "crates/solid-pod-rs-nostr",
+    "crates/solid-pod-rs-didkey",
 ]
 resolver = "2"
 

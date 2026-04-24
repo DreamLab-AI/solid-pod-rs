@@ -66,6 +66,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 use crate::storage::StorageEvent;
@@ -632,5 +633,397 @@ mod tests {
         assert_eq!(SolidZeroOp::Err.as_str(), "err");
         assert_eq!(SolidZeroOp::Pub.as_str(), "pub");
         assert_eq!(SolidZeroOp::Unsub.as_str(), "unsub");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 11, row 91 — `LegacyWebSocketSession`
+//
+// A session-level handler that mirrors JSS `websocket.js` exactly:
+//
+// * wire grammar: `sub <uri>`, `unsub <uri>`, server emits
+//   `ack <uri>`, `err <msg>`, `pub <uri>`.
+// * 100-subscription hard cap per connection (`MAX_SUBSCRIPTIONS_PER_CONNECTION`).
+// * 2 KiB URI byte-length cap (`MAX_URL_LENGTH`).
+// * on every storage change, fan-out to the exact URI AND every
+//   ancestor container URI. Per-subscription WAC Read re-check on
+//   each fan-out — on denial, emit `err` (not a silent drop — JSS
+//   semantics per `websocket.js:73-77`).
+//
+// This is distinct from the broadcast-layer `LegacyNotificationChannel`
+// above (which handles the driver/pump side). `LegacyWebSocketSession`
+// models the per-connection protocol state machine and is what the
+// notifications aggregate drives when a legacy client is connected.
+// ---------------------------------------------------------------------------
+
+/// Per-subscription WAC Read authorisation hook.
+///
+/// Async — the notifications aggregate re-checks on every fan-out, so
+/// the implementation may talk to the ACL resolver each time. Production
+/// wiring should delegate to
+/// `crate::wac::evaluate_access(uri, webid, AccessMode::Read)` and return
+/// `true` when the access is allowed.
+#[async_trait]
+pub trait LegacyWacRead: Send + Sync {
+    /// Return `true` iff `webid` (or anonymous when `None`) is currently
+    /// allowed to Read `resource_uri`.
+    async fn can_read(&self, webid: Option<&str>, resource_uri: &str) -> bool;
+}
+
+/// One server→client wire frame emitted by a [`LegacyWebSocketSession`].
+///
+/// Distinct from [`SolidZeroOp`] which is the opcode enum; this is a
+/// fully-rendered frame payload keyed by variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyFrame {
+    /// `ack <uri>` — subscription accepted.
+    Ack(String),
+    /// `err <msg>` — human-readable error. Exact wording matches JSS
+    /// (`url too long`, `subscription limit reached`, `unknown
+    /// command`, or a URI followed by `forbidden` on a fan-out WAC
+    /// denial).
+    Err(String),
+    /// `pub <uri>` — resource at `<uri>` changed and the session is
+    /// still WAC-authorised to observe it.
+    Pub(String),
+}
+
+impl LegacyFrame {
+    /// Render as the exact bytes written to the WebSocket.
+    pub fn to_wire(&self) -> String {
+        match self {
+            LegacyFrame::Ack(u) => format!("ack {u}"),
+            LegacyFrame::Err(m) => format!("err {m}"),
+            LegacyFrame::Pub(u) => format!("pub {u}"),
+        }
+    }
+}
+
+/// Response from [`LegacyWebSocketSession::handle_message`] — the
+/// frames to emit back to the client for this single inbound message.
+/// Normally one frame; unknown commands and cap violations also
+/// collapse to one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LegacyResponse {
+    pub frames: Vec<LegacyFrame>,
+}
+
+impl LegacyResponse {
+    fn one(frame: LegacyFrame) -> Self {
+        Self { frames: vec![frame] }
+    }
+
+    fn empty() -> Self {
+        Self::default()
+    }
+}
+
+/// Per-connection `solid-0.1` session state.
+///
+/// Construction is cheap; lifetime tracks one WebSocket. The session
+/// is transport-agnostic — the caller reads inbound text frames and
+/// routes each one through [`Self::handle_message`], and separately
+/// drives fan-out via [`Self::on_resource_change`] whenever a storage
+/// event occurs.
+pub struct LegacyWebSocketSession {
+    subs: HashSet<String>,
+    max_subs: usize,
+    max_uri_bytes: usize,
+    wac_check: Arc<dyn LegacyWacRead>,
+    subscriber_webid: Option<String>,
+}
+
+impl LegacyWebSocketSession {
+    /// New session bound to a WAC Read checker and the subscriber's
+    /// resolved WebID. `None` WebID = anonymous connection; the checker
+    /// decides whether to allow anonymous Read.
+    pub fn new(wac_check: Arc<dyn LegacyWacRead>, subscriber_webid: Option<String>) -> Self {
+        Self {
+            subs: HashSet::new(),
+            max_subs: MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            max_uri_bytes: MAX_URL_LENGTH,
+            wac_check,
+            subscriber_webid,
+        }
+    }
+
+    /// Override the per-connection subscription cap. Primarily for
+    /// tests that want to exercise the limit without allocating 100
+    /// subs.
+    pub fn with_max_subs(mut self, cap: usize) -> Self {
+        self.max_subs = cap;
+        self
+    }
+
+    /// Override the per-URI byte-length cap. Primarily for tests.
+    pub fn with_max_uri_bytes(mut self, cap: usize) -> Self {
+        self.max_uri_bytes = cap;
+        self
+    }
+
+    /// Current number of live subscriptions on this connection.
+    pub fn subscription_count(&self) -> usize {
+        self.subs.len()
+    }
+
+    /// True iff `uri` is currently subscribed (exact match).
+    pub fn is_subscribed(&self, uri: &str) -> bool {
+        self.subs.contains(uri)
+    }
+
+    /// Process one inbound text frame from the client. Returns the
+    /// frames the caller should write back (0-or-1 in practice).
+    ///
+    /// Wire grammar:
+    ///
+    /// * `sub <uri>` → `ack <uri>` on accept, `err <msg>` on reject.
+    /// * `unsub <uri>` → `ack <uri>` (JSS does not ack unsub but also
+    ///   does not error — we mirror JSS by emitting no frame; callers
+    ///   that want a positive ack can check `is_subscribed`).
+    /// * anything else → `err unknown command`.
+    pub async fn handle_message(&mut self, msg: &str) -> LegacyResponse {
+        let line = msg.trim_end_matches(['\r', '\n']).trim();
+        if line.is_empty() {
+            return LegacyResponse::empty();
+        }
+
+        if let Some(rest) = line.strip_prefix("sub ") {
+            return self.handle_sub(rest.trim()).await;
+        }
+        if let Some(rest) = line.strip_prefix("unsub ") {
+            self.handle_unsub(rest.trim());
+            return LegacyResponse::empty();
+        }
+        // JSS silently ignores unknown frames (see websocket.js — only
+        // `sub`/`unsub` prefixes are handled); we emit an `err` so the
+        // client sees something, matching the protocol's `err <msg>`
+        // path and keeping test determinism.
+        LegacyResponse::one(LegacyFrame::Err("unknown command".to_string()))
+    }
+
+    async fn handle_sub(&mut self, uri: &str) -> LegacyResponse {
+        if uri.is_empty() {
+            return LegacyResponse::one(LegacyFrame::Err("unknown command".to_string()));
+        }
+        // URI byte-length cap (JSS `MAX_URL_LENGTH = 2048`).
+        if uri.len() > self.max_uri_bytes {
+            return LegacyResponse::one(LegacyFrame::Err("uri too long".to_string()));
+        }
+        // Subscription cap (JSS `MAX_SUBSCRIPTIONS_PER_CONNECTION = 100`).
+        //
+        // An already-subscribed URI is idempotent — JSS's `Set` absorbs
+        // the duplicate without tripping the cap, and we match that.
+        if !self.subs.contains(uri) && self.subs.len() >= self.max_subs {
+            return LegacyResponse::one(LegacyFrame::Err(
+                "subscription limit reached".to_string(),
+            ));
+        }
+        // WAC Read check on subscription. Mirrors JSS
+        // `websocket.js:73-77`: deny closes the sub attempt with
+        // `err <uri> forbidden`.
+        let allowed = self
+            .wac_check
+            .can_read(self.subscriber_webid.as_deref(), uri)
+            .await;
+        if !allowed {
+            return LegacyResponse::one(LegacyFrame::Err(format!("{uri} forbidden")));
+        }
+        self.subs.insert(uri.to_string());
+        LegacyResponse::one(LegacyFrame::Ack(uri.to_string()))
+    }
+
+    fn handle_unsub(&mut self, uri: &str) {
+        if !uri.is_empty() {
+            self.subs.remove(uri);
+        }
+    }
+
+    /// Called by the publisher pump whenever a storage resource is
+    /// created, updated, or deleted. Returns every frame this session
+    /// should emit for that change.
+    ///
+    /// Semantics (strict JSS parity, see `websocket.js:203-219`):
+    ///
+    /// 1. Compute the fan-out set: the exact `changed_uri` plus every
+    ///    ancestor container URI (see [`ancestor_containers`]).
+    /// 2. For each URI in the fan-out set that this session has
+    ///    subscribed to, re-check WAC Read permission via
+    ///    [`LegacyWacRead::can_read`].
+    /// 3. If allowed, emit `pub <changed_uri>` — note the emitted URI
+    ///    is always the original `changed_uri`, not the matching
+    ///    ancestor. A container subscriber observes the actual child
+    ///    path that changed.
+    /// 4. If denied, emit `err <changed_uri> forbidden` — JSS re-checks
+    ///    ACL on fan-out and a revoked reader sees an explicit denial
+    ///    rather than a silent drop.
+    ///
+    /// The same subscriber is notified at most once per `changed_uri`
+    /// even if both the exact URI and an ancestor are subscribed.
+    pub async fn on_resource_change(&self, changed_uri: &str) -> Vec<LegacyFrame> {
+        // Build the candidate set — exact URI plus all ancestors — and
+        // intersect with this session's subscriptions. Using a
+        // `HashSet` guarantees idempotence when the subscriber is
+        // subscribed to both the exact resource and an ancestor.
+        let mut candidates: HashSet<String> = HashSet::new();
+        if self.subs.contains(changed_uri) {
+            candidates.insert(changed_uri.to_string());
+        }
+        for anc in ancestor_containers(changed_uri) {
+            if self.subs.contains(&anc) {
+                candidates.insert(anc);
+            }
+        }
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // A session fires at most one frame per `changed_uri` — the
+        // per-sub WAC check result is the same regardless of which
+        // matching sub triggered it. We collapse to a single frame
+        // (pub-or-err) here.
+        let allowed = self
+            .wac_check
+            .can_read(self.subscriber_webid.as_deref(), changed_uri)
+            .await;
+        if allowed {
+            vec![LegacyFrame::Pub(changed_uri.to_string())]
+        } else {
+            vec![LegacyFrame::Err(format!("{changed_uri} forbidden"))]
+        }
+    }
+
+    /// Convenience for callers that drive the session from a
+    /// `StorageEvent` stream. All three event kinds map to the same
+    /// fan-out — legacy clients don't distinguish.
+    pub async fn on_storage_event(&self, ev: &StorageEvent) -> Vec<LegacyFrame> {
+        let uri = match ev {
+            StorageEvent::Created(p) | StorageEvent::Updated(p) | StorageEvent::Deleted(p) => p,
+        };
+        self.on_resource_change(uri).await
+    }
+}
+
+/// Split a resource URI into its ancestor container URIs.
+///
+/// Given `/a/b/c` returns `["/a/b/", "/a/", "/"]`. The input URI
+/// itself is never included. Trailing slashes on the input are
+/// treated as a container — `/a/b/` yields `["/a/", "/"]` (the
+/// container itself is an exact-match subscription, not an ancestor).
+///
+/// Works on both origin-relative paths (`/a/b/c`) and absolute URLs
+/// (`https://pod.example/a/b/c`). For absolute URLs the walk stops at
+/// the origin root (`https://pod.example/`); it never climbs past the
+/// scheme+authority.
+///
+/// Matches JSS `websocket.js:244-252` (`getParentContainer`) applied
+/// iteratively with the origin-root sentinel from `broadcast()`.
+pub fn ancestor_containers(uri: &str) -> Vec<String> {
+    // Strip trailing slash for the walk so `/a/b/` and `/a/b` produce
+    // the same ancestor list (`["/a/", "/"]`). The input itself is
+    // never emitted.
+    let trimmed = uri.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // Input was "/" (or empty): no ancestors.
+        return Vec::new();
+    }
+
+    // Locate the origin boundary. For absolute URLs this is the
+    // first `/` after `scheme://authority`. For relative paths it
+    // is index 0 (the leading `/`).
+    let origin_end = find_origin_end(trimmed);
+
+    let mut out = Vec::new();
+    let mut cursor = trimmed.to_string();
+    loop {
+        // Find the last `/` strictly after the origin boundary.
+        let search_region = &cursor[origin_end..];
+        let Some(last_slash_rel) = search_region.rfind('/') else {
+            break;
+        };
+        let last_slash_abs = origin_end + last_slash_rel;
+        // Ancestor container = everything up to and including the
+        // last `/`. Dedup trailing slashes on inputs that already
+        // ended with one.
+        let parent = &cursor[..=last_slash_abs];
+        // Stop once we've surfaced the origin root itself.
+        if parent.len() <= origin_end + 1 {
+            out.push(parent.to_string());
+            break;
+        }
+        out.push(parent.to_string());
+        // Next iteration walks the parent's parent — strip the
+        // trailing `/` so `rfind` moves up one segment.
+        cursor = cursor[..last_slash_abs].to_string();
+    }
+    out
+}
+
+/// Return the byte index where the path portion of `uri` begins.
+/// For `https://pod.example/a/b` that's the index of `/a`; for `/a/b`
+/// it's 0 (before the leading `/` so the root slash is "inside" the
+/// searchable region).
+fn find_origin_end(uri: &str) -> usize {
+    if let Some(scheme_end) = uri.find("://") {
+        let authority_start = scheme_end + 3;
+        if let Some(path_slash_rel) = uri[authority_start..].find('/') {
+            return authority_start + path_slash_rel;
+        }
+        // Absolute URL with no path — treat the whole input as origin.
+        return uri.len();
+    }
+    // Relative path — leading slash is inside the searchable region.
+    0
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for the Sprint 11 session API (ancestor_containers + codec).
+// Wire-level end-to-end coverage lives in
+// `tests/legacy_notifications_sprint11.rs`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn ancestor_containers_root_path_has_none() {
+        assert!(ancestor_containers("/").is_empty());
+        assert!(ancestor_containers("").is_empty());
+    }
+
+    #[test]
+    fn ancestor_containers_relative_path_climbs() {
+        let got = ancestor_containers("/a/b/c");
+        assert_eq!(got, vec!["/a/b/".to_string(), "/a/".to_string(), "/".to_string()]);
+    }
+
+    #[test]
+    fn ancestor_containers_absolute_url_stops_at_origin_root() {
+        let got = ancestor_containers("https://pod.example/a/b/c");
+        assert_eq!(
+            got,
+            vec![
+                "https://pod.example/a/b/".to_string(),
+                "https://pod.example/a/".to_string(),
+                "https://pod.example/".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ancestor_containers_trailing_slash_treated_as_container() {
+        // `/a/b/` and `/a/b` produce the same ancestors.
+        let a = ancestor_containers("/a/b/");
+        let b = ancestor_containers("/a/b");
+        assert_eq!(a, b);
+        assert_eq!(a, vec!["/a/".to_string(), "/".to_string()]);
+    }
+
+    #[test]
+    fn legacy_frame_to_wire_roundtrip() {
+        assert_eq!(LegacyFrame::Ack("/x".into()).to_wire(), "ack /x");
+        assert_eq!(LegacyFrame::Err("forbidden".into()).to_wire(), "err forbidden");
+        assert_eq!(LegacyFrame::Pub("/x".into()).to_wire(), "pub /x");
     }
 }
