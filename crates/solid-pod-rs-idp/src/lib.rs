@@ -1,28 +1,84 @@
 //! # solid-pod-rs-idp
 //!
-//! Reserved for v0.5.0 implementation. See the parent workspace's
-//! ADR-056 §D2 for the v0.5.0 sibling-crate strategy and
-//! `docs/design/jss-parity/06-library-surface-context.md` for the
-//! library-vs-server split (F7) this placeholder participates in.
+//! Minimum-viable Solid-OIDC identity provider. Port of the JSS IdP
+//! (`JavaScriptSolidServer/src/idp/*`). Target parity rows:
 //!
-//! **Status: Not yet implemented. Target milestone: v0.5.0.**
+//! | Row | JSS ref                     | Status        |
+//! |-----|-----------------------------|---------------|
+//! | 74  | `/auth` endpoint            | present       |
+//! | 75  | Dynamic Client Registration | present       |
+//! | 76  | OIDC discovery              | present       |
+//! | 77  | `/.well-known/jwks.json`    | present       |
+//! | 78  | Client Identifier Documents | present       |
+//! | 79  | Credentials flow + rate-lim | present       |
+//! | 80  | Passkeys / WebAuthn         | partial-parity (trait hook behind `passkey` feature) |
+//! | 81  | Schnorr SSO (NIP-07)        | partial-parity (trait hook behind `schnorr-sso`)     |
+//! | 82  | HTML interaction pages      | wontfix-in-crate (operator view-layer choice; see README) |
+//! | 130 | JWKS publication (IdP side) | present       |
 //!
-//! ## Planned scope
+//! ## Design boundaries
 //!
-//! - Solid-OIDC provider: `/auth`, `/token`, `/me`, `/reg`, `/session`
-//!   endpoints matching JSS `src/idp/index.js`.
-//! - OIDC discovery + JWKS publication.
-//! - Dynamic client registration (PARITY row 75 IdP side).
-//! - Client Identifier Documents (fetch + cache).
-//! - Credentials flow (email + password, rate-limited).
-//! - Passkeys / WebAuthn via a host-app integration trait.
-//! - Schnorr SSO (NIP-07 handshake) bridging Nostr identities into
-//!   Solid-OIDC sessions.
-//! - HTML login / register / consent pages behind a templating trait
-//!   so consumers pick their own view layer.
+//! - This crate owns **protocol logic**. Transport framing is the
+//!   consumer's problem: either plug `Provider` into your own
+//!   router, or enable the `axum-binder` feature for a ready-made
+//!   Router.
+//! - Storage is pluggable via [`UserStore`]. The built-in
+//!   [`InMemoryUserStore`] exists for tests and single-user
+//!   development; production deployments MUST ship their own
+//!   persistent store.
+//! - DPoP verification is delegated to
+//!   `solid_pod_rs::oidc::verify_dpop_proof`, so we never duplicate
+//!   the RFC 9449 alg-dispatch rules that already ship in core.
+//! - SSRF protection on Client Identifier Document fetches is
+//!   delegated to `solid_pod_rs::security::is_safe_url`.
+//! - Rate-limiting uses the core `RateLimiter` trait; callers can
+//!   substitute any implementation (Redis, sharded, etc).
 //!
-//! ## Parity references
+//! ## What this crate deliberately does NOT do
 //!
-//! PARITY-CHECKLIST rows 74–82 (GAP-ANALYSIS §E.3). Target ~3,500 LOC
-//! plus templates, shipped on an independent release cycle from the
-//! library core.
+//! - **HTML pages** — row 82. JSS bundles handlebars templates; this
+//!   crate leaves the view layer to the consumer. A minimal Askama /
+//!   Leptos adapter is trivially < 300 LOC on top of this crate.
+//! - **Full WebAuthn flow** — row 80. The `webauthn-rs` integration is
+//!   ~400 LOC of fixture wiring; we ship the trait shape so it can
+//!   be added in a follow-up sprint without breaking API.
+//! - **Full NIP-07 handshake** — row 81. Same story: trait hook now,
+//!   real verification lives behind the `schnorr-sso` feature in a
+//!   follow-up.
+
+#![warn(rust_2018_idioms)]
+#![forbid(unsafe_code)]
+
+pub mod credentials;
+pub mod discovery;
+pub mod error;
+pub mod jwks;
+pub mod provider;
+pub mod registration;
+pub mod session;
+pub mod tokens;
+pub mod user_store;
+
+#[cfg(feature = "passkey")]
+pub mod passkey;
+
+#[cfg(feature = "schnorr-sso")]
+pub mod schnorr;
+
+#[cfg(feature = "axum-binder")]
+pub mod axum_binder;
+
+pub use credentials::{login, CredentialsResponse, LoginError};
+pub use discovery::{build_discovery, DiscoveryDocument};
+pub use error::ProviderError;
+pub use jwks::{Jwks, JwksError, SigningKey};
+pub use provider::{
+    AuthorizeRequest, AuthorizeResponse, Provider, ProviderConfig, TokenRequest, TokenResponse,
+    UserInfo,
+};
+pub use registration::{
+    register_client, ClientDocument, ClientStore, RegError, RegistrationRequest,
+};
+pub use session::{SessionError, SessionId, SessionStore};
+pub use tokens::{issue_access_token, AccessToken, TokenError};
+pub use user_store::{InMemoryUserStore, User, UserStore, UserStoreError};

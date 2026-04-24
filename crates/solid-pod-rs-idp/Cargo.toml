@@ -1,12 +1,63 @@
 [package]
 name = "solid-pod-rs-idp"
-version = "0.0.0"
+version = "0.4.0-alpha.1"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Solid-OIDC identity provider for solid-pod-rs — reserved for v0.5.0"
+description = "Solid-OIDC identity provider (authorization-code + DPoP-bound tokens, JWKS, credentials, dynamic client registration) — Rust port of JavaScriptSolidServer/src/idp"
 repository = "https://github.com/dreamlab-ai/solid-pod-rs"
 readme = "README.md"
 publish = false
 
+[lib]
+name = "solid_pod_rs_idp"
+path = "src/lib.rs"
+
 [dependencies]
-# None yet — placeholder crate reserved for the v0.5.0 Solid-OIDC IDP surface.
+# Sprint 10: core provides DPoP verify, SSRF guard, RateLimiter trait,
+# and the Jwk/thumbprint helpers we build on. `oidc` pulls in
+# jsonwebtoken + openidconnect already. `rate-limit` gives us the
+# reference LruRateLimiter. `security-primitives` is implied by
+# `rate-limit`.
+solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives"] }
+
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jsonwebtoken = "9"
+argon2 = "0.5"
+rand = "0.8"
+thiserror = "1"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+base64 = "0.22"
+parking_lot = "0.12"
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+hex = "0.4"
+
+# Optional axum binder.
+axum = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Axum route factory (opt-in; consumers who use a different framework
+# skip it and wire `Provider` into their own router).
+axum-binder = ["dep:axum"]
+# Row 80 — WebAuthn trait hook. Actual webauthn-rs wiring is
+# deferred; this flag exposes the trait so downstream crates can
+# implement it.
+passkey = []
+# Row 81 — NIP-07 Schnorr SSO trait hook. Real verification uses the
+# core crate's `nip98-schnorr` feature; we expose a trait so consumers
+# can plug in the full handshake.
+schnorr-sso = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+serde_urlencoded = "0.7"

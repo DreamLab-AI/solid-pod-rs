@@ -1,12 +1,48 @@
 [package]
 name = "solid-pod-rs-activitypub"
-version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-only"
-description = "ActivityPub federation for solid-pod-rs — reserved for v0.5.0"
-repository = "https://github.com/dreamlab-ai/solid-pod-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+description = "ActivityPub Actor, inbox, outbox, HTTP Signatures, NodeInfo 2.1 for solid-pod-rs (JSS src/ap parity)"
 readme = "README.md"
-publish = false
 
 [dependencies]
-# None yet — placeholder crate reserved for the v0.5.0 ActivityPub surface.
+solid-pod-rs = { path = "../solid-pod-rs", default-features = false }
+
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = "1"
+tracing = "0.1"
+
+# SQLite persistence for followers/following/inbox/outbox/delivery_queue.
+# Match workspace version of rusqlite via sqlx's bundled backend to avoid
+# pulling a second native SQLite symbol set.
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "json"] }
+
+# HTTP Signatures (draft-cavage v12 + RFC 9421 superset) — AP
+# federation uses RSA-SHA256 signatures over the Digest/Signature header
+# set; core `notifications::signing` is Ed25519 only, so this crate
+# carries its own impl.
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+sha2 = "0.10"
+base64 = "0.22"
+httpdate = "1"
+rand = "0.8"
+
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+wiremock = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

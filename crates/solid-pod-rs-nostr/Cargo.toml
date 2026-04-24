@@ -1,12 +1,47 @@
 [package]
 name = "solid-pod-rs-nostr"
-version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-only"
-description = "did:nostr resolver and embedded Nostr relay for solid-pod-rs — reserved for v0.5.0"
-repository = "https://github.com/dreamlab-ai/solid-pod-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+description = "did:nostr DID documents, WebID resolver via alsoKnownAs, and NIP-01/11/16 relay for solid-pod-rs"
+keywords = ["solid", "nostr", "did", "relay", "webid"]
+categories = ["web-programming"]
 readme = "README.md"
-publish = false
+
+[lib]
+name = "solid_pod_rs_nostr"
+path = "src/lib.rs"
 
 [dependencies]
-# None yet — placeholder crate reserved for the v0.5.0 did:nostr / relay surface.
+# Core library: reuse NIP-98 Schnorr primitives (SigningKey/VerifyingKey
+# plumbing ship under `nip98-schnorr`) and SSRF policy for outbound fetch.
+solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["nip98-schnorr", "did-nostr", "security-primitives"] }
+
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "io-util"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+async-trait = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
+
+# Schnorr BIP-340 verification (NIP-01 event signatures).
+k256 = { version = "0.13", features = ["schnorr"] }
+hex = "0.4"
+sha2 = "0.10"
+
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+tempfile = "3"

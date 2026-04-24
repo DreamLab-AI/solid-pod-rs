@@ -1,24 +1,62 @@
 //! # solid-pod-rs-activitypub
 //!
-//! Reserved for v0.5.0 implementation. See the parent workspace's
-//! ADR-056 §D2 for the v0.5.0 sibling-crate strategy and
-//! `docs/design/jss-parity/06-library-surface-context.md` for the
-//! library-vs-server split (F7) this placeholder participates in.
+//! ActivityPub federation for `solid-pod-rs`, JSS `src/ap/*` parity.
 //!
-//! **Status: Not yet implemented. Target milestone: v0.5.0.**
+//! ## Scope (this sibling crate)
 //!
-//! ## Planned scope
+//! * **Actor document** (`/profile/card` with Accept negotiation)
+//! * **Inbox** handler with RSA HTTP Signature verification
+//!   (draft-cavage v12)
+//! * **Outbox** handler with Create/Follow/Delete and federated
+//!   delivery
+//! * **Followers/Following/Inbox/Outbox** persistence (SQLite via
+//!   `sqlx`)
+//! * **Federated delivery worker** with exponential-backoff retry
+//! * **NodeInfo 2.1** discovery at `/.well-known/nodeinfo` +
+//!   `/.well-known/nodeinfo/2.1`
+//! * **WebFinger** re-export of `solid_pod_rs::interop::webfinger_response`
 //!
-//! - Actor discovery (ActivityPub §3 + NodeInfo 2.0)
-//! - `POST /inbox` handling with HTTP Signature verification
-//! - Outbox + federated delivery (Accept / Follow / Undo / Create)
-//! - Follower / Following stores backed by `solid-pod-rs` storage
-//! - NodeInfo 2.0 emission at `/.well-known/nodeinfo`
-//! - Integration with `solid-pod-rs`'s WAC for per-actor authorisation
-//! - SAND stack composition: AP Actor on `/profile/card` + did:nostr
-//!   via `alsoKnownAs` (bundles with `solid-pod-rs-nostr`)
+//! Targets PARITY-CHECKLIST rows 102-108 and 131.
 //!
-//! ## Parity references
+//! ## Why a sibling crate?
 //!
-//! PARITY-CHECKLIST rows 102–108, 131 (GAP-ANALYSIS §E.2). Target
-//! ~1,200 LOC + 40 unit and 15 integration tests at first landing.
+//! AP federation pulls in RSA (2048-bit keypairs, rsa-sha256
+//! signatures) and a persistent follower store, neither of which the
+//! core `solid-pod-rs` crate needs to carry for pods that don't
+//! federate. Gating via a sibling crate keeps the core lean.
+//!
+//! ## HTTP Signatures: we speak draft-cavage v12
+//!
+//! The fediverse hasn't migrated to RFC 9421 yet. Mastodon, Pleroma,
+//! Misskey and GoToSocial all sign their outbound POSTs with
+//! `rsa-sha256` over the `(request-target)`, `host`, `date`, `digest`
+//! header set. Our [`http_sig`] module verifies those shapes and
+//! signs outgoing deliveries in the same style. Core's Ed25519-based
+//! `solid_pod_rs::notifications::signing` is a different protocol and
+//! not wire-compatible.
+
+pub mod actor;
+pub mod delivery;
+pub mod discovery;
+pub mod error;
+pub mod http_sig;
+pub mod inbox;
+pub mod outbox;
+pub mod store;
+
+// ---- Flat re-export surface -------------------------------------------------
+pub use actor::{
+    generate_actor_keypair, render_actor, with_also_known_as, Actor, Endpoints, PublicKey,
+};
+pub use delivery::{DeliveryConfig, DeliveryOutcome, DeliveryWorker};
+pub use discovery::{
+    nodeinfo_2_1, nodeinfo_wellknown, webfinger_response, WebFingerJrd, WebFingerLink,
+};
+pub use error::{InboxError, OutboxError, SigError};
+pub use http_sig::{
+    digest_header, sign_request, verify_request_signature, ActorKeyResolver,
+    HttpActorKeyResolver, OutboundRequest, SignedRequest, VerifiedActor,
+};
+pub use inbox::{build_accept, handle_inbox, InboxOutcome};
+pub use outbox::{handle_outbox, OutboundDelivery};
+pub use store::{DeliveryItem, InboxRow, OutboxRow, Store};

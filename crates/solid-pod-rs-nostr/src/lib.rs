@@ -1,25 +1,73 @@
 //! # solid-pod-rs-nostr
 //!
-//! Reserved for v0.5.0 implementation. See the parent workspace's
-//! ADR-056 §D2 for the v0.5.0 sibling-crate strategy and
-//! `docs/design/jss-parity/06-library-surface-context.md` for the
-//! library-vs-server split (F7) this placeholder participates in.
+//! `did:nostr` DID documents, WebID ↔ did:nostr resolver, and an
+//! embedded Nostr relay (NIP-01, NIP-11, NIP-16) for solid-pod-rs.
 //!
-//! **Status: Not yet implemented. Target milestone: v0.5.0.**
+//! This sibling crate rounds out the Solid / Nostr bridge introduced in
+//! the library core:
 //!
-//! ## Planned scope
+//! - The core [`solid_pod_rs::auth::nip98`] verifies NIP-98 HTTP auth
+//!   signatures.
+//! - The core [`solid_pod_rs::interop::did_nostr`] (feature `did-nostr`)
+//!   ships a low-level Tier-1 DID Doc renderer and a TTL-cached WebID
+//!   resolver for server-side lookup of outside pubkeys.
+//! - **This crate** adds the full operator surface: Tier-3 DID Docs
+//!   with `alsoKnownAs` + service entries, bidirectional
+//!   WebID ↔ did:nostr resolution (including HTML JSON-LD islands and
+//!   Turtle fallback), and a self-contained NIP-01/11/16 relay with a
+//!   pluggable event store and a `tokio-tungstenite` WebSocket wire
+//!   handler.
 //!
-//! - did:nostr DID Document publication at
-//!   `/.well-known/did/nostr/:pubkey.json` (Tier 1 / Tier 3).
-//! - did:nostr ↔ WebID resolver leveraging `alsoKnownAs` triples.
-//! - Embedded Nostr relay implementing NIP-01, NIP-11, NIP-16.
-//! - Integration hook with `solid-pod-rs-activitypub` for the SAND
-//!   stack (AP Actor + did:nostr via `alsoKnownAs`).
-//! - NIP-98 Schnorr already lives in the library core (`auth::nip98`)
-//!   gated behind `nip98-schnorr`; this crate adds the relay + DID
-//!   resolver surface on top.
+//! PARITY-CHECKLIST targets: rows 89, 90, 101, 132.
 //!
-//! ## Parity references
+//! ## Module layout
 //!
-//! PARITY-CHECKLIST rows 89, 90, 101, 132 (GAP-ANALYSIS §E.4, §E.7).
-//! Target 800–1,200 LOC at first landing.
+//! - [`did`]      — `did:nostr` URIs + Tier 1 / Tier 3 document renderers.
+//! - [`resolver`] — bidirectional `did:nostr` ↔ WebID resolver with SSRF guard.
+//! - [`relay`]    — NIP-01 event envelope, filter matching, replaceable-event
+//!   semantics (NIP-16), broadcast-channel live dispatch, NIP-11
+//!   relay-info document.
+//! - [`ws`]       — WebSocket wire protocol on top of `tokio-tungstenite`.
+//! - [`error`]    — error types for each domain.
+//!
+//! ## Quick-start
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use solid_pod_rs_nostr::{
+//!     NostrPubkey, render_did_document_tier1, well_known_path, Relay,
+//! };
+//!
+//! // DID Document publication.
+//! let pk = NostrPubkey::from_hex(
+//!     "1111111111111111111111111111111111111111111111111111111111111111",
+//! )
+//! .unwrap();
+//! let doc = render_did_document_tier1(&pk);
+//! let path = well_known_path(&pk); // "/.well-known/did/nostr/…json"
+//! let _ = (doc, path);
+//!
+//! // Relay.
+//! let relay = Arc::new(Relay::in_memory());
+//! let _info = relay.info().clone(); // serve at GET / (Accept: application/nostr+json)
+//! ```
+
+#![forbid(unsafe_code)]
+
+pub mod did;
+pub mod error;
+pub mod relay;
+pub mod resolver;
+pub mod ws;
+
+pub use did::{
+    did_nostr_uri, render_did_document_tier1, render_did_document_tier3, well_known_path,
+    NostrPubkey, ServiceEntry,
+};
+pub use error::{DidError, RelayError, ResolverError};
+pub use relay::{
+    is_ephemeral, is_parameterised_replaceable, is_replaceable, Event, EventStore, Filter,
+    InMemoryEventStore, Relay, RelayInfo,
+};
+pub use resolver::{DefaultSsrfCheck, NostrWebIdResolver, SsrfCheck};
+pub use ws::{dispatch_message, serve_relay_ws, serve_relay_ws_stream};
