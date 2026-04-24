@@ -1,23 +1,26 @@
 # Gap Analysis — solid-pod-rs vs JavaScriptSolidServer (JSS)
 
-> Authoritative comparison against the **real** JSS. Replaces the Sprint 2/3
-> document that was silently written against a Community-Solid-Server mental
-> model. The provenance correction landed with `25b8fae13`
-> (task #41) and the canonical JSS feature inventory landed with `364a19691`
-> (task #42) at
-> [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md).
-> This document is the prose companion; the row-per-feature table lives in
-> [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md).
+> Authoritative comparison against the **real** JSS. The row-per-feature
+> table lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md); this
+> document is the categorical reasoning narrative. Current as of Sprint 9
+> close (2026-04-24): **66% strict parity, 85% on the spec-normative
+> surface, ~92% protocol-visible**. The four sibling crates
+> (`solid-pod-rs-{activitypub,git,idp,nostr}`) remain unimplemented stubs
+> targeted at v0.5.0; rows they will cover (69, 74–82, 89–90, 100–108,
+> 131, 132) are counted as `missing` against the parent crate until the
+> crates ship.
 
 ## A. Scope and method
 
 ### Comparator
 
-- **solid-pod-rs**: `crates/solid-pod-rs/` at `HEAD` of
-  `sprint-3/jss-gap-analysis-fresh`. Package `solid-pod-rs v0.3.0-alpha.1`,
-  library crate (`src/lib.rs`), ~5,930 LOC of Rust split across 12 modules
-  plus 2 auth submodules and 3 storage submodules. Framework-agnostic; wired
-  into actix-web by `examples/standalone.rs` for conformance testing.
+- **solid-pod-rs**: `crates/solid-pod-rs/` at `HEAD` of `main`
+  (Sprint 9 close, 2026-04-24). Library crate (`src/lib.rs`),
+  framework-agnostic; wired into actix-web by `examples/standalone.rs`
+  for conformance testing. `solid-pod-rs-server` sibling binary crate
+  is the canonical server consumer. Four reserved sibling crates
+  (`-activitypub`, `-git`, `-idp`, `-nostr`) ship as ~25-line stubs
+  until v0.5.0. 567-test suite.
 - **JavaScriptSolidServer**: local clone at
   `/home/devuser/workspace/project/JavaScriptSolidServer/` tracking the
   `jss-upstream` remote. `package.json` reports version `0.0.86`; README
@@ -108,7 +111,8 @@ safer; the Solid Protocol accepts either form.
 | `acl:agentClass foaf:Agent` (public) | `evaluate_access` | `checker.js:139` | **present** |
 | `acl:agentClass acl:AuthenticatedAgent` | `evaluate_access` | `checker.js:147` | **present** |
 | `acl:agentGroup` (vcard:Group) | `evaluate_access_with_groups` + `GroupMembership` trait + `StaticGroupMembership` | parsed at `checker.js:193` but **not enforced** (TODO comment) | **net-new enforcement** (C.2b) |
-| `acl:origin` | **not implemented** | **not implemented** (parser doesn't read it) | both missing (C.2c) |
+| `acl:origin` | `wac::origin::OriginPolicy` + `Pattern` enforce Origin when authorisation carries `acl:origin` | **not implemented** (parser doesn't read it) | **net-new** (Sprint 9 shipped; we beat upstream) |
+| `acl:condition` / `acl:ClientCondition` / `acl:IssuerCondition` (WAC 2.0) | `wac::conditions::ConditionRegistry` with `ClientConditionEvaluator` + `IssuerConditionEvaluator`; fails CLOSED on unknown conditions; 422 on PUT `.acl` with unknown type | parser reads them; checker fails **OPEN** on unknown (`src/wac/checker.js:190`) | **net-new stricter than JSS** (Sprint 9) |
 | Modes (Read/Write/Append/Control) + Write→Append implication | `wac::method_to_mode`, `mode_name` | `checker.js:153,290-305` | **present** |
 | `WAC-Allow` response header | `wac::wac_allow_header` (alphabetical token sort) | `src/wac/checker.js:279-282` (source order) | **semantic-difference** (C.2d) |
 | Turtle ACL parsing | `wac::parse_turtle_acl` + `serialize_turtle_acl`, resolver falls back on JSON-LD parse failure | `src/wac/parser.js:13-384` (`n3` based) | **present** |
@@ -128,10 +132,11 @@ to prescribe `provision_pod` as the default onboarding path.
 than JSS** to WAC §3 of the spec. No regression; log as
 "net-new-over-JSS".
 
-**C.2c `acl:origin`**: Neither side implements origin-based restriction.
-This is a shared gap against WAC §4.3. P2 to add, but not a JSS parity
-issue (both default to "accept any origin"). Bumped to F.2 below for
-semantic discussion — recommend shipping on both sides long term.
+**C.2c `acl:origin`**: Landed Sprint 9. `wac::origin::OriginPolicy`
+enforces the Origin header when an authorisation carries `acl:origin`;
+missing header when a restriction is present denies. JSS still doesn't
+implement it — shared-gap closed by our side shipping first. Net-new
+advantage over upstream.
 
 **C.2d WAC-Allow token order**: Spec is silent on token order. Clients
 should parse as a set. Corpora comparing strings should normalise first.
@@ -157,13 +162,19 @@ on both group enforcement and ACL write validation. Zero regressions.
 | **IdP** (own `oidc-provider` server: auth/token/me/reg/session endpoints, interactions, passkeys, Schnorr SSO, HTML login/register) | **not provided** — we are a relying party, not an IdP | `src/idp/*` — 11 modules, 430 LOC in `idp/index.js`, wired `oidc-provider@9.6.0` | **missing as net surface** (E.3) |
 
 **C.3a Solid-OIDC**: Feature-gated behind `oidc` so default builds don't
-pull `openidconnect` + `jsonwebtoken`. DPoP binding, nonce replay
-protection (to be wired at the HTTP binder layer — we expose the
-`verify_dpop_proof` primitive). No SSRF guard baked into the library
-because fetching JWKS is consumer territory; JSS does its own SSRF
-(`src/utils/ssrf.js`) because it also issues outbound fetches from the
-auth path. **Ship-blocker**: the HTTP binder in `examples/standalone.rs`
-needs a jti replay cache matching JSS's behaviour before 0.4.
+pull `openidconnect` + `jsonwebtoken`. Sprint 9 closed the previous
+ship-blockers:
+- **DPoP proof signature verification** (P0 CVE-class): `oidc::
+  verify_dpop_proof_core` dispatches on header `alg` across ES256/ES384/
+  RS256/RS384/RS512/PS256/PS384/PS512/EdDSA; HS256 accepted only when
+  `kty=oct` (test/dev). RFC 9449 §4.3 `ath` binding is constant-time.
+- **DPoP jti replay cache**: `oidc::replay::JtiReplayCache` ships an
+  LRU-backed primitive (5-min TTL matching iat-skew window, 10 000-
+  entry ceiling). `verify_dpop_proof` accepts an optional cache and
+  rejects `DpopReplayDetected` on seen jti within TTL.
+- **SSRF guard**: `security::is_safe_url` + `security::resolve_and_check`
+  ship as library primitives (row 114). Consumer binders that fetch
+  JWKS must call `resolve_and_check` before outbound fetch.
 
 **C.3b NIP-98**: We have structural checks (kind 27235, `u`/`method`/
 `payload` tags, 60s clock skew) since Sprint 2 and Schnorr verification
@@ -176,7 +187,8 @@ helpers — we don't, because we don't ship git HTTP backend (E.1).
 succeeds. JSS ships an explicit `.well-known/did/nostr/:pubkey.json`
 resolver (Tier 1/3 DID Document) and a normaliser that links did:nostr
 to a WebID via `alsoKnownAs`. **Gap**: we don't publish a DID Document
-endpoint or a cross-resolution normaliser. P2 port candidate.
+endpoint or a cross-resolution normaliser. P2 port candidate — target
+crate `solid-pod-rs-nostr` (stub today).
 
 **C.3d Dispatch precedence**: JSS chains DPoP → Nostr → Bearer →
 WebID-TLS inside one auth middleware. We expose verification primitives
@@ -184,10 +196,11 @@ and let the HTTP binder (actix example, axum example, user code) compose
 the order. This is a scope call, not a gap: a library crate should not
 dictate order.
 
-**State**: Solid-OIDC and NIP-98 auth are at behavioural parity. Four
-gaps: WebID-TLS (won't-fix, F.5), Simple Bearer (deprioritise, E.4),
-did:nostr DID Document publication (P2, E.4), full IdP stack (E.3,
-large).
+**State**: Solid-OIDC and NIP-98 auth are at behavioural parity with
+Sprint 9 P0 closure (DPoP signature + jti replay + SSRF primitive).
+Remaining gaps: WebID-TLS (won't-fix, F.5), Simple Bearer (deprioritise,
+E.4), did:nostr DID Document publication (P2, `solid-pod-rs-nostr`
+stub), full IdP stack (E.3, `solid-pod-rs-idp` stub).
 
 ### C.4 Notifications
 
@@ -554,19 +567,28 @@ connection; 2 KiB URL cap.
 Ship in a separate crate `solid-pod-rs-admin` or document integration
 with `actix-files` / `tower-http::ServeDir` in consumer guide.
 
-### E.10 Dotfile allowlist, rate limits, SSRF guard, subdomain multi-tenancy — **library primitives, P1**
+### E.10 Dotfile allowlist, rate limits, SSRF guard, subdomain multi-tenancy
 
-Each of these is currently a consumer-binder concern. JSS bakes them
-into the server. We should surface them as **primitives** in the
-library:
-- `security::is_allowed_dotfile_path(path: &str) -> bool` — accept `/.acl`, `/.meta`, `/.well-known/*`; reject the rest.
-- `security::PodCreateRateLimiter` trait — consumer wires to their
-  rate-limit backend (Redis, LRU, etc.).
-- `security::is_safe_outbound_url(url: &Url) -> bool` — blocks RFC1918, link-local, AWS metadata (169.254.169.254), file://, ::1, etc. Mirrors JSS's `src/utils/ssrf.js:15-157`.
-- `multitenant::pod_for_hostname(host: &str, base_domain: &str) -> Option<(pod_name, path)>` — subdomain mode.
+**Landed Sprint 9 (P0):**
+- `security::is_safe_url` + `security::resolve_and_check` + `SsrfPolicy::
+  classify` (row 114) — blocks RFC 1918, RFC 4193 ULA, loopback, link-
+  local, cloud-metadata IP literals (incl. `169.254.169.254`,
+  `fd00:ec2::254`) and `metadata.google.internal` short-circuit.
+  Mirrors JSS's `src/utils/ssrf.js`.
+- `security::is_path_allowed` + `security::DotfileAllowlist` (row 115)
+  — static allowlist (`.acl`, `.meta`, `.well-known`, `.quota.json`);
+  `..` traversal always rejected; env-driven tuning for operators.
 
-Estimated: ~300 LOC + 20 tests. **Priority**: P1 for security
-primitives (SSRF + dotfile); P2 for subdomain mode.
+**Landed Sprint 7–8 (P1/P2):**
+- `security::rate_limit::RateLimiter` primitive with `RateLimitKey` /
+  `RateLimitSubject` canonical forms (row 112). Consumer wires to their
+  backend.
+- `multitenant::resolve_tenant` path-vs-subdomain dispatch (row 125) —
+  path-based works; subdomain needs the file-extension heuristic from
+  JSS #307 (row 162, partial-parity).
+
+**Outstanding (P2, v0.5.0):**
+- Subdomain multi-tenancy heuristic polish (row 162).
 
 ---
 
@@ -589,10 +611,11 @@ JSON Patch is strictly additive.
 fail (415) against JSS. Document it as a solid-pod-rs extension in the
 interop guide.
 
-### F.2 `acl:origin` — neither side enforces
+### F.2 `acl:origin` — closed Sprint 9 (we ship, JSS doesn't)
 
-Both parsers ignore `acl:origin`. WAC §4.3 defines it as an additional
-gate. **Joint gap**. Port as E.3.5 once C.2c lands.
+JSS's parser ignores `acl:origin`. We enforce it per WAC §4.3 via
+`wac::origin::OriginPolicy`. Formerly joint-gap, now a net-new
+conformance advantage.
 
 ### F.3 Notifications surface
 
@@ -710,24 +733,35 @@ VisionClaw-specific (kept out of the public crate):
 
 ---
 
-## H. Prioritised port roadmap (Sprint 4 candidates)
+## H. Prioritised port roadmap (post-Sprint 9)
+
+**Landed Sprint 7–9:** SSRF + dotfile primitives (P0, rows 114/115),
+`acl:origin` enforcement (row 51), DPoP jti replay cache (row 64),
+DPoP signature verification (row 62b, P0 CVE-class), WAC 2.0 condition
+framework (rows 53–56), rate-limit primitive (row 112), pod-bootstrap
+type indexes + public-read ACL (rows 14/164/166), atomic quota writes
+(row 159), `Cache-Control` on RDF + `.acl`/`.meta` conneg (rows
+157/167), WebID linkback predicates + CID service entry (rows
+154/155/165).
+
+**Outstanding port targets:**
 
 | Rank | Feature | Priority | Est. LOC | Tests | Target |
 |---|---|---|---|---|---|
-| 1 | SSRF guard + dotfile allowlist primitives (E.10 subset) | **P0** | 150 | 15 unit + 5 integration | 0.3.1 |
-| 2 | `solid-0.1` legacy notifications adapter (E.8) | **P1** | 300 | 10 unit + 3 integration | 0.4.0 |
-| 3 | `acl:origin` enforcement (C.2c → F.2) | **P1** | 100 | 8 unit | 0.4.0 |
-| 4 | jti replay cache for DPoP in the HTTP binder layer (C.3a ship-blocker) | **P1** | 200 | 6 unit | 0.4.0 |
-| 5 | did:nostr DID Document publication + normaliser (E.4) | **P2** | 150 | 6 unit | 0.4.0 |
-| 6 | ActivityPub integration (E.2) | **P1** | 1,200 | 40 unit + 15 integration | 0.5.0 (new crate `solid-pod-rs-ap`) |
-| 7 | Config loader + env var map (E.6) | **P2** | 250 | 12 unit | 0.4.0 |
-| 8 | Subdomain multi-tenancy helper (E.10 subset) | **P2** | 150 | 10 unit | 0.4.0 |
-| 9 | Git HTTP backend (E.1) | **P2** | 450 | 12 integration | 0.5.0 |
-| 10 | Rate-limit primitives trait + reference LRU impl (E.10 subset) | **P2** | 250 | 15 unit | 0.4.0 |
+| 1 | ActivityPub integration (E.2) | **P1** | 1,200 | 40 unit + 15 integration | v0.5.0 (`solid-pod-rs-activitypub` stub today) |
+| 2 | LWS 1.0 SSI-CID verifier (row 152) | **P1** | 400 | 15 unit | v0.5.0 |
+| 3 | LWS 1.0 OIDC delta audit (row 150) | **P1 verify** | 100 | 6 unit | v0.5.0 |
+| 4 | `solid-0.1` legacy notifications adapter (E.8) | **P1** | 300 | 10 unit + 3 integration | v0.4.0 |
+| 5 | LWS 1.0 SSI-did:key auth (row 153) | **P2** | 350 | 12 unit | v0.5.0 (new `solid-pod-rs-didkey` crate) |
+| 6 | did:nostr DID Document publication + normaliser (E.4) | **P2** | 150 | 6 unit | v0.5.0 (`solid-pod-rs-nostr` stub today) |
+| 7 | Git HTTP backend (E.1) | **P2** | 450 | 12 integration | v0.5.0 (`solid-pod-rs-git` stub today) |
+| 8 | Config loader + env var map (E.6) | **P2** | 250 | 12 unit | v0.5.0 |
+| 9 | Subdomain multi-tenancy heuristic polish (E.10, row 162) | **P2** | 150 | 10 unit | v0.5.0 |
+| 10 | NodeInfo 2.1 + top-level 5xx middleware (rows 106, 158) | **P2** | 200 | 8 unit | v0.5.0 |
 
-Ranked primarily by **Solid Protocol conformance value + JSS-parity
-value**. Git, AP, and `solid-0.1` are the three big unlocks; the others
-are incremental hardening.
+Ranked by **Solid Protocol conformance value + JSS-parity value**. AP,
+LWS SSI-CID, and `solid-0.1` are the three big unlocks; the others are
+incremental hardening.
 
 Not ranked (won't-port or long-deferred):
 
@@ -771,28 +805,36 @@ argue about licence compatibility with the JSS ecosystem. Operators
 running AGPL stacks (which most Solid deployments already do) get a
 drop-in component.
 
-### Recommended v0.3.x → v0.4.0 gate
+### Recommended v0.4.x → v0.5.0 gate
 
-**Must land before v0.4.0**:
+**Landed for v0.4.x (Sprint 7–9)**:
 
-1. SSRF guard + dotfile allowlist as library primitives (H rank 1).
-2. `solid-0.1` legacy notifications adapter (H rank 2) — unblocks
-   SolidOS integration.
-3. `acl:origin` enforcement (H rank 3) — closes WAC §4.3 gap.
-4. DPoP jti replay cache primitive (H rank 4) — closes Solid-OIDC §5.2
-   ship-blocker.
-5. Config loader + env var map (H rank 7) — operator quality-of-life
-   that consumer crates currently duplicate.
-6. ADR-054: "library vs server separation" — formalises the scope
-   decision that `solid-pod-rs-server`, `solid-pod-rs-admin`,
-   `solid-pod-rs-idp` are separate crates.
+1. SSRF guard + dotfile allowlist as library primitives (rows
+   114/115).
+2. `acl:origin` enforcement (row 51) — closes WAC §4.3 gap.
+3. DPoP jti replay cache primitive (row 64) — closes Solid-OIDC §5.2
+   ship-blocker; companion DPoP signature verification (row 62b)
+   closed the P0 CVE-class item.
+4. WAC 2.0 `acl:condition` framework with fail-closed unknown-
+   condition semantics (rows 53–56).
+5. Pod bootstrap: type indexes + public-read ACL carve-out (rows
+   14/164/166).
+6. Rate-limit primitive (row 112) and library-server split via
+   `solid-pod-rs-server` binary crate (ADR-056 §D3; rows 139/140).
 
-**Should not block v0.4.0**:
+**Must land before v0.5.0**:
 
-- ActivityPub (new crate timeline; 0.5.0).
-- Git HTTP backend (new module; 0.5.0).
-- IdP stack (new crate; post-0.5.0).
-- Nostr relay (new crate; independent schedule).
+- `solid-0.1` legacy notifications adapter (row 91) — unblocks
+  SolidOS integration.
+- ActivityPub integration (E.2) — new `solid-pod-rs-activitypub`
+  crate.
+- LWS 1.0 SSI-CID verifier (row 152).
+- Config loader + env var map (E.6).
+
+**Should not block v0.5.0**:
+
+- IdP stack (new `solid-pod-rs-idp` crate; post-v0.5.0).
+- Nostr relay (`nostr-relay-rs` independent schedule).
 
 **Won't land ever**:
 
@@ -803,13 +845,18 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has full behavioural parity with JSS on the spec-normative
-Solid Protocol surface, with three net-new features that push it
-**ahead** of JSS on modern notifications, WAC group enforcement, and
-ACL write strictness. The gaps that matter for ecosystem adoption
+solid-pod-rs has **85% parity on the spec-normative Solid Protocol
+surface** and **~92% on the protocol-visible surface** as of Sprint 9
+close. All P0 CVE-class items are cleared (DPoP signature verification,
+SSRF primitive, dotfile allowlist). Six net-new features push us
+**ahead** of JSS: `Prefer` header composition, JSON Patch dialect,
+`acl:agentGroup` enforcement, `acl:origin` enforcement, WAC 2.0 fail-
+closed unknown conditions (with 422-on-PUT stricter surface), and
+Turtle ACL serialisation. The gaps that matter for ecosystem adoption
 (`solid-0.1` legacy notifications, ActivityPub federation, Git HTTP
-backend) are scoped, priced, and roadmapped. v0.4.0 is a six-ticket
-sprint away from being the canonical Rust reference for Solid Pods.
+backend, IdP stack) are scoped into reserved sibling crates that remain
+stubs today — **these are the v0.5.0 work**. The library crate itself
+is approaching stabilisation.
 
 ---
 

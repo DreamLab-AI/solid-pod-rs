@@ -4,6 +4,111 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.1] - 2026-04-24 (Sprint 8 + Sprint 9 consolidation)
+
+Snapshot at commit `2275146`. Parity vs JSS: **85 % spec-normative**
+(91/109 rows) / **66 % strict** on the full 121-row tracker (80/121).
+567 tests pass across the workspace with the full Sprint 9 feature
+matrix.
+
+### Added — Sprint 9 (WAC 2.0 + pod bootstrap + conditions)
+
+- **`wac::validate_for_write(&AclDocument, &ConditionRegistry)`** —
+  returns `UnsupportedCondition` so the binder can emit 422
+  `application/problem+json` per WAC 2.0 §5. Bound into the server's
+  PUT / PATCH / POST paths for ACL documents.
+- **`acl:origin` enforcement (net-new vs JSS).** Feature `acl-origin`
+  gates `wac::origin::check_origin_allowed`; a request missing or
+  mismatching the `Origin` header against the ACL's origin allowlist
+  is denied. This is a strengthening beyond JSS, which does not
+  enforce `acl:origin`. Parity row 62a.
+- **`oidc::replay::DpopReplayCache`** — per-process LRU of seen `jti`
+  claims, clock-aware, bounded, safe under concurrent access.
+  Benchmarks in `benches/dpop_replay_bench.rs`. Feature
+  `dpop-replay-cache`.
+- **`provision::provision_pod`** — idempotent pod bootstrap. Seeds
+  base containers (`/profile/`, `/settings/`, `/inbox/`, `/public/`),
+  writes a WebID profile (with `solid:oidcIssuer` + CID storage link),
+  mounts type indexes (`publicTypeIndex` + `privateTypeIndex` under
+  `/settings/`), and installs a public-read root ACL.
+- **WAC 2.0 condition framework** (Sprint 6 land-date, Sprint 9
+  documentation close): `acl:condition`, `acl:ClientCondition`,
+  `acl:IssuerCondition`, `ConditionRegistry`, `RequestContext`,
+  `EmptyDispatcher`, `ClientConditionEvaluator`,
+  `IssuerConditionEvaluator`. Unknown condition types parse but
+  evaluate to `NotApplicable` (fail-closed). Parity rows 53–56.
+
+### Added — Sprint 8 (JSS 0.0.144 – 0.0.154 tracking + LWS 1.0)
+
+- **NIP-98 BIP-340 Schnorr signature verification** under
+  `nip98-schnorr`, exercised in the LWS 1.0 Auth Suite rows.
+- **CID-bound storage links in WebID** —
+  `webid::generate_webid_html_with_cid` emits a Content-Identifier
+  reference alongside the storage endpoint for IPFS/IPLD-backed pods.
+- **Cache-Control on RDF resources** — containers revalidate,
+  resources expire. `ldp::cache_control_for` helper.
+- **`.acl` + `.meta` content negotiation** — both discovery resources
+  honour `Accept:` and serialise to Turtle, JSON-LD, or N-Triples.
+- **did:nostr ↔ WebID `alsoKnownAs` round-trip** (Sprint 6 land,
+  Sprint 8 close) — `interop::did_nostr::DidNostrResolver` fetches
+  the DID Doc, walks `alsoKnownAs`, fetches each candidate WebID
+  profile, and verifies a back-link via `owl:sameAs` or
+  `schema:sameAs`.
+
+### Changed
+
+- `PARITY-CHECKLIST.md` recalibrated to 121 rows with explicit
+  classification per row (present / partial / missing / net-new /
+  deferred / wontfix). Spec-normative denominator excludes wontfix +
+  deferred; strict denominator counts every row.
+- `oidc::verify_dpop_proof_core` signature extended with an
+  `AlgorithmAllowlist` parameter. Existing call sites compile
+  unchanged via `AlgorithmAllowlist::default()`.
+
+### Fixed
+
+- **Atomic quota writes (P0, Sprint 8).** `FsQuotaStore::record` and
+  `FsQuotaStore::reconcile` now serialise to a temp file under the
+  pod root and `fs::rename` into place. Concurrent writers can no
+  longer observe a half-written `.quota.json`; the race window closed
+  on the Sprint 7 land is confirmed eliminated in
+  `tests/quota_fs_atomic.rs`.
+
+### Security
+
+- **DPoP proof signature is now actually verified (P0, CVE-class,
+  Sprint 9).** `oidc::verify_dpop_proof_core` previously decoded the
+  proof body without verifying the JWT signature against
+  `header.jwk` — any forged proof authenticated. The function now
+  dispatches on `header.alg` via an allowlist
+  (`ES256`/`ES384`, `RS256`/`RS384`/`RS512`, `PS256`/`PS384`/`PS512`,
+  `EdDSA`), builds a `DecodingKey::from_jwk`, and rejects `alg=none`
+  and the HMAC family unconditionally. RFC 9449 §4.3 conformance
+  restored. Parity row 62b. **Deployments that issued DPoP-bound
+  access tokens before the upgrade should rotate them.**
+- **RFC 9449 §4.3 `ath` binding** — `ath` claim presence + hash match
+  against the SHA-256 of the bearer token, constant-time compared.
+- **SSRF guard on JWKS + OIDC discovery** — every outbound in
+  `oidc::jwks::fetch_jwks` runs the SSRF policy on the issuer host,
+  pins the TCP connect to the approved IP via `.resolve()` (defeats
+  DNS rebinding between SSRF check and connect), re-runs the policy
+  on the discovered `jwks_uri`. 900 s cache TTL mirrors JSS.
+- **Dotfile allowlist extended** to `.acl`, `.meta`, `.well-known`,
+  `.quota.json`. All other dotfiles are 404 regardless of storage
+  presence.
+- **SSRF primitives** (`security::ssrf`) — RFC 1918, loopback
+  (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`),
+  and cloud-metadata (`169.254.169.254`) addresses are rejected.
+- **WAC parser bounds** — 1 MiB Turtle ACL cap (configurable via
+  `JSS_MAX_ACL_BYTES`); 32-level JSON-LD depth cap. Defends against
+  O(n²) splitter blowup and stack-overflow bombs.
+
+### Deprecated
+
+- None. 0.4.0-alpha.1 is additive over the pre-Sprint-5 surface;
+  the Sprint 5 DPoP signature fix was a behavioural change at an
+  additive API.
+
 ## Unreleased — 2026-04-20 (Sprint 7 — operator surface + server route table)
 
 ### Added — operator-surface primitives

@@ -62,6 +62,12 @@ Information-oriented. Dry, exhaustive, accurate. Look things up here.
 - [Environment variables](reference/env-vars.md) — every config knob.
 - [Error codes](reference/error-codes.md) — HTTP status → `PodError`
   mapping.
+- [Agent integration guide](reference/agent-integration-guide.md) —
+  feature → module → JSS breadcrumbs map, for LLM-driven integration.
+- [JSS source breadcrumbs](reference/jss-source-breadcrumbs.md) —
+  inverse lookup (JSS file → Rust equivalent + parity row).
+- [JSS feature inventory](reference/jss-feature-inventory.md) —
+  the canonical reference JSS surface we track against.
 
 ## Explanation
 

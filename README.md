@@ -135,8 +135,80 @@ let storage = FsStorage::new(PathBuf::from("./pod-root"));
 Full parity tracking against the reference JavaScript implementation
 lives in
 [`crates/solid-pod-rs/PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md)
-(97 rows, 76 % strict parity) with prose commentary in
-[`crates/solid-pod-rs/GAP-ANALYSIS.md`](crates/solid-pod-rs/GAP-ANALYSIS.md).
+→ **85 % spec-normative parity / 66 % strict on the full 121-row tracker**
+(Sprint 9 close). Prose commentary in
+[`crates/solid-pod-rs/GAP-ANALYSIS.md`](crates/solid-pod-rs/GAP-ANALYSIS.md),
+and an agent-oriented integration guide with per-module JSS source
+breadcrumbs in
+[`crates/solid-pod-rs/docs/reference/agent-integration-guide.md`](crates/solid-pod-rs/docs/reference/agent-integration-guide.md).
+
+---
+
+## What ships today
+
+The `solid-pod-rs` library crate plus the `solid-pod-rs-server` binary
+constitute the entire v0.4.0-alpha shipping surface. Every module listed
+in the feature matrix above is live, tested, and gated behind a stable
+Cargo feature. 567 tests pass across the workspace against the full
+feature set
+(`oidc,dpop-replay-cache,legacy-notifications,jss-v04,acl-origin,security-primitives,config-loader,nip98-schnorr,webhook-signing,did-nostr,rate-limit,quota`).
+
+**Library surface** (crate `solid-pod-rs`):
+
+- `storage` — `Storage` trait + FS / Memory / S3 backends.
+- `ldp` — LDP Basic Containers, resource CRUD, conneg, PATCH (N3 /
+  SPARQL-Update / JSON Patch), `Prefer`, conditional + range requests,
+  `.meta` / `.acl` content negotiation.
+- `wac` — deny-by-default evaluator with `acl:default` inheritance,
+  `acl:origin` enforcement, WAC 2.0 conditions framework
+  (`acl:ClientCondition`, `acl:IssuerCondition`), JSON-LD + Turtle ACL
+  parsers with size + depth caps.
+- `webid` — profile documents emitting `solid:oidcIssuer` and
+  CID-bound storage links.
+- `auth::nip98` — NIP-98 HTTP authentication; BIP-340 Schnorr signature
+  verification under `nip98-schnorr`.
+- `oidc` — Solid-OIDC 0.1 with DPoP proof signature verification (RFC
+  9449 §4.3 `ath` binding, algorithm allowlist, `jti` replay cache),
+  SSRF-guarded JWKS fetcher with DNS-rebinding defence, RFC 7638
+  canonical thumbprints.
+- `notifications` — WebSocketChannel2023, WebhookChannel2023 with
+  RFC 9421 Ed25519 signing + circuit breaker, legacy `solid-0.1`
+  adapter with WAC read-check on subscribe.
+- `security` — SSRF guard (RFC 1918 / loopback / link-local / cloud
+  metadata), dotfile allowlist (`.acl`, `.meta`, `.well-known`,
+  `.quota.json`), CORS policy, sliding-window LRU rate limiter.
+- `quota` — per-pod `.quota.json` sidecar with atomic writes (P0
+  hardening, Sprint 8).
+- `multitenant` — `PodResolver` trait; path-based + subdomain modes.
+- `config` — JSS-compatible layered loader (`JSS_*` env vars).
+- `interop` — `/.well-known/solid`, WebFinger JRD, NodeInfo 2.1,
+  did:nostr resolver (Tier 1 + Tier 3, `alsoKnownAs` cross-verified).
+- `provision` — pod bootstrap: WebID + containers + type indexes +
+  public-read ACL.
+
+**Binary surface** (crate `solid-pod-rs-server`):
+
+- Actix-web route table covering LDP verbs, `.well-known/*` and
+  did:nostr; `PathTraversalGuard` + `DotfileGuard` middleware; WAC
+  enforcement on writes; optional rustls TLS.
+
+### Reserved for v0.5.0
+
+The four sibling crates are empty namespace stubs. Each contains ~25
+lines of doc comment only and **must not be depended on by integrators**
+until v0.5.0.
+
+| Crate | Stub contents | Target rows (from PARITY-CHECKLIST) | Earliest landing |
+|-------|---------------|-------------------------------------|------------------|
+| `crates/solid-pod-rs-activitypub` | lib.rs doc comment only | 102–108, 131 | v0.5.0 |
+| `crates/solid-pod-rs-git`         | lib.rs doc comment only | 69, 100       | v0.5.0 |
+| `crates/solid-pod-rs-idp`         | lib.rs doc comment only | 74–82, 130    | v0.5.0 |
+| `crates/solid-pod-rs-nostr`       | lib.rs doc comment only | 89, 90, 101, 132 | v0.5.0 |
+
+The did:nostr resolver shipped in Sprint 6 lives inside the core library
+(`interop::did_nostr`) rather than the `solid-pod-rs-nostr` stub, so the
+Tier 1 + Tier 3 DID flow is available today without taking a dependency
+on the reserved namespace.
 
 ---
 
