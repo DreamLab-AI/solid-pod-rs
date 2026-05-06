@@ -1,36 +1,83 @@
-//! # solid-pod-rs
+//! Framework-agnostic Rust library for serving Solid Protocol 0.11 pods.
 //!
-//! Rust implementation of a Solid Pod server: WAC (Web Access
-//! Control), LDP (Linked Data Platform) resource/container
-//! semantics, WebID profiles, NIP-98 authentication, and Solid
-//! Notifications.
+//! `solid-pod-rs` provides LDP resource and container semantics, Web Access
+//! Control (WAC 1.x + 2.0), WebID profile documents, Solid-OIDC 0.1,
+//! NIP-98 HTTP auth, and Solid Notifications 0.2 -- all without coupling
+//! to a specific HTTP framework. Wire it into actix-web, axum, hyper, or
+//! anything else; the crate never mounts routes itself.
 //!
-//! The crate is framework-agnostic. Wire it into any HTTP server
-//! (actix-web, axum, hyper, …) by implementing the request → storage
-//! bindings yourself; see `examples/embed_in_actix.rs` for the
-//! canonical embeddable pattern.
+//! For a turnkey binary, use the sibling crate
+//! [`solid-pod-rs-server`](https://docs.rs/solid-pod-rs-server).
 //!
-//! Operators who want a turnkey binary should use the sibling crate
-//! `solid-pod-rs-server`, which provides `cargo install
-//! solid-pod-rs-server` — a drop-in JSS replacement wiring `PodService`
-//! into actix-web with the F6 config loader. The F7 library-server
-//! split (ADR-056 §D3) guarantees this library crate never mounts HTTP
-//! routes itself; consumers always own the transport.
+//! ## Feature flags
 //!
-//! ## Layout
+//! | Flag | Default | Purpose |
+//! |-------------------------|:-------:|-----------------------------------------------|
+//! | `fs-backend` | on | POSIX filesystem storage. |
+//! | `memory-backend` | on | In-process `HashMap` storage (tests/demos). |
+//! | `s3-backend` | off | AWS S3 / S3-compatible object stores. |
+//! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
+//! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
+//! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. |
+//! | `acl-origin` | off | WAC `acl:origin` enforcement. |
+//! | `security-primitives` | off | SSRF guard + dotfile allowlist. |
+//! | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS). |
+//! | `config-loader` | off | Layered config loader with `JSS_*` env vars. |
+//! | `webhook-signing` | off | RFC 9421 Ed25519 webhook signing. |
+//! | `did-nostr` | off | did:nostr resolver in `interop`. |
+//! | `rate-limit` | off | Sliding-window LRU rate limiter. |
+//! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
 //!
-//! - [`storage`] — `Storage` trait and FS/Memory backends.
-//! - [`wac`] — Web Access Control evaluator.
-//! - [`ldp`] — LDP container/resource semantics.
-//! - [`webid`] — WebID profile document helpers.
-//! - [`auth`] — HTTP authentication primitives (NIP-98 in Phase 1).
-//! - [`notifications`] — Solid Notifications (Phase 2 deliverable).
-//! - [`error::PodError`] — crate-wide error type.
+//! ## Module overview
+//!
+//! | Module | Responsibility |
+//! |-----------------|--------------------------------------------------------------|
+//! | [`storage`] | `Storage` trait + FS / Memory / S3 backends. |
+//! | [`ldp`] | Resources, containers, content negotiation, PATCH, `Prefer`. |
+//! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
+//! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
+//! | [`auth`] | NIP-98 HTTP authentication. |
+//! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
+//! | [`error`] | Crate-wide [`PodError`] error type. |
+//! | [`config`] | Layered configuration schema. |
+//! | [`security`] | SSRF guard, dotfile allowlist, CORS, rate limiter. |
+//! | [`quota`] | Per-pod byte-quota enforcement. |
+//! | [`multitenant`] | `PodResolver` trait; path + subdomain modes. |
+//! | [`interop`] | `.well-known/solid`, WebFinger, NodeInfo, did:nostr. |
+//! | [`provision`] | Pod bootstrap (WebID + containers + type indexes + ACL). |
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use solid_pod_rs::storage::memory::MemoryBackend;
+//! use solid_pod_rs::{Storage, evaluate_access, AccessMode};
+//! use bytes::Bytes;
+//! use std::sync::Arc;
+//!
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! // 1. Create a storage backend.
+//! let store = Arc::new(MemoryBackend::new());
+//!
+//! // 2. PUT a resource.
+//! store.put("/hello.txt", Bytes::from("world"), "text/plain").await.unwrap();
+//!
+//! // 3. GET it back.
+//! let (body, meta) = store.get("/hello.txt").await.unwrap();
+//! assert_eq!(&body[..], b"world");
+//! assert_eq!(meta.content_type, "text/plain");
+//!
+//! // 4. WAC evaluation (no ACL document = deny by default).
+//! let allowed = evaluate_access(None, Some("https://alice.example/profile/card#me"),
+//!     "/hello.txt", AccessMode::Read, None);
+//! assert!(!allowed);
+//! # });
+//! ```
 //!
 //! ## Attribution
 //!
 //! Rust port of JavaScriptSolidServer. See NOTICE for provenance.
 
+#![doc = include_str!("../README.md")]
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 

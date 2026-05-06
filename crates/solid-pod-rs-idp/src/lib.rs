@@ -1,53 +1,64 @@
 //! # solid-pod-rs-idp
 //!
-//! Minimum-viable Solid-OIDC identity provider. Port of the JSS IdP
-//! (`JavaScriptSolidServer/src/idp/*`). Target parity rows:
+//! Solid-OIDC identity provider for
+//! [`solid-pod-rs`](https://crates.io/crates/solid-pod-rs) --
+//! authorization-code flow, DPoP-bound tokens, JWKS publication,
+//! dynamic client registration, and credentials login.
 //!
-//! | Row | JSS ref                     | Status        |
-//! |-----|-----------------------------|---------------|
-//! | 74  | `/auth` endpoint            | present       |
-//! | 75  | Dynamic Client Registration | present       |
-//! | 76  | OIDC discovery              | present       |
-//! | 77  | `/.well-known/jwks.json`    | present       |
-//! | 78  | Client Identifier Documents | present       |
-//! | 79  | Credentials flow + rate-lim | present       |
-//! | 80  | Passkeys / WebAuthn         | present (`WebauthnPasskey` via `passkey` feature — Sprint 11) |
-//! | 81  | Schnorr SSO (NIP-07)        | present (`Nip07SchnorrSso` via `schnorr-sso` — Sprint 11) |
-//! | 82  | HTML interaction pages      | wontfix-in-crate (operator view-layer choice; see README) |
-//! | 130 | JWKS publication (IdP side) | present       |
+//! ## Feature flags
+//!
+//! | Flag           | Purpose                                               |
+//! |----------------|-------------------------------------------------------|
+//! | `axum-binder`  | Ready-made axum `Router` that wires all IdP endpoints.|
+//! | `passkey`      | WebAuthn/passkey authentication via `webauthn-rs`.    |
+//! | `schnorr-sso`  | NIP-07 Schnorr SSO (Nostr key login).                 |
+//!
+//! ## Modules
+//!
+//! - [`provider`]     — [`Provider`] orchestrator: `/auth`, `/token`, `/me` endpoints.
+//! - [`discovery`]    — OIDC discovery document builder (`/.well-known/openid-configuration`).
+//! - [`jwks`]         — JWKS key management and `/.well-known/jwks.json` publication.
+//! - [`credentials`]  — Email + password login flow with rate limiting.
+//! - [`registration`] — Dynamic Client Registration and Client Identifier Documents.
+//! - [`tokens`]       — DPoP-bound access-token issuance.
+//! - [`session`]      — Opaque-token session store.
+//! - [`user_store`]   — Pluggable [`UserStore`] trait with [`InMemoryUserStore`] for tests.
+//! - [`invites`]      — Invite-token minting, storage, and validation.
+//! - [`error`]        — [`ProviderError`] with RFC 6749 error codes.
+//! - [`passkey`]      — *(feature `passkey`)* WebAuthn registration and authentication.
+//! - [`schnorr`]      — *(feature `schnorr-sso`)* NIP-07 Schnorr challenge/response.
+//! - [`axum_binder`]  — *(feature `axum-binder`)* Pre-built axum router.
+//!
+//! ## Quick start
+//!
+//! ```rust,ignore
+//! use solid_pod_rs_idp::{Provider, ProviderConfig, Jwks, SessionStore,
+//!     registration::ClientStore, user_store::InMemoryUserStore};
+//! use std::sync::Arc;
+//!
+//! let user_store = Arc::new(InMemoryUserStore::new());
+//! let jwks = Jwks::generate_es256().unwrap();
+//! let provider = Provider::new(
+//!     ProviderConfig::new("https://pod.example/"),
+//!     ClientStore::new(), SessionStore::new(), user_store, jwks,
+//! );
+//! let _disco = provider.discovery_document();
+//! ```
 //!
 //! ## Design boundaries
 //!
-//! - This crate owns **protocol logic**. Transport framing is the
-//!   consumer's problem: either plug `Provider` into your own
-//!   router, or enable the `axum-binder` feature for a ready-made
-//!   Router.
+//! - This crate owns **protocol logic** only. Transport framing is the
+//!   consumer's job: plug [`Provider`] into your own router, or enable
+//!   the `axum-binder` feature for a ready-made `Router`.
 //! - Storage is pluggable via [`UserStore`]. The built-in
 //!   [`InMemoryUserStore`] exists for tests and single-user
-//!   development; production deployments MUST ship their own
-//!   persistent store.
-//! - DPoP verification is delegated to
-//!   `solid_pod_rs::oidc::verify_dpop_proof`, so we never duplicate
-//!   the RFC 9449 alg-dispatch rules that already ship in core.
-//! - SSRF protection on Client Identifier Document fetches is
-//!   delegated to `solid_pod_rs::security::is_safe_url`.
-//! - Rate-limiting uses the core `RateLimiter` trait; callers can
-//!   substitute any implementation (Redis, sharded, etc).
-//!
-//! ## What this crate deliberately does NOT do
-//!
-//! - **HTML pages** — row 82. JSS bundles handlebars templates; this
-//!   crate leaves the view layer to the consumer. A minimal Askama /
-//!   Leptos adapter is trivially < 300 LOC on top of this crate.
-//! - **Attestation-CA pinning for passkeys** — `WebauthnPasskey` uses
-//!   reasonable defaults (no CA pinning). Integrators who need
-//!   tighter policies implement [`passkey::PasskeyBackend`] directly
-//!   on their own `webauthn_rs::Webauthn` instance.
-//! - **npub ↔ WebID profile lookup** — `Nip07SchnorrSso` verifies the
-//!   Schnorr handshake and returns a `SchnorrAssertion`; resolving
-//!   that assertion to a Solid WebID is the consumer's job (a lookup
-//!   against the user store or a `did:nostr` resolver).
+//!   development; production deployments should ship a persistent store.
+//! - DPoP verification delegates to `solid_pod_rs::oidc::verify_dpop_proof`.
+//! - SSRF protection on Client Identifier Document fetches delegates to
+//!   `solid_pod_rs::security::is_safe_url`.
+//! - Rate-limiting uses the core `RateLimiter` trait.
 
+#![doc = include_str!("../README.md")]
 #![warn(rust_2018_idioms)]
 #![forbid(unsafe_code)]
 

@@ -17,11 +17,11 @@ use the sibling crate [`solid-pod-rs-server`](../solid-pod-rs-server/).
 solid-pod-rs = "0.4.0-alpha.1"
 ```
 
-```rust
-use solid_pod_rs::{storage::FsStorage, wac, ldp};
+```rust,no_run
+use solid_pod_rs::storage::fs::FsBackend;
 use std::path::PathBuf;
 
-let storage = FsStorage::new(PathBuf::from("./pod-root"));
+let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Compose with your framework; see examples/embed_in_actix.rs.
 ```
 

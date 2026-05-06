@@ -26,32 +26,52 @@ use serde::Serialize;
 use crate::error::PodError;
 use crate::storage::Storage;
 
+/// Well-known IRI constants used in LDP, WAC, and server-managed triples.
 pub mod iri {
+    /// LDP Resource type IRI.
     pub const LDP_RESOURCE: &str = "http://www.w3.org/ns/ldp#Resource";
+    /// LDP Container type IRI.
     pub const LDP_CONTAINER: &str = "http://www.w3.org/ns/ldp#Container";
+    /// LDP BasicContainer type IRI (the only container type Solid uses).
     pub const LDP_BASIC_CONTAINER: &str = "http://www.w3.org/ns/ldp#BasicContainer";
+    /// LDP namespace prefix.
     pub const LDP_NS: &str = "http://www.w3.org/ns/ldp#";
+    /// `ldp:contains` predicate linking a container to its children.
     pub const LDP_CONTAINS: &str = "http://www.w3.org/ns/ldp#contains";
+    /// Prefer token for minimal container responses (omit containment triples).
     pub const LDP_PREFER_MINIMAL_CONTAINER: &str =
         "http://www.w3.org/ns/ldp#PreferMinimalContainer";
+    /// Prefer token for contained-IRIs-only responses.
     pub const LDP_PREFER_CONTAINED_IRIS: &str =
         "http://www.w3.org/ns/ldp#PreferContainedIRIs";
+    /// Prefer token for membership triples.
     pub const LDP_PREFER_MEMBERSHIP: &str = "http://www.w3.org/ns/ldp#PreferMembership";
 
+    /// Dublin Core Terms namespace prefix.
     pub const DCTERMS_NS: &str = "http://purl.org/dc/terms/";
+    /// `dcterms:modified` predicate for last-modification timestamps.
     pub const DCTERMS_MODIFIED: &str = "http://purl.org/dc/terms/modified";
 
+    /// POSIX stat namespace prefix.
     pub const STAT_NS: &str = "http://www.w3.org/ns/posix/stat#";
+    /// `stat:size` predicate for resource byte size.
     pub const STAT_SIZE: &str = "http://www.w3.org/ns/posix/stat#size";
+    /// `stat:mtime` predicate for POSIX modification time.
     pub const STAT_MTIME: &str = "http://www.w3.org/ns/posix/stat#mtime";
 
+    /// XSD `dateTime` datatype IRI.
     pub const XSD_DATETIME: &str = "http://www.w3.org/2001/XMLSchema#dateTime";
+    /// XSD `integer` datatype IRI.
     pub const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
+    /// XSD `string` datatype IRI.
     pub const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
+    /// PIM Storage type IRI (`pim:Storage`).
     pub const PIM_STORAGE: &str = "http://www.w3.org/ns/pim/space#Storage";
+    /// PIM storage relation IRI (`pim:storage`), used in root `Link` headers.
     pub const PIM_STORAGE_REL: &str = "http://www.w3.org/ns/pim/space#storage";
 
+    /// WAC (Web Access Control) namespace prefix.
     pub const ACL_NS: &str = "http://www.w3.org/ns/auth/acl#";
 }
 

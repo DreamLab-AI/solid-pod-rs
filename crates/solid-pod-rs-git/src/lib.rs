@@ -1,41 +1,29 @@
 //! # solid-pod-rs-git
 //!
 //! Git HTTP smart-protocol backend for
-//! [`solid-pod-rs`](https://crates.io/crates/solid-pod-rs). Brings
-//! PARITY-CHECKLIST rows 69 (Basic-over-NIP-98 auth) and 100 (Git
-//! HTTP with `receive.denyCurrentBranch=updateInstead`) to feature
-//! parity with JavaScriptSolidServer's
-//! [`src/handlers/git.js`](https://github.com/solid/solid-nextgraph/blob/main/src/handlers/git.js).
+//! [`solid-pod-rs`](https://crates.io/crates/solid-pod-rs).
 //!
-//! ## Architecture
+//! ## Modules
 //!
-//! The crate is binder-agnostic: the top-level [`GitHttpService`]
-//! consumes a [`GitRequest`] and produces a [`GitResponse`], and the
-//! embedding HTTP server (axum, actix-web, hyper raw, …) translates
-//! between its native types and these. Internally the service spawns
-//! the system `git http-backend` CGI binary (default path
-//! `/usr/lib/git-core/git-http-backend`, overridable via the
-//! `GIT_HTTP_BACKEND_PATH` env var) and shuttles bytes between it
-//! and the HTTP layer.
+//! - [`service`] — Framework-agnostic [`GitHttpService`] that speaks `git-http-backend` CGI.
+//! - [`auth`]    — `Basic nostr:<token>` and NIP-98 bearer auth extractors.
+//! - [`guard`]   — Path-traversal rejection and repo-slug extraction.
+//! - [`config`]  — Git repository config helpers (`receive.denyCurrentBranch`, etc.).
+//! - [`error`]   — [`GitError`] enum with HTTP status-code mapping.
 //!
-//! ## Routes covered
-//!
-//! | JSS route                         | Method | Auth  |
-//! |-----------------------------------|--------|-------|
-//! | `/:repo/info/refs?service=…`      | GET    | no    |
-//! | `/:repo/git-upload-pack`          | POST   | no    |
-//! | `/:repo/git-receive-pack`         | POST   | **yes** (NIP-98 or Basic-nostr) |
-//!
-//! ## Example
+//! ## Quick start
 //!
 //! ```no_run
 //! use std::path::PathBuf;
 //! use solid_pod_rs_git::{GitHttpService, BasicNostrExtractor};
 //!
 //! # async fn run() {
+//! // Create the service rooted at a pod's data directory.
 //! let service = GitHttpService::new(PathBuf::from("/var/pods/alice"))
 //!     .with_auth(BasicNostrExtractor::new());
-//! // … hand `service.handle(req)` from your HTTP router.
+//!
+//! // In your HTTP router, translate framework types to GitRequest and call:
+//! // let response = service.handle(git_request).await;
 //! # }
 //! ```
 //!
@@ -43,14 +31,17 @@
 //!
 //! | Flag              | Purpose                                         |
 //! |-------------------|-------------------------------------------------|
-//! | `with-git-binary` | Enable integration tests that require the `git` CLI + `git-http-backend` CGI to be installed. Unit tests always run. |
+//! | `with-git-binary` | Enable integration tests that need the `git` CLI and `git-http-backend` CGI binary. Unit tests always run. |
 //!
-//! ## JSS source map
+//! ## Architecture
 //!
-//! * [`auth`] ← JSS `Basic nostr:<token>` bridge in `src/handlers/git.js` + `src/auth/nip98.js`
-//! * [`guard`] ← JSS `extractRepoPath` + `isPathWithinDataRoot` (`src/handlers/git.js:31-62`)
-//! * [`config`] ← JSS `git config` mutators (`src/handlers/git.js:133-150`)
-//! * [`service`] ← JSS `handleGit` (`src/handlers/git.js:95-268`)
+//! The crate is framework-agnostic: [`GitHttpService`] consumes a
+//! [`GitRequest`] and produces a [`GitResponse`]. The embedding HTTP
+//! server (axum, actix-web, hyper, ...) translates between its native
+//! types and these. Internally the service spawns `git http-backend`
+//! (path overridable via `GIT_HTTP_BACKEND_PATH`) and shuttles bytes.
+
+#![doc = include_str!("../README.md")]
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

@@ -22,18 +22,23 @@ use serde::{Deserialize, Serialize};
 /// after construction. Reload swaps in a new snapshot atomically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerConfig {
+    /// HTTP listener settings (host, port, base URL).
     #[serde(default)]
     pub server: ServerSection,
 
+    /// Storage backend selection (filesystem, memory, or S3).
     #[serde(default)]
     pub storage: StorageBackendConfig,
 
+    /// Authentication toggles (NIP-98, Solid-OIDC, DPoP).
     #[serde(default)]
     pub auth: AuthConfig,
 
+    /// Solid Notifications channel toggles (WebSocket, Webhook, legacy).
     #[serde(default)]
     pub notifications: NotificationsConfig,
 
+    /// Security primitives (SSRF guard, dotfile allowlist, ACL origin).
     #[serde(default)]
     pub security: SecurityConfig,
 

@@ -1,42 +1,52 @@
-//! Library surface of `solid-pod-rs-server` — the actix-web app builder
-//! that the `solid-pod-rs-server` binary and the workspace integration
-//! tests share.
+//! # solid-pod-rs-server
 //!
-//! The binary in `src/main.rs` stays thin: CLI parsing, tracing init,
-//! config loading, signal handling. Everything HTTP lives here so the
-//! test harness can drive the exact same handler wiring through
-//! `actix_web::test::init_service` without needing a real TCP listener.
+//! Drop-in Solid Pod server binary wrapping
+//! [`solid-pod-rs`](https://crates.io/crates/solid-pod-rs) with
+//! [actix-web](https://docs.rs/actix-web). This crate is both a
+//! library (for integration-test reuse) and a binary.
 //!
-//! ## Route table (Sprint 7 D)
+//! ## Public types
 //!
-//! | Method  | Path                                     | Handler                |
-//! |---------|------------------------------------------|------------------------|
-//! | GET/HEAD| `/{tail:.*}`                             | `handle_get`           |
-//! | PUT     | `/{tail:.*}`                             | `handle_put`           |
-//! | POST    | `/{tail:.*}/`                            | `handle_post`          |
-//! | PATCH   | `/{tail:.*}`                             | `handle_patch`         |
-//! | DELETE  | `/{tail:.*}`                             | `handle_delete`        |
-//! | OPTIONS | `/{tail:.*}`                             | `handle_options`       |
-//! | GET     | `/.well-known/solid`                     | well-known Solid doc   |
-//! | GET     | `/.well-known/webfinger`                 | WebFinger JRD          |
-//! | GET     | `/.well-known/nodeinfo`                  | NodeInfo discovery     |
-//! | GET     | `/.well-known/nodeinfo/2.1`              | NodeInfo 2.1 content   |
-//! | GET     | `/.well-known/did/nostr/{pubkey}.json`   | DID:nostr document     |
+//! - [`AppState`]  — Shared actix-web application state (storage, dotfile policy, body cap).
+//! - [`build_app`] — Builds the fully-configured `actix_web::App` with all routes and middleware.
+//! - [`NodeInfoMeta`] — NodeInfo 2.1 metadata inputs.
+//! - [`PathTraversalGuard`] — Middleware that rejects `..` path-traversal attempts.
+//! - [`DotfileGuard`] — Middleware that enforces the dotfile allowlist.
+//! - [`ErrorLoggingMiddleware`] — Middleware that logs 5xx responses with full error chains.
+//! - [`body_cap_from_env`] — Reads `JSS_MAX_REQUEST_BODY` from the environment.
+//! - [`cli`] — CLI argument definitions (clap derive).
+//!
+//! ## Route table
+//!
+//! | Method   | Path                                     | Handler              |
+//! |----------|------------------------------------------|----------------------|
+//! | GET/HEAD | `/{tail:.*}`                             | `handle_get`         |
+//! | PUT      | `/{tail:.*}`                             | `handle_put`         |
+//! | POST     | `/{tail:.*}/`                            | `handle_post`        |
+//! | PATCH    | `/{tail:.*}`                             | `handle_patch`       |
+//! | DELETE   | `/{tail:.*}`                             | `handle_delete`      |
+//! | OPTIONS  | `/{tail:.*}`                             | `handle_options`     |
+//! | GET      | `/.well-known/solid`                     | Solid discovery      |
+//! | GET      | `/.well-known/webfinger`                 | WebFinger JRD        |
+//! | GET      | `/.well-known/nodeinfo`                  | NodeInfo discovery   |
+//! | GET      | `/.well-known/nodeinfo/2.1`              | NodeInfo 2.1         |
+//! | GET      | `/.well-known/did/nostr/{pubkey}.json`   | DID:nostr document   |
 //!
 //! ## Middleware stack (applied in order)
 //!
-//! 1. `NormalizePath` — collapse `//` and decode %-encoded segments.
-//! 2. Percent-decode + `..` re-check — defence-in-depth against
-//!    path-traversal smuggling after NormalizePath.
-//! 3. CORS hook — honours `CorsPolicy::from_env()`.
-//! 4. Rate-limit hook — LRU bucket keyed on (route, IP).
-//! 5. Dotfile allowlist — rejects `.env` etc unless permitted.
-//! 6. PayloadConfig — enforces `JSS_MAX_REQUEST_BODY` body cap.
-//! 7. WAC-on-write — PUT/POST/PATCH/DELETE require a write/append grant.
+//! 1. `NormalizePath` -- collapse `//` and decode %-encoded segments.
+//! 2. `PathTraversalGuard` -- defence-in-depth `..` re-check.
+//! 3. `DotfileGuard` -- rejects `.env` etc unless on the allowlist.
+//! 4. `PayloadConfig` -- enforces `JSS_MAX_REQUEST_BODY` body cap.
+//! 5. `ErrorLoggingMiddleware` -- structured 5xx logging.
+//! 6. WAC-on-write -- PUT/POST/PATCH/DELETE require a write/append grant.
+
+#![doc = include_str!("../README.md")]
 
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
+/// CLI argument definitions (clap derive structs).
 pub mod cli;
 
 use std::path::{Path, PathBuf};
@@ -652,6 +662,7 @@ async fn handle_well_known_did_nostr(
 // Percent-decode + dotdot re-check middleware
 // ---------------------------------------------------------------------------
 
+/// Actix middleware that rejects requests containing `..` path-traversal sequences.
 pub struct PathTraversalGuard;
 
 impl<S, B> Transform<S, ServiceRequest> for PathTraversalGuard
@@ -670,6 +681,7 @@ where
     }
 }
 
+/// Per-request service instance produced by [`PathTraversalGuard`].
 pub struct PathTraversalGuardMiddleware<S> {
     service: S,
 }
@@ -839,6 +851,7 @@ fn format_error_chain(e: &actix_web::Error) -> String {
 // Dotfile allowlist middleware
 // ---------------------------------------------------------------------------
 
+/// Actix middleware that blocks dotfile paths unless they appear on the allowlist.
 pub struct DotfileGuard {
     allow: Arc<DotfileAllowlist>,
 }
@@ -868,6 +881,7 @@ where
     }
 }
 
+/// Per-request service instance produced by [`DotfileGuard`].
 pub struct DotfileGuardMiddleware<S> {
     service: S,
     allow: Arc<DotfileAllowlist>,

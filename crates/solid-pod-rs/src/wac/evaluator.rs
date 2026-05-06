@@ -21,6 +21,7 @@ use crate::wac::{map_mode, AccessMode};
 /// a member. The default no-op implementation returns `false` for
 /// every call.
 pub trait GroupMembership {
+    /// Return `true` if `agent_uri` is a member of the group identified by `group_iri`.
     fn is_member(&self, group_iri: &str, agent_uri: &str) -> bool;
 }
 
@@ -35,13 +36,16 @@ impl GroupMembership for NoGroupMembership {
 /// resolve group documents eagerly into an in-memory map.
 #[derive(Debug, Default, Clone)]
 pub struct StaticGroupMembership {
+    /// Map from group IRI to the list of member WebIDs.
     pub groups: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl StaticGroupMembership {
+    /// Create an empty group membership resolver.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Register `members` under `group_iri`, replacing any previous entry.
     pub fn add(&mut self, group_iri: impl Into<String>, members: Vec<String>) {
         self.groups.insert(group_iri.into(), members);
     }
