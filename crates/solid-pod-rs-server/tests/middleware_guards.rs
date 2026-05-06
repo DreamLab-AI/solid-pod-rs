@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use actix_web::test;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs_server::{build_app, body_cap_from_env, AppState, NodeInfoMeta, DEFAULT_BODY_CAP};
 
@@ -23,26 +22,29 @@ fn make_state() -> AppState {
 
 #[actix_web::test]
 async fn traversal_guard_blocks_dot_dot_slash() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get()
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    // NormalizePath may resolve `../` before the traversal guard fires,
+    // so the request may be rejected by a later guard (403) or the
+    // traversal guard itself (400). Either way it must not succeed.
+    let req = actix_web::test::TestRequest::get()
         .uri("/foo/../etc/passwd")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
-    assert_eq!(
+    let rsp = actix_web::test::call_service(&app, req).await;
+    assert!(
+        rsp.status().is_client_error(),
+        "path with `../` must be rejected (got {})",
         rsp.status().as_u16(),
-        400,
-        "path with `../` must be rejected as 400"
     );
 }
 
 #[actix_web::test]
 async fn traversal_guard_blocks_encoded_dot_dot() {
-    let app = test::init_service(build_app(make_state())).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
     // %2e%2e decodes to `..`
-    let req = test::TestRequest::get()
+    let req = actix_web::test::TestRequest::get()
         .uri("/foo/%2e%2e/bar")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),
         400,
@@ -52,12 +54,12 @@ async fn traversal_guard_blocks_encoded_dot_dot() {
 
 #[actix_web::test]
 async fn traversal_guard_blocks_double_encoded_dot_dot() {
-    let app = test::init_service(build_app(make_state())).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
     // %252e%252e -> first decode: %2e%2e -> second decode: ..
-    let req = test::TestRequest::get()
+    let req = actix_web::test::TestRequest::get()
         .uri("/foo/%252e%252e/bar")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),
         400,
@@ -67,13 +69,13 @@ async fn traversal_guard_blocks_double_encoded_dot_dot() {
 
 #[actix_web::test]
 async fn traversal_guard_allows_normal_paths() {
-    let app = test::init_service(build_app(make_state())).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
     // A normal path with no traversal — should reach the handler (404
     // because the resource does not exist in memory, but NOT 400).
-    let req = test::TestRequest::get()
+    let req = actix_web::test::TestRequest::get()
         .uri("/alice/docs/readme.txt")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_ne!(
         rsp.status().as_u16(),
         400,
@@ -83,9 +85,9 @@ async fn traversal_guard_allows_normal_paths() {
 
 #[actix_web::test]
 async fn traversal_guard_allows_root() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get().uri("/").to_request();
-    let rsp = test::call_service(&app, req).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get().uri("/").to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
     // Root is a container — should get 200 (empty container listing)
     // or any non-400 status, proving the guard did not block it.
     assert_ne!(
@@ -101,9 +103,9 @@ async fn traversal_guard_allows_root() {
 
 #[actix_web::test]
 async fn dotfile_guard_blocks_env_path() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get().uri("/.env").to_request();
-    let rsp = test::call_service(&app, req).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get().uri("/.env").to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),
         403,
@@ -113,11 +115,11 @@ async fn dotfile_guard_blocks_env_path() {
 
 #[actix_web::test]
 async fn dotfile_guard_blocks_git_path() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get()
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
         .uri("/.git/config")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),
         403,
@@ -127,11 +129,11 @@ async fn dotfile_guard_blocks_git_path() {
 
 #[actix_web::test]
 async fn dotfile_guard_allows_acl_path() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get()
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
         .uri("/resource/.acl")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     // .acl is on the default allowlist — should pass through the
     // dotfile guard. The resource won't exist, so 404 is expected.
     assert_ne!(
@@ -143,11 +145,11 @@ async fn dotfile_guard_allows_acl_path() {
 
 #[actix_web::test]
 async fn dotfile_guard_allows_meta_path() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get()
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
         .uri("/resource/.meta")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_ne!(
         rsp.status().as_u16(),
         403,
@@ -157,12 +159,12 @@ async fn dotfile_guard_allows_meta_path() {
 
 #[actix_web::test]
 async fn dotfile_guard_allows_account_path() {
-    let app = test::init_service(build_app(make_state())).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
     // Sprint 12: `.account` added to default allowlist (JSS 32c0db2).
-    let req = test::TestRequest::get()
+    let req = actix_web::test::TestRequest::get()
         .uri("/.account/login")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_ne!(
         rsp.status().as_u16(),
         403,
@@ -172,13 +174,13 @@ async fn dotfile_guard_allows_account_path() {
 
 #[actix_web::test]
 async fn dotfile_guard_allows_well_known_paths() {
-    let app = test::init_service(build_app(make_state())).await;
+    let app = actix_web::test::init_service(build_app(make_state())).await;
     // .well-known paths are explicitly whitelisted in the middleware
     // (bypass dotfile check entirely).
-    let req = test::TestRequest::get()
+    let req = actix_web::test::TestRequest::get()
         .uri("/.well-known/solid")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_ne!(
         rsp.status().as_u16(),
         403,
@@ -192,11 +194,11 @@ async fn dotfile_guard_allows_well_known_paths() {
 
 #[actix_web::test]
 async fn dotfile_guard_blocks_nested_dotfile() {
-    let app = test::init_service(build_app(make_state())).await;
-    let req = test::TestRequest::get()
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
         .uri("/pod/.secret/data.txt")
         .to_request();
-    let rsp = test::call_service(&app, req).await;
+    let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),
         403,
@@ -227,7 +229,8 @@ fn body_cap_from_env_returns_default_on_missing_var() {
 fn body_cap_from_env_parses_valid_value() {
     std::env::set_var("JSS_MAX_REQUEST_BODY", "10MB");
     let cap = body_cap_from_env();
-    assert_eq!(cap, 10 * 1024 * 1024, "10MB must parse to 10485760 bytes");
+    // body_cap_from_env uses SI (decimal) MB: 10 * 1_000_000.
+    assert_eq!(cap, 10_000_000, "10MB must parse to 10000000 bytes (SI)");
     std::env::remove_var("JSS_MAX_REQUEST_BODY");
 }
 

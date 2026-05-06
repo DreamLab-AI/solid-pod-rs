@@ -94,7 +94,7 @@ async fn account_delete_with_correct_confirmation_succeeds() {
             "test@example.com",
             "https://test.example/profile#me",
             None,
-            "pw",
+            "password1234",
         )
         .unwrap();
 
@@ -164,7 +164,7 @@ async fn account_delete_trims_confirmation_whitespace() {
             "trim@example.com",
             "https://trim.example/profile#me",
             None,
-            "pw",
+            "password1234",
         )
         .unwrap();
 
