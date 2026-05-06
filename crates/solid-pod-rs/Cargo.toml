@@ -148,7 +148,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # Sprint 7 D: integration tests drive the server binary's actix `App`
 # through `test::init_service`. Dev-dependency only — never ships in
 # the library's public surface.
-solid-pod-rs-server = { version = "0.4.0-alpha.1", path = "../solid-pod-rs-server" }
+# solid-pod-rs-server = { version = "0.4.0-alpha.2", path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }
