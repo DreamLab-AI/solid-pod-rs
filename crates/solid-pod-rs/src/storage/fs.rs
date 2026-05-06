@@ -239,6 +239,21 @@ impl Storage for FsBackend {
         Ok(fs::try_exists(&data_path).await.unwrap_or(false))
     }
 
+    async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
+        let container = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
+        let dir_path = self.resolve(&container)?;
+        fs::create_dir_all(&dir_path).await?;
+        Ok(ResourceMeta::new(
+            "container",
+            0,
+            "application/ld+json",
+        ))
+    }
+
     async fn watch(&self, path: &str) -> Result<mpsc::Receiver<StorageEvent>, PodError> {
         use notify::{RecursiveMode, Watcher};
 

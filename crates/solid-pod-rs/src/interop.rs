@@ -22,7 +22,7 @@ use crate::error::PodError;
 
 /// Solid Protocol `.well-known/solid` discovery document. The doc
 /// advertises the OIDC issuer, the pod URL, and the Notifications
-/// endpoint.
+/// endpoint. JSS parity: includes `api.accounts` URLs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolidWellKnown {
     #[serde(rename = "@context")]
@@ -36,6 +36,24 @@ pub struct SolidWellKnown {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webfinger: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<SolidWellKnownApi>,
+}
+
+/// JSS-compatible account management API pointers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolidWellKnownApi {
+    pub accounts: SolidWellKnownAccounts,
+}
+
+/// JSS-compatible account endpoint URLs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolidWellKnownAccounts {
+    pub new: String,
+    pub recover: String,
+    pub signin: String,
+    pub signout: String,
 }
 
 /// Build the discovery document for a pod root.
@@ -50,6 +68,14 @@ pub fn well_known_solid(
         notification_gateway: format!("{base}/.notifications"),
         storage: format!("{base}/"),
         webfinger: Some(format!("{base}/.well-known/webfinger")),
+        api: Some(SolidWellKnownApi {
+            accounts: SolidWellKnownAccounts {
+                new: format!("{base}/api/accounts/new"),
+                recover: format!("{base}/api/accounts/recover"),
+                signin: format!("{base}/login"),
+                signout: format!("{base}/logout"),
+            },
+        }),
     }
 }
 

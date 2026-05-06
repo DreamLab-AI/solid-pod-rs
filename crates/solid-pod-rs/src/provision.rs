@@ -152,7 +152,7 @@ fn build_public_type_index_acl(webid: &str, resource_path: &str) -> AclDocument 
 ///   function treats `AlreadyExists` as success).
 /// * Writes a WebID profile HTML at `<pod_base>/pods/<pubkey>/profile/card`.
 /// * Writes a root ACL document if `plan.root_acl` is supplied.
-pub async fn provision_pod<S: Storage>(
+pub async fn provision_pod<S: Storage + ?Sized>(
     storage: &S,
     plan: &ProvisionPlan,
 ) -> Result<ProvisionOutcome, PodError> {

@@ -201,11 +201,29 @@ async fn handle_request(
             }
         }
         "PUT" => {
-            if path.ends_with('/') {
+            let has_container_link = req_headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("Link")
+                    && v.contains("BasicContainer")
+                    && v.contains("rel=\"type\"")
+            });
+            if path.ends_with('/') && !has_container_link {
                 return SimulatedResponse {
                     status: 405,
                     reason: "Method Not Allowed",
                     headers: Vec::new(),
+                    body: Vec::new(),
+                };
+            }
+            if path.ends_with('/') && has_container_link {
+                pod.create_container(path).await.unwrap();
+                let headers: Vec<(String, String)> = link_headers(path)
+                    .into_iter()
+                    .map(|v| ("Link".to_string(), v))
+                    .collect();
+                return SimulatedResponse {
+                    status: 201,
+                    reason: "Created",
+                    headers,
                     body: Vec::new(),
                 };
             }
@@ -564,11 +582,24 @@ async fn jss_get_non_container_emits_etag() {
 }
 
 #[tokio::test]
-async fn jss_put_to_container_returns_405() {
+async fn jss_put_to_container_without_link_returns_405() {
     let pod = MemoryBackend::new();
     let acls = HashMap::new();
     let resp = handle_request(&pod, &acls, "PUT", "/foo/", &[], b"x").await;
     assert_eq!(resp.status, 405);
+}
+
+#[tokio::test]
+async fn jss_put_to_container_with_basic_container_link_creates_container() {
+    let pod = MemoryBackend::new();
+    let acls = HashMap::new();
+    let headers = vec![(
+        "Link".to_string(),
+        "<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\"".to_string(),
+    )];
+    let resp = handle_request(&pod, &acls, "PUT", "/new-container/", &headers, &[]).await;
+    assert_eq!(resp.status, 201);
+    assert!(pod.exists("/new-container/").await.unwrap());
 }
 
 #[tokio::test]
@@ -813,7 +844,7 @@ async fn jss_options_container_advertises_accept_post_and_ranges() {
     // the representation is server-generated RDF, not byte-rangeable.
     assert_eq!(o.accept_ranges, "none");
     assert!(o.allow.contains(&"POST"));
-    assert!(!o.allow.contains(&"PUT"));
+    assert!(o.allow.contains(&"PUT"));
 }
 
 #[tokio::test]

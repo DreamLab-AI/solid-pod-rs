@@ -99,6 +99,27 @@ pub trait Storage: Send + Sync + 'static {
     /// Return whether a resource exists.
     async fn exists(&self, path: &str) -> Result<bool, PodError>;
 
+    /// Create an empty container at `path`.
+    ///
+    /// JSS parity: `PUT` with `Link: <ldp:BasicContainer>; rel="type"`
+    /// creates a container rather than a resource. The default
+    /// implementation writes a `.meta` marker via [`Storage::put`];
+    /// filesystem backends should create a directory instead.
+    async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
+        let container = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
+        let meta_path = format!("{container}.meta", container = container.trim_end_matches('/'));
+        self.put(
+            &meta_path,
+            Bytes::new(),
+            "application/ld+json",
+        )
+        .await
+    }
+
     /// Register a watcher for a resource or container.
     ///
     /// The returned channel receives `StorageEvent` messages for

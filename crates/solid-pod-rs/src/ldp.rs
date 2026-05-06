@@ -1580,6 +1580,7 @@ pub fn options_for(path: &str) -> OptionsResponse {
     let mut allow = vec!["GET", "HEAD", "OPTIONS"];
     if container {
         allow.push("POST");
+        allow.push("PUT");
     } else {
         allow.push("PUT");
         allow.push("PATCH");

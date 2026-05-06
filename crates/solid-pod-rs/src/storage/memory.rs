@@ -174,6 +174,27 @@ impl Storage for MemoryBackend {
         Ok(guard.contains_key(&path))
     }
 
+    async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
+        let container = Self::normalize(path);
+        let container = if container.ends_with('/') {
+            container
+        } else {
+            format!("{container}/")
+        };
+        let meta = ResourceMeta::new("container", 0, "application/ld+json");
+        let mut guard = self.inner.data.write().await;
+        guard.insert(
+            container.clone(),
+            Entry {
+                body: Bytes::new(),
+                meta: meta.clone(),
+            },
+        );
+        drop(guard);
+        let _ = self.inner.events.send(StorageEvent::Created(container));
+        Ok(meta)
+    }
+
     async fn watch(&self, path: &str) -> Result<mpsc::Receiver<StorageEvent>, PodError> {
         let filter_path = Self::normalize(path);
         let mut rx = self.inner.events.subscribe();

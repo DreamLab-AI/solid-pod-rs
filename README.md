@@ -174,7 +174,7 @@ graph TD
 
 ## LDP — Linked Data Platform
 
-Solid pods speak LDP. This means every URL is either a **resource** (a file with RDF metadata) or a **container** (a directory that lists its children). You interact with them using standard HTTP verbs: `GET` to read, `PUT` to create or replace, `POST` to add to a container, `PATCH` to edit in place, `DELETE` to remove.
+Solid pods speak LDP. This means every URL is either a **resource** (a file with RDF metadata) or a **container** (a directory that lists its children). You interact with them using standard HTTP verbs: `GET` to read, `PUT` to create or replace, `POST` to add to a container, `PATCH` to edit in place, `DELETE` to remove, and `COPY` to duplicate resources with their ACL sidecars.
 
 <details>
 <summary><strong>Technical detail</strong></summary>
@@ -187,6 +187,10 @@ solid-pod-rs implements LDP Basic Containers per Solid Protocol §5.2–§5.3:
 - **Conditional requests** — `If-Match` / `If-None-Match` with strong SHA-256 ETags → 304 / 412.
 - **Range requests** — single-range `bytes=N-M` (RFC 7233).
 - **Container membership** — `ldp:contains` with server-managed `dcterms:modified`, `stat:size`, `stat:mtime`.
+- **Container creation via PUT** — `PUT` with `Link: <ldp:BasicContainer>; rel="type"` creates a container (JSS parity).
+- **HTTP COPY** — `Source` header → resource + ACL sidecar duplication.
+- **Glob GET** — `GET /folder/*` merges all Turtle resources into a single response (JSS parity).
+- **`Updates-Via`** — GET responses include `Updates-Via` WebSocket header for live subscription discovery.
 - **`.meta` sidecars** — RDF metadata that travels with the resource.
 
 Modules: `ldp`, `storage::fs`, `storage::memory`, `storage::s3`.
@@ -374,6 +378,27 @@ The server binary loads configuration in layers (lowest precedence first): compi
 | `JSS_DEFAULT_QUOTA` | string | Per-pod storage quota |
 
 Full list: [`docs/reference/env-vars.md`](crates/solid-pod-rs/docs/reference/env-vars.md).
+</details>
+
+---
+
+## Account Management
+
+The server exposes the same account management endpoints as JSS, so existing Solid clients and deployment tooling work without modification. Pods are provisioned with a full directory structure: WebID profile, inbox, public/private containers, type indexes, and root ACL.
+
+<details>
+<summary><strong>Technical detail</strong></summary>
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/accounts/new` | POST | Create a new pod (username + optional display name) |
+| `/pods/check/{name}` | GET | Check if a pod name is taken |
+| `/login/password` | POST | Credentials login (delegates to IdP crate) |
+| `/account/password/reset` | POST | Request password reset (anti-enumeration: always 200) |
+| `/account/password/change` | POST | Change password with reset token |
+| `/.well-known/solid` | GET | Discovery document with `api.accounts.*` URLs |
+
+Pod provisioning creates: `/profile/card` (WebID), `/inbox/`, `/public/`, `/private/`, `/settings/`, `publicTypeIndex.jsonld`, `privateTypeIndex.jsonld`, and root `.acl`.
 </details>
 
 ---
