@@ -1,6 +1,6 @@
 # solid-pod-rs
 
-**A Rust-native port of [JavaScriptSolidServer](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer) (JSS)** — the reference implementation of the Solid Protocol. This crate delivers the full JSS feature surface (~98% strict parity) as a framework-agnostic Rust library and a drop-in server binary.
+**A Rust-native port of [JavaScriptSolidServer](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer) (JSS)** — an extended implementation of the Solid Protocol. This crate delivers the full JSS feature surface (~98% strict parity) as a framework-agnostic Rust library and a drop-in server binary.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![crates.io](https://img.shields.io/crates/v/solid-pod-rs.svg)](https://crates.io/crates/solid-pod-rs)
