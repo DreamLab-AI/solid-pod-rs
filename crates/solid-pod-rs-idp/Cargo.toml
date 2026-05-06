@@ -1,12 +1,17 @@
 [package]
 name = "solid-pod-rs-idp"
-version = "0.4.0-alpha.1"
-edition = "2021"
-license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
 description = "Solid-OIDC identity provider (authorization-code + DPoP-bound tokens, JWKS, credentials, dynamic client registration) — Rust port of JavaScriptSolidServer/src/idp"
-repository = "https://github.com/dreamlab-ai/solid-pod-rs"
+keywords = ["solid", "oidc", "idp", "dpop", "webid"]
+categories = ["web-programming::http-server", "authentication"]
 readme = "README.md"
-publish = false
 
 [lib]
 name = "solid_pod_rs_idp"
@@ -18,7 +23,7 @@ path = "src/lib.rs"
 # jsonwebtoken + openidconnect already. `rate-limit` gives us the
 # reference LruRateLimiter. `security-primitives` is implied by
 # `rate-limit`.
-solid-pod-rs = { path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
+solid-pod-rs = { version = "0.4.0-alpha.1", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }

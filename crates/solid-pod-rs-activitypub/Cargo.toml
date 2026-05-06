@@ -9,10 +9,12 @@ homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
 description = "ActivityPub Actor, inbox, outbox, HTTP Signatures, NodeInfo 2.1 for solid-pod-rs (JSS src/ap parity)"
+keywords = ["solid", "activitypub", "federation", "http-signatures", "nodeinfo"]
+categories = ["web-programming::http-server"]
 readme = "README.md"
 
 [dependencies]
-solid-pod-rs = { path = "../solid-pod-rs", default-features = false }
+solid-pod-rs = { version = "0.4.0-alpha.1", path = "../solid-pod-rs", default-features = false }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs"] }
 async-trait = "0.1"
