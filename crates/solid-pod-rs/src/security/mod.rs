@@ -47,14 +47,24 @@
 //! all private/loopback/link-local space; dotfile allowlist permits
 //! only `.acl` and `.meta`.
 
+// `dotfile` and `cors` are pure-logic primitives — always compiled.
 pub mod cors;
 pub mod dotfile;
+
+// `rate_limit` is async-trait based but uses no tokio internals; the
+// trait + decision types compile under `core`. The reference
+// `LruRateLimiter` impl is gated separately.
 pub mod rate_limit;
+
+// `ssrf` reaches for `tokio::net::lookup_host` for DNS resolution;
+// keep it on the tokio-runtime path only.
+#[cfg(feature = "tokio-runtime")]
 pub mod ssrf;
 
 pub use cors::{AllowedOrigins, CorsPolicy};
 pub use dotfile::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use rate_limit::{RateLimitDecision, RateLimitKey, RateLimitSubject, RateLimiter};
+#[cfg(feature = "tokio-runtime")]
 pub use ssrf::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
 
 #[cfg(feature = "rate-limit")]

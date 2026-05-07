@@ -4,6 +4,46 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.3] - 2026-05-07 (Phase 4 chain prep — `core` feature)
+
+### Added
+- `core` feature flag: pure-logic surface for wasm32 / CF Workers
+  consumers (no tokio, no reqwest, no DNS resolver, no filesystem).
+- `tokio-runtime` feature: gates the async-IO surface. Activated by
+  `default` so the existing 0.4.0-alpha.2 surface is preserved.
+- `notifications` feature: gates the
+  WebSocketChannel2023 + WebhookChannel2023 stack. Activated by
+  `default`.
+
+### Changed
+- `tokio`, `tokio-tungstenite`, `futures-util`, `notify`, `reqwest`
+  are now `optional = true` in `Cargo.toml`. They activate
+  transitively through `tokio-runtime` (and `notifications` for
+  reqwest).
+- `default = ["std", "fs-backend", "memory-backend", "tokio-runtime",
+  "notifications"]` (was `["fs-backend", "memory-backend"]`). Net
+  surface unchanged for downstream consumers.
+- `fs-backend`, `memory-backend`, `s3-backend`, `oidc`,
+  `dpop-replay-cache`, `webhook-signing`, `did-nostr`, `rate-limit`,
+  `quota`, `legacy-notifications`, `security-primitives` all imply
+  `tokio-runtime`.
+- `From<notify::Error> for PodError` is now gated on `fs-backend`.
+- `wac::StorageAclResolver`, `ldp::LdpContainerOps`,
+  `security::ssrf`, all `notifications`/`provision`/`quota`/`storage`
+  modules are gated on `tokio-runtime`. The pure traits (`AclResolver`,
+  `RateLimiter`) and parsers stay in `core`.
+- `metrics::SecurityMetrics`: SSRF-block helpers gated on
+  `tokio-runtime`. Dotfile counter remains available under `core`.
+- `SecurityMetricsInner`'s SSRF counter fields stay in the struct
+  unconditionally so `Default`/`Clone` derivations are layout-stable
+  across feature configurations.
+
+### Verified
+- `cargo check -p solid-pod-rs` (default features) — PASS
+- `cargo check -p solid-pod-rs --no-default-features --features core` — PASS
+- `cargo check --workspace` (all 7 sibling crates) — PASS
+- `cargo test -p solid-pod-rs --lib` — 236 tests PASS
+
 ## [0.5.0-alpha.1] - 2026-04-24 (Sprint 11 — top-10 roadmap closure)
 
 Parity vs JSS: **~100 % spec-normative** / **~97 % strict** on the

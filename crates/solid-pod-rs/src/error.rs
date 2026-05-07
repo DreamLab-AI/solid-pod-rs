@@ -94,6 +94,10 @@ pub enum PodError {
     QuotaExceeded(#[from] crate::quota::QuotaExceeded),
 }
 
+// `notify` is an optional dep activated by `fs-backend`. Wasm32 / `core`
+// consumers compile this crate without it; the `Watch` variant remains
+// constructible from a string when needed by other backends.
+#[cfg(feature = "fs-backend")]
 impl From<notify::Error> for PodError {
     fn from(e: notify::Error) -> Self {
         PodError::Watch(e.to_string())

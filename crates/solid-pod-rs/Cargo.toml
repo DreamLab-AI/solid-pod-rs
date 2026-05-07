@@ -18,7 +18,10 @@ name = "solid_pod_rs"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["fs", "io-util", "sync", "macros", "rt", "time"] }
+# `tokio` is optional so wasm32 / no-runtime consumers can opt out via
+# `default-features = false, features = ["core"]`. Default builds still
+# pull it in transitively through `tokio-runtime`.
+tokio = { version = "1", features = ["fs", "io-util", "sync", "macros", "rt", "time"], optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,17 +34,19 @@ hex = "0.4"
 url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
-notify = "6"
+notify = { version = "6", optional = true }
 
-# SPARQL-Update parsing for PATCH bodies
+# SPARQL-Update parsing for PATCH bodies (pure-logic; always compiled).
 spargebra = "0.3"
 
-# WebSocketChannel2023 (Solid Notifications 0.2)
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
+# WebSocketChannel2023 (Solid Notifications 0.2). Optional: only needed
+# when a tokio runtime is configured for the notifications feature.
+tokio-tungstenite = { version = "0.24", optional = true }
+futures-util = { version = "0.3", optional = true }
 
-# HTTP client for WebhookChannel2023 delivery
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTTP client for WebhookChannel2023 delivery + did:nostr resolver.
+# Optional so `core` consumers don't pull a TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 # Optional backends
 aws-sdk-s3 = { version = "1", optional = true }
@@ -75,12 +80,33 @@ serde_yaml = { version = "0.9", optional = true }
 toml = { version = "0.8", optional = true }
 
 [features]
-default = ["fs-backend", "memory-backend"]
-fs-backend = []
-memory-backend = []
-s3-backend = ["dep:aws-sdk-s3"]
-oidc = ["dep:openidconnect", "dep:jsonwebtoken"]
+# `default` preserves the surface from 0.4.0-alpha.2: filesystem +
+# in-memory backends, the tokio runtime, the notifications stack
+# (WebSocketChannel2023 + WebhookChannel2023 — `reqwest`-backed), plus
+# the JSS-parity umbrella.
+default = ["std", "fs-backend", "memory-backend", "tokio-runtime", "notifications"]
+
+# ---------------------------------------------------------------------------
+# 0.4.0-alpha.3: feature flags for wasm32 / CF-Workers consumers.
+# Per ADR-076/078 absorption, `nostr-bbs-pod-worker` consumes the pure
+# logic surfaces (wac, webid, dotfile, nip98 verifier, ldp parsers,
+# interop types, security path/URL primitives) without dragging in tokio
+# or reqwest. `core` is the entry point for those consumers.
+# ---------------------------------------------------------------------------
+core = ["std"]
+std = []
+
+# Activate the tokio runtime + the websocket/futures stack. Pulled in
+# transitively by every async-IO feature below. Pure-logic consumers
+# leave this off via `default-features = false, features = ["core"]`.
+tokio-runtime = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+
+fs-backend = ["tokio-runtime", "dep:notify"]
+memory-backend = ["tokio-runtime"]
+s3-backend = ["dep:aws-sdk-s3", "tokio-runtime"]
+oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]
+notifications = ["tokio-runtime", "dep:reqwest"]
 
 # ---------------------------------------------------------------------------
 # Sprint 4 / JSS parity umbrella (ADR-056 / PRD §F).
@@ -91,11 +117,12 @@ jss-v04 = []
 
 # F1/F2: SSRF guard + dotfile allowlist (lightweight structs always
 # compiled; integration gated at call sites).
-security-primitives = ["jss-v04"]
+security-primitives = ["jss-v04", "tokio-runtime"]
 
 # F3: legacy `solid-0.1` WebSocket notifications adapter for SolidOS
-# data-browser compat.
-legacy-notifications = ["jss-v04"]
+# data-browser compat. Implies the tokio runtime + the new
+# `notifications` feature it sits on top of.
+legacy-notifications = ["jss-v04", "tokio-runtime", "notifications"]
 
 # F4: WAC `acl:origin` enforcement per WAC §4.3. When off, the
 # evaluator ignores the Origin header for backward compat.
@@ -103,7 +130,7 @@ acl-origin = ["jss-v04"]
 
 # F5: DPoP jti replay cache (Solid-OIDC §5.2 / RFC 9449).
 # Enables `oidc::replay` and pulls in `lru`.
-dpop-replay-cache = ["oidc", "jss-v04", "dep:lru"]
+dpop-replay-cache = ["oidc", "jss-v04", "dep:lru", "tokio-runtime"]
 
 # F6: JSS-compatible layered config loader. The `config` module is
 # always compiled (lightweight struct definitions); this feature flag
@@ -116,20 +143,20 @@ config-loader = ["jss-v04", "dep:serde_yaml", "dep:toml"]
 
 # Sprint 6 C: RFC 9421 HTTP Message Signatures on outgoing webhook
 # deliveries, Retry-After handling, circuit breaker. Consumers opt in.
-webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand"]
+webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand", "tokio-runtime", "dep:reqwest"]
 
 # Sprint 6 D: did:nostr resolver (DID-Doc ↔ WebID bidirectional
 # alsoKnownAs/owl:sameAs verification). Surfaces under
 # `solid_pod_rs::interop::did_nostr`. No new crate dependencies: uses
 # the reqwest + serde + url stack already pulled in by the library,
 # and std::sync::RwLock for the cache.
-did-nostr = ["jss-v04", "security-primitives"]
+did-nostr = ["jss-v04", "security-primitives", "tokio-runtime", "dep:reqwest"]
 
 # Sprint 7 A: rate-limit primitive. Library exposes a `RateLimiter`
 # trait plus an LRU-backed reference implementation. CORS support is
 # gated under `jss-v04` (no new deps). Enabling `rate-limit` pulls in
 # `lru` + `parking_lot`.
-rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot"]
+rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot", "tokio-runtime"]
 
 # Sprint 7 B: pod-level quota policy. Ships `FsQuotaStore` backed by
 # `.quota.json` sidecars; integrates with the config loader via
@@ -137,7 +164,7 @@ rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot"]
 # always-on `jss-v04` umbrella; this flag only gates the FS adapter
 # (which shares serde_json + tokio::fs already pulled in by the crate,
 # no new deps).
-quota = ["jss-v04", "config-loader"]
+quota = ["jss-v04", "config-loader", "tokio-runtime"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -148,7 +175,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # Sprint 7 D: integration tests drive the server binary's actix `App`
 # through `test::init_service`. Dev-dependency only — never ships in
 # the library's public surface.
-solid-pod-rs-server = { version = "0.4.0-alpha.2", path = "../solid-pod-rs-server" }
+solid-pod-rs-server = { version = "0.4.0-alpha.3", path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }

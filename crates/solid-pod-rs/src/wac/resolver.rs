@@ -7,9 +7,16 @@
 use async_trait::async_trait;
 
 use crate::error::PodError;
+// `Storage` lives behind `tokio-runtime`; the storage-backed resolver
+// impl below is gated to match. The `AclResolver` trait is pure and
+// remains available under `core` so wasm32 consumers can implement
+// their own KV-backed resolver against the same contract.
+#[cfg(feature = "tokio-runtime")]
 use crate::storage::Storage;
 use crate::wac::document::AclDocument;
+#[cfg(feature = "tokio-runtime")]
 use crate::wac::parse_jsonld_acl;
+#[cfg(feature = "tokio-runtime")]
 use crate::wac::parser::parse_turtle_acl;
 
 /// Resolves the effective ACL document for a resource using the WAC walk-up-the-tree algorithm.
@@ -28,10 +35,12 @@ pub trait AclResolver: Send + Sync {
 }
 
 /// `AclResolver` backed by a [`Storage`] implementation.
+#[cfg(feature = "tokio-runtime")]
 pub struct StorageAclResolver<S: Storage> {
     storage: std::sync::Arc<S>,
 }
 
+#[cfg(feature = "tokio-runtime")]
 impl<S: Storage> StorageAclResolver<S> {
     /// Wrap a shared storage handle in a resolver.
     pub fn new(storage: std::sync::Arc<S>) -> Self {
@@ -39,6 +48,7 @@ impl<S: Storage> StorageAclResolver<S> {
     }
 }
 
+#[cfg(feature = "tokio-runtime")]
 #[async_trait]
 impl<S: Storage> AclResolver for StorageAclResolver<S> {
     /// Walk from `resource_path` toward `/`, returning the first valid `.acl` sidecar found.

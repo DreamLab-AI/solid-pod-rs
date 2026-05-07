@@ -13,6 +13,10 @@
 //!
 //! | Flag | Default | Purpose |
 //! |-------------------------|:-------:|-----------------------------------------------|
+//! | `core` | off | Pure-logic surfaces only — wasm32 / CF Workers. |
+//! | `std` | on | std lib (always; reserved for future no_std).  |
+//! | `tokio-runtime` | on | Tokio + tokio-tungstenite + futures-util.       |
+//! | `notifications` | on | WebSocketChannel2023 + WebhookChannel2023.      |
 //! | `fs-backend` | on | POSIX filesystem storage. |
 //! | `memory-backend` | on | In-process `HashMap` storage (tests/demos). |
 //! | `s3-backend` | off | AWS S3 / S3-compatible object stores. |
@@ -27,6 +31,11 @@
 //! | `did-nostr` | off | did:nostr resolver in `interop`. |
 //! | `rate-limit` | off | Sliding-window LRU rate limiter. |
 //! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
+//!
+//! `core` consumers wire the crate via `default-features = false,
+//! features = ["core"]` and get only the pure-logic surfaces (no
+//! tokio, no reqwest, no DNS resolver, no filesystem). See
+//! `RELEASE_NOTES.md` v0.4.0-alpha.3 for the absorbed surfaces map.
 //!
 //! ## Module overview
 //!
@@ -81,6 +90,14 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
+// ---------------------------------------------------------------------------
+// Always-compiled (`core`) modules.
+//
+// Pure-logic surfaces: parsers, validators, type definitions. None of
+// these reach for tokio, reqwest, or notify directly. Wasm32 / CF
+// Workers consumers wire these via
+// `default-features = false, features = ["core"]`.
+// ---------------------------------------------------------------------------
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -88,13 +105,26 @@ pub mod interop;
 pub mod ldp;
 pub mod metrics;
 pub mod multitenant;
-pub mod notifications;
-pub mod provision;
-pub mod quota;
 pub mod security;
-pub mod storage;
 pub mod wac;
 pub mod webid;
+
+// ---------------------------------------------------------------------------
+// `tokio-runtime`-gated modules.
+//
+// These pull tokio (mpsc, fs, broadcast) or reqwest (HTTP client) and
+// are unavailable to `core` consumers. They are wired in by the
+// `default` feature set so the existing surface from 0.4.0-alpha.2 is
+// preserved bit-for-bit on native builds.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "tokio-runtime")]
+pub mod notifications;
+#[cfg(feature = "tokio-runtime")]
+pub mod provision;
+#[cfg(feature = "tokio-runtime")]
+pub mod quota;
+#[cfg(feature = "tokio-runtime")]
+pub mod storage;
 
 #[cfg(feature = "oidc")]
 pub mod oidc;
@@ -106,7 +136,9 @@ pub mod oidc;
 #[cfg(feature = "legacy-notifications")]
 pub mod handlers;
 
-// Re-exports for ergonomic consumers.
+// ---------------------------------------------------------------------------
+// `core` re-exports — always available.
+// ---------------------------------------------------------------------------
 pub use auth::nip98::Nip98Verifier;
 pub use auth::self_signed::{
     CidVerifier, ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
@@ -114,10 +146,8 @@ pub use auth::self_signed::{
 pub use error::PodError;
 pub use metrics::SecurityMetrics;
 pub use security::{
-    is_path_allowed, is_safe_url, resolve_and_check, DotfileAllowlist, DotfileError,
-    DotfilePathError, IpClass, SsrfError, SsrfPolicy,
+    is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError,
 };
-pub use storage::{ResourceMeta, Storage, StorageEvent};
 pub use wac::{
     check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,
     method_to_mode, mode_name, parse_turtle_acl, serialize_turtle_acl, wac_allow_header,
@@ -138,15 +168,24 @@ pub use interop::{
     Nip05Document, SolidWellKnown, WebFingerJrd, WebFingerLink,
 };
 pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
-pub use provision::{
-    check_admin_override, provision_pod, AdminOverride, ProvisionOutcome, ProvisionPlan,
-    QuotaTracker,
-};
-pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
-
-#[cfg(feature = "quota")]
-pub use quota::FsQuotaStore;
 pub use webid::{
     extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer,
     validate_webid_html,
 };
+
+// ---------------------------------------------------------------------------
+// `tokio-runtime`-gated re-exports.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "tokio-runtime")]
+pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
+#[cfg(feature = "tokio-runtime")]
+pub use storage::{ResourceMeta, Storage, StorageEvent};
+#[cfg(feature = "tokio-runtime")]
+pub use provision::{
+    check_admin_override, provision_pod, AdminOverride, ProvisionOutcome, ProvisionPlan,
+    QuotaTracker,
+};
+#[cfg(feature = "tokio-runtime")]
+pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
+#[cfg(feature = "quota")]
+pub use quota::FsQuotaStore;

@@ -1,3 +1,40 @@
+# v0.4.0-alpha.3 (Phase 4 chain prep — 2026-05-07)
+
+Adds the `core` feature flag for pure-logic consumers (wasm32 / CF
+Workers). All async-IO surfaces — tokio, reqwest, notify,
+tokio-tungstenite, futures-util — are now optional dependencies gated
+behind the `tokio-runtime` feature.
+
+The `default` feature set preserves the surface from `0.4.0-alpha.2`
+bit-for-bit: `["std", "fs-backend", "memory-backend", "tokio-runtime",
+"notifications"]`. Existing consumers do not need to change anything.
+
+Per ADR-076/078 absorption, `nostr-bbs-pod-worker` (CF Workers) wires
+this crate via `default-features = false, features = ["core"]` and
+consumes the pure surfaces: `wac`, `webid`, `auth::nip98::verify_at`,
+`security::dotfile`, `interop` types, `ldp` parsers (PATCH dialects,
+content negotiation, range parsing, server-managed triples), `error`,
+`metrics::SecurityMetrics` (dotfile counter only — SSRF counters gate
+on `tokio-runtime`).
+
+Modules behind `tokio-runtime` (unavailable to `core`):
+
+- `storage` (Storage trait + FsBackend + MemoryBackend)
+- `notifications` (WebSocketChannel2023 + WebhookChannel2023)
+- `provision` (Storage-driven pod bootstrap)
+- `quota` (FsQuotaStore — async-trait QuotaPolicy)
+- `oidc` (reqwest-backed JWKS fetcher + DPoP replay cache)
+- `security::ssrf` (`tokio::net::lookup_host`-backed DNS guard)
+- `wac::StorageAclResolver` (Storage-driven walk-up resolver — the
+  `AclResolver` trait stays in `core` so consumers can implement KV
+  backends against the same contract)
+- `ldp::LdpContainerOps` (the trait impl that delegates to
+  `Storage::list`; the LDP parsers themselves remain in `core`)
+
+236 unit tests pass on default features. `cargo check -p solid-pod-rs
+--no-default-features --features core` PASS — confirms the pure
+surface compiles without tokio.
+
 # v0.5.0-alpha.2 (Sprint 12 close — 2026-05-06)
 
 solid-pod-rs closes the JSS v0.0.60–v0.0.71 feature delta. The workspace
