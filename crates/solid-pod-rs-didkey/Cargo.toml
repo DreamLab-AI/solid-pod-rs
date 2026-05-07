@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Reuse the core SelfSignedVerifier trait + error types.
-solid-pod-rs = { version = "0.4.0-alpha.3", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "security-primitives"] }
+solid-pod-rs = { version = "0.4.0-alpha.4", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "security-primitives"] }
 
 async-trait = "0.1"
 

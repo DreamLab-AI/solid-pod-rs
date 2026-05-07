@@ -117,7 +117,7 @@ pub mod webid;
 // `default` feature set so the existing surface from 0.4.0-alpha.2 is
 // preserved bit-for-bit on native builds.
 // ---------------------------------------------------------------------------
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "notifications")]
 pub mod notifications;
 #[cfg(feature = "tokio-runtime")]
 pub mod provision;
