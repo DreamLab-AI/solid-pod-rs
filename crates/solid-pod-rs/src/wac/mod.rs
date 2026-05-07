@@ -137,7 +137,9 @@ pub use evaluator::{
 pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
-pub use resolver::{AclResolver, StorageAclResolver};
+pub use resolver::AclResolver;
+#[cfg(feature = "tokio-runtime")]
+pub use resolver::StorageAclResolver;
 pub use serializer::serialize_turtle_acl;
 
 /// Access modes defined by WAC.

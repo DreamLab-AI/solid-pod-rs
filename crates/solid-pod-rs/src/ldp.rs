@@ -20,10 +20,15 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+#[cfg(feature = "tokio-runtime")]
 use async_trait::async_trait;
 use serde::Serialize;
 
 use crate::error::PodError;
+// `Storage` lives behind `tokio-runtime` — the LDP parsers themselves
+// are pure and compile under `core`, only the storage-driven container
+// representation helper at the bottom of this file needs the trait.
+#[cfg(feature = "tokio-runtime")]
 use crate::storage::Storage;
 
 /// Well-known IRI constants used in LDP, WAC, and server-managed triples.
@@ -1978,6 +1983,7 @@ pub fn apply_patch_to_absent(
 // LdpContainerOps trait (backwards compatible)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "tokio-runtime")]
 #[async_trait]
 pub trait LdpContainerOps: Storage {
     async fn container_representation(
@@ -1989,6 +1995,7 @@ pub trait LdpContainerOps: Storage {
     }
 }
 
+#[cfg(feature = "tokio-runtime")]
 impl<T: Storage + ?Sized> LdpContainerOps for T {}
 
 // ---------------------------------------------------------------------------

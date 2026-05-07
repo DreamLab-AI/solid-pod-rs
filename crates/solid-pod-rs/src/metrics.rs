@@ -14,6 +14,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+// `IpClass` lives in the SSRF guard which only compiles under
+// `tokio-runtime` (DNS resolution requires the tokio reactor). The
+// SSRF-block counter helpers below are gated to match. Dotfile
+// counters remain available under `core`.
+#[cfg(feature = "tokio-runtime")]
 use crate::security::ssrf::IpClass;
 
 /// Atomic counter bundle, cheap to clone.
@@ -24,11 +29,20 @@ pub struct SecurityMetrics {
 
 #[derive(Debug, Default)]
 struct SecurityMetricsInner {
-    // SSRF block counters, labelled by IpClass.
+    // SSRF block counters, labelled by IpClass. Only read by the
+    // SSRF-block helpers, which are gated on `tokio-runtime`. The
+    // fields stay in the struct unconditionally so the layout — and
+    // therefore `Default`/`Clone` derivations — is identical across
+    // feature configurations.
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     ssrf_blocked_private: AtomicU64,
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     ssrf_blocked_loopback: AtomicU64,
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     ssrf_blocked_link_local: AtomicU64,
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     ssrf_blocked_multicast: AtomicU64,
+    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     ssrf_blocked_reserved: AtomicU64,
     // `Public` is never blocked under the default classifier, but
     // callers that carry a denylist hit count it under `Reserved`
@@ -45,6 +59,7 @@ impl SecurityMetrics {
     }
 
     /// Increment the SSRF block counter for `class`.
+    #[cfg(feature = "tokio-runtime")]
     pub fn record_ssrf_block(&self, class: IpClass) {
         let counter = match class {
             IpClass::Private => &self.inner.ssrf_blocked_private,
@@ -57,6 +72,7 @@ impl SecurityMetrics {
     }
 
     /// Read the SSRF block counter for `class`.
+    #[cfg(feature = "tokio-runtime")]
     pub fn ssrf_blocked_total(&self, class: IpClass) -> u64 {
         let counter = match class {
             IpClass::Private => &self.inner.ssrf_blocked_private,

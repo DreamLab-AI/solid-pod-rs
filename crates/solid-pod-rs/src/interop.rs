@@ -316,16 +316,25 @@ pub mod did_nostr {
 
     /// Build a minimal DID Doc for publication at the well-known URL.
     /// Tier-1 schema (matches JSS): `id`, `alsoKnownAs`, and a single
-    /// `verificationMethod` entry of type `NostrSchnorrKey2024` derived
-    /// from the x-only pubkey.
+    /// `verificationMethod` entry of type
+    /// `SchnorrSecp256k1VerificationKey2019` derived from the x-only pubkey.
+    ///
+    /// Per ADR-074 D1 (cross-system DID:Nostr canonicalisation): all DreamLab
+    /// emitters MUST use `SchnorrSecp256k1VerificationKey2019` (the only
+    /// published W3C secp256k1 Schnorr suite). The legacy `NostrSchnorrKey2024`
+    /// term was a forum invention that no W3C verifier can resolve. Tier-1
+    /// includes the secp256k1-2019 suite context so the term resolves.
     pub fn did_nostr_document(pubkey: &str, also_known_as: &[String]) -> serde_json::Value {
         serde_json::json!({
-            "@context": ["https://www.w3.org/ns/did/v1"],
+            "@context": [
+                "https://www.w3.org/ns/did/v1",
+                "https://w3id.org/security/suites/secp256k1-2019/v1"
+            ],
             "id": format!("did:nostr:{}", pubkey),
             "alsoKnownAs": also_known_as,
             "verificationMethod": [{
                 "id": format!("did:nostr:{}#nostr-schnorr", pubkey),
-                "type": "NostrSchnorrKey2024",
+                "type": "SchnorrSecp256k1VerificationKey2019",
                 "controller": format!("did:nostr:{}", pubkey),
                 "publicKeyHex": pubkey,
             }]

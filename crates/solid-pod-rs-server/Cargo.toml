@@ -23,11 +23,11 @@ path = "src/main.rs"
 
 [dependencies]
 # Library core — the binary's sole non-transport dependency.
-solid-pod-rs = { version = "0.4.0-alpha.2", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
+solid-pod-rs = { version = "0.4.0-alpha.4", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
-solid-pod-rs-idp = { version = "0.4.0-alpha.2", path = "../solid-pod-rs-idp" }
+solid-pod-rs-idp = { version = "0.4.0-alpha.4", path = "../solid-pod-rs-idp" }
 
 # Sprint-11 CLI: `invite create` surfaces invite records with
 # absolute expiry timestamps. Kept here rather than transitively
