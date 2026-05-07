@@ -8,7 +8,7 @@
 //!
 //! 1. `did_nostr_well_known_url_format` — pure URL composition.
 //! 2. `did_nostr_document_emits_minimal_schema` — doc shape +
-//!    `NostrSchnorrKey2024` verification method entry.
+//!    `SchnorrSecp256k1VerificationKey2019` verification method entry (per ADR-074 D1).
 //! 3. `did_nostr_resolver_returns_webid_when_backlink_present` — happy
 //!    path: DID Doc with one `alsoKnownAs`, WebID profile carries
 //!    `owl:sameAs` back-link → `Some(web_id)`.
@@ -64,10 +64,18 @@ fn did_nostr_document_emits_minimal_schema() {
     assert_eq!(doc["alsoKnownAs"][0], "https://alice.example/me#i");
 
     let vm = &doc["verificationMethod"][0];
-    assert_eq!(vm["type"], "NostrSchnorrKey2024");
+    // ADR-074 D1: canonical W3C Schnorr suite identifier.
+    assert_eq!(vm["type"], "SchnorrSecp256k1VerificationKey2019");
     assert_eq!(vm["controller"], format!("did:nostr:{TEST_PUBKEY}"));
     assert_eq!(vm["publicKeyHex"], TEST_PUBKEY);
     assert_eq!(vm["id"], format!("did:nostr:{TEST_PUBKEY}#nostr-schnorr"));
+
+    // Tier-1 must also include the secp256k1-2019 suite context.
+    let contexts = doc["@context"].as_array().expect("@context array");
+    assert!(
+        contexts.iter().any(|c| c == "https://w3id.org/security/suites/secp256k1-2019/v1"),
+        "DID Doc must include the secp256k1-2019 suite context (ADR-074 D1)",
+    );
 }
 
 // --- test-3 --------------------------------------------------------------

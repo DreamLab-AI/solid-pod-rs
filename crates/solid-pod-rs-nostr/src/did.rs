@@ -80,22 +80,32 @@ pub struct ServiceEntry {
 /// Render a minimum-viable (Tier 1) DID document.
 ///
 /// Contains:
-/// - `@context`: W3C DID Core v1.
+/// - `@context`: W3C DID Core v1 + `secp256k1-2019` suite (required so the
+///   `SchnorrSecp256k1VerificationKey2019` term resolves under JSON-LD
+///   processing).
 /// - `id`: `did:nostr:<hex>`.
 /// - `alsoKnownAs`: empty array (WebID binding is Tier 3).
-/// - `verificationMethod`: single `NostrSchnorrKey2024` entry keyed by
-///   the x-only pubkey (`publicKeyMultibase` uses multibase `z` +
+/// - `verificationMethod`: single `SchnorrSecp256k1VerificationKey2019` entry
+///   keyed by the x-only pubkey (`publicKeyMultibase` uses multibase `z` +
 ///   multicodec `0xe7` for secp256k1 schnorr per emerging convention,
 ///   retaining `publicKeyHex` for JSS parity).
+///
+/// Per ADR-074 D1: cross-system DID canonicalisation mandates the suite
+/// identifier `SchnorrSecp256k1VerificationKey2019` — the only published W3C
+/// secp256k1 Schnorr suite. The previous `NostrSchnorrKey2024` was a forum
+/// invention that no W3C verifier resolves.
 pub fn render_did_document_tier1(pk: &NostrPubkey) -> Value {
     let did = did_nostr_uri(pk);
     json!({
-        "@context": ["https://www.w3.org/ns/did/v1"],
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://w3id.org/security/suites/secp256k1-2019/v1"
+        ],
         "id": did,
         "alsoKnownAs": [],
         "verificationMethod": [{
             "id": format!("{did}#nostr-schnorr"),
-            "type": "NostrSchnorrKey2024",
+            "type": "SchnorrSecp256k1VerificationKey2019",
             "controller": did,
             "publicKeyHex": pk.to_hex(),
             "publicKeyMultibase": format_multibase_schnorr(&pk.0),
@@ -149,9 +159,11 @@ pub fn render_did_document_tier3(
         ],
         "id": did,
         "alsoKnownAs": also_known_as,
+        // Per ADR-074 D1: SchnorrSecp256k1VerificationKey2019 is the canonical
+        // suite identifier across all DreamLab DID emitters. See render_did_document_tier1.
         "verificationMethod": [{
             "id": format!("{did}#nostr-schnorr"),
-            "type": "NostrSchnorrKey2024",
+            "type": "SchnorrSecp256k1VerificationKey2019",
             "controller": did,
             "publicKeyHex": pk.to_hex(),
             "publicKeyMultibase": format_multibase_schnorr(&pk.0),
@@ -256,11 +268,17 @@ mod tests {
         let doc = render_did_document_tier1(&pk);
         assert_eq!(doc["id"], format!("did:nostr:{PK_HEX}"));
         assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+        assert_eq!(
+            doc["@context"][1],
+            "https://w3id.org/security/suites/secp256k1-2019/v1",
+            "Tier-1 must include the secp256k1-2019 suite context so \
+             SchnorrSecp256k1VerificationKey2019 resolves under JSON-LD"
+        );
         assert!(doc["alsoKnownAs"].is_array());
         assert_eq!(doc["alsoKnownAs"].as_array().unwrap().len(), 0);
 
         let vm = &doc["verificationMethod"][0];
-        assert_eq!(vm["type"], "NostrSchnorrKey2024");
+        assert_eq!(vm["type"], "SchnorrSecp256k1VerificationKey2019");
         assert_eq!(vm["publicKeyHex"], PK_HEX);
         assert!(vm["publicKeyMultibase"]
             .as_str()
@@ -282,7 +300,7 @@ mod tests {
         assert_eq!(doc["alsoKnownAs"][0], webid);
         assert_eq!(
             doc["verificationMethod"][0]["type"],
-            "NostrSchnorrKey2024"
+            "SchnorrSecp256k1VerificationKey2019"
         );
         assert_eq!(doc["service"][0]["type"], "SolidWebID");
         assert_eq!(doc["service"][0]["serviceEndpoint"], webid);
