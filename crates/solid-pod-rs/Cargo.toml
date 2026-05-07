@@ -175,7 +175,12 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # Sprint 7 D: integration tests drive the server binary's actix `App`
 # through `test::init_service`. Dev-dependency only — never ships in
 # the library's public surface.
-solid-pod-rs-server = { version = "0.4.0-alpha.3", path = "../solid-pod-rs-server" }
+# Path-only dev-dependency: dropping the version pin avoids a publish
+# cycle (solid-pod-rs-server depends on solid-pod-rs at the same
+# version, so cargo can't resolve the dev-dep against crates.io until
+# the parent itself publishes). cargo strips dev-deps from the
+# published metadata, so this is the supported pattern.
+solid-pod-rs-server = { path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }
