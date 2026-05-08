@@ -1,4 +1,18 @@
-# v0.4.0-alpha.3 (Phase 4 chain prep — 2026-05-07)
+## v0.4.0-alpha.4 (2026-05-07)
+
+### Changed
+- Workspace version bump to 0.4.0-alpha.4
+- All 7 crates published to crates.io
+- `core` feature flag: enables no-IO subset for WASM/CF Workers environments
+- Sibling crates updated to reference alpha.4 deps
+
+### Fixed
+- C3a/b: verificationMethod.type unified to SchnorrSecp256k1VerificationKey2019
+- DID document @context includes secp256k1-2019/v1 suite
+
+---
+
+# v0.4.0-alpha.3 (Phase 4 chain prep -- 2026-05-07)
 
 Adds the `core` feature flag for pure-logic consumers (wasm32 / CF
 Workers). All async-IO surfaces — tokio, reqwest, notify,

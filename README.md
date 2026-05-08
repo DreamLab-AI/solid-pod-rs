@@ -114,7 +114,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.4.0-alpha.1", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.4.0-alpha.4", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run
@@ -475,6 +475,35 @@ Full documentation follows the [Diataxis](https://diataxis.fr/) framework in [`c
 - **How-to guides** — goal-oriented recipes (configure auth, enable notifications, debug ACL denials)
 - **Reference** — exhaustive API docs, env vars, WAC modes, agent integration guide
 - **Explanation** — architecture decisions, security model, design rationale
+
+---
+
+## Ecosystem
+
+solid-pod-rs is the foundation library of the DreamLab open-source ecosystem -- five repositories federated via `did:nostr` identity.
+
+```mermaid
+graph LR
+    SPR["solid-pod-rs<br/><i>Foundation</i>"] -->|dep| NRF["nostr-rust-forum<br/><i>Forum Kit</i>"]
+    SPR -->|dep| AB["agentbox<br/><i>Agent Container</i>"]
+    SPR -->|dep| VC["VisionClaw<br/><i>Integration Substrate</i>"]
+    NRF -->|kit| DW["dreamlab-ai-website<br/><i>Deployment</i>"]
+    AB <-.->|"relay mesh"| VC
+    AB <-.->|"relay mesh"| NRF
+    VC <-.->|"relay mesh"| NRF
+
+    style SPR fill:#4a9eff,stroke:#2563eb,color:#fff
+```
+
+| Repository | Role | Key Technology |
+|---|---|---|
+| **[solid-pod-rs](https://github.com/DreamLab-AI/solid-pod-rs)** | **Foundation library** | **Solid Protocol, DID:Nostr, WAC** |
+| [nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Forum kit | 11 `nostr-bbs-*` Rust crates, CF Workers |
+| [agentbox](https://github.com/DreamLab-AI/agentbox) | Agent container | Nix, nostr-rs-relay, mesh peer |
+| [VisionClaw](https://github.com/DreamLab-AI/VisionClaw) | Integration substrate | Knowledge graph, GPU physics, XR |
+| [dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website) | Branded deployment | React SPA, WASM forum |
+
+All five share `did:nostr:<hex-pubkey>` as the universal identity primitive. solid-pod-rs provides the DID document generation, WebID-TLS profiles, and access control enforcement consumed by every other substrate.
 
 ---
 
