@@ -1,40 +1,98 @@
 # Ecosystem integration
 
-solid-pod-rs is one component in a larger family of Solid-on-Rust
-crates. This page explains how the pieces fit, who owns what, and
-the integration points between them.
+solid-pod-rs is the foundation library of the DreamLab open-source
+ecosystem -- five repositories federated via `did:nostr` identity.
+This page explains how the pieces fit, who consumes what, and the
+integration points between them.
 
 ## The stack
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                       Solid-Apps                         │
-  │  (end-user apps: Nostrum Forum, clients, dashboards)     │
-  └──────────────────────────────────────────────────────────┘
-                          ▲
-                          │ HTTP (LDP + WAC + Notifications)
-                          ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │                       URN-Solid                          │
-  │   Rust HTTP service wiring solid-pod-rs into a runtime   │
-  │   (actix/axum), adds provisioning, WebFinger, NIP-05     │
-  └──────────────────────────────────────────────────────────┘
-                          │
-                          │ uses (Storage trait)
-                          ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │                     solid-pod-rs (this crate)            │
-  │   Library: WAC, LDP, Notifications, NIP-98, Solid-OIDC   │
-  └──────────────────────────────────────────────────────────┘
-                          ▲
-                          │ schema + vocabularies
-                          │
-  ┌──────────────────────────────────────────────────────────┐
-  │                     solid-schema                         │
-  │   Shared Rust types for Solid vocabularies (acl, ldp,    │
-  │   solid, pim, dcterms, foaf)                             │
-  └──────────────────────────────────────────────────────────┘
+  +----------------------------------------------------------+
+  |                       Solid-Apps                          |
+  |  (end-user apps: forum UI, dashboards, XR clients)       |
+  +----------------------------------------------------------+
+                          ^
+                          | HTTP (LDP + WAC + Notifications)
+                          v
+  +----------------------------------------------------------+
+  |                    Consumer substrates                    |
+  |   VisionClaw, agentbox, nostr-rust-forum,                |
+  |   dreamlab-ai-website                                    |
+  |   Each wires solid-pod-rs into its own runtime           |
+  |   (actix/axum/CF Workers) with domain-specific concerns  |
+  +----------------------------------------------------------+
+                          |
+                          | uses (Storage trait, WAC, auth, LDP)
+                          v
+  +----------------------------------------------------------+
+  |                  solid-pod-rs (this crate)                |
+  |   Library: WAC, LDP, Notifications, NIP-98, Solid-OIDC,  |
+  |   DID:nostr, WebID, did:key                              |
+  +----------------------------------------------------------+
 ```
+
+## Consumers
+
+### VisionClaw
+
+VisionClaw is the integration substrate -- a knowledge-graph platform
+with GPU physics, WebXR rendering, and a Nostr-backed actor mesh.
+
+- **Integration point:** `src/handlers/solid_pod_handler.rs` wires
+  solid-pod-rs into the actix-web runtime as an embedded pod endpoint.
+- **Features used:** LDP (resource CRUD), WAC (per-resource access
+  control), NIP-98 auth, WebID profile generation, DID:nostr
+  resolution.
+- **Dependency:** `solid-pod-rs = "0.4"` with default features plus
+  `nip98-schnorr` and `did-nostr`.
+
+Repository: [DreamLab-AI/VisionClaw](https://github.com/DreamLab-AI/VisionClaw)
+
+### agentbox
+
+agentbox is a Nix-based sovereign agent container that runs as a mesh
+peer alongside VisionClaw and nostr-rust-forum.
+
+- **Integration point:** the pod-bridge adapter in
+  `management-api/adapters/` forwards agent state to a local Solid
+  pod for durable storage and WAC-governed sharing.
+- **Features used:** Storage trait (filesystem backend), WAC
+  enforcement, NIP-98 auth, Solid Notifications (WebSocket channel
+  for agent event streaming).
+- **Dependency:** `solid-pod-rs = "0.4"` with default features.
+
+Repository: [DreamLab-AI/agentbox](https://github.com/DreamLab-AI/agentbox)
+
+### nostr-rust-forum (nostr-bbs-pod-worker)
+
+nostr-rust-forum is a configurable forum kit published as 11
+`nostr-bbs-*` Rust crates. The `nostr-bbs-pod-worker` crate runs on
+Cloudflare Workers (wasm32 target) and consumes solid-pod-rs for
+pod-backed thread storage.
+
+- **Integration point:** `nostr-bbs-pod-worker` uses the `core`
+  feature flag (no-IO subset) to compile to wasm32 without pulling
+  tokio, reqwest, or filesystem dependencies.
+- **Features used:** WAC evaluator, WebID parsing, NIP-98 structural
+  verification (`auth::nip98::verify_at`), dotfile allowlist, LDP
+  parsers (PATCH dialects, content negotiation), interop types.
+- **Dependency:**
+  `solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }`
+
+Repository: [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum)
+
+### dreamlab-ai-website
+
+dreamlab-ai-website is DreamLab's branded forum deployment -- a
+downstream consumer of the nostr-rust-forum kit.
+
+- **Integration point:** consumes solid-pod-rs transitively via
+  `nostr-bbs-pod-worker`. Does not depend on solid-pod-rs directly.
+- **Features used:** inherited from nostr-bbs-pod-worker (WAC, WebID,
+  NIP-98 structural verification, LDP parsers).
+
+Repository: [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website)
 
 ## Who owns what
 
@@ -44,121 +102,88 @@ the integration points between them.
 - LDP semantics (containers, Link headers, PATCH).
 - WAC evaluator.
 - NIP-98 + Solid-OIDC verification.
-- In-memory, filesystem, (planned) S3 backends.
+- In-memory, filesystem, and S3 backends.
 - Solid Notifications 0.2 channel managers.
+- DID:nostr resolution + WebID generation.
+- did:key resolution (Ed25519, P-256, secp256k1).
 - Platform-independent. No actix, no worker, no hosting concerns.
 
 **Does not** own: HTTP routing, TLS, provisioning, account lifecycle,
 WebFinger, NIP-05, quota, billing.
 
-### URN-Solid
+### Consumer substrates
 
-URN-Solid is the consumer crate (a downstream workspace member) that
-wraps solid-pod-rs in an actix/axum HTTP service with production
-concerns layered on top:
+Each consumer substrate wraps solid-pod-rs in its own runtime with
+domain-specific concerns:
 
-- Request routing and middleware.
-- Provisioning (`.provision` endpoint, WebID bootstrap).
-- Tenancy (per-user pod paths).
-- WebFinger / NIP-05 discovery.
-- Quota enforcement.
-- Metrics export.
-- Admin API.
-
-URN-Solid depends on solid-pod-rs as a library and never modifies its
-API surface. When URN-Solid needs a feature from solid-pod-rs (e.g.
-new PATCH dialect), it lands here first, with a
-[parity-checklist](../../PARITY-CHECKLIST.md) update.
-
-### solid-schema
-
-Shared Rust types for Solid vocabularies. When solid-pod-rs defines a
-struct that represents an ACL or LDP concept, that struct may later
-graduate to solid-schema so both solid-pod-rs and URN-Solid share
-the same canonical type.
-
-Currently, solid-pod-rs defines its own lightweight types
-(`AclAuthorization`, `ContainerMember`, etc.) to stay self-contained.
-The migration path is:
-
-1. Library is stable on in-crate types.
-2. solid-schema publishes a type compatible with the in-crate shape.
-3. solid-pod-rs re-exports or adopts the schema type in a minor-bump
-   release.
-
-### Solid-Apps
-
-Applications that talk to a pod over HTTP. Do not link to
-solid-pod-rs — they are HTTP clients.
-
-Examples in the VisionClaw workspace:
-
-- **Nostrum Forum** — a threaded discussion app. Reads + writes
-  Solid resources for posts, uses NIP-98 for auth.
-- **Pod Dashboard** — administrative UI for a pod operator.
-
-The integration contract is *the Solid Protocol itself*. solid-pod-rs
-is chosen because it supports the protocol, not because it exposes
-a particular Rust API.
+- **VisionClaw** -- actix-web transport, graph-aware provisioning,
+  actor-mesh integration.
+- **agentbox** -- management API adapter, Nix packaging,
+  nostr-rs-relay mesh peering.
+- **nostr-bbs-pod-worker** -- CF Workers (wasm32), thread storage,
+  forum-specific ACL policies.
 
 ## Boundary contracts
 
-### solid-pod-rs ↔ URN-Solid
+### solid-pod-rs public API surface
 
-URN-Solid depends on these public API surfaces:
+All consumers depend on these public API surfaces:
 
-- `storage::Storage` trait.
-- `ldp::*` helpers (link_headers, PreferHeader, content negotiation,
-  PATCH).
-- `wac::evaluate_access*`, `wac_allow_header`, `StorageAclResolver`.
-- `auth::nip98::verify`.
-- `oidc::*` (feature `oidc`).
+- `storage::Storage` trait (VisionClaw, agentbox).
+- `ldp::*` helpers -- link_headers, PreferHeader, content negotiation,
+  PATCH (all consumers).
+- `wac::evaluate_access*`, `wac_allow_header`, `StorageAclResolver`
+  (VisionClaw, agentbox); `wac::AclResolver` trait alone for
+  `core`-only consumers (nostr-bbs-pod-worker).
+- `auth::nip98::verify` / `auth::nip98::verify_at` (all consumers).
+- `oidc::*` (feature `oidc` -- VisionClaw).
 - `notifications::{WebSocketChannelManager, WebhookChannelManager,
-  discovery_document}`.
+  discovery_document}` (VisionClaw, agentbox).
+- `interop::did_nostr::*` (feature `did-nostr` -- VisionClaw,
+  nostr-bbs-pod-worker).
 - `PodError` variants for HTTP status mapping.
 
 Anything else is an implementation detail and may change between
 minor versions.
 
-### solid-pod-rs ↔ solid-schema
-
-Currently no hard dependency. Future boundary will be:
-
-- `solid_schema::acl::Authorization` → `solid_pod_rs::wac::AclAuthorization`.
-- `solid_schema::ldp::iri::*` → `solid_pod_rs::ldp::iri::*`.
-- `solid_schema::as_ns::*` → `solid_pod_rs::notifications::as_ns::*`.
-
-When solid-schema ships, solid-pod-rs will re-export the schema types
-and deprecate the in-crate equivalents for one minor version.
-
 ## Integration patterns
 
-### Pattern 1 — URN-Solid wraps solid-pod-rs
+### Pattern 1 -- full server embedding (VisionClaw, agentbox)
 
 ```rust
 use solid_pod_rs::{storage::fs::FsBackend, Storage};
-use urn_solid::Server;
+use std::sync::Arc;
 
-let storage: Arc<dyn Storage> = Arc::new(FsBackend::new("/var/lib/pods").await?);
-let server = Server::builder()
-    .storage(storage)
-    .bind("0.0.0.0:8080")
-    .build();
-server.run().await?;
+let storage: Arc<dyn Storage> = Arc::new(
+    FsBackend::new("/var/lib/pods").await?
+);
+// Wire into your actix/axum router; see examples/embed_in_actix.rs.
 ```
 
-URN-Solid composes the HTTP routing, auth middleware, provisioning,
-and metrics.
+The consumer composes HTTP routing, auth middleware, provisioning,
+and metrics around the solid-pod-rs library.
 
-### Pattern 2 — direct embedding
+### Pattern 2 -- core-only WASM embedding (nostr-bbs-pod-worker)
 
-A service that isn't a pod but wants to expose a subset of Solid
-semantics (e.g. a forum that hosts user avatars as LDP resources)
-links to solid-pod-rs directly. The service chooses which endpoints
-to expose — for an avatar subsystem, maybe only `GET` and `PUT` on a
-single path prefix.
+```rust
+// Cargo.toml
+// solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }
 
-### Pattern 3 — storage-only reuse
+use solid_pod_rs::auth::nip98::verify_at;
+use solid_pod_rs::wac::evaluate_access;
+
+// No tokio, no filesystem -- pure logic only.
+// The CF Worker runtime provides its own I/O.
+```
+
+### Pattern 3 -- transitive consumption (dreamlab-ai-website)
+
+dreamlab-ai-website does not depend on solid-pod-rs directly.
+It consumes the forum kit (`nostr-bbs-pod-worker`) which handles
+all pod interactions internally. The integration contract is the
+Solid Protocol itself over HTTP.
+
+### Pattern 4 -- storage-only reuse
 
 A consumer that needs just a storage abstraction with strong ETags +
 change events could use solid-pod-rs's storage module alone, ignoring
@@ -169,10 +194,27 @@ on you.
 
 - solid-pod-rs uses semantic versioning. Breaking changes to public
   APIs cause a major-version bump.
-- URN-Solid pins `solid-pod-rs = "0.2"` in Cargo.toml. Minor / patch
-  updates are automatic.
-- solid-schema will publish `1.x` once stabilised; solid-pod-rs will
-  track its semver separately.
+- VisionClaw and agentbox pin `solid-pod-rs = "0.4"` in Cargo.toml.
+  Minor / patch updates are automatic.
+- nostr-bbs-pod-worker pins
+  `solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }`.
+- The current published version is **0.4.0-alpha.4** across all 7
+  workspace crates on crates.io.
+
+## Cross-system identity
+
+All five repositories share `did:nostr:<64-lowercase-hex>` as the
+universal identity primitive (per ADR-074). solid-pod-rs provides:
+
+- DID document generation with `verificationMethod.type =
+  SchnorrSecp256k1VerificationKey2019`.
+- `@context` including `https://w3id.org/security/suites/secp256k1-2019/v1`.
+- WebID profile generation with `alsoKnownAs` cross-linking to
+  `did:nostr` identifiers.
+- NIP-98 HTTP authentication binding pubkey to `did:nostr:{pubkey}`.
+
+NIP-26 delegation is the cross-system trust pivot for inter-substrate
+operations.
 
 ## Contribution flow
 
@@ -180,18 +222,18 @@ When adding a feature that spans the ecosystem:
 
 1. Land library API in solid-pod-rs with tests. Update
    `PARITY-CHECKLIST.md`.
-2. Expose it in URN-Solid via new endpoints or middleware.
-3. Update solid-schema if the feature introduces new vocabulary
-   types.
-4. Document in the appropriate Diátaxis quadrant (this
-   documentation site for the library; URN-Solid has its own site).
+2. Expose it in the relevant consumer substrate(s) via new endpoints
+   or middleware.
+3. Verify `core` feature compatibility if the feature is needed by
+   wasm32 consumers (nostr-bbs-pod-worker).
+4. Document in the appropriate Diataxis quadrant.
 
 ## See also
 
-- [PARITY-CHECKLIST.md](../../PARITY-CHECKLIST.md) — current
+- [PARITY-CHECKLIST.md](../../PARITY-CHECKLIST.md) -- current
   feature status.
-- [README.md](../../README.md) — crate overview.
-- [explanation/architecture-decisions.md](architecture-decisions.md) —
+- [README.md](../../README.md) -- crate overview.
+- [explanation/architecture-decisions.md](architecture-decisions.md) --
   why the library is framework-agnostic.
-- [explanation/storage-abstraction.md](storage-abstraction.md) — the
+- [explanation/storage-abstraction.md](storage-abstraction.md) -- the
   trait shape consumers build on.
