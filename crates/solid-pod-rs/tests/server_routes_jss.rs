@@ -64,6 +64,7 @@ async fn make_state() -> AppState {
             total_users: 0,
             base_url: "https://pod.example".into(),
         },
+        mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
     };
     state.nodeinfo.base_url = "https://pod.example".into();

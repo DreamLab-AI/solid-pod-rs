@@ -45,6 +45,7 @@
 //! | [`ldp`] | Resources, containers, content negotiation, PATCH, `Prefer`. |
 //! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
+//! | [`mashlib`] | SolidOS data-browser HTML wrapper + data-island embed.    |
 //! | [`auth`] | NIP-98 HTTP authentication. |
 //! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
@@ -103,6 +104,7 @@ pub mod config;
 pub mod error;
 pub mod interop;
 pub mod ldp;
+pub mod mashlib;
 pub mod metrics;
 pub mod multitenant;
 pub mod security;
@@ -171,6 +173,9 @@ pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver
 pub use webid::{
     extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer,
     validate_webid_html,
+};
+pub use mashlib::{
+    MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES,
 };
 
 // ---------------------------------------------------------------------------

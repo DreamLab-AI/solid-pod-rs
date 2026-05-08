@@ -52,6 +52,7 @@ let storage = FsBackend::new(PathBuf::from("./pod-root"));
 | `ldp`           | Resources, containers, content negotiation, PATCH, `Prefer`. |
 | `wac`           | Access control evaluator + WAC 2.0 conditions framework.     |
 | `webid`         | WebID profile documents (emits `solid:oidcIssuer` + CID).    |
+| `mashlib`       | SolidOS data-browser HTML wrapper + data-island optimisation.|
 | `auth`          | NIP-98 HTTP authentication.                                  |
 | `oidc`          | Solid-OIDC 0.1 + DPoP (verified) + JWKS + replay cache.      |
 | `notifications` | WebSocket, Webhook (RFC 9421 signed), legacy adapter.        |

@@ -74,6 +74,7 @@ use solid_pod_rs::{
     config::sources::parse_size,
     interop,
     ldp::{self, LdpContainerOps, PatchCreateOutcome},
+    mashlib::{self, MashlibConfig},
     provision,
     security::DotfileAllowlist,
     storage::Storage,
@@ -94,6 +95,9 @@ pub struct AppState {
     pub dotfiles: Arc<DotfileAllowlist>,
     pub body_cap: usize,
     pub nodeinfo: NodeInfoMeta,
+    pub mashlib: MashlibConfig,
+    /// Legacy alias — reads from `mashlib.mode` when `Cdn`.  Deprecated;
+    /// use `mashlib` directly.
     pub mashlib_cdn: Option<String>,
 }
 
@@ -143,6 +147,7 @@ impl AppState {
             dotfiles: Arc::new(DotfileAllowlist::from_env()),
             body_cap: body_cap_from_env(),
             nodeinfo: NodeInfoMeta::default(),
+            mashlib: MashlibConfig::default(),
             mashlib_cdn: None,
         }
     }
@@ -299,6 +304,32 @@ async fn handle_get(
             .container_representation(&path)
             .await
             .map_err(to_actix)?;
+
+        // Mashlib: serve HTML wrapper for browser navigation.
+        let accept = req.headers().get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let sec_fetch_dest = req.headers().get("sec-fetch-dest")
+            .and_then(|v| v.to_str().ok());
+        if mashlib::should_serve(accept, sec_fetch_dest, "application/ld+json", state.mashlib.enabled) {
+            let json_ld = serde_json::to_string(&v).ok();
+            let html = mashlib::generate_html(
+                &path,
+                &state.mashlib,
+                json_ld.as_deref(),
+            );
+            let mut rsp = HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .insert_header(("X-Frame-Options", "DENY"))
+                .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
+                .insert_header(("Cache-Control", "no-store"))
+                .body(html);
+            set_wac_allow(&mut rsp, &wac_allow);
+            set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+            set_link_headers(&mut rsp, &path);
+            return Ok(rsp);
+        }
+
         let mut rsp = HttpResponse::Ok().json(v);
         rsp.headers_mut().insert(
             header::CONTENT_TYPE,
@@ -312,6 +343,35 @@ async fn handle_get(
 
     match state.storage.get(&path).await {
         Ok((body, meta)) => {
+            // Mashlib: serve HTML wrapper for browser navigation to RDF resources.
+            let accept = req.headers().get(header::ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let sec_fetch_dest = req.headers().get("sec-fetch-dest")
+                .and_then(|v| v.to_str().ok());
+            if mashlib::should_serve(accept, sec_fetch_dest, &meta.content_type, state.mashlib.enabled) {
+                let embed = if body.len() <= state.mashlib.data_island_max_bytes {
+                    std::str::from_utf8(&body).ok().map(|s| s.to_string())
+                } else {
+                    None
+                };
+                let html = mashlib::generate_html(
+                    &path,
+                    &state.mashlib,
+                    embed.as_deref(),
+                );
+                let mut rsp = HttpResponse::Ok()
+                    .content_type("text/html; charset=utf-8")
+                    .insert_header(("X-Frame-Options", "DENY"))
+                    .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
+                    .insert_header(("Cache-Control", "no-store"))
+                    .body(html);
+                set_wac_allow(&mut rsp, &wac_allow);
+                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_link_headers(&mut rsp, &path);
+                return Ok(rsp);
+            }
+
             let mut rsp = HttpResponse::Ok().body(body.to_vec());
             rsp.headers_mut().insert(
                 header::CONTENT_TYPE,

@@ -51,11 +51,21 @@ struct Cli {
     #[arg(long, env = "RUST_LOG")]
     log: Option<String>,
 
-    /// Optional mashlib CDN URL. When set the server redirects `/` and
-    /// the mashlib asset paths to the CDN. Default bakes the
-    /// `unpkg.com/mashlib@2.0.0/dist` path for compatibility with JSS.
-    #[arg(long, env = "JSS_MASHLIB_CDN")]
+    /// Enable SolidOS mashlib data browser.  When a browser navigates
+    /// to an RDF resource (`Accept: text/html`), the server returns an
+    /// HTML wrapper that loads mashlib and renders the data client-side.
+    #[arg(long, env = "JSS_MASHLIB")]
+    mashlib: bool,
+
+    /// Mashlib CDN version (e.g. `2.0.0`).  Ignored when
+    /// `--mashlib-module` is set.
+    #[arg(long, env = "JSS_MASHLIB_CDN", default_value = "2.0.0")]
     mashlib_cdn: Option<String>,
+
+    /// Load mashlib from an ES module URL instead of CDN (the LOSOS
+    /// pattern).  Implies `--mashlib`.
+    #[arg(long, env = "JSS_MASHLIB_MODULE")]
+    mashlib_module: Option<String>,
 
     /// Optional TLS key PEM path. When set together with
     /// `--ssl-cert`, the server binds via rustls on the chosen port.
@@ -191,10 +201,21 @@ async fn main() -> anyhow::Result<()> {
         total_users: 0,
         base_url,
     };
-    state.mashlib_cdn = cli
-        .mashlib_cdn
-        .clone()
-        .or_else(|| std::env::var("JSS_MASHLIB_CDN").ok());
+    // Mashlib configuration — module URL takes priority over CDN version.
+    let mashlib_enabled = cli.mashlib || cli.mashlib_module.is_some();
+    if mashlib_enabled {
+        state.mashlib.enabled = true;
+        if let Some(ref module_url) = cli.mashlib_module {
+            state.mashlib.mode = solid_pod_rs::MashlibMode::Module {
+                url: module_url.clone(),
+            };
+        } else if let Some(ref version) = cli.mashlib_cdn {
+            state.mashlib.mode = solid_pod_rs::MashlibMode::Cdn {
+                version: version.clone(),
+            };
+        }
+    }
+    state.mashlib_cdn = cli.mashlib_cdn.clone();
 
     if !cfg.auth.oidc_enabled {
         warn!("auth.oidc_enabled=false — DPoP / OIDC routes disabled");

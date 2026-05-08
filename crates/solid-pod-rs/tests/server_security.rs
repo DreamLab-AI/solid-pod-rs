@@ -48,6 +48,7 @@ async fn public_read_state() -> AppState {
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap: 16, // tiny so we can provoke 413 easily
         nodeinfo: NodeInfoMeta::default(),
+        mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
     }
 }
@@ -76,6 +77,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap,
         nodeinfo: NodeInfoMeta::default(),
+        mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
     }
 }
@@ -220,6 +222,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap: 1024,
         nodeinfo: NodeInfoMeta::default(),
+        mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
     };
     let app = test::init_service(build_app(state)).await;

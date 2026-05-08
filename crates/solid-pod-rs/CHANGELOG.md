@@ -4,6 +4,29 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.5] - 2026-05-08 (Mashlib data browser integration)
+
+### Added
+- `mashlib` module: SolidOS data-browser HTML wrapper generation with
+  three modes (CDN, Local, ES Module / LOSOS).
+- `MashlibConfig`, `MashlibMode`, `DATA_ISLAND_MAX_BYTES` public types.
+- `mashlib::should_serve()`: content-negotiation decision function —
+  checks `Accept`, `Sec-Fetch-Dest`, and resource content type.
+- `mashlib::generate_html()`: produces the HTML wrapper page with
+  optional JSON-LD data-island embed (≤ 256 KiB) and a round-trip
+  optimisation script that patches `$rdf.fetcher.load()`.
+- Server binary: `--mashlib`, `--mashlib-cdn`, `--mashlib-module` CLI
+  flags / env vars.  Wired into `handle_get` for both containers and
+  resources.
+- 19 unit tests covering decision logic, escaping, data-island cap,
+  all three HTML template modes, and round-trip script presence.
+
+### Changed
+- `AppState` gains `mashlib: MashlibConfig` field (replaces dead
+  `mashlib_cdn: Option<String>` which is kept as a deprecated alias).
+- GAP-ANALYSIS E.9 upgraded from P3/wontfix to LANDED.
+- PARITY-CHECKLIST row 109 updated to `present`.
+
 ## [0.4.0-alpha.3] - 2026-05-07 (Phase 4 chain prep — `core` feature)
 
 ### Added

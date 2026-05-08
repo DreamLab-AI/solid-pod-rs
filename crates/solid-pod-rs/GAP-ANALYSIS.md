@@ -560,12 +560,21 @@ connection; 2 KiB URL cap.
   live updates on our pods. Back-compat matters for the existing
   ecosystem.
 
-### E.9 SolidOS Mashlib static serving — **P3 (consumer concern)**
+### E.9 SolidOS Mashlib data browser — **LANDED (Sprint 13)**
 
-**JSS**: `src/server.js:382-401` serves `/mashlib.min.js`,
-`/841.mashlib.min.js`, `/mash.css`, `.map` variants as static assets.
-Ship in a separate crate `solid-pod-rs-admin` or document integration
-with `actix-files` / `tower-http::ServeDir` in consumer guide.
+**JSS**: `src/mashlib/index.js` — `shouldServeMashlib()` +
+`generateDatabrowserHtml()` + `generateModuleDatabrowserHtml()` +
+data-island embed + round-trip optimisation script.
+
+**solid-pod-rs**: `mashlib` module — `mashlib::should_serve()` +
+`mashlib::generate_html()` with three modes (CDN / Local / Module),
+256 KiB data-island inlining, and `$rdf.fetcher.load()` round-trip
+patch.  Wired into `handle_get` in the server crate.  CLI flags:
+`--mashlib`, `--mashlib-cdn <version>`, `--mashlib-module <url>`.
+
+Static asset serving (`/mashlib.min.js`, `/mash.css`) remains a
+consumer concern — CDN mode requires no local assets; Local mode
+requires `actix-files` / `tower-http::ServeDir` integration.
 
 ### E.10 Dotfile allowlist, rate limits, SSRF guard, subdomain multi-tenancy
 
@@ -768,7 +777,7 @@ Not ranked (won't-port or long-deferred):
 - **WebID-TLS** (E.5) — won't-port.
 - **IdP stack** (E.3) — defer to `solid-pod-rs-idp` crate, post-0.5.0.
 - **Nostr relay** (E.7) — defer to `nostr-relay-rs` crate.
-- **Mashlib / SolidOS UI** (E.9) — defer to `solid-pod-rs-admin`.
+- **Mashlib / SolidOS UI** (E.9) — **LANDED**: `mashlib` module in library crate; CDN/Module/Local modes.
 - **HTML login/register pages** (C.6, F.6) — won't-port in-crate;
   `solid-pod-rs-admin` consumer crate.
 

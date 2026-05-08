@@ -43,6 +43,33 @@ Defaults  <  File  <  EnvVars  <  CLI flags
 See [`crates/solid-pod-rs/src/config/sources.rs`](../solid-pod-rs/src/config/sources.rs)
 for the full `JSS_*` environment variable table.
 
+## Mashlib / SolidOS data browser
+
+Enable the mashlib data browser to render RDF resources in the browser:
+
+```bash
+# CDN mode (zero config — loads from unpkg.com)
+solid-pod-rs-server --mashlib
+
+# CDN with a specific version
+solid-pod-rs-server --mashlib --mashlib-cdn 2.1.0
+
+# ES module mode (LOSOS shell)
+solid-pod-rs-server --mashlib-module https://host/path/to/mashlib.js
+```
+
+When enabled, browser navigation (`Accept: text/html`) to RDF
+resources returns an HTML wrapper that loads mashlib client-side.
+The resource's JSON-LD is embedded inline as a data island (up to
+256 KiB) for a zero-network-roundtrip render.  XHR / `fetch()`
+requests (`Sec-Fetch-Dest: empty`) still receive raw RDF.
+
+| Env var | CLI flag | Default |
+|---|---|---|
+| `JSS_MASHLIB` | `--mashlib` | off |
+| `JSS_MASHLIB_CDN` | `--mashlib-cdn` | `2.0.0` |
+| `JSS_MASHLIB_MODULE` | `--mashlib-module` | — |
+
 ## Feature flags
 
 This binary enables the following `solid-pod-rs` features by default:
