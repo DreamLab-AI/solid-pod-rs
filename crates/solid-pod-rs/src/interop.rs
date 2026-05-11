@@ -324,7 +324,28 @@ pub mod did_nostr {
     /// published W3C secp256k1 Schnorr suite). The legacy `NostrSchnorrKey2024`
     /// term was a forum invention that no W3C verifier can resolve. Tier-1
     /// includes the secp256k1-2019 suite context so the term resolves.
+    ///
+    /// NOTE: The canonical DID:nostr types (including `NostrPubkey`,
+    /// `render_did_document_tier1`, `render_did_document_tier3`) now live
+    /// in [`crate::did_nostr_types`] (feature `did-nostr-types`). This
+    /// convenience wrapper accepts a raw hex string and merges
+    /// `also_known_as` into the Tier-1 skeleton. New code should prefer
+    /// the canonical types directly.
     pub fn did_nostr_document(pubkey: &str, also_known_as: &[String]) -> serde_json::Value {
+        // Delegate to the canonical Tier-1 renderer when the pubkey
+        // parses cleanly; fall back to inline JSON for malformed input
+        // (preserves backward-compat — callers never saw an error here).
+        #[cfg(feature = "did-nostr-types")]
+        if let Ok(pk) = crate::did_nostr_types::NostrPubkey::from_hex(pubkey) {
+            let mut doc = crate::did_nostr_types::render_did_document_tier1(&pk);
+            if !also_known_as.is_empty() {
+                doc["alsoKnownAs"] = serde_json::json!(also_known_as);
+            }
+            return doc;
+        }
+
+        // Fallback: raw JSON construction (identical output shape minus
+        // publicKeyMultibase, which requires valid 32-byte key material).
         serde_json::json!({
             "@context": [
                 "https://www.w3.org/ns/did/v1",

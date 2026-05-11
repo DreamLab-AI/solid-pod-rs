@@ -99,6 +99,9 @@ pub struct AppState {
     /// Legacy alias — reads from `mashlib.mode` when `Cdn`.  Deprecated;
     /// use `mashlib` directly.
     pub mashlib_cdn: Option<String>,
+    /// Payment configuration — drives `/pay/.info` and the `X-Balance` /
+    /// `X-Cost` / `X-Pay-Currency` response headers on paid resources.
+    pub pay_config: solid_pod_rs::payments::PayConfig,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -149,6 +152,7 @@ impl AppState {
             nodeinfo: NodeInfoMeta::default(),
             mashlib: MashlibConfig::default(),
             mashlib_cdn: None,
+            pay_config: solid_pod_rs::payments::PayConfig::default(),
         }
     }
 }
@@ -195,6 +199,22 @@ fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     pubkey.map(|pk| format!("did:nostr:{pk}"))
 }
 
+/// Return `true` when the `Accept` header includes `text/html`.
+///
+/// Used for container `index.html` content negotiation: if a browser
+/// requests `text/html` on a container URL and that container contains
+/// an `index.html` resource, the server serves the HTML file instead of
+/// the RDF container listing. Solid clients that send `Accept: text/turtle`
+/// or `application/ld+json` skip this path entirely.
+fn accept_includes_html(accept: &str) -> bool {
+    accept
+        .split(',')
+        .any(|entry| {
+            let mime = entry.split(';').next().unwrap_or("").trim();
+            mime.eq_ignore_ascii_case("text/html")
+        })
+}
+
 // ---------------------------------------------------------------------------
 // WAC enforcement for writes (PUT / POST / PATCH / DELETE)
 // ---------------------------------------------------------------------------
@@ -225,6 +245,7 @@ async fn enforce_write(
         web_id: agent_uri,
         client_id: None,
         issuer: None,
+        payment_balance_sats: None,
     };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
@@ -299,6 +320,28 @@ async fn handle_get(
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
     if ldp::is_container(&path) {
+        let accept = req.headers().get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        // Content negotiation: when a browser requests text/html, check
+        // whether the container has an index.html child resource. If so,
+        // serve it directly instead of the RDF container listing. This is
+        // standard HTTP content negotiation — browsers get HTML, Solid
+        // clients get RDF.
+        if accept_includes_html(accept) {
+            let index_path = format!("{}index.html", &path);
+            if let Ok((body, _meta)) = state.storage.get(&index_path).await {
+                let mut rsp = HttpResponse::Ok()
+                    .content_type("text/html; charset=utf-8")
+                    .body(body.to_vec());
+                set_wac_allow(&mut rsp, &wac_allow);
+                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_link_headers(&mut rsp, &path);
+                return Ok(rsp);
+            }
+        }
+
         let v = state
             .storage
             .container_representation(&path)
@@ -306,9 +349,6 @@ async fn handle_get(
             .map_err(to_actix)?;
 
         // Mashlib: serve HTML wrapper for browser navigation.
-        let accept = req.headers().get(header::ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
         let sec_fetch_dest = req.headers().get("sec-fetch-dest")
             .and_then(|v| v.to_str().ok());
         if mashlib::should_serve(accept, sec_fetch_dest, "application/ld+json", state.mashlib.enabled) {
@@ -986,6 +1026,246 @@ async fn handle_password_change(
 }
 
 // ---------------------------------------------------------------------------
+// Payment endpoint (JSS parity: GET /pay/.info)
+// ---------------------------------------------------------------------------
+
+async fn handle_pay_info(state: web::Data<AppState>) -> HttpResponse {
+    let body = solid_pod_rs::payments::pay_info(&state.pay_config);
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(body)
+}
+
+// ---------------------------------------------------------------------------
+// WAC-gated CORS proxy endpoint — GET /proxy?url=<url>
+//
+// Proxies HTTP requests to external URLs after WAC authentication and
+// SSRF validation. Defence-in-depth:
+//   1. WAC auth required (reuses existing NIP-98 auth).
+//   2. Target URL validated against SSRF blocklist (no private/loopback IPs).
+//   3. Byte cap enforced (default 50 MB).
+//   4. Redirect targets re-validated against SSRF blocklist.
+//   5. Sensitive response headers stripped (Set-Cookie, Authorization).
+//   6. X-Upstream-Authorization header forwarded if present.
+// ---------------------------------------------------------------------------
+
+/// Default byte cap for proxied responses (50 MiB).
+pub const DEFAULT_PROXY_BYTE_CAP: usize = 50 * 1024 * 1024;
+
+/// Query parameters for the proxy endpoint.
+#[derive(Debug, Deserialize)]
+struct ProxyQuery {
+    url: String,
+}
+
+/// Headers that are stripped from the proxied response for security.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    "set-cookie",
+    "set-cookie2",
+    "authorization",
+    "www-authenticate",
+    "proxy-authenticate",
+    "proxy-authorization",
+];
+
+/// Validate that a URL target is safe for proxying (SSRF protection).
+///
+/// Checks the URL against the SSRF blocklist without DNS resolution.
+/// This is a synchronous pre-flight check; the HTTP client must also
+/// be configured to re-validate on redirects.
+fn validate_proxy_target(target: &str) -> Result<url::Url, HttpResponse> {
+    let parsed = match url::Url::parse(target) {
+        Ok(u) => u,
+        Err(_) => {
+            return Err(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "invalid target URL"})));
+        }
+    };
+
+    // Only HTTP(S) schemes are allowed.
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": format!("unsupported scheme: {scheme}")})));
+        }
+    }
+
+    // SSRF guard: reject URLs with private/loopback/link-local IP hosts.
+    if let Err(_e) = solid_pod_rs::security::is_safe_url(target) {
+        return Err(HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
+    }
+
+    // Additional hostname-based checks for common SSRF bypass patterns.
+    if let Some(host) = parsed.host_str() {
+        let host_lower = host.to_ascii_lowercase();
+        // Block localhost variants.
+        if host_lower == "localhost"
+            || host_lower.ends_with(".localhost")
+            || host_lower == "0.0.0.0"
+            || host_lower == "[::1]"
+            || host_lower == "[::0]"
+        {
+            return Err(HttpResponse::Forbidden()
+                .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
+        }
+    } else {
+        return Err(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "target URL has no host"})));
+    }
+
+    Ok(parsed)
+}
+
+async fn handle_proxy(
+    req: HttpRequest,
+    _state: web::Data<AppState>,
+    query: web::Query<ProxyQuery>,
+) -> Result<HttpResponse, ActixError> {
+    // 1. WAC authentication — require an authenticated agent.
+    let auth_pk = extract_pubkey(&req).await;
+    let agent = agent_uri(auth_pk.as_ref());
+    if agent.is_none() {
+        return Ok(HttpResponse::Unauthorized()
+            .json(serde_json::json!({"error": "authentication required"})));
+    }
+
+    // 2. Validate the target URL against SSRF policy.
+    let _target_url = match validate_proxy_target(&query.url) {
+        Ok(u) => u,
+        Err(rsp) => return Ok(rsp),
+    };
+
+    // 3. Build the proxied request.
+    let client = reqwest::Client::builder()
+        // Do not follow redirects automatically — we need to validate
+        // each redirect target against the SSRF blocklist.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("proxy client: {e}")))?;
+
+    let mut current_url = query.url.clone();
+    let mut redirect_count = 0u8;
+    const MAX_REDIRECTS: u8 = 5;
+
+    let byte_cap = std::env::var("PROXY_BYTE_CAP")
+        .ok()
+        .and_then(|v| solid_pod_rs::config::sources::parse_size(&v).map(|u| u as usize).ok())
+        .unwrap_or(DEFAULT_PROXY_BYTE_CAP);
+
+    loop {
+        // Re-validate SSRF on each redirect hop.
+        if redirect_count > 0 {
+            match validate_proxy_target(&current_url) {
+                Ok(_) => {}
+                Err(rsp) => return Ok(rsp),
+            }
+        }
+
+        let mut upstream_req = client.get(&current_url);
+
+        // Forward X-Upstream-Authorization if present.
+        if let Some(auth_val) = req
+            .headers()
+            .get("x-upstream-authorization")
+            .and_then(|v| v.to_str().ok())
+        {
+            upstream_req = upstream_req.header("Authorization", auth_val);
+        }
+
+        let response = upstream_req
+            .send()
+            .await
+            .map_err(|e| actix_web::error::ErrorBadGateway(format!("upstream error: {e}")))?;
+
+        // Handle redirects with SSRF re-validation.
+        if response.status().is_redirection() {
+            if redirect_count >= MAX_REDIRECTS {
+                return Ok(HttpResponse::BadGateway()
+                    .json(serde_json::json!({"error": "too many redirects"})));
+            }
+            if let Some(location) = response.headers().get("location") {
+                let loc_str = location
+                    .to_str()
+                    .map_err(|_| actix_web::error::ErrorBadGateway("invalid redirect location"))?;
+                // Resolve relative redirects against current URL.
+                let base = url::Url::parse(&current_url)
+                    .map_err(|_| actix_web::error::ErrorBadGateway("invalid current URL"))?;
+                let resolved = base
+                    .join(loc_str)
+                    .map_err(|_| actix_web::error::ErrorBadGateway("invalid redirect URL"))?;
+                current_url = resolved.to_string();
+                redirect_count += 1;
+                continue;
+            }
+            return Ok(HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": "redirect without location"})));
+        }
+
+        // Read the response body with byte cap enforcement.
+        let upstream_status = response.status().as_u16();
+        let upstream_content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        // Collect response headers, stripping sensitive ones.
+        let mut forwarded_headers: Vec<(String, String)> = Vec::new();
+        for (name, value) in response.headers() {
+            let name_lower = name.as_str().to_ascii_lowercase();
+            if STRIPPED_RESPONSE_HEADERS.contains(&name_lower.as_str()) {
+                continue;
+            }
+            // Skip hop-by-hop headers.
+            if matches!(
+                name_lower.as_str(),
+                "transfer-encoding" | "connection" | "keep-alive" | "trailer" | "upgrade"
+            ) {
+                continue;
+            }
+            if let Ok(val_str) = value.to_str() {
+                forwarded_headers.push((name_lower, val_str.to_string()));
+            }
+        }
+
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| actix_web::error::ErrorBadGateway(format!("body read: {e}")))?;
+
+        if body_bytes.len() > byte_cap {
+            return Ok(HttpResponse::PayloadTooLarge()
+                .json(serde_json::json!({
+                    "error": "proxied response exceeds byte cap",
+                    "limit": byte_cap
+                })));
+        }
+
+        // Build the response.
+        let mut rsp = HttpResponse::build(
+            StatusCode::from_u16(upstream_status)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        );
+        rsp.insert_header(("Content-Type", upstream_content_type.as_str()));
+        rsp.insert_header(("X-Proxy-Status", upstream_status.to_string()));
+
+        // Forward non-sensitive headers.
+        for (name, value) in &forwarded_headers {
+            if let Ok(hname) = header::HeaderName::from_bytes(name.as_bytes()) {
+                if let Ok(hval) = header::HeaderValue::from_str(value) {
+                    rsp.insert_header((hname, hval));
+                }
+            }
+        }
+
+        return Ok(rsp.body(body_bytes.to_vec()));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Percent-decode + dotdot re-check middleware
 // ---------------------------------------------------------------------------
 
@@ -1319,6 +1599,12 @@ pub fn build_app(
             web::get().to(handle_well_known_did_nostr),
         );
     }
+
+    // Payment endpoint (JSS parity: GET /pay/.info).
+    app = app.route("/pay/.info", web::get().to(handle_pay_info));
+
+    // WAC-gated CORS proxy endpoint.
+    app = app.route("/proxy", web::get().to(handle_proxy));
 
     // Pod management API (JSS parity: /api/accounts/*)
     app = app

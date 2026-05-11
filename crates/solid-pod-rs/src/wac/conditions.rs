@@ -22,6 +22,7 @@ use crate::wac::client::{ClientConditionBody, ClientConditionEvaluator};
 use crate::wac::document::AclDocument;
 use crate::wac::evaluator::GroupMembership;
 use crate::wac::issuer::{IssuerConditionBody, IssuerConditionEvaluator};
+use crate::wac::payment::{PaymentConditionBody, PaymentConditionEvaluator};
 
 /// Outcome of evaluating a single `acl:condition` predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +51,9 @@ pub enum Condition {
     /// `acl:IssuerCondition` — gate on the token issuer.
     Issuer(IssuerConditionBody),
 
+    /// `acl:PaymentCondition` — gate on payment proof (balance deduction).
+    Payment(PaymentConditionBody),
+
     /// Any condition type the server does not recognise. The `type_iri`
     /// is preserved verbatim from the `@type` (or Turtle `rdf:type`)
     /// discriminator.
@@ -67,6 +71,7 @@ impl Condition {
         match self {
             Condition::Client(_) => "acl:ClientCondition",
             Condition::Issuer(_) => "acl:IssuerCondition",
+            Condition::Payment(_) => "acl:PaymentCondition",
             Condition::Unknown { type_iri } => type_iri.as_str(),
         }
     }
@@ -114,6 +119,12 @@ impl Serialize for Condition {
                 }
                 m.end()
             }
+            Condition::Payment(body) => {
+                let mut m = ser.serialize_map(None)?;
+                m.serialize_entry("@type", "acl:PaymentCondition")?;
+                m.serialize_entry("acl:costSats", &body.cost_sats)?;
+                m.end()
+            }
             Condition::Unknown { type_iri } => {
                 let mut m = ser.serialize_map(Some(1))?;
                 m.serialize_entry("@type", type_iri)?;
@@ -147,6 +158,12 @@ impl<'de> Deserialize<'de> for Condition {
                 | "http://www.w3.org/ns/auth/acl#IssuerCondition"
                 | "https://www.w3.org/ns/auth/acl#IssuerCondition"
         );
+        let matches_payment = matches!(
+            type_iri_str,
+            "acl:PaymentCondition"
+                | "http://www.w3.org/ns/auth/acl#PaymentCondition"
+                | "https://www.w3.org/ns/auth/acl#PaymentCondition"
+        );
         if matches_client {
             let body =
                 ClientConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
@@ -155,6 +172,10 @@ impl<'de> Deserialize<'de> for Condition {
             let body =
                 IssuerConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Issuer(body))
+        } else if matches_payment {
+            let body =
+                PaymentConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
+            Ok(Condition::Payment(body))
         } else {
             Ok(Condition::Unknown {
                 type_iri: type_iri_str.to_string(),
@@ -176,6 +197,11 @@ pub struct RequestContext<'a> {
     pub client_id: Option<&'a str>,
     /// Token issuer — the `iss` claim.
     pub issuer: Option<&'a str>,
+    /// Available payment balance in satoshis. Set by the handler layer
+    /// after reading the caller's Web Ledger entry. `None` means no
+    /// payment context is available (anonymous / no ledger). When a
+    /// `PaymentCondition` is present, a `None` here causes 402.
+    pub payment_balance_sats: Option<u64>,
 }
 
 /// Registry-facing dispatcher trait. Separate from the concrete
@@ -202,6 +228,7 @@ pub trait ConditionDispatcher: Send + Sync {
 pub struct ConditionRegistry {
     client_eval: Option<ClientConditionEvaluator>,
     issuer_eval: Option<IssuerConditionEvaluator>,
+    payment_eval: Option<PaymentConditionEvaluator>,
 }
 
 impl ConditionRegistry {
@@ -221,12 +248,19 @@ impl ConditionRegistry {
         self
     }
 
-    /// Convenience constructor enabling both built-ins. Used by most
+    /// Register the default built-in payment-condition evaluator.
+    pub fn with_payment(mut self, e: PaymentConditionEvaluator) -> Self {
+        self.payment_eval = Some(e);
+        self
+    }
+
+    /// Convenience constructor enabling all built-ins. Used by most
     /// call sites and tests.
     pub fn default_with_client_and_issuer() -> Self {
         Self::new()
             .with_client(ClientConditionEvaluator)
             .with_issuer(IssuerConditionEvaluator)
+            .with_payment(PaymentConditionEvaluator)
     }
 
     /// List of condition-type IRIs the registry can dispatch. Used by
@@ -239,6 +273,9 @@ impl ConditionRegistry {
         }
         if self.issuer_eval.is_some() {
             s.push("acl:IssuerCondition");
+        }
+        if self.payment_eval.is_some() {
+            s.push("acl:PaymentCondition");
         }
         s
     }
@@ -258,6 +295,10 @@ impl ConditionDispatcher for ConditionRegistry {
             },
             Condition::Issuer(body) => match &self.issuer_eval {
                 Some(e) => e.evaluate(body, ctx, groups),
+                None => ConditionOutcome::NotApplicable,
+            },
+            Condition::Payment(body) => match &self.payment_eval {
+                Some(e) => e.evaluate(body, ctx),
                 None => ConditionOutcome::NotApplicable,
             },
             Condition::Unknown { .. } => ConditionOutcome::NotApplicable,

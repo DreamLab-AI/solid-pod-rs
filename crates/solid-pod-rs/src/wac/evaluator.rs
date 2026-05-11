@@ -187,6 +187,7 @@ pub fn evaluate_access_with_groups(
         web_id: agent_uri,
         client_id: None,
         issuer: None,
+        payment_balance_sats: None,
     };
     evaluate_access_ctx_inner(
         acl_doc,

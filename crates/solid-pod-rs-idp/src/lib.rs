@@ -62,11 +62,13 @@
 #![warn(rust_2018_idioms)]
 #![forbid(unsafe_code)]
 
+pub mod account_delete;
 pub mod credentials;
 pub mod discovery;
 pub mod error;
 pub mod invites;
 pub mod jwks;
+pub mod password_change;
 pub mod provider;
 pub mod registration;
 pub mod session;
@@ -82,8 +84,15 @@ pub mod schnorr;
 #[cfg(feature = "axum-binder")]
 pub mod axum_binder;
 
+pub use account_delete::{
+    delete_account, AccountDeleteError, AccountDeleteRequest, AccountDeleteResponse,
+    CONFIRMATION_PHRASE,
+};
 pub use credentials::{
     login, validate_password_length, CredentialsResponse, LoginError, MIN_PASSWORD_LENGTH,
+};
+pub use password_change::{
+    change_password, PasswordChangeError, PasswordChangeRequest, PasswordChangeResponse,
 };
 pub use discovery::{build_discovery, DiscoveryDocument};
 pub use error::ProviderError;

@@ -14,6 +14,7 @@ use crate::wac::client::ClientConditionBody;
 use crate::wac::conditions::Condition;
 use crate::wac::document::{ids_of, AclAuthorization, AclDocument, IdOrIds, IdRef};
 use crate::wac::issuer::IssuerConditionBody;
+use crate::wac::payment::PaymentConditionBody;
 use crate::wac::MAX_ACL_BYTES;
 
 /// Parse a Turtle ACL document into the same `AclDocument` shape that
@@ -356,6 +357,7 @@ fn parse_turtle_condition_body(
     let mut issuers: Vec<String> = Vec::new();
     let mut issuer_groups: Vec<String> = Vec::new();
     let mut issuer_classes: Vec<String> = Vec::new();
+    let mut cost_sats: Option<u64> = None;
 
     for pair in split_predicate_list(body) {
         let pair = pair.trim();
@@ -394,6 +396,11 @@ fn parse_turtle_condition_body(
             "http://www.w3.org/ns/auth/acl#issuerClass" | "acl:issuerClass" => {
                 issuer_classes.extend(objects);
             }
+            "http://www.w3.org/ns/auth/acl#costSats" | "acl:costSats" => {
+                if let Some(first) = objects.first() {
+                    cost_sats = first.parse::<u64>().ok();
+                }
+            }
             _ => {}
         }
     }
@@ -410,6 +417,9 @@ fn parse_turtle_condition_body(
             issuer_group: strs_to_ids(issuer_groups),
             issuer_class: strs_to_ids(issuer_classes),
         })),
+        "acl:PaymentCondition" => Some(Condition::Payment(PaymentConditionBody {
+            cost_sats: cost_sats.unwrap_or(0),
+        })),
         other => Some(Condition::Unknown {
             type_iri: other.to_string(),
         }),
@@ -417,16 +427,17 @@ fn parse_turtle_condition_body(
 }
 
 fn strs_to_ids(items: Vec<String>) -> Option<IdOrIds> {
-    if items.is_empty() {
-        None
-    } else if items.len() == 1 {
-        Some(IdOrIds::Single(IdRef {
-            id: items.into_iter().next().unwrap(),
-        }))
-    } else {
-        Some(IdOrIds::Multiple(
-            items.into_iter().map(|id| IdRef { id }).collect(),
-        ))
+    let mut iter = items.into_iter();
+    let first = iter.next()?; // empty → None
+    match iter.next() {
+        None => Some(IdOrIds::Single(IdRef { id: first })),
+        Some(second) => Some(IdOrIds::Multiple(
+            std::iter::once(first)
+                .chain(std::iter::once(second))
+                .chain(iter)
+                .map(|id| IdRef { id })
+                .collect(),
+        )),
     }
 }
 
@@ -438,6 +449,8 @@ fn normalise_condition_type(raw: &str) -> String {
         | "https://www.w3.org/ns/auth/acl#ClientCondition" => "acl:ClientCondition".into(),
         "http://www.w3.org/ns/auth/acl#IssuerCondition"
         | "https://www.w3.org/ns/auth/acl#IssuerCondition" => "acl:IssuerCondition".into(),
+        "http://www.w3.org/ns/auth/acl#PaymentCondition"
+        | "https://www.w3.org/ns/auth/acl#PaymentCondition" => "acl:PaymentCondition".into(),
         other => other.to_string(),
     }
 }

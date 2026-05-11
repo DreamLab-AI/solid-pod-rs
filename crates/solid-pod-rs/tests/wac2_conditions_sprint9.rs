@@ -150,6 +150,7 @@ fn authz_with_unknown_condition_is_skipped_fail_closed() {
         web_id: Some("did:nostr:alice"),
         client_id: None,
         issuer: None,
+        payment_balance_sats: None,
     };
     assert!(
         !evaluate_access_ctx(
@@ -203,6 +204,7 @@ fn client_condition_evaluation_matches_exact_client_id() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
     assert!(evaluate_access_ctx(
         Some(&doc),
@@ -218,6 +220,7 @@ fn client_condition_evaluation_matches_exact_client_id() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://evil.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
     assert!(!evaluate_access_ctx(
         Some(&doc),
@@ -249,6 +252,7 @@ fn issuer_condition_evaluation_matches_exact_issuer() {
         web_id: Some("did:nostr:alice"),
         client_id: None,
         issuer: Some("https://trusted.idp/"),
+        payment_balance_sats: None,
     };
     assert!(evaluate_access_ctx(
         Some(&doc),
@@ -264,6 +268,7 @@ fn issuer_condition_evaluation_matches_exact_issuer() {
         web_id: Some("did:nostr:alice"),
         client_id: None,
         issuer: Some("https://rogue.idp/"),
+        payment_balance_sats: None,
     };
     assert!(!evaluate_access_ctx(
         Some(&doc),

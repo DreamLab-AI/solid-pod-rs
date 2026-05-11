@@ -50,6 +50,7 @@ async fn public_read_state() -> AppState {
         nodeinfo: NodeInfoMeta::default(),
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
+        pay_config: solid_pod_rs::payments::PayConfig::default(),
     }
 }
 
@@ -79,6 +80,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         nodeinfo: NodeInfoMeta::default(),
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
+        pay_config: solid_pod_rs::payments::PayConfig::default(),
     }
 }
 
@@ -224,6 +226,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         nodeinfo: NodeInfoMeta::default(),
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
+        pay_config: solid_pod_rs::payments::PayConfig::default(),
     };
     let app = test::init_service(build_app(state)).await;
 

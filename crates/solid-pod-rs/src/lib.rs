@@ -28,9 +28,11 @@
 //! | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS). |
 //! | `config-loader` | off | Layered config loader with `JSS_*` env vars. |
 //! | `webhook-signing` | off | RFC 9421 Ed25519 webhook signing. |
+//! | `did-nostr-types` | off | Canonical did:nostr types (wasm32-safe). |
 //! | `did-nostr` | off | did:nostr resolver in `interop`. |
 //! | `rate-limit` | off | Sliding-window LRU rate limiter. |
 //! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
+//! | `mrc20` | off | BIP-341 taproot key chaining for MRC20 tokens. |
 //! | `lws-cid` | off | LWS 1.0 CID self-signed JWT verifier (ES256K). |
 //! | `lws-cid-p256` | off | LWS-CID + ES256 (P-256) algorithm. |
 //! | `lws-cid-eddsa` | off | LWS-CID + EdDSA (Ed25519) algorithm. |
@@ -51,7 +53,8 @@
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
 //! | [`mashlib`] | SolidOS data-browser HTML wrapper + data-island embed.    |
 //! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
-//! | [`payments`] | HTTP 402, Web Ledgers, MRC20 tokens, multi-chain TXO. |
+//! | [`payments`] | HTTP 402, Web Ledgers, multi-chain TXO, payment store. |
+//! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
 //! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
 //! | [`config`] | Layered configuration schema. |
@@ -59,6 +62,7 @@
 //! | [`quota`] | Per-pod byte-quota enforcement. |
 //! | [`multitenant`] | `PodResolver` trait; path + subdomain modes. |
 //! | [`interop`] | `.well-known/solid`, WebFinger, NodeInfo, did:nostr. |
+//! | [`did_nostr_types`] | Canonical `did:nostr` types (wasm32-safe, `core`). |
 //! | [`provision`] | Pod bootstrap (WebID + containers + type indexes + ACL). |
 //!
 //! ## Quick start
@@ -112,10 +116,21 @@ pub mod ldp;
 pub mod mashlib;
 pub mod metrics;
 pub mod multitenant;
+pub mod mrc20;
 pub mod payments;
 pub mod security;
 pub mod wac;
 pub mod webid;
+
+// ---------------------------------------------------------------------------
+// `did-nostr-types`-gated module.
+//
+// Canonical did:nostr types (NostrPubkey, DID-Doc renderers, ServiceEntry)
+// behind a lightweight feature flag. No runtime deps — wasm32 / CF Workers
+// consumers get these via `core`.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "did-nostr-types")]
+pub mod did_nostr_types;
 
 // ---------------------------------------------------------------------------
 // `tokio-runtime`-gated modules.
@@ -169,7 +184,7 @@ pub use ldp::{
     patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
     ConditionalOutcome, ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome,
     PatchDialect, PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, Term, Triple, ACCEPT_PATCH,
-    ACCEPT_POST, CACHE_CONTROL_RDF,
+    ACCEPT_POST, CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
 };
 pub use interop::{
     dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,

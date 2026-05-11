@@ -68,6 +68,7 @@ fn wac2_acl_condition_client_matches_permits() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
     assert!(evaluate_access_ctx(
         Some(&doc),
@@ -104,6 +105,7 @@ fn wac2_acl_condition_client_mismatch_denies() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://evil.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
     assert!(!evaluate_access_ctx(
         Some(&doc),
@@ -145,6 +147,7 @@ fn wac2_acl_condition_issuer_group_membership() {
         web_id: Some("did:nostr:alice"),
         client_id: None,
         issuer: Some("https://idp.example/"),
+        payment_balance_sats: None,
     };
     assert!(evaluate_access_ctx(
         Some(&doc),
@@ -181,6 +184,7 @@ fn wac2_unknown_condition_type_fails_closed() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: Some("https://idp.example/"),
+        payment_balance_sats: None,
     };
     assert!(
         !evaluate_access_ctx(
@@ -228,6 +232,7 @@ fn wac2_conjunctive_conditions_and_gate() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: Some("https://untrusted.idp/"),
+        payment_balance_sats: None,
     };
     assert!(!evaluate_access_ctx(
         Some(&doc),
@@ -243,6 +248,7 @@ fn wac2_conjunctive_conditions_and_gate() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: Some("https://trusted.idp/"),
+        payment_balance_sats: None,
     };
     assert!(evaluate_access_ctx(
         Some(&doc),
@@ -307,6 +313,7 @@ fn wac2_monotonicity_invariant() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://app.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
 
     let plain = evaluate_access_ctx(
@@ -379,6 +386,7 @@ fn wac2_wac_allow_header_omits_gated_modes() {
         web_id: Some("did:nostr:alice"),
         client_id: Some("https://not-the-one.example/webid#client"),
         issuer: None,
+        payment_balance_sats: None,
     };
     let hdr = wac_allow_header_with_dispatcher(
         Some(&doc),

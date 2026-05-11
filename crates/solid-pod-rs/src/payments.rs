@@ -1,9 +1,14 @@
-//! HTTP 402 Payment Required — Web Ledgers + MRC20 token model.
+//! HTTP 402 Payment Required — Web Ledgers + multi-chain TXO deposits.
 //!
 //! Implements the JSS payment architecture: per-identity satoshi
 //! balances tracked via the Web Ledgers spec, multi-chain TXO deposit
-//! verification, MRC20 state-chain tokens anchored to Bitcoin taproot,
-//! and BIP-341 key chaining for per-state deposit addresses.
+//! verification, HTTP 402 negotiation, and payment-store abstraction.
+//!
+//! MRC20 state-chain token types ([`Mrc20Op`], [`Mrc20State`],
+//! [`verify_state_link`]) are re-exported from [`crate::mrc20`] for
+//! backward compatibility. The full MRC20 implementation — JCS
+//! canonicalization, BIP-341 taproot key chaining, and state-chain
+//! verification — lives in [`crate::mrc20`].
 //!
 //! All identities are `did:nostr:<hex-pubkey>` — users and agents are
 //! indistinguishable at the protocol level, enabling user↔user,
@@ -17,7 +22,7 @@
 //! wasm32, timestamps use `js_sys::Date::now()`; on native, `SystemTime`.
 //!
 //! @see <https://webledgers.org>
-//! @see JSS `src/handlers/pay.js`, `src/webledger.js`, `src/mrc20.js`
+//! @see JSS `src/handlers/pay.js`, `src/webledger.js`
 
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +307,23 @@ pub fn pay_info(config: &PayConfig) -> serde_json::Value {
     info
 }
 
+/// Response headers attached to successful paid requests.
+///
+/// JSS parity: on every response that consumed balance, the server adds
+/// `X-Balance`, `X-Cost`, and `X-Pay-Currency` headers so the client
+/// can track spend without a separate `/pay/.balance` call.
+///
+/// Returns a `Vec<(header_name, header_value)>` that the transport layer
+/// appends to the HTTP response. Framework-agnostic — actix-web, axum,
+/// and Worker consumers each adapt these to their header type.
+pub fn payment_response_headers(balance: u64, cost: u64, currency: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("X-Balance", balance.to_string()),
+        ("X-Cost", cost.to_string()),
+        ("X-Pay-Currency", currency.to_string()),
+    ]
+}
+
 /// GET /pay/.balance response body.
 pub fn balance_response(did: &str, balance: u64, cost: u64) -> serde_json::Value {
     serde_json::json!({
@@ -398,52 +420,14 @@ fn validate_txid(txid: &str) -> Result<(), PaymentError> {
 }
 
 // ---------------------------------------------------------------------------
-// MRC20 state chain types
+// MRC20 state chain types — re-exported from `crate::mrc20`.
 // ---------------------------------------------------------------------------
 
-/// MRC20 token state in the state chain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Mrc20State {
-    pub profile: String,
-    pub prev: String,
-    pub seq: u64,
-    pub ops: Vec<Mrc20Op>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<String>,
-}
-
-/// MRC20 operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Mrc20Op {
-    pub op: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub amt: Option<u64>,
-}
-
-/// Verify MRC20 state chain link: `state.prev == SHA-256(JCS(prev_state))`.
-pub fn verify_state_link(state: &Mrc20State, prev_state: &Mrc20State) -> Result<(), PaymentError> {
-    let prev_json = serde_json::to_string(prev_state)
-        .map_err(|e| PaymentError::InvalidState(format!("serialize: {e}")))?;
-    let hash = hex::encode(sha2::Sha256::digest(prev_json.as_bytes()));
-    if state.prev != hash {
-        return Err(PaymentError::InvalidState(format!(
-            "chain break: expected prev {hash}, got {}",
-            state.prev
-        )));
-    }
-    if state.seq != prev_state.seq + 1 {
-        return Err(PaymentError::InvalidState(format!(
-            "sequence mismatch: expected {}, got {}",
-            prev_state.seq + 1,
-            state.seq
-        )));
-    }
-    Ok(())
-}
+/// Backward-compatibility re-exports. The canonical definitions and full
+/// implementation (JCS, BIP-341, state-chain verification) live in
+/// [`crate::mrc20`]. These re-exports let existing consumers that import
+/// MRC20 types from `payments` continue to compile without changes.
+pub use crate::mrc20::{Mrc20Op, Mrc20State, verify_state_link};
 
 // ---------------------------------------------------------------------------
 // Payment store trait (storage abstraction)
@@ -498,8 +482,6 @@ pub enum PaymentError {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-use sha2::Digest;
 
 fn now_secs() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -698,5 +680,20 @@ mod tests {
         let config = PayConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.cost_sats, 1);
+    }
+
+    #[test]
+    fn payment_response_headers_returns_three_headers() {
+        let headers = super::payment_response_headers(950, 50, "sat");
+        assert_eq!(headers.len(), 3);
+        assert_eq!(headers[0], ("X-Balance", "950".to_string()));
+        assert_eq!(headers[1], ("X-Cost", "50".to_string()));
+        assert_eq!(headers[2], ("X-Pay-Currency", "sat".to_string()));
+    }
+
+    #[test]
+    fn payment_response_headers_zero_balance() {
+        let headers = super::payment_response_headers(0, 1, "sat");
+        assert_eq!(headers[0].1, "0");
     }
 }

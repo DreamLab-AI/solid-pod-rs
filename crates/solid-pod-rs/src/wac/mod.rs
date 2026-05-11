@@ -116,6 +116,7 @@ pub mod evaluator;
 pub mod issuer;
 pub mod origin;
 pub mod parser;
+pub mod payment;
 pub mod resolver;
 pub mod serializer;
 
@@ -135,6 +136,7 @@ pub use evaluator::{
     evaluate_access_with_groups, GroupMembership, StaticGroupMembership,
 };
 pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
+pub use payment::{total_payment_cost, PaymentConditionBody, PaymentConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
 pub use resolver::AclResolver;
@@ -231,6 +233,7 @@ pub fn wac_allow_header_with_dispatcher(
         web_id: None,
         client_id: ctx.client_id,
         issuer: ctx.issuer,
+        payment_balance_sats: ctx.payment_balance_sats,
     };
     for mode in ALL_MODES {
         if evaluate_access_ctx(acl_doc, ctx, resource_path, *mode, None, groups, dispatcher) {

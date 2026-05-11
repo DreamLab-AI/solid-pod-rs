@@ -192,8 +192,12 @@ mod lru_impl {
             capacity: usize,
             policies: Vec<(String, u32, Duration)>,
         ) -> Self {
-            let capacity =
-                NonZeroUsize::new(capacity.max(1)).unwrap_or(NonZeroUsize::new(1).unwrap());
+            // SAFETY: 1 is non-zero, so this is infallible.
+            const ONE: NonZeroUsize = match NonZeroUsize::new(1) {
+                Some(v) => v,
+                None => unreachable!(),
+            };
+            let capacity = NonZeroUsize::new(capacity.max(1)).unwrap_or(ONE);
 
             let policies = policies
                 .into_iter()

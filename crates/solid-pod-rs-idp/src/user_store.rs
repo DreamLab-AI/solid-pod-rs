@@ -55,6 +55,14 @@ pub struct User {
     pub name: Option<String>,
     /// Argon2id PHC-encoded password hash.
     pub password_hash: String,
+    /// Optional username (unique handle, case-insensitive).
+    pub username: Option<String>,
+    /// Optional Nostr public key (x-only, hex, 64 chars). Used by the
+    /// Schnorr SSO typed-username fallback: when `did:nostr` resolution
+    /// fails and a username is provided, the IdP looks up the account
+    /// by username and verifies the Schnorr signature against this key
+    /// (the profile's `verificationMethod`).
+    pub nostr_pubkey: Option<String>,
 }
 
 /// Async user-store contract.
@@ -66,6 +74,16 @@ pub trait UserStore: Send + Sync + 'static {
 
     /// Look up a user by internal id.
     async fn find_by_id(&self, id: &str) -> Result<Option<User>, UserStoreError>;
+
+    /// Look up a user by username (case-insensitive). Returns `Ok(None)`
+    /// on no-match. Used by the Schnorr SSO typed-username fallback
+    /// when `did:nostr` resolution fails.
+    ///
+    /// Default impl returns `Ok(None)` so existing stores that lack
+    /// username support compile unchanged.
+    async fn find_by_username(&self, _username: &str) -> Result<Option<User>, UserStoreError> {
+        Ok(None)
+    }
 
     /// Verify `password` against the user's stored hash. This lives
     /// on the trait rather than free-function so stores that use
@@ -95,12 +113,29 @@ pub trait UserStore: Send + Sync + 'static {
     async fn delete(&self, _id: &str) -> Result<bool, UserStoreError> {
         Err(UserStoreError::NotImplemented)
     }
+
+    /// Update a user's password hash. The caller has already verified
+    /// the current password and validated the new password length.
+    /// Returns `Ok(true)` when the password was updated, `Ok(false)`
+    /// when the user id was not found.
+    ///
+    /// Default impl returns [`UserStoreError::NotImplemented`].
+    async fn update_password(
+        &self,
+        _id: &str,
+        _new_password_hash: String,
+    ) -> Result<bool, UserStoreError> {
+        Err(UserStoreError::NotImplemented)
+    }
 }
 
 /// Reference in-memory implementation.
 #[derive(Default)]
 pub struct InMemoryUserStore {
+    /// Keyed by lowercase email.
     inner: RwLock<HashMap<String, User>>,
+    /// Secondary index: lowercase username -> lowercase email.
+    username_index: RwLock<HashMap<String, String>>,
 }
 
 impl InMemoryUserStore {
@@ -140,8 +175,51 @@ impl InMemoryUserStore {
             webid: webid.into(),
             name,
             password_hash: hash,
+            username: None,
+            nostr_pubkey: None,
         };
         self.inner.write().insert(user.email.clone(), user.clone());
+        Ok(user)
+    }
+
+    /// Create a user with username and optional Nostr pubkey for
+    /// Schnorr SSO typed-username fallback testing.
+    pub fn insert_user_with_nostr(
+        &self,
+        id: impl Into<String>,
+        email: impl Into<String>,
+        webid: impl Into<String>,
+        name: Option<String>,
+        password: &str,
+        username: Option<String>,
+        nostr_pubkey: Option<String>,
+    ) -> Result<User, UserStoreError> {
+        if password.len() < MIN_PASSWORD_LENGTH {
+            return Err(UserStoreError::PasswordTooShort {
+                min_length: MIN_PASSWORD_LENGTH,
+            });
+        }
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| UserStoreError::Hash(e.to_string()))?
+            .to_string();
+        let lower_email = email.into().to_ascii_lowercase();
+        let user = User {
+            id: id.into(),
+            email: lower_email.clone(),
+            webid: webid.into(),
+            name,
+            password_hash: hash,
+            username: username.clone(),
+            nostr_pubkey,
+        };
+        if let Some(ref uname) = username {
+            self.username_index
+                .write()
+                .insert(uname.to_ascii_lowercase(), lower_email.clone());
+        }
+        self.inner.write().insert(lower_email, user.clone());
         Ok(user)
     }
 }
@@ -161,6 +239,15 @@ impl UserStore for InMemoryUserStore {
             .cloned())
     }
 
+    async fn find_by_username(&self, username: &str) -> Result<Option<User>, UserStoreError> {
+        let lower = username.to_ascii_lowercase();
+        let email = self.username_index.read().get(&lower).cloned();
+        match email {
+            Some(email_key) => Ok(self.inner.read().get(&email_key).cloned()),
+            None => Ok(None),
+        }
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, UserStoreError> {
         let mut guard = self.inner.write();
         // Find the keyed entry whose row matches this id and remove it.
@@ -171,6 +258,22 @@ impl UserStore for InMemoryUserStore {
         match email_key {
             Some(k) => {
                 guard.remove(&k);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn update_password(
+        &self,
+        id: &str,
+        new_password_hash: String,
+    ) -> Result<bool, UserStoreError> {
+        let mut guard = self.inner.write();
+        let user = guard.values_mut().find(|u| u.id == id);
+        match user {
+            Some(u) => {
+                u.password_hash = new_password_hash;
                 Ok(true)
             }
             None => Ok(false),
@@ -244,6 +347,43 @@ mod tests {
         let found = store.find_by_id("u-2").await.unwrap().unwrap();
         assert_eq!(found.email, "bob@example.com");
         assert!(store.find_by_id("missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn inmemory_update_password() {
+        let store = InMemoryUserStore::new();
+        store
+            .insert_user(
+                "u-pw",
+                "pw@example.com",
+                "https://pw.example/profile#me",
+                None,
+                "oldpassword123",
+            )
+            .unwrap();
+
+        let user = store.find_by_id("u-pw").await.unwrap().unwrap();
+        assert!(store.verify_password(&user, "oldpassword123").await.unwrap());
+
+        // Hash a new password and update.
+        let salt = SaltString::generate(&mut OsRng);
+        let new_hash = Argon2::default()
+            .hash_password(b"newpassword456", &salt)
+            .unwrap()
+            .to_string();
+        let updated = store.update_password("u-pw", new_hash).await.unwrap();
+        assert!(updated);
+
+        let user2 = store.find_by_id("u-pw").await.unwrap().unwrap();
+        assert!(store.verify_password(&user2, "newpassword456").await.unwrap());
+        assert!(!store.verify_password(&user2, "oldpassword123").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn inmemory_update_password_unknown_user() {
+        let store = InMemoryUserStore::new();
+        let updated = store.update_password("nonexistent", "hash".into()).await.unwrap();
+        assert!(!updated);
     }
 
     // ---- password-length validation at registration (JSS 1feead2) ----

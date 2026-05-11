@@ -66,6 +66,7 @@ async fn make_state() -> AppState {
         },
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
+        pay_config: solid_pod_rs::payments::PayConfig::default(),
     };
     state.nodeinfo.base_url = "https://pod.example".into();
     state

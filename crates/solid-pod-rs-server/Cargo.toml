@@ -66,6 +66,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Error wiring.
 anyhow = "1"
 
+# HTTP client for the CORS proxy endpoint.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# URL parsing for proxy SSRF validation.
+url = "2"
+
 # Optional TLS (rustls). Gated by the `tls` feature so default builds
 # keep the dependency surface minimal.
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "ring"] }

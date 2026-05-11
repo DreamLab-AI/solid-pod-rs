@@ -1059,9 +1059,25 @@ fn strip_braces(block: &str) -> String {
     t.trim().to_string()
 }
 
+/// Maximum size (in bytes) of a SPARQL-Update body the server will
+/// attempt to parse.  Inputs larger than this are rejected before
+/// reaching the parser, preventing DoS through pathologically large or
+/// deeply nested SPARQL documents.
+pub const SPARQL_UPDATE_MAX_BYTES: usize = 1_048_576; // 1 MiB
+
 /// Apply a SPARQL 1.1 Update document (`INSERT DATA`, `DELETE DATA`,
 /// `DELETE WHERE`) to `target` using `spargebra` for parsing.
+///
+/// Rejects inputs exceeding [`SPARQL_UPDATE_MAX_BYTES`] before parsing.
 pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, PodError> {
+    if update.len() > SPARQL_UPDATE_MAX_BYTES {
+        return Err(PodError::BadRequest(format!(
+            "SPARQL-Update body exceeds {} byte limit ({} bytes)",
+            SPARQL_UPDATE_MAX_BYTES,
+            update.len(),
+        )));
+    }
+
     use spargebra::term::{
         GraphName, GraphNamePattern, GroundQuad, GroundQuadPattern, GroundSubject, GroundTerm,
         GroundTermPattern, NamedNodePattern, Quad, Subject, Term as SpTerm,

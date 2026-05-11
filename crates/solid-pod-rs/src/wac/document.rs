@@ -99,11 +99,22 @@ pub(crate) fn get_ids(val: &Option<IdOrIds>) -> Vec<&str> {
 }
 
 pub(crate) fn ids_of(items: Vec<String>) -> IdOrIds {
-    if items.len() == 1 {
-        IdOrIds::Single(IdRef {
-            id: items.into_iter().next().unwrap(),
-        })
-    } else {
-        IdOrIds::Multiple(items.into_iter().map(|id| IdRef { id }).collect())
+    let mut iter = items.into_iter();
+    let first = iter.next();
+    let second = iter.next();
+    match (first, second) {
+        // Single-element path: the len==1 guard previously ensured this.
+        (Some(id), None) => IdOrIds::Single(IdRef { id }),
+        // Multi-element: reconstruct the full iterator.
+        (Some(first), Some(second)) => IdOrIds::Multiple(
+            std::iter::once(first)
+                .chain(std::iter::once(second))
+                .chain(iter)
+                .map(|id| IdRef { id })
+                .collect(),
+        ),
+        // Empty: shouldn't happen per call-site invariants but handle
+        // defensively — return an empty Multiple rather than panicking.
+        _ => IdOrIds::Multiple(Vec::new()),
     }
 }

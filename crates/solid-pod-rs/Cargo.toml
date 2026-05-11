@@ -98,7 +98,7 @@ default = ["std", "fs-backend", "memory-backend", "tokio-runtime", "notification
 # interop types, security path/URL primitives) without dragging in tokio
 # or reqwest. `core` is the entry point for those consumers.
 # ---------------------------------------------------------------------------
-core = ["std", "dep:js-sys"]
+core = ["std", "dep:js-sys", "did-nostr-types"]
 std = []
 
 # Activate the tokio runtime + the websocket/futures stack. Pulled in
@@ -163,7 +163,13 @@ webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand", "
 # `solid_pod_rs::interop::did_nostr`. No new crate dependencies: uses
 # the reqwest + serde + url stack already pulled in by the library,
 # and std::sync::RwLock for the cache.
-did-nostr = ["jss-v04", "security-primitives", "tokio-runtime", "dep:reqwest"]
+did-nostr-types = []
+# MRC20 token state chain verification with BIP-341 taproot key chaining.
+# Pure logic (JCS, state validation, deposit verification) is always compiled.
+# This feature enables anchor verification: taproot address derivation and
+# bech32m encoding via k256.
+mrc20 = ["dep:k256"]
+did-nostr = ["did-nostr-types", "jss-v04", "security-primitives", "tokio-runtime", "dep:reqwest"]
 
 # Sprint 7 A: rate-limit primitive. Library exposes a `RateLimiter`
 # trait plus an LRU-backed reference implementation. CORS support is

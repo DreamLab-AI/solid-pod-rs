@@ -402,6 +402,48 @@ impl CachedFetcher {
     }
 }
 
+impl CachedFetcher {
+    /// Verify an access token by resolving the issuer's JWKS through the
+    /// cache. Combines JWKS cache lookup with
+    /// [`super::verify_access_token`] — call sites that previously
+    /// fetched the JWKS on every request can switch to this single method
+    /// to gain per-issuer caching.
+    ///
+    /// `dpop_jkt` and `now` are forwarded to the underlying verifier.
+    pub async fn verify_access_token_cached(
+        &self,
+        token: &str,
+        issuer: &str,
+        dpop_jkt: &str,
+        now: u64,
+    ) -> Result<super::AccessTokenVerified, crate::error::PodError> {
+        let issuer_url = Url::parse(issuer)
+            .map_err(|e| crate::error::PodError::Nip98(format!("bad issuer URL: {e}")))?;
+        let keyset = self.jwks(&issuer_url).await?;
+        let key = super::TokenVerifyKey::Asymmetric(keyset);
+        super::verify_access_token(token, &key, issuer, dpop_jkt, now)
+    }
+}
+
+/// Default per-issuer JWKS cache TTL used by
+/// [`CachedFetcher::with_short_ttl`] — 5 minutes. Shorter than the
+/// default 900s to bound how long a rotated key remains trusted.
+pub const SHORT_CACHE_TTL: Duration = Duration::from_secs(300);
+
+impl CachedFetcher {
+    /// Construct a fetcher with short (5 min) TTLs for both discovery
+    /// and JWKS caches. Suitable for resource servers that verify tokens
+    /// on every request and want freshness within a key-rotation window.
+    pub fn with_short_ttl(ssrf: Arc<SsrfPolicy>, client: Client) -> Self {
+        Self::new(
+            OidcConfigCache::new(SHORT_CACHE_TTL),
+            JwksCache::new(SHORT_CACHE_TTL),
+            ssrf,
+            client,
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (fast, no network)
 // ---------------------------------------------------------------------------
@@ -455,5 +497,40 @@ mod tests {
         c.put("https://op.example".into(), doc);
         std::thread::sleep(Duration::from_millis(5));
         assert!(c.get("https://op.example").is_none());
+    }
+
+    #[test]
+    fn jwks_cache_misses_when_empty() {
+        let c = JwksCache::new(Duration::from_secs(60));
+        assert!(c.get("https://op.example").is_none());
+    }
+
+    #[test]
+    fn jwks_cache_hits_within_ttl() {
+        let c = JwksCache::new(Duration::from_secs(60));
+        let set = JwkSet { keys: vec![] };
+        c.put("https://op.example".into(), set);
+        let cached = c.get("https://op.example");
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().keys.len(), 0);
+    }
+
+    #[test]
+    fn jwks_cache_expires_after_ttl() {
+        let c = JwksCache::new(Duration::from_nanos(1));
+        let set = JwkSet { keys: vec![] };
+        c.put("https://op.example".into(), set);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(c.get("https://op.example").is_none());
+    }
+
+    #[test]
+    fn short_cache_ttl_is_300_seconds() {
+        assert_eq!(super::SHORT_CACHE_TTL, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn default_cache_ttl_is_900_seconds() {
+        assert_eq!(super::DEFAULT_CACHE_TTL, Duration::from_secs(900));
     }
 }

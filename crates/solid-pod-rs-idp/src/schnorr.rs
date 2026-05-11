@@ -42,6 +42,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[cfg(feature = "schnorr-sso")]
+use crate::user_store::UserStore;
+#[cfg(feature = "schnorr-sso")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "schnorr-sso")]
@@ -208,6 +210,127 @@ impl Nip07SchnorrSso {
         h.update(pubkey_hex.as_bytes());
         h.finalize().into()
     }
+
+    /// Typed-username VM fallback: verify a Schnorr response with a
+    /// fallback that resolves the pubkey from the user's profile when
+    /// `did:nostr` resolution fails.
+    ///
+    /// Flow:
+    /// 1. Try the normal `verify_response` path (caller-supplied pubkey).
+    /// 2. If that fails and `username` is `Some`, look up the account by
+    ///    username, fetch `nostr_pubkey` from the profile's
+    ///    `verificationMethod`, and re-verify the signature against that
+    ///    key.
+    ///
+    /// This prevents the typed-username fallback from being used as a
+    /// pubkey oracle: the challenge is consumed on the first attempt, so
+    /// the fallback operates on the same one-shot challenge.
+    pub async fn verify_response_with_username_fallback(
+        &self,
+        user_id: &str,
+        pubkey_hex: &str,
+        signature_hex: &str,
+        username: Option<&str>,
+        user_store: &dyn UserStore,
+    ) -> Result<SchnorrAssertion, SchnorrError> {
+        use k256::schnorr::{signature::Verifier, Signature, VerifyingKey};
+
+        // 1. Look up & remove challenge — one-shot semantics.
+        let (_, (challenge, issued_at)) = self
+            .challenges
+            .remove(user_id)
+            .ok_or_else(|| SchnorrError::Challenge("no active challenge for user".into()))?;
+
+        if issued_at.elapsed() > self.ttl {
+            return Err(SchnorrError::Challenge("expired".into()));
+        }
+
+        // Parse signature (shared across both paths).
+        let sig_bytes = hex::decode(signature_hex)
+            .map_err(|e| SchnorrError::Parse(format!("signature: {e}")))?;
+        if sig_bytes.len() != 64 {
+            return Err(SchnorrError::Parse(format!(
+                "signature must be 64 bytes, got {}",
+                sig_bytes.len()
+            )));
+        }
+        let sig = Signature::try_from(sig_bytes.as_slice())
+            .map_err(|e| SchnorrError::Parse(format!("signature parse: {e}")))?;
+
+        // 2. Try caller-supplied pubkey first.
+        let pub_bytes =
+            hex::decode(pubkey_hex).map_err(|e| SchnorrError::Parse(format!("pubkey: {e}")))?;
+        if pub_bytes.len() == 32 {
+            if let Ok(vk) = VerifyingKey::from_bytes(&pub_bytes) {
+                let digest = Self::canonical_digest(&challenge.token, user_id, pubkey_hex);
+                if vk.verify(&digest, &sig).is_ok() {
+                    let verified_at = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    return Ok(SchnorrAssertion {
+                        user_id: user_id.to_string(),
+                        pubkey: pubkey_hex.to_string(),
+                        verified_at,
+                    });
+                }
+            }
+        }
+
+        // 3. Fallback: look up by username, get profile verificationMethod key.
+        let username = username.ok_or_else(|| {
+            SchnorrError::InvalidSignature(
+                "caller-supplied pubkey verification failed and no username provided for fallback"
+                    .into(),
+            )
+        })?;
+
+        let user = user_store
+            .find_by_username(username)
+            .await
+            .map_err(|e| SchnorrError::UnknownNpub(format!("user store error: {e}")))?
+            .ok_or_else(|| {
+                SchnorrError::UnknownNpub(format!("no account for username: {username}"))
+            })?;
+
+        let profile_pubkey_hex = user.nostr_pubkey.ok_or_else(|| {
+            SchnorrError::UnknownNpub(format!(
+                "account '{}' has no nostr_pubkey verificationMethod",
+                username
+            ))
+        })?;
+
+        // 4. Verify the signature against the profile's verificationMethod key.
+        let profile_pub_bytes = hex::decode(&profile_pubkey_hex)
+            .map_err(|e| SchnorrError::Parse(format!("profile pubkey: {e}")))?;
+        if profile_pub_bytes.len() != 32 {
+            return Err(SchnorrError::Parse(format!(
+                "profile pubkey must be 32 bytes, got {}",
+                profile_pub_bytes.len()
+            )));
+        }
+        let profile_vk = VerifyingKey::from_bytes(&profile_pub_bytes)
+            .map_err(|e| SchnorrError::Parse(format!("profile pubkey parse: {e}")))?;
+
+        // The digest uses the *profile* pubkey, not the caller-supplied one,
+        // because the client signed against the key they hold (which should
+        // match the profile's verificationMethod).
+        let digest =
+            Self::canonical_digest(&challenge.token, user_id, &profile_pubkey_hex);
+        profile_vk
+            .verify(&digest, &sig)
+            .map_err(|e| SchnorrError::InvalidSignature(e.to_string()))?;
+
+        let verified_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(SchnorrAssertion {
+            user_id: user_id.to_string(),
+            pubkey: profile_pubkey_hex,
+            verified_at,
+        })
+    }
 }
 
 #[cfg(feature = "schnorr-sso")]
@@ -317,5 +440,294 @@ mod tests {
                 .unwrap_err(),
             SchnorrError::Unimplemented
         ));
+    }
+
+    #[cfg(feature = "schnorr-sso")]
+    mod username_fallback {
+        use super::*;
+        use crate::user_store::InMemoryUserStore;
+        use k256::schnorr::{signature::Signer, SigningKey};
+        use std::time::Duration;
+
+        fn make_sso() -> Nip07SchnorrSso {
+            Nip07SchnorrSso::new(Duration::from_secs(300))
+        }
+
+        fn make_signing_key() -> SigningKey {
+            SigningKey::from_bytes(&[0x42; 32]).unwrap()
+        }
+
+        fn pubkey_hex(sk: &SigningKey) -> String {
+            hex::encode(sk.verifying_key().to_bytes())
+        }
+
+        #[tokio::test]
+        async fn fallback_resolves_pubkey_from_username() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            // Store a user with username and nostr_pubkey.
+            let store = InMemoryUserStore::new();
+            store
+                .insert_user_with_nostr(
+                    "u-1",
+                    "alice@example.com",
+                    "https://alice.example/profile#me",
+                    Some("Alice".into()),
+                    "password123",
+                    Some("alice".into()),
+                    Some(pk_hex.clone()),
+                )
+                .unwrap();
+
+            // Issue challenge.
+            let challenge = sso.issue_challenge("u-1").await.unwrap();
+
+            // Client signs with the profile key.
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-1",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            // Verify with a WRONG caller-supplied pubkey but correct username.
+            let wrong_pk = "a".repeat(64);
+            let result = sso
+                .verify_response_with_username_fallback(
+                    "u-1",
+                    &wrong_pk,
+                    &sig_hex,
+                    Some("alice"),
+                    &store,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.user_id, "u-1");
+            assert_eq!(result.pubkey, pk_hex);
+        }
+
+        #[tokio::test]
+        async fn fallback_succeeds_with_direct_pubkey() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            let store = InMemoryUserStore::new();
+
+            let challenge = sso.issue_challenge("u-2").await.unwrap();
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-2",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            // Direct pubkey verification succeeds without needing fallback.
+            let result = sso
+                .verify_response_with_username_fallback(
+                    "u-2",
+                    &pk_hex,
+                    &sig_hex,
+                    None,
+                    &store,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.user_id, "u-2");
+            assert_eq!(result.pubkey, pk_hex);
+        }
+
+        #[tokio::test]
+        async fn fallback_fails_when_no_username_and_bad_pubkey() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            let store = InMemoryUserStore::new();
+
+            let challenge = sso.issue_challenge("u-3").await.unwrap();
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-3",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            let wrong_pk = "b".repeat(64);
+            let err = sso
+                .verify_response_with_username_fallback(
+                    "u-3",
+                    &wrong_pk,
+                    &sig_hex,
+                    None, // no username
+                    &store,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, SchnorrError::InvalidSignature(_)));
+        }
+
+        #[tokio::test]
+        async fn fallback_fails_when_username_not_found() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            let store = InMemoryUserStore::new();
+
+            let challenge = sso.issue_challenge("u-4").await.unwrap();
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-4",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            let wrong_pk = "c".repeat(64);
+            let err = sso
+                .verify_response_with_username_fallback(
+                    "u-4",
+                    &wrong_pk,
+                    &sig_hex,
+                    Some("nonexistent"),
+                    &store,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, SchnorrError::UnknownNpub(_)));
+        }
+
+        #[tokio::test]
+        async fn fallback_fails_when_user_has_no_nostr_pubkey() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            let store = InMemoryUserStore::new();
+            // User exists but has no nostr_pubkey.
+            store
+                .insert_user_with_nostr(
+                    "u-5",
+                    "bob@example.com",
+                    "https://bob.example/profile#me",
+                    None,
+                    "password123",
+                    Some("bob".into()),
+                    None, // no nostr_pubkey
+                )
+                .unwrap();
+
+            let challenge = sso.issue_challenge("u-5").await.unwrap();
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-5",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            let wrong_pk = "d".repeat(64);
+            let err = sso
+                .verify_response_with_username_fallback(
+                    "u-5",
+                    &wrong_pk,
+                    &sig_hex,
+                    Some("bob"),
+                    &store,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, SchnorrError::UnknownNpub(_)));
+        }
+
+        #[tokio::test]
+        async fn challenge_consumed_even_on_fallback_failure() {
+            let sso = make_sso();
+            let store = InMemoryUserStore::new();
+
+            let _challenge = sso.issue_challenge("u-6").await.unwrap();
+
+            // First attempt fails (bad sig, no username).
+            let _ = sso
+                .verify_response_with_username_fallback(
+                    "u-6",
+                    &"e".repeat(64),
+                    &"f".repeat(128),
+                    None,
+                    &store,
+                )
+                .await;
+
+            // Second attempt must fail with "no active challenge" since
+            // the challenge was consumed on the first attempt.
+            let err = sso
+                .verify_response_with_username_fallback(
+                    "u-6",
+                    &"e".repeat(64),
+                    &"f".repeat(128),
+                    None,
+                    &store,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, SchnorrError::Challenge(_)));
+        }
+
+        #[tokio::test]
+        async fn fallback_case_insensitive_username() {
+            let sso = make_sso();
+            let sk = make_signing_key();
+            let pk_hex = pubkey_hex(&sk);
+
+            let store = InMemoryUserStore::new();
+            store
+                .insert_user_with_nostr(
+                    "u-7",
+                    "carol@example.com",
+                    "https://carol.example/profile#me",
+                    None,
+                    "password123",
+                    Some("Carol".into()),
+                    Some(pk_hex.clone()),
+                )
+                .unwrap();
+
+            let challenge = sso.issue_challenge("u-7").await.unwrap();
+            let digest = Nip07SchnorrSso::canonical_digest(
+                &challenge.token,
+                "u-7",
+                &pk_hex,
+            );
+            let sig: k256::schnorr::Signature = sk.sign(&digest);
+            let sig_hex = hex::encode(sig.to_bytes());
+
+            // Use different casing for username.
+            let wrong_pk = "a".repeat(64);
+            let result = sso
+                .verify_response_with_username_fallback(
+                    "u-7",
+                    &wrong_pk,
+                    &sig_hex,
+                    Some("CAROL"),
+                    &store,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.user_id, "u-7");
+            assert_eq!(result.pubkey, pk_hex);
+        }
     }
 }

@@ -231,6 +231,7 @@ async fn wac_issuer_condition_dispatches_to_cid_verifier() {
         // test we only need it to be non-None so the base predicate
         // matches.
         issuer: Some("cid:Verifier"),
+        payment_balance_sats: None,
     };
 
     // Success path — CID verifier accepted the proof.
