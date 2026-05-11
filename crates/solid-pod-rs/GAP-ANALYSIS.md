@@ -325,29 +325,31 @@ Melvin's guide. solid-pod-rs implements this in two modules:
 | MRC20 anchor verification | blocktrails npm package | `mrc20::verify_mrc20_anchor` | **present** (feature-gated) |
 | Token rate configuration | `--pay-token NAME --pay-rate N` | `PayConfig` token name + rate | **present** |
 | Payment discovery endpoint | /pay info | `payments::pay_info()` includes buy/withdraw/pool | **present** |
-| Peer-to-peer trading /pay/.sell + /pay/.swap | order book + atomic swap | **not implemented** | **missing** (P2) |
-| /pay/.offers listing | sell order discovery | **not implemented** | **missing** (P2) |
-| AMM constant-product /pay/.pool | x*y=k liquidity pool | **not implemented** (endpoint listed in discovery but no logic) | **missing** (P2) |
+| Peer-to-peer trading /pay/.sell + /pay/.swap | order book + atomic swap | `trading::OrderBook::create_order` + `execute_swap` — atomic settlement via `WebLedger` | **present** |
+| /pay/.offers listing | sell order discovery | `trading::OrderBook::list_offers` (all or filtered by currency pair) | **present** |
+| AMM constant-product /pay/.pool | x*y=k liquidity pool | `trading::AmmPool` — constant-product with 0.3% fee, add/remove liquidity, u128 intermediates | **present** |
 | Programmable state beyond tokens (NFTs, contracts) | blocktrails + rules engine | `mrc20::Mrc20Trail` covers token state; generic state anchoring not abstracted | **partial-parity** (P3) |
 
 **State**: solid-pod-rs has comprehensive payment/token parity for
 the core flow: deposit → balance → debit → buy → withdraw →
-blocktrail anchor. The 12 "present" rows cover the full lifecycle
-that a pod operator needs to gate content behind HTTP 402, accept
-Bitcoin deposits across four chain variants, mint MRC20 tokens, and
-verify on-chain anchors via BIP-341 key chaining.
+blocktrail anchor → trade → pool. The 15 "present" rows cover the
+full lifecycle that a pod operator needs to gate content behind HTTP
+402, accept Bitcoin deposits across four chain variants, mint MRC20
+tokens, verify on-chain anchors via BIP-341 key chaining, and run
+peer-to-peer or AMM-based trading.
 
-**Missing surface**: The exchange/trading layer — peer-to-peer sell
-orders (`/pay/.sell`), atomic swaps (`/pay/.swap`), sell order
-discovery (`/pay/.offers`), and the automated market maker pool
-(`/pay/.pool`) — is not implemented. The pool endpoint is listed in
-the `pay_info()` discovery response but has no backing logic.
+**Exchange/trading layer** (closed): The `trading` module
+(`src/trading.rs`) implements peer-to-peer sell orders
+(`OrderBook::create_order`, `cancel_order`, `execute_swap`), sell
+order discovery (`list_offers`), and an AMM constant-product pool
+(`AmmPool` with `x*y=k`, 0.3% fee, add/remove liquidity). All
+balance mutations delegate to `WebLedger` via currency-aware
+extension methods (`credit_currency`, `debit_currency`,
+`get_currency_balance`). Integer-only arithmetic with `u128`
+intermediates prevents overflow. 15 unit tests cover the order book,
+AMM, overflow safety, and serialization roundtrip.
 
-**Priority rationale**: These are P2 gaps because the DreamLab
-ecosystem uses per-endpoint cost tables (e.g. VisionClaw's
-`pay_handler.rs`) rather than pod-native peer-to-peer trading. The
-exchange layer is an advanced feature that JSS documents but that
-most pod deployments do not activate. Generic programmable state
+**Remaining gap**: Generic programmable state
 anchoring (part 10) is P3 — the `Mrc20Trail` struct covers the
 token-specific case, and abstracting it to arbitrary data types
 (NFTs, smart contracts, git commits) is a future design exercise.

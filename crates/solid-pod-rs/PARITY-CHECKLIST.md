@@ -440,9 +440,9 @@ Reference: [Melvin Carvalho's "A Practical Guide to Solid"](https://melvin.me/pu
 | 189 | MRC20 anchor verification against mempool | `blocktrails` npm | `mrc20::verify_mrc20_anchor` | present | `src/mrc20.rs:412` | Feature `bip341-taproot`. Melvin guide part 6. |
 | 190 | Token rate config (--pay-token, --pay-rate) | JSS CLI flags | `PayConfig` token name + rate | present | `src/payments.rs` | Melvin guide part 7. |
 | 191 | Payment discovery endpoint (/pay info) | `src/handlers/pay.js` | `payments::pay_info()` | present | `src/payments.rs:280` | Melvin guide part 3. |
-| 192 | Peer-to-peer trading (/pay/.sell, /pay/.swap) | `src/handlers/pay.js` (order book) | not implemented | missing (P2) | — | Melvin guide part 8. |
-| 193 | /pay/.offers sell order listing | `src/handlers/pay.js` | not implemented | missing (P2) | — | Melvin guide part 8. |
-| 194 | AMM constant-product pool (/pay/.pool) | `src/handlers/pay.js` (50 lines) | discovery endpoint listed but no logic | missing (P2) | — | Melvin guide part 9. |
+| 192 | Peer-to-peer trading (/pay/.sell, /pay/.swap) | `src/handlers/pay.js` (order book) | `trading::OrderBook::create_order` + `execute_swap` | present | `src/trading.rs` | Melvin guide part 8. |
+| 193 | /pay/.offers sell order listing | `src/handlers/pay.js` | `trading::OrderBook::list_offers` (all or filtered by pair) | present | `src/trading.rs` | Melvin guide part 8. |
+| 194 | AMM constant-product pool (/pay/.pool) | `src/handlers/pay.js` (50 lines) | `trading::AmmPool` (x*y=k, add/remove liquidity, swap, 0.3% fee) | present | `src/trading.rs` | Melvin guide part 9. |
 | 195 | Programmable state anchoring (NFTs, contracts, git) | `blocktrails` conceptual | `mrc20::Mrc20Trail` (token-specific) | partial-parity (P3) | `src/mrc20.rs:110` | Melvin guide part 10. |
 
 ---

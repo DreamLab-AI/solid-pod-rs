@@ -55,6 +55,7 @@
 //! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
 //! | [`payments`] | HTTP 402, Web Ledgers, multi-chain TXO, payment store. |
 //! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
+//! | [`trading`] | Peer-to-peer order book + AMM constant-product pool.  |
 //! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
 //! | [`config`] | Layered configuration schema. |
@@ -118,6 +119,7 @@ pub mod metrics;
 pub mod multitenant;
 pub mod mrc20;
 pub mod payments;
+pub mod trading;
 pub mod security;
 pub mod wac;
 pub mod webid;
