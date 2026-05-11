@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -124,14 +124,56 @@ pub trait Notifications: Send + Sync {
 // In-memory backend (shared by both channel types)
 // ---------------------------------------------------------------------------
 
-#[derive(Default, Clone)]
+/// Default maximum number of subscriptions held across all topics.
+/// Prevents OOM under ActivityPub federation firehose conditions.
+pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 10_000;
+
+#[derive(Clone)]
 pub struct InMemoryNotifications {
-    inner: Arc<RwLock<HashMap<String, Vec<Subscription>>>>,
+    inner: Arc<RwLock<InMemoryInner>>,
+}
+
+#[derive(Clone)]
+struct InMemoryInner {
+    topics: HashMap<String, VecDeque<Subscription>>,
+    /// Maximum total subscriptions across all topics.
+    max_capacity: usize,
+    /// Running total so we avoid recomputing on every insert.
+    total_count: usize,
+}
+
+impl Default for InMemoryInner {
+    fn default() -> Self {
+        Self {
+            topics: HashMap::new(),
+            max_capacity: DEFAULT_MAX_SUBSCRIPTIONS,
+            total_count: 0,
+        }
+    }
+}
+
+impl Default for InMemoryNotifications {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(InMemoryInner::default())),
+        }
+    }
 }
 
 impl InMemoryNotifications {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create with a custom maximum subscription capacity.
+    pub fn with_capacity(max_capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(InMemoryInner {
+                topics: HashMap::new(),
+                max_capacity,
+                total_count: 0,
+            })),
+        }
     }
 }
 
@@ -139,18 +181,46 @@ impl InMemoryNotifications {
 impl Notifications for InMemoryNotifications {
     async fn subscribe(&self, subscription: Subscription) -> Result<(), PodError> {
         let mut guard = self.inner.write().await;
+        // Evict oldest subscription across all topics when at capacity.
+        if guard.total_count >= guard.max_capacity {
+            // Find the first non-empty topic and pop its oldest entry.
+            let evict_topic = guard
+                .topics
+                .iter()
+                .find(|(_, subs)| !subs.is_empty())
+                .map(|(t, _)| t.clone());
+            if let Some(topic_key) = evict_topic {
+                let now_empty = {
+                    let subs = guard.topics.get_mut(&topic_key).unwrap();
+                    subs.pop_front();
+                    subs.is_empty()
+                };
+                guard.total_count = guard.total_count.saturating_sub(1);
+                if now_empty {
+                    guard.topics.remove(&topic_key);
+                }
+            }
+        }
         guard
+            .topics
             .entry(subscription.topic.clone())
             .or_default()
-            .push(subscription);
+            .push_back(subscription);
+        guard.total_count += 1;
         Ok(())
     }
 
     async fn unsubscribe(&self, id: &str) -> Result<(), PodError> {
         let mut guard = self.inner.write().await;
-        for subs in guard.values_mut() {
+        let mut removed = 0usize;
+        for subs in guard.topics.values_mut() {
+            let before = subs.len();
             subs.retain(|s| s.id != id);
+            removed += before - subs.len();
         }
+        guard.total_count = guard.total_count.saturating_sub(removed);
+        // Remove empty topic entries to avoid map bloat.
+        guard.topics.retain(|_, subs| !subs.is_empty());
         Ok(())
     }
 
@@ -160,7 +230,7 @@ impl Notifications for InMemoryNotifications {
         _notification: ChangeNotification,
     ) -> Result<(), PodError> {
         let guard = self.inner.read().await;
-        let _ = guard.get(topic);
+        let _ = guard.topics.get(topic);
         Ok(())
     }
 }
@@ -904,5 +974,58 @@ mod tests {
         assert_eq!(m.active_subscriptions().await, 1);
         m.unsubscribe(&s.id).await;
         assert_eq!(m.active_subscriptions().await, 0);
+    }
+
+    #[tokio::test]
+    async fn inmemory_bounded_evicts_oldest_at_capacity() {
+        let n = InMemoryNotifications::with_capacity(3);
+        for i in 0..3 {
+            let sub = Subscription {
+                id: format!("sub-{i}"),
+                topic: "/t/".into(),
+                channel_type: ChannelType::WebhookChannel2023,
+                receive_from: format!("https://example.com/hook-{i}"),
+            };
+            n.subscribe(sub).await.unwrap();
+        }
+        // At capacity (3). Adding a 4th should evict the oldest (sub-0).
+        let sub4 = Subscription {
+            id: "sub-3".into(),
+            topic: "/t/".into(),
+            channel_type: ChannelType::WebhookChannel2023,
+            receive_from: "https://example.com/hook-3".into(),
+        };
+        n.subscribe(sub4).await.unwrap();
+
+        // Verify total count stays at capacity.
+        let guard = n.inner.read().await;
+        assert_eq!(guard.total_count, 3);
+        // The oldest (sub-0) was evicted.
+        let subs = guard.topics.get("/t/").unwrap();
+        assert!(!subs.iter().any(|s| s.id == "sub-0"));
+        assert!(subs.iter().any(|s| s.id == "sub-3"));
+    }
+
+    #[tokio::test]
+    async fn inmemory_unsubscribe_decrements_total_count() {
+        let n = InMemoryNotifications::with_capacity(100);
+        let sub = Subscription {
+            id: "sub-x".into(),
+            topic: "/x/".into(),
+            channel_type: ChannelType::WebhookChannel2023,
+            receive_from: "https://example.com/hook".into(),
+        };
+        n.subscribe(sub).await.unwrap();
+        {
+            let guard = n.inner.read().await;
+            assert_eq!(guard.total_count, 1);
+        }
+        n.unsubscribe("sub-x").await.unwrap();
+        {
+            let guard = n.inner.read().await;
+            assert_eq!(guard.total_count, 0);
+            // Empty topic entry is cleaned up.
+            assert!(guard.topics.is_empty());
+        }
     }
 }

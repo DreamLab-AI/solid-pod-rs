@@ -387,9 +387,26 @@ impl PasskeyBackend for WebauthnPasskey {
         }
         let cred: PublicKeyCredential = serde_json::from_value(value)
             .map_err(|e| PasskeyError::Parse(e.to_string()))?;
-        self.webauthn
+        let auth_result = self
+            .webauthn
             .finish_passkey_authentication(&cred, &state)
             .map_err(|e| PasskeyError::Verification(e.to_string()))?;
+
+        // Update the stored credential with the new counter / flags
+        // returned by webauthn-rs.  Without this step an attacker who
+        // intercepts a valid assertion can replay it because the
+        // signature counter in the stored credential never advances.
+        if auth_result.needs_update() {
+            if let Some(mut creds) = self.credentials.get_mut(&account_id) {
+                for stored in creds.value_mut().iter_mut() {
+                    if stored.cred_id() == auth_result.cred_id() {
+                        stored.update_credential(&auth_result);
+                        break;
+                    }
+                }
+            }
+        }
+
         Ok(account_id)
     }
 }

@@ -542,7 +542,12 @@ async fn handle_patch(
     }
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Append, agent.as_deref()).await?;
+    // PATCH can modify or delete data (e.g. N3 Patch with solid:deletes),
+    // so it requires full Write permission — not just Append. Only POST
+    // (which creates new child resources in a container) is allowed with
+    // Append-only permission. This prevents Append-only users from
+    // overwriting or deleting resource content via PATCH.
+    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
 
     let ct = req
         .headers()
