@@ -185,6 +185,18 @@ rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot", "tokio-runtime"]
 # no new deps).
 quota = ["jss-v04", "config-loader", "tokio-runtime"]
 
+# ---------------------------------------------------------------------------
+# wasm32 target overrides:
+#
+# - `getrandom` 0.2 (transitively via rand → rand_core through spargebra
+#   and tungstenite) requires the "js" feature on wasm*-unknown-unknown.
+# - `uuid` v1 with `v4` needs a randomness source on wasm32; the "js"
+#   feature satisfies this via `crypto.getRandomValues()`.
+# ---------------------------------------------------------------------------
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { version = "1", features = ["js"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

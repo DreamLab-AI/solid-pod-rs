@@ -21,7 +21,29 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use sha2::{Digest, Sha256};
-use solid_pod_rs::auth::nip98::{authorization_header, verify_at};
+use solid_pod_rs::auth::nip98::{authorization_header, compute_event_id, verify_at, Nip98Event};
+
+/// Deterministic keypair seed. Under `nip98-schnorr` this produces a
+/// real BIP-340 signing key; without the feature the pubkey is the
+/// legacy `"a".repeat(64)` placeholder and the sig is all zeros.
+#[cfg(feature = "nip98-schnorr")]
+fn bench_keypair() -> (k256::schnorr::SigningKey, String) {
+    let seed = [0x42u8; 32];
+    let sk = k256::schnorr::SigningKey::from_bytes(&seed)
+        .expect("seed produces valid Schnorr signing key");
+    let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+    (sk, pubkey_hex)
+}
+
+#[cfg(not(feature = "nip98-schnorr"))]
+fn bench_pubkey() -> String {
+    "a".repeat(64)
+}
+
+#[cfg(feature = "nip98-schnorr")]
+fn bench_pubkey() -> String {
+    bench_keypair().1
+}
 
 fn build_header(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> String {
     let mut tags = vec![
@@ -31,14 +53,45 @@ fn build_header(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> String
     if let Some(b) = body.filter(|b| !b.is_empty()) {
         tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
     }
+
+    let pubkey = bench_pubkey();
+
+    // Compute the canonical NIP-01 event id.
+    let skeleton = Nip98Event {
+        id: String::new(),
+        pubkey: pubkey.clone(),
+        created_at: ts,
+        kind: 27235,
+        tags: tags.clone(),
+        content: String::new(),
+        sig: String::new(),
+    };
+    let id = compute_event_id(&skeleton);
+
+    // Sign when `nip98-schnorr` is enabled, otherwise use placeholder.
+    let sig = {
+        #[cfg(feature = "nip98-schnorr")]
+        {
+            use k256::schnorr::signature::Signer;
+            let (sk, _) = bench_keypair();
+            let id_bytes = hex::decode(&id).expect("id is valid hex");
+            let signature: k256::schnorr::Signature = sk.sign(&id_bytes);
+            hex::encode(signature.to_bytes())
+        }
+        #[cfg(not(feature = "nip98-schnorr"))]
+        {
+            "0".repeat(128)
+        }
+    };
+
     let event = serde_json::json!({
-        "id":         "0".repeat(64),
-        "pubkey":     "a".repeat(64),
+        "id":         id,
+        "pubkey":     pubkey,
         "created_at": ts,
         "kind":       27235,
         "tags":       tags,
         "content":    "",
-        "sig":        "0".repeat(128),
+        "sig":        sig,
     });
     let b64 = BASE64.encode(serde_json::to_string(&event).unwrap());
     authorization_header(&b64)

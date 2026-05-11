@@ -113,11 +113,14 @@ jobs:
         run: cargo check --all-targets
 
   # ---------------------------------------------------------------------------
-  # WASM target: library must build for wasm32-unknown-unknown without default
-  # networking features. memory-backend is pure-Rust and portable.
+  # WASM target: library must build for wasm32-unknown-unknown using the
+  # `core` feature surface (pure-logic: WAC, WebID, LDP parsers, NIP-98,
+  # interop types). `memory-backend` implies `tokio-runtime` which pulls
+  # in mio — not supported on wasm32. `core` is the designed entry point
+  # for Cloudflare Workers / wasm32 consumers (ADR-076/078).
   # ---------------------------------------------------------------------------
   wasm-check:
-    name: wasm32-unknown-unknown (memory-backend)
+    name: wasm32-unknown-unknown (core)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -132,12 +135,12 @@ jobs:
         with:
           workspaces: crates/solid-pod-rs -> target
           key: wasm32
-      - name: cargo check --target wasm32-unknown-unknown --no-default-features --features memory-backend
+      - name: cargo check --target wasm32-unknown-unknown --no-default-features --features core
         run: |
           cargo check \
             --target wasm32-unknown-unknown \
             --no-default-features \
-            --features memory-backend \
+            --features core \
             --lib
 
   # ---------------------------------------------------------------------------

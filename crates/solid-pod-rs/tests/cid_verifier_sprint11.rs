@@ -18,6 +18,28 @@ use solid_pod_rs::wac::{
 };
 
 // ---------------------------------------------------------------------------
+// Helper: construct `Nip98Verifier` in a way that compiles both with and
+// without the `lws-cid` feature. When `lws-cid` is active the verifier
+// requires a `ProfileFetcher`; we supply a no-op stub.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "lws-cid")]
+fn make_nip98_verifier() -> solid_pod_rs::Nip98Verifier {
+    struct NoOpFetcher;
+    #[async_trait]
+    impl solid_pod_rs::auth::lws_cid::ProfileFetcher for NoOpFetcher {
+        async fn fetch(&self, _url: &str) -> Result<Vec<u8>, String> {
+            Err("not implemented".into())
+        }
+    }
+    solid_pod_rs::Nip98Verifier::new(Arc::new(NoOpFetcher))
+}
+
+#[cfg(not(feature = "lws-cid"))]
+fn make_nip98_verifier() -> solid_pod_rs::Nip98Verifier {
+    solid_pod_rs::Nip98Verifier
+}
+
+// ---------------------------------------------------------------------------
 // Stand-in verifier that accepts a hard-coded prefix → did mapping. Lets
 // us exercise the fan-out semantics without dragging the real
 // solid-pod-rs-didkey crate into solid-pod-rs's test cycle.
@@ -59,7 +81,7 @@ async fn cid_verifier_accepts_did_key_proof() {
             prefix: "eyJ", // compact JWTs start with "eyJ"
             did: "did:key:z6MkSample",
         }))
-        .with(Arc::new(solid_pod_rs::Nip98Verifier));
+        .with(Arc::new(make_nip98_verifier()));
     let env = ProofEnvelope {
         proof: "eyJhbGciOiJFZERTQSJ9.payload.sig",
         method: "GET",
@@ -114,7 +136,7 @@ async fn cid_verifier_accepts_nip98_proof() {
     let token = B64STD.encode(serde_json::to_string(&event).unwrap());
     let header = format!("Nostr {token}");
 
-    let cid = CidVerifier::new().with(Arc::new(solid_pod_rs::Nip98Verifier));
+    let cid = CidVerifier::new().with(Arc::new(make_nip98_verifier()));
     let env = ProofEnvelope {
         proof: &header,
         method: "GET",
@@ -138,7 +160,7 @@ async fn cid_verifier_rejects_unknown_proof() {
             prefix: "a:",
             did: "did:a:1",
         }))
-        .with(Arc::new(solid_pod_rs::Nip98Verifier));
+        .with(Arc::new(make_nip98_verifier()));
     let env = ProofEnvelope {
         proof: "this-is-garbage",
         method: "GET",
