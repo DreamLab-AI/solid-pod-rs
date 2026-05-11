@@ -186,12 +186,12 @@ async fn verify_rejects_tampered_body() {
 }
 
 #[tokio::test]
-async fn verify_rejects_tampered_header() {
+async fn verify_rejects_tampered_header_stale_date() {
     let (priv_pem, pub_pem) = generate_actor_keypair().unwrap();
     let key_id = "https://remote.example/actor#main-key";
     let mut req = build_signed_inbound("POST", "/inbox", b"{}", &priv_pem, key_id);
-    // Tamper the Date header after signing — this invalidates the
-    // signature base string without affecting the digest.
+    // Tamper the Date header to a very old value — this is now caught
+    // by the Date freshness check (P0-07) before signature verification.
     req.headers.insert(
         "date".to_string(),
         "Sat, 01 Jan 2000 00:00:00 GMT".to_string(),
@@ -199,8 +199,28 @@ async fn verify_rejects_tampered_header() {
     let resolver = StaticResolver { pem: pub_pem };
     let result = verify_request_signature(&req, &resolver).await;
     assert!(
+        matches!(result, Err(SigError::DateNotFresh(_))),
+        "expected DateNotFresh for year-2000 Date, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn verify_rejects_tampered_header_fresh_date() {
+    let (priv_pem, pub_pem) = generate_actor_keypair().unwrap();
+    let key_id = "https://remote.example/actor#main-key";
+    let mut req = build_signed_inbound("POST", "/inbox", b"{}", &priv_pem, key_id);
+    // Tamper the Date header to a fresh but different value — passes
+    // the freshness check but invalidates the signature base string.
+    let slightly_off = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    req.headers.insert(
+        "date".to_string(),
+        httpdate::fmt_http_date(slightly_off),
+    );
+    let resolver = StaticResolver { pem: pub_pem };
+    let result = verify_request_signature(&req, &resolver).await;
+    assert!(
         matches!(result, Err(SigError::VerifyFailed(_))),
-        "expected VerifyFailed, got {result:?}"
+        "expected VerifyFailed for fresh-but-tampered Date, got {result:?}"
     );
 }
 
