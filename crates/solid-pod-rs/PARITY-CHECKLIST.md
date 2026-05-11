@@ -420,6 +420,31 @@ ADR-058 has the full drift analysis; PRD at `docs/sprint-12-prd.md`.
 | 178 | AP CLI/env config knobs (`--ap-username`, `--ap-display-name`, etc.) | `0837ee2` (v0.0.62) | not implemented | explicitly-deferred | — | P3. Sprint 13. |
 | 179 | HTML error page helper (401/403 browser pages) | `ae796d0` (v0.0.68) | not implemented | wontfix-in-crate | — | Consumer binder concern. |
 
+## 18. Payments, Tokens & Web Ledgers
+
+Reference: [Melvin Carvalho's "A Practical Guide to Solid"](https://melvin.me/public/solid/)
+(10-part series, April 2026). See also
+[`docs/reference/melvin-practical-guide.md`](./docs/reference/melvin-practical-guide.md).
+
+| # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 180 | HTTP 402 PaymentCondition in WAC ACLs | `src/wac/checker.js:130-197`, `src/handlers/pay.js` | `wac::conditions::PaymentCondition` + `payments::payment_required_body` | present | `src/wac/conditions.rs`, `src/payments.rs:267` | Melvin guide parts 3-4. |
+| 181 | Pay-per-read auto-deduction | `src/handlers/pay.js` | `payments::debit()` | present | `src/payments.rs:158` | Melvin guide part 4. |
+| 182 | X-Cost / X-Balance response headers | `src/handlers/pay.js` | `payments::payment_response_headers()` | present | `src/payments.rs:319` | Melvin guide part 4. |
+| 183 | /pay/.balance endpoint | `src/handlers/pay.js` | `payments::balance_response()` | present | `src/payments.rs:328` | Melvin guide part 5. |
+| 184 | WebLedger JSON storage | `src/pay/webledger.js` | `payments::WebLedger` struct | present | `src/payments.rs:120` | Melvin guide part 5. |
+| 185 | TXO URI parsing (txo:chain:txid:vout) | `src/pay/txo.js` | `payments::parse_txo_uri()` | present | `src/payments.rs:372` | Melvin guide part 5. |
+| 186 | Multi-chain deposits (btc, tbtc3, tbtc4, signet) | `--pay-chains` flag | `payments::ChainConfig` with 4 presets | present | `src/payments.rs:215` | Melvin guide part 8. |
+| 187 | MRC20 token buy/withdraw (/pay/.buy, /pay/.withdraw) | `src/handlers/pay.js` | `mrc20::Mrc20State`, `Mrc20Op` | present | `src/mrc20.rs:77,98` | Melvin guide part 7. |
+| 188 | BIP-341 key chaining (blocktrails) | `blocktrails` npm | `mrc20::bt_derive_chained_pubkey`, `bt_derive_chained_privkey` | present | `src/mrc20.rs:266,293` | Feature `bip341-taproot`. Melvin guide part 6. |
+| 189 | MRC20 anchor verification against mempool | `blocktrails` npm | `mrc20::verify_mrc20_anchor` | present | `src/mrc20.rs:412` | Feature `bip341-taproot`. Melvin guide part 6. |
+| 190 | Token rate config (--pay-token, --pay-rate) | JSS CLI flags | `PayConfig` token name + rate | present | `src/payments.rs` | Melvin guide part 7. |
+| 191 | Payment discovery endpoint (/pay info) | `src/handlers/pay.js` | `payments::pay_info()` | present | `src/payments.rs:280` | Melvin guide part 3. |
+| 192 | Peer-to-peer trading (/pay/.sell, /pay/.swap) | `src/handlers/pay.js` (order book) | not implemented | missing (P2) | — | Melvin guide part 8. |
+| 193 | /pay/.offers sell order listing | `src/handlers/pay.js` | not implemented | missing (P2) | — | Melvin guide part 8. |
+| 194 | AMM constant-product pool (/pay/.pool) | `src/handlers/pay.js` (50 lines) | discovery endpoint listed but no logic | missing (P2) | — | Melvin guide part 9. |
+| 195 | Programmable state anchoring (NFTs, contracts, git) | `blocktrails` conceptual | `mrc20::Mrc20Trail` (token-specific) | partial-parity (P3) | `src/mrc20.rs:110` | Melvin guide part 10. |
+
 ---
 
 ## Sprint history

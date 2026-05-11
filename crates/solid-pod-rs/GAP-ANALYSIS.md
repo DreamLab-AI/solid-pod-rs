@@ -300,6 +300,58 @@ ADR-054 "library vs server separation".
 | Runtime footprint | ~30 MB static binary, <10 ms cold start (example binary) | ~120 MB Node + 432 KB source + deps (per README §"footprint comparison") |
 | Steady-state perf | ~15k req/s GET (measured via `wrk`, memory backend, 1 core) | 5,400 req/s GET resource, 4,700 req/s container (README `Performance`) |
 
+### C.9 Payments, Tokens & Web Ledgers
+
+Reference: [Melvin Carvalho's "A Practical Guide to Solid"](https://melvin.me/public/solid/)
+(10-part series, April 2026). See also
+[`docs/reference/melvin-practical-guide.md`](./docs/reference/melvin-practical-guide.md)
+for the article-by-article mapping.
+
+JSS ships a full payment/token layer documented across parts 3-10 of
+Melvin's guide. solid-pod-rs implements this in two modules:
+`payments.rs` (699 lines) and `mrc20.rs` (905 lines).
+
+| Feature | JSS (per Melvin guide) | solid-pod-rs | Verdict |
+|---|---|---|---|
+| HTTP 402 PaymentCondition in WAC | `--pay --pay-cost N` | `wac::conditions::PaymentCondition` + `payments::payment_required_body` | **present** |
+| Pay-per-read balance deduction | auto-deduct from webledger | `payments::debit()` | **present** |
+| X-Cost / X-Balance response headers | standard headers | `payments::payment_response_headers()` | **present** |
+| Balance endpoint /pay/.balance | curl with NIP-98 auth | `payments::balance_response()` | **present** |
+| Webledger JSON storage | JSON file at well-known path | `payments::WebLedger` | **present** |
+| TXO URI parsing (txo:chain:txid:vout) | deposit + mempool verify | `payments::parse_txo_uri()` | **present** |
+| Multi-chain deposits (btc/tbtc3/tbtc4/signet) | `--pay-chains` flag | `payments::ChainConfig` with 4 presets | **present** |
+| MRC20 token minting + buy/withdraw | /pay/.buy, /pay/.withdraw | `mrc20::Mrc20State`, `Mrc20Op` | **present** |
+| BIP-341 key chaining (blocktrails) | SHA256 tweak → scalar add → P2TR | `mrc20::bt_derive_chained_pubkey/privkey` | **present** (feature-gated `bip341-taproot`) |
+| MRC20 anchor verification | blocktrails npm package | `mrc20::verify_mrc20_anchor` | **present** (feature-gated) |
+| Token rate configuration | `--pay-token NAME --pay-rate N` | `PayConfig` token name + rate | **present** |
+| Payment discovery endpoint | /pay info | `payments::pay_info()` includes buy/withdraw/pool | **present** |
+| Peer-to-peer trading /pay/.sell + /pay/.swap | order book + atomic swap | **not implemented** | **missing** (P2) |
+| /pay/.offers listing | sell order discovery | **not implemented** | **missing** (P2) |
+| AMM constant-product /pay/.pool | x*y=k liquidity pool | **not implemented** (endpoint listed in discovery but no logic) | **missing** (P2) |
+| Programmable state beyond tokens (NFTs, contracts) | blocktrails + rules engine | `mrc20::Mrc20Trail` covers token state; generic state anchoring not abstracted | **partial-parity** (P3) |
+
+**State**: solid-pod-rs has comprehensive payment/token parity for
+the core flow: deposit → balance → debit → buy → withdraw →
+blocktrail anchor. The 12 "present" rows cover the full lifecycle
+that a pod operator needs to gate content behind HTTP 402, accept
+Bitcoin deposits across four chain variants, mint MRC20 tokens, and
+verify on-chain anchors via BIP-341 key chaining.
+
+**Missing surface**: The exchange/trading layer — peer-to-peer sell
+orders (`/pay/.sell`), atomic swaps (`/pay/.swap`), sell order
+discovery (`/pay/.offers`), and the automated market maker pool
+(`/pay/.pool`) — is not implemented. The pool endpoint is listed in
+the `pay_info()` discovery response but has no backing logic.
+
+**Priority rationale**: These are P2 gaps because the DreamLab
+ecosystem uses per-endpoint cost tables (e.g. VisionClaw's
+`pay_handler.rs`) rather than pod-native peer-to-peer trading. The
+exchange layer is an advanced feature that JSS documents but that
+most pod deployments do not activate. Generic programmable state
+anchoring (part 10) is P3 — the `Mrc20Trail` struct covers the
+token-specific case, and abstracting it to arbitrary data types
+(NFTs, smart contracts, git commits) is a future design exercise.
+
 ---
 
 ## D. Overbuilt (features we have that JSS doesn't) — keep / deprecate / feature-flag

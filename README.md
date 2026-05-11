@@ -36,6 +36,7 @@ JSS goes further than the base Solid Protocol in several areas. solid-pod-rs tra
 - **Nostr integration** — NIP-98 HTTP authentication (Schnorr signatures over secp256k1), did:nostr DID document resolution, and an embedded NIP-01 relay.
 - **Passkey and Schnorr SSO** — WebAuthn passkey authentication and NIP-07 Schnorr single sign-on as alternatives to password-based login.
 - **did:key support** — Ed25519, P-256, and secp256k1 did:key documents with self-signed JWT verification (LWS 1.0 SSI profile).
+- **HTTP 402 Web Ledgers** — PaymentCondition in WAC ACLs, per-read micropayments, webledger balance tracking, multi-chain TXO deposits (btc/tbtc3/tbtc4/signet), MRC20 token minting/buy/withdraw, BIP-341 blocktrail anchoring. See [Melvin Carvalho's Practical Guide to Solid](https://melvin.me/public/solid/) for a 10-part walkthrough of the JSS payment system.
 </details>
 
 <details>
