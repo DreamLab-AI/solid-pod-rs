@@ -1,0 +1,22 @@
+[package]
+name = "solid-pod-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+solid-pod-rs = { path = "..", default-features = false, features = ["std"] }
+spargebra = "0.3"
+
+# Prevent this from interfering with workspace builds
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sparql_update"
+path = "fuzz_targets/sparql_update.rs"
+doc = false

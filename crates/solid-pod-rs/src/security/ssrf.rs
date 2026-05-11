@@ -343,13 +343,38 @@ fn classify_v6(v6: Ipv6Addr) -> IpClass {
         return IpClass::Multicast;
     }
 
-    // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96 low): route
-    // through IPv4 classification.
+    // IPv4-mapped (::ffff:0:0/96): route through IPv4 classification.
     if let Some(v4) = v6.to_ipv4_mapped() {
         return classify_v4(v4);
     }
 
+    // IPv4-compatible (deprecated ::/96 prefix, e.g. ::127.0.0.1).
+    // `to_ipv4_mapped()` only catches ::ffff:x.x.x.x; the deprecated
+    // ::x.x.x.x form is still resolved by many OS network stacks.
+    let octets = v6.octets();
+    if octets[..10] == [0u8; 10] && octets[10] == 0 && octets[11] == 0 {
+        // octets[12..16] hold the embedded IPv4 — but skip ::0.0.0.0
+        // (unspecified, handled above) and ::0.0.0.1 (loopback, handled
+        // above).
+        let v4 = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+        if !v4.is_unspecified() && v4 != Ipv4Addr::new(0, 0, 0, 1) {
+            return classify_v4(v4);
+        }
+    }
+
     let first = segs[0];
+
+    // 6to4 (2002::/16): the first 4 bytes after the prefix embed the
+    // IPv4 gateway.  2002:c0a8:0101:: embeds 192.168.1.1.
+    if first == 0x2002 {
+        let v4 = Ipv4Addr::new(
+            (segs[1] >> 8) as u8,
+            (segs[1] & 0xFF) as u8,
+            (segs[2] >> 8) as u8,
+            (segs[2] & 0xFF) as u8,
+        );
+        return classify_v4(v4);
+    }
 
     // Link-local: fe80::/10
     if (first & 0xFFC0) == 0xFE80 {
@@ -621,6 +646,111 @@ mod tests {
             SsrfPolicy::classify(IpAddr::V6("2001:4860:4860::8888".parse().unwrap())),
             IpClass::Public
         );
+    }
+
+    // ----- R2-P0-04: IPv4-compatible IPv6 bypass ----------------------------
+
+    #[test]
+    fn classify_ipv4_compatible_loopback() {
+        // ::127.0.0.1 — deprecated IPv4-compatible form of loopback
+        let addr: Ipv6Addr = "::127.0.0.1".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Loopback,
+            "::127.0.0.1 must be classified as Loopback"
+        );
+    }
+
+    #[test]
+    fn classify_ipv4_compatible_private_10() {
+        // ::10.0.0.1 — deprecated IPv4-compatible form of RFC 1918
+        let addr: Ipv6Addr = "::10.0.0.1".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Private,
+            "::10.0.0.1 must be classified as Private"
+        );
+    }
+
+    #[test]
+    fn classify_ipv4_compatible_link_local_metadata() {
+        // ::169.254.169.254 — deprecated IPv4-compatible cloud metadata
+        let addr: Ipv6Addr = "::169.254.169.254".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Reserved,
+            "::169.254.169.254 must be classified as Reserved (cloud metadata)"
+        );
+    }
+
+    #[test]
+    fn classify_ipv4_compatible_public() {
+        // ::8.8.8.8 — public address in IPv4-compatible form
+        let addr: Ipv6Addr = "::8.8.8.8".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Public,
+            "::8.8.8.8 should be classified as Public"
+        );
+    }
+
+    #[test]
+    fn classify_6to4_private() {
+        // 2002:c0a8:0101:: embeds 192.168.1.1
+        let addr: Ipv6Addr = "2002:c0a8:0101::".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Private,
+            "2002:c0a8:0101:: (6to4 embedding 192.168.1.1) must be Private"
+        );
+    }
+
+    #[test]
+    fn classify_6to4_loopback() {
+        // 2002:7f00:0001:: embeds 127.0.0.1
+        let addr: Ipv6Addr = "2002:7f00:0001::".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Loopback,
+            "2002:7f00:0001:: (6to4 embedding 127.0.0.1) must be Loopback"
+        );
+    }
+
+    #[test]
+    fn classify_6to4_metadata() {
+        // 2002:a9fe:a9fe:: embeds 169.254.169.254
+        let addr: Ipv6Addr = "2002:a9fe:a9fe::".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Reserved,
+            "2002:a9fe:a9fe:: (6to4 embedding 169.254.169.254) must be Reserved"
+        );
+    }
+
+    #[test]
+    fn classify_6to4_public() {
+        // 2002:0808:0808:: embeds 8.8.8.8
+        let addr: Ipv6Addr = "2002:0808:0808::".parse().unwrap();
+        assert_eq!(
+            SsrfPolicy::classify(IpAddr::V6(addr)),
+            IpClass::Public,
+            "2002:0808:0808:: (6to4 embedding 8.8.8.8) should be Public"
+        );
+    }
+
+    #[test]
+    fn blocks_ipv4_compatible_in_url() {
+        // Verify the URL-level check catches the IPv4-compatible bypass
+        assert_blocked("http://[::127.0.0.1]/", IpClass::Loopback);
+        assert_blocked("http://[::10.0.0.1]/", IpClass::Private);
+        assert_blocked("http://[::169.254.169.254]/", IpClass::Reserved);
+    }
+
+    #[test]
+    fn blocks_6to4_in_url() {
+        assert_blocked("http://[2002:c0a8:0101::]/", IpClass::Private);
+        assert_blocked("http://[2002:7f00:0001::]/", IpClass::Loopback);
+        assert_blocked("http://[2002:a9fe:a9fe::]/", IpClass::Reserved);
     }
 
     #[test]
