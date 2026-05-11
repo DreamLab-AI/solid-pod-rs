@@ -379,6 +379,24 @@ impl Relay {
         &self.info
     }
 
+    /// Access the underlying event store.
+    ///
+    /// Exposed for the typestate `ingest_verified` path and custom
+    /// store implementations. Most consumers should use [`ingest`] or
+    /// [`ingest_verified`](crate::typestate) instead.
+    pub fn store(&self) -> &dyn EventStore {
+        &*self.store
+    }
+
+    /// Broadcast an event to all live subscribers.
+    ///
+    /// Returns `Ok(receiver_count)` on success or `Err(event)` if there
+    /// are no active receivers. The error is non-fatal — callers
+    /// typically ignore it.
+    pub fn broadcast(&self, event: &Event) -> Result<usize, broadcast::error::SendError<Event>> {
+        self.events_tx.send(event.clone())
+    }
+
     /// Subscribe to the live-event broadcast.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events_tx.subscribe()

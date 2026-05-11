@@ -59,6 +59,7 @@ pub mod did;
 pub mod error;
 pub mod relay;
 pub mod resolver;
+pub mod typestate;
 pub mod ws;
 
 pub use did::{
@@ -71,4 +72,5 @@ pub use relay::{
     InMemoryEventStore, Relay, RelayInfo,
 };
 pub use resolver::{DefaultSsrfCheck, NostrWebIdResolver, SsrfCheck};
+pub use typestate::{UncheckedEvent, VerifiedEvent, VerifyError};
 pub use ws::{dispatch_message, serve_relay_ws, serve_relay_ws_stream};

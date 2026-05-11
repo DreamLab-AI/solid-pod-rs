@@ -135,6 +135,8 @@ pub fn dispatch_message(
 }
 
 fn handle_event(relay: &Relay, arr: &[Value]) -> Vec<String> {
+    use crate::typestate::UncheckedEvent;
+
     let Some(event_value) = arr.get(1) else {
         return vec![notice("EVENT frame missing event payload")];
     };
@@ -149,9 +151,18 @@ fn handle_event(relay: &Relay, arr: &[Value]) -> Vec<String> {
             return vec![ok_frame(&id, false, &format!("invalid: {e}"))];
         }
     };
-    let id = event.id.clone();
-    match relay.ingest(event) {
-        Ok(()) => vec![ok_frame(&id, true, "")],
+
+    // Typestate path: wrap as UncheckedEvent, verify the Schnorr
+    // signature, then ingest the VerifiedEvent. This avoids the
+    // double-verification that `relay.ingest()` would perform and
+    // demonstrates the recommended API pattern.
+    let unchecked = UncheckedEvent::new(event);
+    let id = unchecked.id().to_string();
+    match unchecked.verify() {
+        Ok(verified) => match relay.ingest_verified(verified) {
+            Ok(()) => vec![ok_frame(&id, true, "")],
+            Err(e) => vec![ok_frame(&id, false, &e.to_string())],
+        },
         Err(e) => vec![ok_frame(&id, false, &e.to_string())],
     }
 }
