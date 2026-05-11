@@ -25,8 +25,10 @@ use rsa::signature::{SignatureEncoding, Signer, Verifier};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 use crate::error::SigError;
+use crate::ssrf::assert_ssrf_safe;
 
 /// A raw inbound request awaiting signature verification.
 #[derive(Debug, Clone)]
@@ -111,6 +113,11 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .split_once('#')
             .map(|(u, _)| u.to_string())
             .unwrap_or_else(|| key_id.to_string());
+
+        // P0-08: SSRF protection — reject private/internal IPs before
+        // fetching the remote actor document.
+        assert_ssrf_safe(&actor_url)?;
+
         let resp = self
             .client
             .get(&actor_url)
@@ -281,6 +288,48 @@ pub fn digest_header(body: &[u8]) -> String {
     format!("SHA-256={}", B64.encode(digest))
 }
 
+/// Maximum age (in seconds) for the `Date` header — requests older
+/// than this are rejected as potential replays.
+const DATE_MAX_AGE_SECS: u64 = 300; // 5 minutes
+
+/// Maximum clock skew into the future (in seconds) we tolerate.
+const DATE_MAX_FUTURE_SECS: u64 = 30;
+
+/// Validate that the `Date` header is within an acceptable freshness
+/// window. Prevents replay attacks with captured old signatures.
+fn check_date_freshness(date_str: &str) -> Result<(), SigError> {
+    let parsed = httpdate::parse_http_date(date_str).map_err(|e| {
+        SigError::DateNotFresh(format!("unparseable Date header '{}': {}", date_str, e))
+    })?;
+    let now = SystemTime::now();
+
+    // Reject if the Date is too far in the past.
+    if let Ok(age) = now.duration_since(parsed) {
+        if age > Duration::from_secs(DATE_MAX_AGE_SECS) {
+            return Err(SigError::DateNotFresh(format!(
+                "Date '{}' is {} seconds old (max {})",
+                date_str,
+                age.as_secs(),
+                DATE_MAX_AGE_SECS
+            )));
+        }
+    }
+
+    // Reject if the Date is too far in the future.
+    if let Ok(ahead) = parsed.duration_since(now) {
+        if ahead > Duration::from_secs(DATE_MAX_FUTURE_SECS) {
+            return Err(SigError::DateNotFresh(format!(
+                "Date '{}' is {} seconds in the future (max {})",
+                date_str,
+                ahead.as_secs(),
+                DATE_MAX_FUTURE_SECS
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Verify an inbound signed request. Returns the [`VerifiedActor`] on
 /// success so the caller can tie activity processing to the signing
 /// identity.
@@ -294,6 +343,14 @@ pub async fn verify_request_signature(
     let parsed = parse_signature_header(sig_raw)?;
     if parsed.algorithm != "rsa-sha256" && parsed.algorithm != "hs2019" {
         return Err(SigError::UnsupportedAlgorithm(parsed.algorithm));
+    }
+
+    // P0-07: Date freshness check — reject stale or future-dated
+    // requests to prevent replay attacks with captured signatures.
+    if let Some(date_val) = req.get("date") {
+        check_date_freshness(date_val)?;
+    } else if parsed.headers.iter().any(|h| h == "date") {
+        return Err(SigError::MissingHeader("date"));
     }
 
     // Digest check — if the covered set includes `digest`, the body
@@ -559,5 +616,87 @@ mod tests {
         let resolver = StaticResolver { pem: pub_pem };
         let actor = verify_request_signature(&inbound, &resolver).await.unwrap();
         assert_eq!(actor.key_id, key_id);
+    }
+
+    // -- P0-07: Date freshness tests ----------------------------------------
+
+    #[test]
+    fn check_date_freshness_accepts_now() {
+        let now = httpdate::fmt_http_date(SystemTime::now());
+        assert!(check_date_freshness(&now).is_ok());
+    }
+
+    #[test]
+    fn check_date_freshness_rejects_stale_date() {
+        let old = SystemTime::now() - Duration::from_secs(600);
+        let date = httpdate::fmt_http_date(old);
+        let result = check_date_freshness(&date);
+        assert!(
+            matches!(result, Err(SigError::DateNotFresh(_))),
+            "expected DateNotFresh for 10-minute-old Date, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_date_freshness_rejects_future_date() {
+        let future = SystemTime::now() + Duration::from_secs(120);
+        let date = httpdate::fmt_http_date(future);
+        let result = check_date_freshness(&date);
+        assert!(
+            matches!(result, Err(SigError::DateNotFresh(_))),
+            "expected DateNotFresh for 2-minute-future Date, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_date_freshness_accepts_slight_future() {
+        // 10 seconds in the future should be accepted (within 30s window).
+        let slight_future = SystemTime::now() + Duration::from_secs(10);
+        let date = httpdate::fmt_http_date(slight_future);
+        assert!(check_date_freshness(&date).is_ok());
+    }
+
+    #[test]
+    fn check_date_freshness_rejects_garbage() {
+        let result = check_date_freshness("not-a-date");
+        assert!(
+            matches!(result, Err(SigError::DateNotFresh(_))),
+            "expected DateNotFresh for garbage date, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_stale_date_header() {
+        let (priv_pem, pub_pem) = fresh_keypair();
+        let key_id = "https://remote.example/actor#main-key";
+        // Build a request with an old Date header (signed correctly).
+        let host = "pod.example";
+        let old_time = SystemTime::now() - Duration::from_secs(600);
+        let date = httpdate::fmt_http_date(old_time);
+        let body = b"{}";
+        let digest = digest_header(body);
+        let base = format!(
+            "(request-target): post /inbox\nhost: {}\ndate: {}\ndigest: {}",
+            host, date, digest
+        );
+        let sk = RsaPrivateKey::from_pkcs8_pem(&priv_pem).unwrap();
+        let signer = SigningKey::<Sha256>::new(sk);
+        let sig: RsaSignature = signer.sign(base.as_bytes());
+        let sig_b64 = B64.encode(sig.to_bytes());
+        let sig_header = format!(
+            "keyId=\"{key_id}\",algorithm=\"rsa-sha256\",headers=\"(request-target) host date digest\",signature=\"{sig_b64}\""
+        );
+        let req = SignedRequest::new("POST", "/inbox", body.to_vec())
+            .with_header("host", host)
+            .with_header("date", &date)
+            .with_header("digest", &digest)
+            .with_header("signature", &sig_header);
+
+        let resolver = StaticResolver { pem: pub_pem };
+        let result = verify_request_signature(&req, &resolver).await;
+        assert!(
+            matches!(result, Err(SigError::DateNotFresh(_))),
+            "expected DateNotFresh for stale request, got {result:?}"
+        );
     }
 }

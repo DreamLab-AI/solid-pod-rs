@@ -43,6 +43,14 @@ pub enum SigError {
     /// The `keyId` URL could not be parsed.
     #[error("URL parse error: {0}")]
     Url(String),
+    /// The `Date` header is too old or too far in the future (replay
+    /// protection).
+    #[error("request Date is stale or in the future: {0}")]
+    DateNotFresh(String),
+    /// The target URL resolves to a private/internal IP address (SSRF
+    /// protection).
+    #[error("SSRF blocked: {0}")]
+    SsrfBlocked(String),
 }
 
 /// Inbox-layer errors raised by [`crate::inbox`].
@@ -77,4 +85,8 @@ pub enum OutboxError {
     /// The federated delivery queue rejected the item.
     #[error("delivery queue error: {0}")]
     Delivery(String),
+    /// The inbox URL resolves to a private/internal IP address (SSRF
+    /// protection).
+    #[error("SSRF blocked: {0}")]
+    SsrfBlocked(String),
 }

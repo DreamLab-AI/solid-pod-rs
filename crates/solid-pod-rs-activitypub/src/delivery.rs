@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use crate::{
     http_sig::{sign_request, OutboundRequest},
+    ssrf::assert_ssrf_safe,
     store::Store,
 };
 
@@ -55,6 +56,9 @@ pub struct DeliveryWorker {
     store: Store,
     config: DeliveryConfig,
     http: reqwest::Client,
+    /// When true, skip SSRF validation. Only intended for tests where
+    /// the mock server binds to 127.0.0.1.
+    skip_ssrf_check: bool,
 }
 
 impl DeliveryWorker {
@@ -67,6 +71,23 @@ impl DeliveryWorker {
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("reqwest client builds"),
+            skip_ssrf_check: false,
+        }
+    }
+
+    /// Create a worker that skips SSRF checks. **Only for tests** where
+    /// the target is a localhost mock server.
+    #[cfg(test)]
+    fn new_without_ssrf_check(store: Store, config: DeliveryConfig) -> Self {
+        Self {
+            store,
+            config,
+            http: reqwest::Client::builder()
+                .user_agent("solid-pod-rs-activitypub/0.4.0")
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("reqwest client builds"),
+            skip_ssrf_check: true,
         }
     }
 
@@ -82,6 +103,23 @@ impl DeliveryWorker {
             self.store.drop_delivery(item.queue_id).await?;
             return Ok(DeliveryOutcome::Dropped);
         };
+
+        // P0-09: SSRF protection — reject delivery to private/internal
+        // IPs before making the outbound POST.
+        if !self.skip_ssrf_check {
+            if let Err(e) = assert_ssrf_safe(&item.inbox_url) {
+                tracing::warn!(
+                    inbox_url = %item.inbox_url,
+                    error = %e,
+                    "SSRF blocked: dropping delivery to private/internal address"
+                );
+                self.store.drop_delivery(item.queue_id).await?;
+                self.store
+                    .mark_outbox_state(&item.activity_id, "failed")
+                    .await?;
+                return Ok(DeliveryOutcome::Dropped);
+            }
+        }
 
         let body =
             serde_json::to_vec(&activity).map_err(|e| crate::error::OutboxError::Delivery(e.to_string()))?;
@@ -253,7 +291,7 @@ mod tests {
         .await
         .unwrap();
 
-        let worker = DeliveryWorker::new(store.clone(), config);
+        let worker = DeliveryWorker::new_without_ssrf_check(store.clone(), config);
         let outcome = worker.drain_once().await.unwrap();
         assert_eq!(outcome, DeliveryOutcome::Delivered);
         assert_eq!(
@@ -287,7 +325,7 @@ mod tests {
         .await
         .unwrap();
 
-        let worker = DeliveryWorker::new(store.clone(), config);
+        let worker = DeliveryWorker::new_without_ssrf_check(store.clone(), config);
         match worker.drain_once().await.unwrap() {
             DeliveryOutcome::Rescheduled { next_retry_secs } => {
                 assert_eq!(next_retry_secs, BACKOFF_SECONDS[0]);
@@ -321,7 +359,7 @@ mod tests {
         .await
         .unwrap();
 
-        let worker = DeliveryWorker::new(store.clone(), config);
+        let worker = DeliveryWorker::new_without_ssrf_check(store.clone(), config);
         assert_eq!(worker.drain_once().await.unwrap(), DeliveryOutcome::Dropped);
     }
 
@@ -330,5 +368,62 @@ mod tests {
         let (store, config) = scaffold().await;
         let worker = DeliveryWorker::new(store, config);
         assert_eq!(worker.drain_once().await.unwrap(), DeliveryOutcome::Idle);
+    }
+
+    #[tokio::test]
+    async fn delivery_drops_ssrf_to_private_ip() {
+        let (store, config) = scaffold().await;
+        let actor = render_actor("https://pod.example", "me", "Me", None, "PEM");
+
+        // Enqueue delivery to a private RFC-1918 address.
+        let inbox_url = "http://192.168.1.1/inbox";
+        store
+            .add_follower(&actor.id, "evil-follower", Some(inbox_url))
+            .await
+            .unwrap();
+        handle_outbox(
+            &store,
+            &actor,
+            serde_json::json!({"type": "Create", "object": {"type": "Note", "content": "ssrf test"}}),
+        )
+        .await
+        .unwrap();
+
+        // Use production worker (SSRF checks enabled).
+        let worker = DeliveryWorker::new(store.clone(), config);
+        let outcome = worker.drain_once().await.unwrap();
+        assert_eq!(
+            outcome,
+            DeliveryOutcome::Dropped,
+            "delivery to private IP should be dropped by SSRF filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_drops_ssrf_to_metadata_endpoint() {
+        let (store, config) = scaffold().await;
+        let actor = render_actor("https://pod.example", "me", "Me", None, "PEM");
+
+        // Enqueue delivery to the AWS metadata endpoint.
+        let inbox_url = "http://169.254.169.254/latest/meta-data";
+        store
+            .add_follower(&actor.id, "cloud-attacker", Some(inbox_url))
+            .await
+            .unwrap();
+        handle_outbox(
+            &store,
+            &actor,
+            serde_json::json!({"type": "Create", "object": {"type": "Note", "content": "ssrf test"}}),
+        )
+        .await
+        .unwrap();
+
+        let worker = DeliveryWorker::new(store.clone(), config);
+        let outcome = worker.drain_once().await.unwrap();
+        assert_eq!(
+            outcome,
+            DeliveryOutcome::Dropped,
+            "delivery to link-local/metadata IP should be dropped by SSRF filter"
+        );
     }
 }

@@ -46,6 +46,7 @@ pub mod error;
 pub mod http_sig;
 pub mod inbox;
 pub mod outbox;
+pub mod ssrf;
 pub mod store;
 
 // ---- Flat re-export surface -------------------------------------------------
@@ -64,4 +65,5 @@ pub use http_sig::{
 };
 pub use inbox::{build_accept, handle_inbox, InboxOutcome};
 pub use outbox::{handle_outbox, handle_outbox_post, OutboundDelivery};
+pub use ssrf::assert_ssrf_safe;
 pub use store::{DeliveryItem, InboxRow, OutboxRow, Store};
