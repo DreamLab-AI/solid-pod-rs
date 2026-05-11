@@ -3,9 +3,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 
-use solid_pod_rs_didkey::{
-    encode_did_key, verify_self_signed_jwt, DidKeyError, DidKeyPubkey,
-};
+use solid_pod_rs_didkey::{encode_did_key, verify_self_signed_jwt, DidKeyError, DidKeyPubkey};
 
 use ed25519_dalek::{Signer as _, SigningKey as Ed25519SigningKey};
 use p256::ecdsa::{Signature as P256Signature, SigningKey as P256SigningKey};
@@ -136,20 +134,17 @@ fn verify_ed25519_with_embedded_jwk() {
 fn reject_tampered_ed25519_jwt() {
     let now = 1_700_000_000u64;
     let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, true);
-    let err = verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60)
-        .unwrap_err();
-    assert!(
-        matches!(err, DidKeyError::BadSignature(_)),
-        "got {err:?}"
-    );
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60).unwrap_err();
+    assert!(matches!(err, DidKeyError::BadSignature(_)), "got {err:?}");
 }
 
 #[test]
 fn reject_wrong_htu() {
     let now = 1_700_000_000u64;
     let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, false);
-    let err = verify_self_signed_jwt(&jwt.compact, "https://evil.example/r", "GET", now, 60)
-        .unwrap_err();
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://evil.example/r", "GET", now, 60).unwrap_err();
     assert!(matches!(err, DidKeyError::InvalidClaims(_)));
 }
 
@@ -157,8 +152,8 @@ fn reject_wrong_htu() {
 fn reject_wrong_htm() {
     let now = 1_700_000_000u64;
     let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, false);
-    let err = verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "POST", now, 60)
-        .unwrap_err();
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "POST", now, 60).unwrap_err();
     assert!(matches!(err, DidKeyError::InvalidClaims(_)));
 }
 
@@ -167,8 +162,8 @@ fn reject_expired_iat() {
     // iat 10 minutes ago, skew only 60s.
     let now = 1_700_000_000u64;
     let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now - 600, false);
-    let err = verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60)
-        .unwrap_err();
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60).unwrap_err();
     assert!(matches!(err, DidKeyError::InvalidClaims(_)));
 }
 
@@ -181,8 +176,7 @@ fn reject_alg_mismatch_between_header_and_did() {
     let did = encode_did_key(&pk);
 
     let header = serde_json::json!({ "alg": "ES256", "typ": "JWT", "kid": did });
-    let payload =
-        serde_json::json!({ "htu": "https://pod.example/r", "htm": "GET", "iat": 0u64 });
+    let payload = serde_json::json!({ "htu": "https://pod.example/r", "htm": "GET", "iat": 0u64 });
     let h_b64 = b64(serde_json::to_vec(&header).unwrap());
     let p_b64 = b64(serde_json::to_vec(&payload).unwrap());
     let signing_input = format!("{h_b64}.{p_b64}");

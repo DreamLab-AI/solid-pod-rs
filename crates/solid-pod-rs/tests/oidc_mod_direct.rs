@@ -12,8 +12,8 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use solid_pod_rs::oidc::{
     discovery_for, extract_webid, register_client, verify_dpop_proof, AccessTokenVerified,
-    ClientRegistrationRequest, ClientRegistrationResponse, CnfClaim, DiscoveryDocument,
-    DpopClaims, IntrospectionResponse, Jwk, SolidOidcClaims,
+    ClientRegistrationRequest, ClientRegistrationResponse, CnfClaim, DiscoveryDocument, DpopClaims,
+    IntrospectionResponse, Jwk, SolidOidcClaims,
 };
 use solid_pod_rs::PodError;
 
@@ -36,14 +36,7 @@ fn test_jwk(secret: &[u8]) -> Jwk {
     }
 }
 
-fn build_dpop_proof(
-    secret: &[u8],
-    jwk: &Jwk,
-    htu: &str,
-    htm: &str,
-    iat: u64,
-    jti: &str,
-) -> String {
+fn build_dpop_proof(secret: &[u8], jwk: &Jwk, htu: &str, htm: &str, iat: u64, jti: &str) -> String {
     let header_json = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "HS256",
@@ -143,8 +136,7 @@ fn discovery_for_serialises_to_well_known_shape() {
     assert!(json["dpop_signing_alg_values_supported"].is_array());
 
     // Round-trip.
-    let back: DiscoveryDocument =
-        serde_json::from_value(json).expect("discovery deserialises");
+    let back: DiscoveryDocument = serde_json::from_value(json).expect("discovery deserialises");
     assert_eq!(back.issuer, d.issuer);
 }
 
@@ -158,7 +150,14 @@ async fn verify_dpop_proof_rejects_wrong_htm() {
     let jwk = test_jwk(secret);
     let now = 1_700_000_000u64;
     // Proof claims htm=POST, request is GET → mismatch.
-    let proof = build_dpop_proof(secret, &jwk, "https://pod.example/r", "POST", now, "jti-htm-1");
+    let proof = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/r",
+        "POST",
+        now,
+        "jti-htm-1",
+    );
 
     let err = verify_dpop_proof(&proof, "https://pod.example/r", "GET", now, 60, None)
         .await
@@ -172,7 +171,14 @@ async fn verify_dpop_proof_rejects_wrong_htu() {
     let secret = b"mod-direct-htu-secret";
     let jwk = test_jwk(secret);
     let now = 1_700_000_000u64;
-    let proof = build_dpop_proof(secret, &jwk, "https://pod.example/a", "GET", now, "jti-htu-1");
+    let proof = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/a",
+        "GET",
+        now,
+        "jti-htu-1",
+    );
 
     let err = verify_dpop_proof(&proof, "https://pod.example/b", "GET", now, 60, None)
         .await
@@ -192,7 +198,14 @@ async fn verify_dpop_proof_rejects_iat_outside_skew() {
     let iat = 1_700_000_000u64;
     // now is 5 minutes ahead, skew window only 60s.
     let now = iat + 300;
-    let proof = build_dpop_proof(secret, &jwk, "https://pod.example/r", "GET", iat, "jti-iat-1");
+    let proof = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/r",
+        "GET",
+        iat,
+        "jti-iat-1",
+    );
 
     let err = verify_dpop_proof(&proof, "https://pod.example/r", "GET", now, 60, None)
         .await
@@ -270,7 +283,10 @@ fn introspection_response_round_trips() {
         serde_json::from_str(&wire).expect("introspection deserialises");
     assert!(back.active);
     assert_eq!(back.webid.as_deref(), Some("https://me.example/profile#me"));
-    assert_eq!(back.cnf.as_ref().map(|c| c.jkt.as_str()), Some("THUMBPRINT-OK"));
+    assert_eq!(
+        back.cnf.as_ref().map(|c| c.jkt.as_str()),
+        Some("THUMBPRINT-OK")
+    );
     assert_eq!(back.scope.as_deref(), Some("openid webid"));
 
     // Inactive form round-trips too.
@@ -331,7 +347,14 @@ async fn verify_dpop_proof_happy_path_returns_jkt() {
     let jwk = test_jwk(secret);
     let expected_jkt = jwk.thumbprint().unwrap();
     let now = 1_700_000_000u64;
-    let proof = build_dpop_proof(secret, &jwk, "https://pod.example/r", "GET", now, "jti-ok-1");
+    let proof = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/r",
+        "GET",
+        now,
+        "jti-ok-1",
+    );
 
     let v = verify_dpop_proof(&proof, "https://pod.example/r", "GET", now, 60, None)
         .await

@@ -47,7 +47,10 @@ fn schnorr_verify_rejects_tampered_event_id() {
     let err = verify_schnorr_signature(&event).unwrap_err();
     match err {
         PodError::Nip98(msg) => {
-            assert!(msg.contains("event id"), "expected id-mismatch error, got: {msg}");
+            assert!(
+                msg.contains("event id"),
+                "expected id-mismatch error, got: {msg}"
+            );
         }
         _ => panic!("wrong error type"),
     }

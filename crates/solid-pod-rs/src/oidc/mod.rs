@@ -86,10 +86,7 @@ pub struct ClientRegistrationResponse {
 
 /// Register a client. Real servers persist this; callers should wrap
 /// with their own storage.
-pub fn register_client(
-    req: &ClientRegistrationRequest,
-    now: u64,
-) -> ClientRegistrationResponse {
+pub fn register_client(req: &ClientRegistrationRequest, now: u64) -> ClientRegistrationResponse {
     let client_id = format!("client-{}", uuid::Uuid::new_v4());
     let client_secret = match req.token_endpoint_auth_method.as_deref() {
         Some("none") => None,
@@ -101,7 +98,10 @@ pub fn register_client(
         serde_json::to_value(&req.redirect_uris).unwrap_or_default(),
     );
     if let Some(name) = &req.client_name {
-        metadata.insert("client_name".into(), serde_json::Value::String(name.clone()));
+        metadata.insert(
+            "client_name".into(),
+            serde_json::Value::String(name.clone()),
+        );
     }
     if let Some(scope) = &req.scope {
         metadata.insert("scope".into(), serde_json::Value::String(scope.clone()));
@@ -420,9 +420,7 @@ pub async fn verify_dpop_proof_with_ath(
             match e {
                 ReplayError::Replayed { .. } => {
                     DPOP_REPLAY_REJECTED_TOTAL.increment();
-                    return Err(PodError::Nip98(format!(
-                        "DPoP jti replay detected: {e}"
-                    )));
+                    return Err(PodError::Nip98(format!("DPoP jti replay detected: {e}")));
                 }
             }
         }
@@ -584,9 +582,8 @@ fn verify_dpop_proof_core(
     validation.validate_exp = false; // DPoP proofs have no `exp`
     validation.validate_aud = false;
 
-    let data = decode::<DpopClaims>(proof, &key, &validation).map_err(|e| {
-        PodError::Nip98(format!("DPoP proof signature verification failed: {e}"))
-    })?;
+    let data = decode::<DpopClaims>(proof, &key, &validation)
+        .map_err(|e| PodError::Nip98(format!("DPoP proof signature verification failed: {e}")))?;
     let claims = data.claims;
 
     if claims.htm.to_uppercase() != expected_htm.to_uppercase() {
@@ -749,9 +746,7 @@ pub fn verify_access_token(
     // Resolve a DecodingKey based on (alg, keyset).
     let key = match (alg, keyset) {
         // Symmetric test path.
-        (Algorithm::HS256, TokenVerifyKey::Symmetric(secret)) => {
-            DecodingKey::from_secret(secret)
-        }
+        (Algorithm::HS256, TokenVerifyKey::Symmetric(secret)) => DecodingKey::from_secret(secret),
         (Algorithm::HS256, TokenVerifyKey::Asymmetric(_)) => {
             return Err(PodError::Nip98(
                 "HS256 not permitted for external OIDC — asymmetric keyset required".into(),
@@ -1027,12 +1022,7 @@ mod tests {
         assert!(extract_webid(&c).is_err());
     }
 
-    fn issue_hs256_access_token(
-        secret: &[u8],
-        issuer: &str,
-        jkt: &str,
-        exp: u64,
-    ) -> String {
+    fn issue_hs256_access_token(secret: &[u8], issuer: &str, jkt: &str, exp: u64) -> String {
         // `saturating_sub` avoids overflow when tests set `exp=100`
         // to force the expired path without caring about `iat`.
         let claims = SolidOidcClaims {
@@ -1062,8 +1052,7 @@ mod tests {
         let jkt = "THUMB-OK";
         let token = issue_hs256_access_token(secret, "https://op", jkt, 9_999_999_999);
         let ks = TokenVerifyKey::Symmetric(secret.to_vec());
-        let verified =
-            verify_access_token(&token, &ks, "https://op", jkt, 1_700_000_000).unwrap();
+        let verified = verify_access_token(&token, &ks, "https://op", jkt, 1_700_000_000).unwrap();
         assert_eq!(verified.webid, "https://me.example/profile#me");
         assert_eq!(verified.client_id.as_deref(), Some("client-123"));
     }

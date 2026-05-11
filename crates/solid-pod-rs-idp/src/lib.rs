@@ -91,9 +91,6 @@ pub use account_delete::{
 pub use credentials::{
     login, validate_password_length, CredentialsResponse, LoginError, MIN_PASSWORD_LENGTH,
 };
-pub use password_change::{
-    change_password, PasswordChangeError, PasswordChangeRequest, PasswordChangeResponse,
-};
 pub use discovery::{build_discovery, DiscoveryDocument};
 pub use error::ProviderError;
 pub use invites::{
@@ -101,6 +98,9 @@ pub use invites::{
     Invite, InviteStore, InviteStoreError,
 };
 pub use jwks::{Jwks, JwksError, SigningKey};
+pub use password_change::{
+    change_password, PasswordChangeError, PasswordChangeRequest, PasswordChangeResponse,
+};
 pub use provider::{
     AuthorizeRequest, AuthorizeResponse, Provider, ProviderConfig, TokenRequest, TokenResponse,
     UserInfo,

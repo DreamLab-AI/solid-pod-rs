@@ -26,9 +26,7 @@ fn try_load_fixture(name: &str) -> Option<serde_json::Value> {
 }
 
 fn assert_meta_block(fixture: &serde_json::Value, expected_spec_substring: &str) {
-    let meta = fixture
-        .get("_meta")
-        .expect("fixture must have _meta block");
+    let meta = fixture.get("_meta").expect("fixture must have _meta block");
     let spec = meta
         .get("spec")
         .and_then(|v| v.as_str())
@@ -65,9 +63,24 @@ macro_rules! fixture_test {
     };
 }
 
-fixture_test!(did_doc_load_and_validate, "did-doc-conformance.json", "ADR-074", 7);
-fixture_test!(bip340_load_and_validate, "bip340-schnorr.json", "BIP-340", 19);
-fixture_test!(multibase_load_and_validate, "multibase.json", "Multibase", 27);
+fixture_test!(
+    did_doc_load_and_validate,
+    "did-doc-conformance.json",
+    "ADR-074",
+    7
+);
+fixture_test!(
+    bip340_load_and_validate,
+    "bip340-schnorr.json",
+    "BIP-340",
+    19
+);
+fixture_test!(
+    multibase_load_and_validate,
+    "multibase.json",
+    "Multibase",
+    27
+);
 
 #[test]
 #[ignore = "wires into solid-pod-rs-didkey's DID Document emitter; ADR-074 D2 conformance check — Phase 2"]

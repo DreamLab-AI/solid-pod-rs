@@ -191,18 +191,19 @@ fn handle_req(
 
     let mut out = Vec::with_capacity(history.len() + 1);
     for ev in history {
-        let frame =
-            json!(["EVENT", sub_id, serde_json::to_value(ev).unwrap_or(Value::Null)]).to_string();
+        let frame = json!([
+            "EVENT",
+            sub_id,
+            serde_json::to_value(ev).unwrap_or(Value::Null)
+        ])
+        .to_string();
         out.push(frame);
     }
     out.push(json!(["EOSE", sub_id]).to_string());
     out
 }
 
-fn handle_close(
-    subscriptions: &mut HashMap<String, Vec<Filter>>,
-    arr: &[Value],
-) -> Vec<String> {
+fn handle_close(subscriptions: &mut HashMap<String, Vec<Filter>>, arr: &[Value]) -> Vec<String> {
     let Some(sub_id) = arr.get(1).and_then(|v| v.as_str()) else {
         return vec![notice("CLOSE frame missing subscription id")];
     };
@@ -327,9 +328,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_subscription_receives_matching_events() {
         use tokio::io::duplex;
-        use tokio_tungstenite::{
-            tungstenite::protocol::Role, WebSocketStream,
-        };
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
 
         let relay = Arc::new(Relay::in_memory());
         // Pre-populate one event so history is non-empty.

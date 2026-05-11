@@ -57,10 +57,7 @@ pub struct SolidWellKnownAccounts {
 }
 
 /// Build the discovery document for a pod root.
-pub fn well_known_solid(
-    pod_base: &str,
-    oidc_issuer: &str,
-) -> SolidWellKnown {
+pub fn well_known_solid(pod_base: &str, oidc_issuer: &str) -> SolidWellKnown {
     let base = pod_base.trim_end_matches('/');
     SolidWellKnown {
         context: serde_json::json!("https://www.w3.org/ns/solid/terms"),
@@ -104,11 +101,7 @@ pub struct WebFingerLink {
 
 /// Produce a WebFinger JRD response pointing `acct:user@host` at the
 /// user's WebID. Returns `None` if the resource is not recognised.
-pub fn webfinger_response(
-    resource: &str,
-    pod_base: &str,
-    webid: &str,
-) -> Option<WebFingerJrd> {
+pub fn webfinger_response(resource: &str, pod_base: &str, webid: &str) -> Option<WebFingerJrd> {
     if !resource.starts_with("acct:") && !resource.starts_with("https://") {
         return None;
     }
@@ -151,10 +144,7 @@ pub struct Nip05Document {
 
 /// Verify a NIP-05 identifier (`local@example.com`) against a fetched
 /// NIP-05 document. Returns the resolved hex pubkey on success.
-pub fn verify_nip05(
-    identifier: &str,
-    document: &Nip05Document,
-) -> Result<String, PodError> {
+pub fn verify_nip05(identifier: &str, document: &Nip05Document) -> Result<String, PodError> {
     let (local, _domain) = identifier
         .split_once('@')
         .ok_or_else(|| PodError::Nip98(format!("invalid NIP-05 identifier: {identifier}")))?;
@@ -172,9 +162,7 @@ pub fn verify_nip05(
 }
 
 /// Build the NIP-05 document structure for a pod's own hosted names.
-pub fn nip05_document(
-    names: impl IntoIterator<Item = (String, String)>,
-) -> Nip05Document {
+pub fn nip05_document(names: impl IntoIterator<Item = (String, String)>) -> Nip05Document {
     Nip05Document {
         names: names.into_iter().collect(),
         relays: None,
@@ -232,7 +220,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(j.subject, "acct:alice@pod.example");
-        assert!(j.links.iter().any(|l| l.rel == "http://www.w3.org/ns/solid#webid"));
+        assert!(j
+            .links
+            .iter()
+            .any(|l| l.rel == "http://www.w3.org/ns/solid#webid"));
     }
 
     #[test]

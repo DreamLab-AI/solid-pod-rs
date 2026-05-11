@@ -14,8 +14,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs::wac::{evaluate_access, parse_jsonld_acl, AccessMode, AclDocument};
 use solid_pod_rs::wac::resolver::{AclResolver, StorageAclResolver};
+use solid_pod_rs::wac::{evaluate_access, parse_jsonld_acl, AccessMode, AclDocument};
 
 /// Build a valid JSON-LD ACL body granting `agent` the given `mode` on `path`.
 fn acl_body(agent: &str, path: &str, mode: &str) -> Bytes {
@@ -94,9 +94,7 @@ async fn two_writers_same_acl_no_corruption() {
         let s = store.clone();
         handles.push(tokio::spawn(async move {
             let body = acl_body("did:nostr:alice", "/shared", "Read");
-            s.put(acl_path, body, "application/ld+json")
-                .await
-                .unwrap();
+            s.put(acl_path, body, "application/ld+json").await.unwrap();
             ("A", i)
         }));
     }
@@ -106,9 +104,7 @@ async fn two_writers_same_acl_no_corruption() {
         let s = store.clone();
         handles.push(tokio::spawn(async move {
             let body = acl_body("did:nostr:bob", "/shared", "Write");
-            s.put(acl_path, body, "application/ld+json")
-                .await
-                .unwrap();
+            s.put(acl_path, body, "application/ld+json").await.unwrap();
             ("B", i)
         }));
     }
@@ -162,7 +158,11 @@ async fn writer_reader_concurrency_consistent_reads() {
 
     // Seed with a public-read ACL.
     store
-        .put(acl_path, public_read_acl("/resource"), "application/ld+json")
+        .put(
+            acl_path,
+            public_read_acl("/resource"),
+            "application/ld+json",
+        )
         .await
         .unwrap();
 
@@ -178,9 +178,7 @@ async fn writer_reader_concurrency_consistent_reads() {
             } else {
                 acl_body("did:nostr:bob", "/resource", "Write")
             };
-            s.put(acl_path, body, "application/ld+json")
-                .await
-                .unwrap();
+            s.put(acl_path, body, "application/ld+json").await.unwrap();
         }));
     }
 
@@ -219,21 +217,15 @@ async fn writer_reader_concurrency_consistent_reads() {
                     AccessMode::Write,
                     None,
                 );
-                let public_read = evaluate_access(
-                    doc.as_ref(),
-                    None,
-                    "/resource",
-                    AccessMode::Read,
-                    None,
-                );
+                let public_read =
+                    evaluate_access(doc.as_ref(), None, "/resource", AccessMode::Read, None);
 
                 // The document was written atomically, so exactly one
                 // of these invariants holds:
                 //   1. alice has Read (alice-ACL iteration)
                 //   2. bob has Write (bob-ACL iteration)
                 //   3. public Read (seed ACL)
-                let valid =
-                    alice_read || bob_write || public_read;
+                let valid = alice_read || bob_write || public_read;
                 assert!(
                     valid,
                     "read must see a consistent ACL state: \
@@ -290,13 +282,7 @@ async fn rapid_sequential_mutations_verify_final_state() {
     for i in 0..total - 1 {
         let agent = format!("did:nostr:agent-{i}");
         assert!(
-            !evaluate_access(
-                Some(&doc),
-                Some(&agent),
-                "/seq",
-                AccessMode::Read,
-                None,
-            ),
+            !evaluate_access(Some(&doc), Some(&agent), "/seq", AccessMode::Read, None,),
             "agent-{i} must NOT have Read — only the last writer's ACL survives"
         );
     }
@@ -331,9 +317,7 @@ async fn contended_rwlock_many_spawned_tasks() {
         handles.push(tokio::spawn(async move {
             let agent = format!("did:nostr:writer-{i}");
             let body = multi_mode_acl(&agent, "/contended", &["Read", "Write"]);
-            s.put(acl_path, body, "application/ld+json")
-                .await
-                .unwrap();
+            s.put(acl_path, body, "application/ld+json").await.unwrap();
         }));
     }
 
@@ -346,10 +330,7 @@ async fn contended_rwlock_many_spawned_tasks() {
                 Ok((body, _)) => {
                     // Must always parse successfully — no truncated JSON.
                     let doc = parse_acl(&body);
-                    assert!(
-                        doc.graph.is_some(),
-                        "ACL document must have a graph field"
-                    );
+                    assert!(doc.graph.is_some(), "ACL document must have a graph field");
                 }
                 Err(_) => {
                     // NotFound is acceptable if we race before the seed
@@ -465,9 +446,7 @@ async fn resolver_walk_up_under_concurrent_mutations() {
             } else {
                 acl_body("did:nostr:bob", "/a", "Read")
             };
-            s.put("/a.acl", body, "application/ld+json")
-                .await
-                .unwrap();
+            s.put("/a.acl", body, "application/ld+json").await.unwrap();
         }));
     }
 

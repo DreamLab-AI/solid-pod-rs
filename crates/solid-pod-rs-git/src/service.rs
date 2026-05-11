@@ -80,8 +80,7 @@ impl GitRequest {
     /// `true` if this request requires a successful auth check (push).
     #[must_use]
     pub fn is_write(&self) -> bool {
-        self.path.contains("/git-receive-pack")
-            || self.query.contains("service=git-receive-pack")
+        self.path.contains("/git-receive-pack") || self.query.contains("service=git-receive-pack")
     }
 }
 
@@ -232,7 +231,14 @@ impl GitHttpService {
         }
 
         // 5. Spawn the CGI and shuttle request/response bytes.
-        spawn_cgi(&self.backend_path, &self.repo_root, &git_dir, &remote_user, req).await
+        spawn_cgi(
+            &self.backend_path,
+            &self.repo_root,
+            &git_dir,
+            &remote_user,
+            req,
+        )
+        .await
     }
 }
 
@@ -357,9 +363,7 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
         } else if let Some(i) = find_subsequence(stdout, b"\n\n") {
             (i, 2)
         } else {
-            return Err(GitError::MalformedCgi(
-                "no header/body separator".into(),
-            ));
+            return Err(GitError::MalformedCgi("no header/body separator".into()));
         }
     };
 
@@ -375,7 +379,9 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
         if line.is_empty() {
             continue;
         }
-        let Some(colon) = line.find(':') else { continue };
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
         let key = line[..colon].trim().to_string();
         let value = line[colon + 1..].trim().to_string();
         if key.eq_ignore_ascii_case("status") {
@@ -390,10 +396,7 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
     }
 
     // CORS headers (JSS lines 218-220).
-    headers.push((
-        "Access-Control-Allow-Origin".into(),
-        "*".into(),
-    ));
+    headers.push(("Access-Control-Allow-Origin".into(), "*".into()));
     headers.push((
         "Access-Control-Allow-Methods".into(),
         "GET, POST, OPTIONS".into(),
@@ -411,9 +414,7 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]

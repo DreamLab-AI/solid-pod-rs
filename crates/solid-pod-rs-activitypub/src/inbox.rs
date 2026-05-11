@@ -81,11 +81,7 @@ pub async fn handle_inbox(
                 .and_then(|v| v.as_str())
                 .map(String::from);
             store
-                .add_follower(
-                    local_actor_id,
-                    &follower_id,
-                    follower_inbox.as_deref(),
-                )
+                .add_follower(local_actor_id, &follower_id, follower_inbox.as_deref())
                 .await?;
             let accept = build_accept(local_actor_id, activity);
             Ok(InboxOutcome::FollowAccepted {

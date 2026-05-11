@@ -19,7 +19,11 @@ use crate::wac::evaluator::GroupMembership;
 /// satisfies the condition).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ClientConditionBody {
-    #[serde(rename = "acl:client", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "acl:client",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub client: Option<IdOrIds>,
 
     #[serde(

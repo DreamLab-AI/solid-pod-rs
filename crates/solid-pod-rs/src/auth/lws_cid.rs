@@ -149,8 +149,8 @@ impl SelfSignedVerifier for LwsCidVerifier {
         }
 
         // Parse header to check if this is an LWS-CID token (kid is a URL#fragment).
-        let (hdr_b64, payload_b64, sig_b64) = split_jws(envelope.proof)
-            .map_err(|e| SelfSignedError::Malformed(e))?;
+        let (hdr_b64, payload_b64, sig_b64) =
+            split_jws(envelope.proof).map_err(|e| SelfSignedError::Malformed(e))?;
 
         let header: JwtHeader = decode_segment(&hdr_b64)
             .map_err(|e| SelfSignedError::Malformed(format!("header: {e}")))?;
@@ -230,15 +230,14 @@ impl SelfSignedVerifier for LwsCidVerifier {
             .iter()
             .find(|vm| vm.id == kid || vm.id.ends_with(&format!("#{kid_fragment}")))
             .ok_or_else(|| {
-                SelfSignedError::Other(format!(
-                    "verificationMethod {kid} not found in profile"
-                ))
+                SelfSignedError::Other(format!("verificationMethod {kid} not found in profile"))
             })?;
 
         // Confirm the VM is listed in `authentication`.
-        let vm_in_auth = profile.authentication.iter().any(|a| {
-            a == &vm.id || a == &kid || a.ends_with(&format!("#{kid_fragment}"))
-        });
+        let vm_in_auth = profile
+            .authentication
+            .iter()
+            .any(|a| a == &vm.id || a == &kid || a.ends_with(&format!("#{kid_fragment}")));
         if !vm_in_auth {
             return Err(SelfSignedError::Other(format!(
                 "verificationMethod {kid} is not in authentication relationship"
@@ -261,9 +260,7 @@ impl SelfSignedVerifier for LwsCidVerifier {
 
         // Extract public key from the VM's publicKeyJwk.
         let jwk = vm.public_key_jwk.as_ref().ok_or_else(|| {
-            SelfSignedError::Other(
-                "verificationMethod has no publicKeyJwk".into(),
-            )
+            SelfSignedError::Other("verificationMethod has no publicKeyJwk".into())
         })?;
 
         // Alg-confusion gate: header alg must match JWK curve.
@@ -313,9 +310,7 @@ fn split_jws(jwt: &str) -> Result<(String, String, String), String> {
 }
 
 fn decode_segment<T: for<'de> Deserialize<'de>>(b64: &str) -> Result<T, String> {
-    let bytes = B64URL
-        .decode(b64)
-        .map_err(|e| format!("base64: {e}"))?;
+    let bytes = B64URL.decode(b64).map_err(|e| format!("base64: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("json: {e}"))
 }
 
@@ -339,11 +334,7 @@ fn split_kid_url(kid: &str) -> Option<(String, String)> {
     Some((base.to_string(), fragment.to_string()))
 }
 
-fn validate_time_bounds(
-    claims: &JwtClaims,
-    now: u64,
-    skew: u64,
-) -> Result<(), SelfSignedError> {
+fn validate_time_bounds(claims: &JwtClaims, now: u64, skew: u64) -> Result<(), SelfSignedError> {
     // iat must be within skew window.
     if now.saturating_sub(claims.iat) > skew && claims.iat.saturating_sub(now) > skew {
         return Err(SelfSignedError::OutOfTimeWindow(format!(
@@ -415,9 +406,7 @@ fn extract_json_ld_from_html(html: &str) -> Result<serde_json::Value, String> {
     let start = html
         .find("application/ld+json")
         .ok_or("no JSON-LD data island in HTML profile")?;
-    let tag_end = html[start..]
-        .find('>')
-        .ok_or("malformed script tag")?;
+    let tag_end = html[start..].find('>').ok_or("malformed script tag")?;
     let json_start = start + tag_end + 1;
     let script_end = html[json_start..]
         .find("</script>")
@@ -502,9 +491,7 @@ fn verify_signature_jwk(
         "ES256" => verify_es256(jwk, msg, sig),
         #[cfg(feature = "lws-cid-eddsa")]
         "EdDSA" => verify_eddsa(jwk, msg, sig),
-        other => Err(SelfSignedError::Other(format!(
-            "unsupported alg: {other}"
-        ))),
+        other => Err(SelfSignedError::Other(format!("unsupported alg: {other}"))),
     }
 }
 
@@ -721,7 +708,8 @@ mod tests {
         let v = LwsCidVerifier::new(fetcher);
         // kid is did:key:z... — not our format.
         let header = serde_json::json!({"alg": "EdDSA", "kid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"});
-        let claims = serde_json::json!({"sub": "x", "iss": "x", "htm": "GET", "htu": "https://x", "iat": 0});
+        let claims =
+            serde_json::json!({"sub": "x", "iss": "x", "htm": "GET", "htu": "https://x", "iat": 0});
         let h = B64URL.encode(serde_json::to_vec(&header).unwrap());
         let p = B64URL.encode(serde_json::to_vec(&claims).unwrap());
         let s = B64URL.encode(b"fakesig_________________________________");
@@ -949,7 +937,9 @@ mod tests {
     #[test]
     fn is_url_with_fragment_detection() {
         assert!(is_url_with_fragment("https://pod.example/card#key-1"));
-        assert!(!is_url_with_fragment("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"));
+        assert!(!is_url_with_fragment(
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        ));
         assert!(!is_url_with_fragment("https://pod.example/card"));
     }
 

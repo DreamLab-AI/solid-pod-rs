@@ -11,9 +11,9 @@
 //!   - `crates/solid-pod-rs-activitypub/tests/sprint12_ap_features.rs`
 
 use solid_pod_rs::error::PodError;
-use solid_pod_rs::wac::{parse_turtle_acl_with_limit, MAX_ACL_BYTES};
-use solid_pod_rs::{DotfileAllowlist, is_path_allowed};
 use solid_pod_rs::security::dotfile::DEFAULT_ALLOWED;
+use solid_pod_rs::wac::{parse_turtle_acl_with_limit, MAX_ACL_BYTES};
+use solid_pod_rs::{is_path_allowed, DotfileAllowlist};
 
 // =========================================================================
 // PodError::PayloadTooLarge variant exists (row 169)

@@ -93,8 +93,8 @@ pub fn generate_webid_html_with_issuer(
         }]);
     }
 
-    let body_json = serde_json::to_string_pretty(&body)
-        .expect("serde_json::Value always serialises");
+    let body_json =
+        serde_json::to_string_pretty(&body).expect("serde_json::Value always serialises");
 
     format!(
         r#"<!DOCTYPE html>
@@ -117,8 +117,8 @@ pub fn generate_webid_html_with_issuer(
 
 /// Locate and parse the JSON-LD data island from a WebID HTML document.
 fn parse_json_ld(data: &[u8]) -> Result<Option<Value>, String> {
-    let text = std::str::from_utf8(data)
-        .map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
+    let text =
+        std::str::from_utf8(data).map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
     let start = match text.find("application/ld+json") {
         Some(s) => s,
         None => return Ok(None),
@@ -133,8 +133,8 @@ fn parse_json_ld(data: &[u8]) -> Result<Option<Value>, String> {
         None => return Ok(None),
     };
     let json_str = text[json_start..json_start + script_end].trim();
-    let value: Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("WebID JSON-LD parse error: {e}"))?;
+    let value: Value =
+        serde_json::from_str(json_str).map_err(|e| format!("WebID JSON-LD parse error: {e}"))?;
     Ok(Some(value))
 }
 
@@ -146,9 +146,9 @@ pub fn extract_oidc_issuer(data: &[u8]) -> Result<Option<String>, String> {
         Some(v) => v,
         None => return Ok(None),
     };
-    let issuer = value.get("solid:oidcIssuer").or_else(|| {
-        value.get("http://www.w3.org/ns/solid/terms#oidcIssuer")
-    });
+    let issuer = value
+        .get("solid:oidcIssuer")
+        .or_else(|| value.get("http://www.w3.org/ns/solid/terms#oidcIssuer"));
     match issuer {
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(Value::Object(m)) => {
@@ -191,8 +191,7 @@ pub fn extract_cid_openid_provider(data: &[u8]) -> Result<Option<String>, String
             Some(Value::Array(ts)) => ts.iter().any(|t| {
                 matches!(
                     t.as_str(),
-                    Some("lws:OpenIdProvider")
-                        | Some("https://www.w3.org/ns/lws#OpenIdProvider")
+                    Some("lws:OpenIdProvider") | Some("https://www.w3.org/ns/lws#OpenIdProvider")
                 )
             }),
             _ => false,
@@ -219,8 +218,8 @@ pub fn extract_cid_openid_provider(data: &[u8]) -> Result<Option<String>, String
 
 /// Validate that a byte slice is a well-formed WebID profile.
 pub fn validate_webid_html(data: &[u8]) -> Result<(), String> {
-    let text = std::str::from_utf8(data)
-        .map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
+    let text =
+        std::str::from_utf8(data).map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
     if !text.contains("application/ld+json") {
         return Err(
             "WebID profile must contain a <script type=\"application/ld+json\"> block".to_string(),
@@ -289,8 +288,7 @@ mod tests {
 
     #[test]
     fn extract_oidc_issuer_absent_returns_none() {
-        let html =
-            generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
+        let html = generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
         let iss = extract_oidc_issuer(html.as_bytes()).unwrap();
         assert!(iss.is_none());
     }
@@ -328,8 +326,7 @@ mod tests {
 
     #[test]
     fn omits_cid_service_when_no_issuer() {
-        let html =
-            generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
+        let html = generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
         let body = json_ld_body(&html);
         assert!(
             body.get("service").is_none(),
@@ -343,12 +340,8 @@ mod tests {
 
     #[test]
     fn emits_primary_topic_of_and_main_entity_of_page() {
-        let html = generate_webid_html_with_issuer(
-            "abc",
-            Some("Alice"),
-            "https://pods.example.com",
-            None,
-        );
+        let html =
+            generate_webid_html_with_issuer("abc", Some("Alice"), "https://pods.example.com", None);
         let body = json_ld_body(&html);
         assert_eq!(
             body.get("foaf:isPrimaryTopicOf").and_then(|v| v.as_str()),
@@ -380,8 +373,7 @@ mod tests {
 
     #[test]
     fn extract_cid_openid_provider_absent_returns_none() {
-        let html =
-            generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
+        let html = generate_webid_html_with_issuer("abc", Some("Alice"), "https://p", None);
         let endpoint = extract_cid_openid_provider(html.as_bytes()).unwrap();
         assert!(endpoint.is_none());
     }
@@ -402,9 +394,7 @@ mod tests {
                 .expect("ld+json tag present");
             let tag_end = html[start..].find('>').expect("script open >");
             let body_start = start + tag_end + 1;
-            let body_end = html[body_start..]
-                .find("</script>")
-                .expect("script close");
+            let body_end = html[body_start..].find("</script>").expect("script close");
             let body = html[body_start..body_start + body_end].trim();
             serde_json::from_str::<serde_json::Value>(body).unwrap_or_else(|e| {
                 panic!("embedded JSON-LD failed to parse: {e}\n----\n{body}\n----")

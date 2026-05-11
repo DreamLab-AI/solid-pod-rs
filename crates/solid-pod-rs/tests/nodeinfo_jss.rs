@@ -14,7 +14,11 @@ use solid_pod_rs::interop::{nodeinfo_2_1, nodeinfo_discovery};
 fn nodeinfo_discovery_emits_link_to_2_1() {
     let doc = nodeinfo_discovery("https://pod.example");
     let links = doc.get("links").and_then(|v| v.as_array()).unwrap();
-    assert_eq!(links.len(), 1, "discovery must carry exactly one link: {doc}");
+    assert_eq!(
+        links.len(),
+        1,
+        "discovery must carry exactly one link: {doc}"
+    );
     let first = &links[0];
     assert_eq!(
         first.get("rel").and_then(|v| v.as_str()),
@@ -35,7 +39,10 @@ fn nodeinfo_discovery_strips_trailing_slash() {
         .and_then(|v| v.as_str())
         .unwrap();
     assert_eq!(href, "https://pod.example/.well-known/nodeinfo/2.1");
-    assert!(!href.contains("//.well-known"), "double slash in href: {href}");
+    assert!(
+        !href.contains("//.well-known"),
+        "double slash in href: {href}"
+    );
 }
 
 #[test]

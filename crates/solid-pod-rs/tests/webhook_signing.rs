@@ -97,7 +97,10 @@ fn webhook_rfc9421_signature_tamper_detected() {
     )
     .expect_err("tampered body must fail verification");
     assert!(
-        matches!(err, SignatureError::DigestMismatch | SignatureError::BadSignature),
+        matches!(
+            err,
+            SignatureError::DigestMismatch | SignatureError::BadSignature
+        ),
         "expected DigestMismatch or BadSignature, got {:?}",
         err
     );

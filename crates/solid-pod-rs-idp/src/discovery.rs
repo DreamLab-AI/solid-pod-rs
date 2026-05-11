@@ -95,11 +95,7 @@ pub fn build_discovery(issuer: &str) -> DiscoveryDocument {
             "offline_access".into(),
         ],
         response_types_supported: vec!["code".into()],
-        response_modes_supported: vec![
-            "query".into(),
-            "fragment".into(),
-            "form_post".into(),
-        ],
+        response_modes_supported: vec!["query".into(), "fragment".into(), "form_post".into()],
         grant_types_supported: vec![
             "authorization_code".into(),
             "refresh_token".into(),
@@ -137,10 +133,7 @@ mod tests {
         assert_eq!(d.authorization_endpoint, "https://pod.example/idp/auth");
         assert_eq!(d.token_endpoint, "https://pod.example/idp/token");
         assert_eq!(d.jwks_uri, "https://pod.example/.well-known/jwks.json");
-        assert_eq!(
-            d.registration_endpoint,
-            "https://pod.example/idp/reg"
-        );
+        assert_eq!(d.registration_endpoint, "https://pod.example/idp/reg");
 
         // Solid-OIDC profile MUST: webid scope.
         assert!(d.scopes_supported.iter().any(|s| s == "webid"));
@@ -150,11 +143,17 @@ mod tests {
             .iter()
             .any(|s| s == "none"));
         // Authorisation code is the core Solid-OIDC grant.
-        assert!(d.grant_types_supported.iter().any(|s| s == "authorization_code"));
+        assert!(d
+            .grant_types_supported
+            .iter()
+            .any(|s| s == "authorization_code"));
         // DPoP advertisement must be non-empty.
         assert!(!d.dpop_signing_alg_values_supported.is_empty());
         // PKCE S256 is required for public clients.
-        assert!(d.code_challenge_methods_supported.iter().any(|s| s == "S256"));
+        assert!(d
+            .code_challenge_methods_supported
+            .iter()
+            .any(|s| s == "S256"));
         // Solid-OIDC marker.
         assert!(d.solid_oidc_supported.contains("solid-oidc"));
     }

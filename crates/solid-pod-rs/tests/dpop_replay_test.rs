@@ -163,10 +163,7 @@ async fn f5d_max_size_eviction_drops_oldest() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn f5e_concurrent_same_jti_exactly_one_wins() {
-    let cache = Arc::new(DpopReplayCache::with_config(
-        Duration::from_secs(60),
-        1024,
-    ));
+    let cache = Arc::new(DpopReplayCache::with_config(Duration::from_secs(60), 1024));
     let jti = "jti-race-0005".to_string();
 
     // Spawn N tasks that all try to record the same jti.
@@ -208,14 +205,18 @@ async fn f5f_verify_dpop_with_none_cache_is_pre_f5_behaviour() {
     let proof = build_dpop_proof(secret, &jwk, htu, "GET", now, "jti-f5f-unique");
 
     // First call: accepted.
-    let v1 = verify_dpop_proof(&proof, htu, "GET", now, 60, None).await.unwrap();
+    let v1 = verify_dpop_proof(&proof, htu, "GET", now, 60, None)
+        .await
+        .unwrap();
     assert_eq!(v1.jkt, jkt);
     assert_eq!(v1.jti, "jti-f5f-unique");
 
     // Second call with the SAME proof + None cache: still accepted —
     // replay detection is disabled. This is intentional backward
     // compatibility.
-    let v2 = verify_dpop_proof(&proof, htu, "GET", now, 60, None).await.unwrap();
+    let v2 = verify_dpop_proof(&proof, htu, "GET", now, 60, None)
+        .await
+        .unwrap();
     assert_eq!(v2.jti, "jti-f5f-unique");
 }
 
@@ -263,7 +264,10 @@ async fn f5g_verify_dpop_with_cache_rejects_replay() {
 async fn evict_expired_removes_stale_entries() {
     let cache = DpopReplayCache::with_config(Duration::from_millis(10), 16);
     for i in 0..5 {
-        cache.check_and_record(&format!("jti-sweep-{i}")).await.unwrap();
+        cache
+            .check_and_record(&format!("jti-sweep-{i}"))
+            .await
+            .unwrap();
     }
     assert_eq!(cache.len().await, 5);
 

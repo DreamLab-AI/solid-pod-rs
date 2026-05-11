@@ -116,11 +116,11 @@ pub mod interop;
 pub mod ldp;
 pub mod mashlib;
 pub mod metrics;
-pub mod multitenant;
 pub mod mrc20;
+pub mod multitenant;
 pub mod payments;
-pub mod trading;
 pub mod security;
+pub mod trading;
 pub mod wac;
 pub mod webid;
 
@@ -169,51 +169,46 @@ pub use auth::self_signed::{
     CidVerifier, ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
 };
 pub use error::PodError;
-pub use metrics::SecurityMetrics;
-pub use security::{
-    is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError,
+pub use interop::{
+    dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,
+    Nip05Document, SolidWellKnown, WebFingerJrd, WebFingerLink,
 };
+pub use ldp::{
+    apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch, cache_control_for,
+    evaluate_preconditions, is_rdf_content_type, link_headers, negotiate_format, not_found_headers,
+    options_for, parse_range_header, parse_range_header_v2, patch_dialect_from_mime,
+    server_managed_triples, slice_range, vary_header, ByteRange, ConditionalOutcome,
+    ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome, PatchDialect,
+    PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
+    CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
+};
+pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
+pub use metrics::SecurityMetrics;
+pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
+pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
     check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,
     method_to_mode, mode_name, parse_turtle_acl, serialize_turtle_acl, wac_allow_header,
     AccessMode, AclDocument, GroupMembership, Origin, OriginDecision, OriginPattern,
     StaticGroupMembership,
 };
-pub use ldp::{
-    apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch,
-    cache_control_for, evaluate_preconditions, is_rdf_content_type, link_headers,
-    negotiate_format, not_found_headers, options_for, parse_range_header, parse_range_header_v2,
-    patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
-    ConditionalOutcome, ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome,
-    PatchDialect, PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, Term, Triple, ACCEPT_PATCH,
-    ACCEPT_POST, CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
-};
-pub use interop::{
-    dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,
-    Nip05Document, SolidWellKnown, WebFingerJrd, WebFingerLink,
-};
-pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
 pub use webid::{
-    extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer,
-    validate_webid_html,
-};
-pub use mashlib::{
-    MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES,
+    extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer, validate_webid_html,
 };
 
 // ---------------------------------------------------------------------------
 // `tokio-runtime`-gated re-exports.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "tokio-runtime")]
-pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
-#[cfg(feature = "tokio-runtime")]
-pub use storage::{ResourceMeta, Storage, StorageEvent};
-#[cfg(feature = "tokio-runtime")]
 pub use provision::{
     check_admin_override, provision_pod, AdminOverride, ProvisionOutcome, ProvisionPlan,
     QuotaTracker,
 };
-#[cfg(feature = "tokio-runtime")]
-pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
 #[cfg(feature = "quota")]
 pub use quota::FsQuotaStore;
+#[cfg(feature = "tokio-runtime")]
+pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
+#[cfg(feature = "tokio-runtime")]
+pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
+#[cfg(feature = "tokio-runtime")]
+pub use storage::{ResourceMeta, Storage, StorageEvent};

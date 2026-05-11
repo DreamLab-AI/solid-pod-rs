@@ -200,8 +200,7 @@ pub fn format_multibase_schnorr(pk: &[u8; 32]) -> String {
 /// Minimal base58btc encoder — avoids pulling an extra dependency for
 /// what is a single multicodec rendering site.
 fn base58_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 58] =
-        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if input.is_empty() {
         return String::new();
     }
@@ -235,7 +234,9 @@ fn base58_encode(input: &[u8]) -> String {
 /// Validate that `s` is a 64-character lowercase hex string (a valid
 /// NIP-01 pubkey in hex form).
 pub fn is_valid_hex_pubkey(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    s.len() == 64
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Check whether `tag_value` matches the expected `did:nostr` URI for

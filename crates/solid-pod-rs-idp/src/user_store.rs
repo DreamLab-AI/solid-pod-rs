@@ -89,11 +89,7 @@ pub trait UserStore: Send + Sync + 'static {
     /// on the trait rather than free-function so stores that use
     /// external auth (LDAP, OAuth federation) can override the
     /// verification path.
-    async fn verify_password(
-        &self,
-        user: &User,
-        password: &str,
-    ) -> Result<bool, UserStoreError> {
+    async fn verify_password(&self, user: &User, password: &str) -> Result<bool, UserStoreError> {
         let parsed = PasswordHash::new(&user.password_hash)
             .map_err(|e| UserStoreError::Hash(e.to_string()))?;
         let ok = Argon2::default()
@@ -231,12 +227,7 @@ impl UserStore for InMemoryUserStore {
     }
 
     async fn find_by_id(&self, id: &str) -> Result<Option<User>, UserStoreError> {
-        Ok(self
-            .inner
-            .read()
-            .values()
-            .find(|u| u.id == id)
-            .cloned())
+        Ok(self.inner.read().values().find(|u| u.id == id).cloned())
     }
 
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, UserStoreError> {
@@ -299,15 +290,29 @@ mod tests {
             .unwrap();
         assert_eq!(user.email, "ada@example.com");
 
-        let found = store.find_by_email("ada@example.com").await.unwrap().unwrap();
+        let found = store
+            .find_by_email("ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found.id, "u-1");
 
         // Case-insensitive email lookup.
-        let found2 = store.find_by_email("ADA@example.COM").await.unwrap().unwrap();
+        let found2 = store
+            .find_by_email("ADA@example.COM")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found2.id, "u-1");
 
-        assert!(store.verify_password(&found, "correct-horse-battery-staple").await.unwrap());
-        assert!(!store.verify_password(&found, "wrong-password").await.unwrap());
+        assert!(store
+            .verify_password(&found, "correct-horse-battery-staple")
+            .await
+            .unwrap());
+        assert!(!store
+            .verify_password(&found, "wrong-password")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -363,7 +368,10 @@ mod tests {
             .unwrap();
 
         let user = store.find_by_id("u-pw").await.unwrap().unwrap();
-        assert!(store.verify_password(&user, "oldpassword123").await.unwrap());
+        assert!(store
+            .verify_password(&user, "oldpassword123")
+            .await
+            .unwrap());
 
         // Hash a new password and update.
         let salt = SaltString::generate(&mut OsRng);
@@ -375,14 +383,23 @@ mod tests {
         assert!(updated);
 
         let user2 = store.find_by_id("u-pw").await.unwrap().unwrap();
-        assert!(store.verify_password(&user2, "newpassword456").await.unwrap());
-        assert!(!store.verify_password(&user2, "oldpassword123").await.unwrap());
+        assert!(store
+            .verify_password(&user2, "newpassword456")
+            .await
+            .unwrap());
+        assert!(!store
+            .verify_password(&user2, "oldpassword123")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
     async fn inmemory_update_password_unknown_user() {
         let store = InMemoryUserStore::new();
-        let updated = store.update_password("nonexistent", "hash".into()).await.unwrap();
+        let updated = store
+            .update_password("nonexistent", "hash".into())
+            .await
+            .unwrap();
         assert!(!updated);
     }
 

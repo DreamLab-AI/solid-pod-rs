@@ -230,7 +230,10 @@ async fn config_env_extras_populate() {
     let _guard = ENV_LOCK.lock().await;
     clear_jss_env();
 
-    std::env::set_var("JSS_CORS_ALLOWED_ORIGINS", "https://a.example, https://b.example");
+    std::env::set_var(
+        "JSS_CORS_ALLOWED_ORIGINS",
+        "https://a.example, https://b.example",
+    );
     std::env::set_var("JSS_SUBDOMAINS", "true");
     std::env::set_var("JSS_BASE_DOMAIN", "pods.example.com");
     std::env::set_var("JSS_IDP_ENABLED", "true");
@@ -246,7 +249,10 @@ async fn config_env_extras_populate() {
 
     assert_eq!(
         cfg.extras.cors_allowed_origins,
-        vec!["https://a.example".to_string(), "https://b.example".to_string()]
+        vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string()
+        ]
     );
     assert_eq!(cfg.extras.subdomains_enabled, Some(true));
     assert_eq!(cfg.extras.base_domain.as_deref(), Some("pods.example.com"));

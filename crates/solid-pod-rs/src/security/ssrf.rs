@@ -213,12 +213,13 @@ impl SsrfPolicy {
         // accepts the input; we only care about the IP.
         let port = url.port_or_known_default().unwrap_or(80);
         let lookup_target = format!("{host}:{port}");
-        let mut addrs = tokio::net::lookup_host(&lookup_target)
-            .await
-            .map_err(|e| SsrfError::DnsFailure {
-                host: host.to_string(),
-                source: e,
-            })?;
+        let mut addrs =
+            tokio::net::lookup_host(&lookup_target)
+                .await
+                .map_err(|e| SsrfError::DnsFailure {
+                    host: host.to_string(),
+                    source: e,
+                })?;
         let sock_addr = addrs.next().ok_or_else(|| SsrfError::NoAddresses {
             host: host.to_string(),
         })?;
@@ -516,12 +517,13 @@ pub async fn resolve_and_check(host: &str) -> Result<IpAddr, SsrfError> {
     } else {
         format!("{host}:80")
     };
-    let addrs = tokio::net::lookup_host(&lookup_target)
-        .await
-        .map_err(|e| SsrfError::DnsFailure {
-            host: host.to_string(),
-            source: e,
-        })?;
+    let addrs =
+        tokio::net::lookup_host(&lookup_target)
+            .await
+            .map_err(|e| SsrfError::DnsFailure {
+                host: host.to_string(),
+                source: e,
+            })?;
 
     let mut first: Option<IpAddr> = None;
     for sock in addrs {
@@ -808,8 +810,14 @@ mod tests {
     #[test]
     fn blocks_aws_metadata_ip() {
         // AWS/Azure/GCP all share the 169.254.169.254 literal.
-        assert_blocked("http://169.254.169.254/latest/meta-data/", IpClass::Reserved);
-        assert_blocked("http://[fd00:ec2::254]/latest/meta-data/", IpClass::Reserved);
+        assert_blocked(
+            "http://169.254.169.254/latest/meta-data/",
+            IpClass::Reserved,
+        );
+        assert_blocked(
+            "http://[fd00:ec2::254]/latest/meta-data/",
+            IpClass::Reserved,
+        );
     }
 
     #[tokio::test]
@@ -880,12 +888,10 @@ mod tests {
                 // error — both are acceptable block outcomes.
                 assert_eq!(host, "this-host-does-not-exist.invalid");
             }
-            Err(other) => panic!(
-                "expected DnsFailure or NoAddresses for unresolvable host, got {other:?}"
-            ),
-            Ok(ip) => panic!(
-                "expected DNS failure for unresolvable host, got Ok({ip})"
-            ),
+            Err(other) => {
+                panic!("expected DnsFailure or NoAddresses for unresolvable host, got {other:?}")
+            }
+            Ok(ip) => panic!("expected DNS failure for unresolvable host, got Ok({ip})"),
         }
     }
 
@@ -893,8 +899,8 @@ mod tests {
     async fn policy_dns_failure_blocks_request() {
         // Same test through the SsrfPolicy aggregate.
         let policy = SsrfPolicy::new();
-        let url = Url::parse("https://this-host-does-not-exist.invalid/resource")
-            .expect("valid URL");
+        let url =
+            Url::parse("https://this-host-does-not-exist.invalid/resource").expect("valid URL");
         let result = policy.resolve_and_check(&url).await;
         match result {
             Err(SsrfError::DnsFailure { host, .. }) => {
@@ -903,12 +909,8 @@ mod tests {
             Err(SsrfError::NoAddresses { host, .. }) => {
                 assert!(host.contains("this-host-does-not-exist.invalid"));
             }
-            Err(other) => panic!(
-                "expected DnsFailure/NoAddresses through policy, got {other:?}"
-            ),
-            Ok(ip) => panic!(
-                "expected DNS failure through policy, got Ok({ip})"
-            ),
+            Err(other) => panic!("expected DnsFailure/NoAddresses through policy, got {other:?}"),
+            Ok(ip) => panic!("expected DNS failure through policy, got Ok({ip})"),
         }
     }
 }

@@ -10,11 +10,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    actor::Actor,
-    error::OutboxError,
-    store::Store,
-};
+use crate::{actor::Actor, error::OutboxError, store::Store};
 
 /// Result of submitting an activity to the outbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +104,12 @@ fn wrap_note_in_create(actor: &Actor, note: serde_json::Value) -> serde_json::Va
 
     // Ensure the Note itself has an id.
     let mut note = note;
-    if note.get("id").and_then(|v| v.as_str()).map(|s| s.is_empty()).unwrap_or(true) {
+    if note
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.is_empty())
+        .unwrap_or(true)
+    {
         let note_id = format!("{base}/posts/{}", uuid::Uuid::new_v4());
         note["id"] = serde_json::Value::String(note_id);
     }
@@ -200,9 +201,7 @@ mod tests {
             "type": "Create",
             "object": {"type": "Note", "content": "hello world"}
         });
-        let delivery = handle_outbox(&store, &actor, note_activity)
-            .await
-            .unwrap();
+        let delivery = handle_outbox(&store, &actor, note_activity).await.unwrap();
         assert_eq!(delivery.queued_inboxes, 2);
         assert!(delivery.activity.get("id").is_some());
         assert_eq!(delivery.activity["actor"], actor.id);
@@ -232,7 +231,9 @@ mod tests {
     async fn outbox_rejects_missing_type() {
         let store = Store::in_memory().await.unwrap();
         let actor = sample_actor();
-        let err = handle_outbox(&store, &actor, serde_json::json!({})).await.unwrap_err();
+        let err = handle_outbox(&store, &actor, serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, OutboxError::InvalidActivity(_)));
     }
 
@@ -242,7 +243,9 @@ mod tests {
         let actor = sample_actor();
         let act = serde_json::json!({"type": "Create", "object": {"type": "Note"}});
         let d = handle_outbox(&store, &actor, act).await.unwrap();
-        assert!(d.activity_id.starts_with("https://pod.example/profile/card.jsonld/activities/"));
+        assert!(d
+            .activity_id
+            .starts_with("https://pod.example/profile/card.jsonld/activities/"));
     }
 
     // --- handle_outbox_post tests ---
@@ -258,7 +261,10 @@ mod tests {
         let delivery = handle_outbox_post(&store, &actor, note).await.unwrap();
         assert_eq!(delivery.activity["type"], "Create");
         assert_eq!(delivery.activity["object"]["type"], "Note");
-        assert_eq!(delivery.activity["object"]["content"], "Hello from outbox POST");
+        assert_eq!(
+            delivery.activity["object"]["content"],
+            "Hello from outbox POST"
+        );
         // The Note should have attributedTo and published stamped.
         assert_eq!(delivery.activity["object"]["attributedTo"], actor.id);
         assert!(delivery.activity["object"]["published"].as_str().is_some());
@@ -305,8 +311,14 @@ mod tests {
     async fn outbox_post_note_delivers_to_followers() {
         let store = Store::in_memory().await.unwrap();
         let actor = sample_actor();
-        store.add_follower(&actor.id, "f1", Some("https://f1/inbox")).await.unwrap();
-        store.add_follower(&actor.id, "f2", Some("https://f2/inbox")).await.unwrap();
+        store
+            .add_follower(&actor.id, "f1", Some("https://f1/inbox"))
+            .await
+            .unwrap();
+        store
+            .add_follower(&actor.id, "f2", Some("https://f2/inbox"))
+            .await
+            .unwrap();
 
         let note = serde_json::json!({"type": "Note", "content": "fan-out test"});
         let delivery = handle_outbox_post(&store, &actor, note).await.unwrap();

@@ -7,11 +7,9 @@
 use std::path::PathBuf;
 
 use solid_pod_rs::error::PodError;
-use solid_pod_rs::wac::{
-    parse_turtle_acl_with_limit, parse_jsonld_acl_with_limits, MAX_ACL_BYTES,
-};
-use solid_pod_rs::{DotfileAllowlist, is_path_allowed};
 use solid_pod_rs::security::dotfile::DotfilePathError;
+use solid_pod_rs::wac::{parse_jsonld_acl_with_limits, parse_turtle_acl_with_limit, MAX_ACL_BYTES};
+use solid_pod_rs::{is_path_allowed, DotfileAllowlist};
 
 // =========================================================================
 // Size-capped ACL parsing (row 169)
@@ -183,9 +181,7 @@ fn dotdot_bypass_attempt_rejected_by_free_function() {
     // a `..` segment.
     match is_path_allowed("/pod/../etc/passwd") {
         Err(DotfilePathError::ParentTraversal(_)) => {}
-        other => panic!(
-            "expected ParentTraversal for /pod/../etc/passwd, got {other:?}"
-        ),
+        other => panic!("expected ParentTraversal for /pod/../etc/passwd, got {other:?}"),
     }
 }
 

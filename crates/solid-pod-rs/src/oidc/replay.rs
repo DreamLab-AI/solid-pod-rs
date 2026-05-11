@@ -121,8 +121,7 @@ impl DpopReplayCache {
     /// `max_size` is clamped to at least 1; a zero-capacity LRU is
     /// meaningless for replay detection.
     pub fn with_config(ttl: Duration, max_size: usize) -> Self {
-        let cap = NonZeroUsize::new(max_size.max(1))
-            .expect("max_size clamped to >= 1 above");
+        let cap = NonZeroUsize::new(max_size.max(1)).expect("max_size clamped to >= 1 above");
         Self {
             inner: Arc::new(Mutex::new(LruCacheInner {
                 entries: LruCache::new(cap),
@@ -279,8 +278,7 @@ impl ReplayRejectedCounter {
 /// Process-wide replay-rejection counter. Consumers reading this
 /// should expose it via their metrics endpoint as
 /// `solid_pod_rs_dpop_replay_rejected_total`.
-pub static DPOP_REPLAY_REJECTED_TOTAL: ReplayRejectedCounter =
-    ReplayRejectedCounter::new();
+pub static DPOP_REPLAY_REJECTED_TOTAL: ReplayRejectedCounter = ReplayRejectedCounter::new();
 
 // ---------------------------------------------------------------------------
 // Synchronous LRU+TTL replay primitive — Sprint 9 row 64.
@@ -326,8 +324,7 @@ impl JtiReplayCache {
     /// Build a cache with the given capacity and TTL. Capacity is
     /// clamped to at least 1.
     pub fn new(capacity: usize, ttl: Duration) -> Self {
-        let cap = NonZeroUsize::new(capacity.max(1))
-            .expect("capacity clamped to >= 1 above");
+        let cap = NonZeroUsize::new(capacity.max(1)).expect("capacity clamped to >= 1 above");
         Self {
             inner: Arc::new(StdMutex::new(JtiInner {
                 entries: LruCache::new(cap),
@@ -367,19 +364,10 @@ impl JtiReplayCache {
     /// already recorded within TTL, return [`ReplayError::Replayed`]
     /// without refreshing the entry. Expired entries are transparently
     /// overwritten.
-    pub fn check_and_insert(
-        &self,
-        jti: &str,
-        now: SystemTime,
-    ) -> Result<(), ReplayError> {
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    pub fn check_and_insert(&self, jti: &str, now: SystemTime) -> Result<(), ReplayError> {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&first_seen) = guard.entries.peek(jti) {
-            let age = now
-                .duration_since(first_seen)
-                .unwrap_or(Duration::ZERO);
+            let age = now.duration_since(first_seen).unwrap_or(Duration::ZERO);
             if age < self.ttl {
                 return Err(ReplayError::Replayed { ttl: self.ttl });
             }

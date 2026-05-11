@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use bytes::Bytes;
 use solid_pod_rs::ldp::{
-    link_headers, negotiate_format, render_container_jsonld, render_container_turtle,
-    PreferHeader, RdfFormat, ACCEPT_POST,
+    link_headers, negotiate_format, render_container_jsonld, render_container_turtle, PreferHeader,
+    RdfFormat, ACCEPT_POST,
 };
 use solid_pod_rs::storage::{memory::MemoryBackend, Storage};
 use solid_pod_rs::wac::{evaluate_access, method_to_mode, AccessMode, AclDocument};
@@ -44,7 +44,11 @@ fn parse_http_file(name: &str) -> HttpFixture {
 
 fn parse_http_text(raw: &str) -> HttpFixture {
     let mut lines = raw.split('\n');
-    let start_line = lines.next().unwrap_or("").trim_end_matches('\r').to_string();
+    let start_line = lines
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('\r')
+        .to_string();
     let mut headers = Vec::new();
     let mut body_lines = Vec::new();
     let mut in_body = false;
@@ -95,7 +99,10 @@ fn header_values(r: &SimulatedResponse, name: &str) -> Vec<String> {
 }
 
 fn response_header_names(r: &SimulatedResponse) -> Vec<String> {
-    r.headers.iter().map(|(k, _)| k.to_ascii_lowercase()).collect()
+    r.headers
+        .iter()
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect()
 }
 
 async fn handle_request(
@@ -161,8 +168,7 @@ async fn handle_request(
                     ),
                     RdfFormat::JsonLd => (
                         "application/ld+json",
-                        serde_json::to_vec(&render_container_jsonld(path, &list, prefer))
-                            .unwrap(),
+                        serde_json::to_vec(&render_container_jsonld(path, &list, prefer)).unwrap(),
                     ),
                     RdfFormat::NTriples => ("application/n-triples", Vec::new()),
                     RdfFormat::RdfXml => ("application/rdf+xml", Vec::new()),
@@ -228,7 +234,9 @@ async fn handle_request(
                 };
             }
             let existed = pod.exists(path).await.unwrap_or(false);
-            pod.put(path, Bytes::copy_from_slice(body), &ct).await.unwrap();
+            pod.put(path, Bytes::copy_from_slice(body), &ct)
+                .await
+                .unwrap();
             let mut headers: Vec<(String, String)> = link_headers(path)
                 .into_iter()
                 .map(|v| ("Link".to_string(), v))
@@ -241,22 +249,20 @@ async fn handle_request(
                 body: Vec::new(),
             }
         }
-        "DELETE" => {
-            match pod.delete(path).await {
-                Ok(()) => SimulatedResponse {
-                    status: 204,
-                    reason: "No Content",
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
-                Err(_) => SimulatedResponse {
-                    status: 404,
-                    reason: "Not Found",
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
-            }
-        }
+        "DELETE" => match pod.delete(path).await {
+            Ok(()) => SimulatedResponse {
+                status: 204,
+                reason: "No Content",
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            Err(_) => SimulatedResponse {
+                status: 404,
+                reason: "Not Found",
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+        },
         "OPTIONS" => {
             let mut headers: Vec<(String, String)> = link_headers(path)
                 .into_iter()
@@ -370,9 +376,15 @@ async fn jss_put_resource_returns_201_with_location() {
     let req = parse_http_file("put_resource.request.http");
     let expected = parse_http_file("put_resource.response.http");
 
-    let resp =
-        handle_request(&pod, &acls, "PUT", "/data/note.txt", &req.headers, req.body.as_bytes())
-            .await;
+    let resp = handle_request(
+        &pod,
+        &acls,
+        "PUT",
+        "/data/note.txt",
+        &req.headers,
+        req.body.as_bytes(),
+    )
+    .await;
     assert_eq!(resp.status, 201);
     assert_eq!(expected_status(&expected), 201);
     let loc = header_values(&resp, "Location");
@@ -409,8 +421,7 @@ async fn jss_delete_resource_returns_204() {
     let req = parse_http_file("delete_resource.request.http");
     let expected = parse_http_file("delete_resource.response.http");
 
-    let resp = handle_request(&pod, &acls, "DELETE", "/data/note.txt", &req.headers, &[])
-        .await;
+    let resp = handle_request(&pod, &acls, "DELETE", "/data/note.txt", &req.headers, &[]).await;
     assert_eq!(resp.status, 204);
     assert_eq!(expected_status(&expected), 204);
     assert!(!pod.exists("/data/note.txt").await.unwrap());
@@ -422,8 +433,7 @@ async fn jss_get_missing_returns_404() {
     let acls = HashMap::new();
     let req = parse_http_file("not_found.request.http");
     let expected = parse_http_file("not_found.response.http");
-    let resp = handle_request(&pod, &acls, "GET", "/does-not-exist", &req.headers, &[])
-        .await;
+    let resp = handle_request(&pod, &acls, "GET", "/does-not-exist", &req.headers, &[]).await;
     assert_eq!(resp.status, 404);
     assert_eq!(expected_status(&expected), 404);
 }
@@ -470,8 +480,7 @@ async fn jss_options_container_lists_accept_post() {
 
     let req = parse_http_file("options_container.request.http");
     let expected = parse_http_file("options_container.response.http");
-    let resp = handle_request(&pod, &acls, "OPTIONS", "/container/", &req.headers, &[])
-        .await;
+    let resp = handle_request(&pod, &acls, "OPTIONS", "/container/", &req.headers, &[]).await;
     assert_eq!(resp.status, 204);
     assert_eq!(expected_status(&expected), 204);
     let ap = header_values(&resp, "Accept-Post");
@@ -674,8 +683,14 @@ async fn jss_container_get_links_have_consistent_header_order() {
     let resp = handle_request(&pod, &acls, "GET", "/container/", &[], &[]).await;
     let links = header_values(&resp, "Link");
     // BasicContainer must come before plain Container / Resource.
-    let idx_bc = links.iter().position(|l| l.contains("BasicContainer")).unwrap();
-    let idx_r = links.iter().position(|l| l.contains("ldp#Resource")).unwrap();
+    let idx_bc = links
+        .iter()
+        .position(|l| l.contains("BasicContainer"))
+        .unwrap();
+    let idx_r = links
+        .iter()
+        .position(|l| l.contains("ldp#Resource"))
+        .unwrap();
     assert!(idx_bc < idx_r, "BasicContainer should precede Resource");
 }
 
@@ -752,18 +767,22 @@ async fn jss_turtle_acl_fallback_grants_public_read() {
             acl:default </> ;
             acl:mode acl:Read .
     "#;
-    pod.put("/.acl", Bytes::copy_from_slice(ttl.as_bytes()), "text/turtle")
-        .await
-        .unwrap();
+    pod.put(
+        "/.acl",
+        Bytes::copy_from_slice(ttl.as_bytes()),
+        "text/turtle",
+    )
+    .await
+    .unwrap();
     let resolver = StorageAclResolver::new(pod.clone());
     let doc = resolver.find_effective_acl("/foo").await.unwrap().unwrap();
     assert!(evaluate_access(
         Some(&doc),
         None,
         "/foo",
-        AccessMode::Read
-    ,
-        None));
+        AccessMode::Read,
+        None
+    ));
 }
 
 #[tokio::test]
@@ -776,8 +795,7 @@ async fn jss_if_match_preconditions_block_concurrent_update() {
         .await
         .unwrap();
     // Client sends stale If-Match
-    let outcome =
-        evaluate_preconditions("PUT", Some(&meta.etag), Some("\"stale-etag\""), None);
+    let outcome = evaluate_preconditions("PUT", Some(&meta.etag), Some("\"stale-etag\""), None);
     assert_eq!(outcome, ConditionalOutcome::PreconditionFailed);
     // Correct etag passes
     let outcome = evaluate_preconditions(
@@ -886,7 +904,10 @@ async fn jss_well_known_solid_exposes_storage_and_issuer() {
     let v = serde_json::to_value(&doc).unwrap();
     assert_eq!(v["solid_oidc_issuer"], "https://op.example");
     assert!(v["storage"].as_str().unwrap().ends_with('/'));
-    assert!(v["notification_gateway"].as_str().unwrap().ends_with(".notifications"));
+    assert!(v["notification_gateway"]
+        .as_str()
+        .unwrap()
+        .ends_with(".notifications"));
 }
 
 #[tokio::test]
@@ -1015,9 +1036,9 @@ async fn jss_turtle_acl_control_grants_acl_rw() {
         Some(&doc),
         Some("did:nostr:own"),
         "/",
-        AccessMode::Control
-    ,
-        None));
+        AccessMode::Control,
+        None
+    ));
 }
 
 // Dev-session helper.

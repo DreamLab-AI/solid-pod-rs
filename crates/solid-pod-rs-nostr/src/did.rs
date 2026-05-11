@@ -62,8 +62,7 @@ mod tests {
         assert_eq!(doc["id"], format!("did:nostr:{PK_HEX}"));
         assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
         assert_eq!(
-            doc["@context"][1],
-            "https://w3id.org/security/suites/secp256k1-2019/v1",
+            doc["@context"][1], "https://w3id.org/security/suites/secp256k1-2019/v1",
             "Tier-1 must include the secp256k1-2019 suite context so \
              SchnorrSecp256k1VerificationKey2019 resolves under JSON-LD"
         );
@@ -73,10 +72,7 @@ mod tests {
         let vm = &doc["verificationMethod"][0];
         assert_eq!(vm["type"], "SchnorrSecp256k1VerificationKey2019");
         assert_eq!(vm["publicKeyHex"], PK_HEX);
-        assert!(vm["publicKeyMultibase"]
-            .as_str()
-            .unwrap()
-            .starts_with('z'));
+        assert!(vm["publicKeyMultibase"].as_str().unwrap().starts_with('z'));
     }
 
     #[test]
@@ -97,7 +93,10 @@ mod tests {
         );
         assert_eq!(doc["service"][0]["type"], "SolidWebID");
         assert_eq!(doc["service"][0]["serviceEndpoint"], webid);
-        assert_eq!(doc["authentication"][0], format!("did:nostr:{PK_HEX}#nostr-schnorr"));
+        assert_eq!(
+            doc["authentication"][0],
+            format!("did:nostr:{PK_HEX}#nostr-schnorr")
+        );
     }
 
     #[test]

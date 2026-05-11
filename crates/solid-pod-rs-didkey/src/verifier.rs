@@ -50,9 +50,8 @@ impl Default for DidKeyVerifier {
 fn looks_like_compact_jws(s: &str) -> bool {
     let dots = s.bytes().filter(|b| *b == b'.').count();
     dots == 2
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'=')
-        })
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'='))
 }
 
 #[async_trait]
@@ -75,9 +74,7 @@ impl SelfSignedVerifier for DidKeyVerifier {
                 did: verified.did,
                 verification_method: verified.verification_method,
             })),
-            Err(crate::error::DidKeyError::MalformedJwt(m)) => {
-                Err(SelfSignedError::Malformed(m))
-            }
+            Err(crate::error::DidKeyError::MalformedJwt(m)) => Err(SelfSignedError::Malformed(m)),
             Err(crate::error::DidKeyError::InvalidHeader(m))
             | Err(crate::error::DidKeyError::NotDidKey(m)) => {
                 // Header parseable but not bound to a did:key →

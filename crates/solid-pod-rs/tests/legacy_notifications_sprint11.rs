@@ -94,9 +94,7 @@ async fn pub_emits_for_exact_match() {
     let mut s = LegacyWebSocketSession::new(wac, None);
     s.handle_message("sub /pods/alice/posts/hello.ttl").await;
 
-    let frames = s
-        .on_resource_change("/pods/alice/posts/hello.ttl")
-        .await;
+    let frames = s.on_resource_change("/pods/alice/posts/hello.ttl").await;
     assert_eq!(
         frames,
         vec![LegacyFrame::Pub("/pods/alice/posts/hello.ttl".into())]
@@ -113,9 +111,7 @@ async fn pub_fans_out_to_ancestor_containers() {
 
     // Child resource changes — subscriber on `/pods/alice/` should see
     // a `pub` frame for the child URI.
-    let frames = s
-        .on_resource_change("/pods/alice/posts/hello.ttl")
-        .await;
+    let frames = s.on_resource_change("/pods/alice/posts/hello.ttl").await;
     assert_eq!(
         frames,
         vec![LegacyFrame::Pub("/pods/alice/posts/hello.ttl".into())]
@@ -187,7 +183,10 @@ async fn rejects_url_over_2kib() {
     let mut s = LegacyWebSocketSession::new(wac, None);
 
     // 2049 bytes total URI — over the 2048 cap.
-    let long_uri: String = "https://p/".chars().chain(std::iter::repeat('a').take(2049 - 10)).collect();
+    let long_uri: String = "https://p/"
+        .chars()
+        .chain(std::iter::repeat('a').take(2049 - 10))
+        .collect();
     assert_eq!(long_uri.len(), 2049);
 
     let r = s.handle_message(&format!("sub {long_uri}")).await;

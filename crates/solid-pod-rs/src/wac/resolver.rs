@@ -71,9 +71,7 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
                 match parse_jsonld_acl(&body) {
                     Ok(doc) => return Ok(Some(doc)),
                     Err(PodError::BadRequest(_)) => {
-                        return Err(PodError::BadRequest(
-                            "ACL document exceeds bounds".into(),
-                        ));
+                        return Err(PodError::BadRequest("ACL document exceeds bounds".into()));
                     }
                     Err(PodError::PayloadTooLarge(msg)) => {
                         return Err(PodError::PayloadTooLarge(msg));

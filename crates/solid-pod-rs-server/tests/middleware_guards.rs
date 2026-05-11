@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use solid_pod_rs::storage::memory::MemoryBackend;
-use solid_pod_rs_server::{build_app, body_cap_from_env, AppState, NodeInfoMeta, DEFAULT_BODY_CAP};
+use solid_pod_rs_server::{body_cap_from_env, build_app, AppState, NodeInfoMeta, DEFAULT_BODY_CAP};
 
 /// Build a fresh `AppState` backed by an in-memory storage.
 fn make_state() -> AppState {
@@ -104,7 +104,9 @@ async fn traversal_guard_allows_root() {
 #[actix_web::test]
 async fn dotfile_guard_blocks_env_path() {
     let app = actix_web::test::init_service(build_app(make_state())).await;
-    let req = actix_web::test::TestRequest::get().uri("/.env").to_request();
+    let req = actix_web::test::TestRequest::get()
+        .uri("/.env")
+        .to_request();
     let rsp = actix_web::test::call_service(&app, req).await;
     assert_eq!(
         rsp.status().as_u16(),

@@ -134,7 +134,9 @@ impl ConfigLoader {
     /// bypassing the builder. Format auto-detected from extension. This
     /// is the Sprint 11 row 120 one-shot helper — equivalent to
     /// `ConfigLoader::new().with_defaults().with_file(path).load()`.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> impl std::future::Future<Output = Result<ServerConfig, PodError>> {
+    pub fn from_file<P: AsRef<Path>>(
+        path: P,
+    ) -> impl std::future::Future<Output = Result<ServerConfig, PodError>> {
         let p = path.as_ref().to_path_buf();
         async move {
             ConfigLoader::new()
@@ -173,8 +175,8 @@ impl ConfigLoader {
                     .and_then(|s| s.get("type"))
                     .and_then(|t| t.as_str())
                     == Some("memory");
-                let root_was_set = std::env::var("JSS_STORAGE_ROOT").is_ok()
-                    || std::env::var("JSS_ROOT").is_ok();
+                let root_was_set =
+                    std::env::var("JSS_STORAGE_ROOT").is_ok() || std::env::var("JSS_ROOT").is_ok();
                 if type_is_memory && root_was_set {
                     self.warnings.push(
                         "JSS_STORAGE_TYPE=memory with JSS_STORAGE_ROOT/JSS_ROOT set: \
@@ -191,9 +193,8 @@ impl ConfigLoader {
             tracing::warn!(target: "solid_pod_rs::config", "{w}");
         }
 
-        let cfg: ServerConfig = serde_json::from_value(tree).map_err(|e| {
-            PodError::Backend(format!("config merge produced invalid shape: {e}"))
-        })?;
+        let cfg: ServerConfig = serde_json::from_value(tree)
+            .map_err(|e| PodError::Backend(format!("config merge produced invalid shape: {e}")))?;
 
         cfg.validate().map_err(PodError::Backend)?;
 

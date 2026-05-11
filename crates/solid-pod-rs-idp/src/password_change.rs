@@ -109,9 +109,7 @@ pub async fn change_password(
         .find_by_id(user_id)
         .await
         .map_err(|e| PasswordChangeError::UserStore(e.to_string()))?
-        .ok_or(PasswordChangeError::InvalidRequest(
-            "user not found".into(),
-        ))?;
+        .ok_or(PasswordChangeError::InvalidRequest("user not found".into()))?;
 
     // --- verify current password ---
     let ok = user_store
@@ -134,16 +132,14 @@ pub async fn change_password(
         .update_password(user_id, new_hash)
         .await
         .map_err(|e| match e {
-            UserStoreError::NotImplemented => PasswordChangeError::UserStore(
-                "password change not supported by this store".into(),
-            ),
+            UserStoreError::NotImplemented => {
+                PasswordChangeError::UserStore("password change not supported by this store".into())
+            }
             other => PasswordChangeError::UserStore(other.to_string()),
         })?;
 
     if !updated {
-        return Err(PasswordChangeError::InvalidRequest(
-            "user not found".into(),
-        ));
+        return Err(PasswordChangeError::InvalidRequest("user not found".into()));
     }
 
     Ok(PasswordChangeResponse {

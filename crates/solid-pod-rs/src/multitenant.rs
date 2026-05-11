@@ -241,10 +241,7 @@ mod tests {
         };
         // Host header: `....//foo.pods.example.com`
         let got = r.resolve("....//foo.pods.example.com", "/index.html");
-        assert_eq!(
-            got.pod, None,
-            "bypass attempt must not produce a pod name"
-        );
+        assert_eq!(got.pod, None, "bypass attempt must not produce a pod name");
     }
 
     #[test]
@@ -308,7 +305,10 @@ mod tests {
         assert!(is_file_like_label("bundle.js"));
         assert!(is_file_like_label("icon.SVG"));
         assert!(is_file_like_label("profile.jsonld"));
-        assert!(!is_file_like_label("hero.webp"), "unknown ext must not match");
+        assert!(
+            !is_file_like_label("hero.webp"),
+            "unknown ext must not match"
+        );
         assert!(!is_file_like_label("alice"));
         assert!(!is_file_like_label("bob-smith"));
         // A label with a dot but unknown extension must not match.

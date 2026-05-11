@@ -38,18 +38,14 @@ pub const DATA_ISLAND_MAX_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone)]
 pub enum MashlibMode {
     /// Load from unpkg CDN.  `version` is e.g. `"2.0.0"`.
-    Cdn {
-        version: String,
-    },
+    Cdn { version: String },
     /// Serve from a local directory (operator sets up `actix-files` /
     /// `tower-http::ServeDir`).  The HTML references `/mashlib.min.js`
     /// and `/mash.css` at the server root.
     Local,
     /// ES module entry point (the LOSOS pattern).  The server emits
     /// `<div id="mashlib">` and a `<script type="module" src="{url}">`.
-    Module {
-        url: String,
-    },
+    Module { url: String },
 }
 
 impl Default for MashlibMode {
@@ -345,12 +341,22 @@ mod tests {
 
     #[test]
     fn rejects_when_disabled() {
-        assert!(!should_serve("text/html", Some("document"), "text/turtle", false));
+        assert!(!should_serve(
+            "text/html",
+            Some("document"),
+            "text/turtle",
+            false
+        ));
     }
 
     #[test]
     fn rejects_xhr_fetch() {
-        assert!(!should_serve("text/html", Some("empty"), "text/turtle", true));
+        assert!(!should_serve(
+            "text/html",
+            Some("empty"),
+            "text/turtle",
+            true
+        ));
     }
 
     #[test]

@@ -16,16 +16,16 @@
 //! - Dev-mode session bypass.
 
 use bytes::Bytes;
-use solid_pod_rs::{
-    apply_json_patch, check_admin_override, dev_session, evaluate_preconditions,
-    extract_oidc_issuer, generate_webid_html_with_issuer, nip05_document, options_for,
-    parse_range_header, parse_turtle_acl, provision_pod, serialize_turtle_acl,
-    slice_range, verify_nip05, webfinger_response, well_known_solid, AccessMode,
-    ConditionalOutcome, ProvisionPlan, QuotaTracker,
-};
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::wac::{evaluate_access, AclResolver, StorageAclResolver};
+use solid_pod_rs::{
+    apply_json_patch, check_admin_override, dev_session, evaluate_preconditions,
+    extract_oidc_issuer, generate_webid_html_with_issuer, nip05_document, options_for,
+    parse_range_header, parse_turtle_acl, provision_pod, serialize_turtle_acl, slice_range,
+    verify_nip05, webfinger_response, well_known_solid, AccessMode, ConditionalOutcome,
+    ProvisionPlan, QuotaTracker,
+};
 
 // ---------------------------------------------------------------------------
 // Turtle ACL
@@ -54,7 +54,13 @@ async fn turtle_acl_resolver_reads_ttl_sidecar() {
 
     let resolver = StorageAclResolver::new(pod.clone());
     let doc = resolver.find_effective_acl("/foo").await.unwrap().unwrap();
-    assert!(evaluate_access(Some(&doc), None, "/foo", AccessMode::Read, None));
+    assert!(evaluate_access(
+        Some(&doc),
+        None,
+        "/foo",
+        AccessMode::Read,
+        None
+    ));
 }
 
 #[test]
@@ -72,16 +78,16 @@ fn turtle_acl_round_trip_preserves_modes() {
         Some(&doc),
         Some("did:nostr:owner"),
         "/",
-        AccessMode::Write
-    ,
-        None));
+        AccessMode::Write,
+        None
+    ));
     assert!(evaluate_access(
         Some(&doc),
         Some("did:nostr:owner"),
         "/",
-        AccessMode::Control
-    ,
-        None));
+        AccessMode::Control,
+        None
+    ));
 
     // Re-serialise and re-parse: modes survive.
     let out = serialize_turtle_acl(&doc);
@@ -90,9 +96,9 @@ fn turtle_acl_round_trip_preserves_modes() {
         Some(&doc2),
         Some("did:nostr:owner"),
         "/",
-        AccessMode::Write
-    ,
-        None));
+        AccessMode::Write,
+        None
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,8 +241,12 @@ fn webfinger_acct_lookup_returns_links() {
     )
     .unwrap();
     let rels: Vec<_> = j.links.iter().map(|l| l.rel.as_str()).collect();
-    assert!(rels.iter().any(|r| r == &"http://www.w3.org/ns/solid#webid"));
-    assert!(rels.iter().any(|r| r == &"http://www.w3.org/ns/pim/space#storage"));
+    assert!(rels
+        .iter()
+        .any(|r| r == &"http://www.w3.org/ns/solid#webid"));
+    assert!(rels
+        .iter()
+        .any(|r| r == &"http://www.w3.org/ns/pim/space#storage"));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +271,7 @@ fn quota_rejects_over_limit_writes() {
     q.reserve(512).unwrap();
     q.reserve(400).unwrap();
     let err = q.reserve(200).unwrap_err();
-    assert!(matches!(
-        err,
-        solid_pod_rs::PodError::PreconditionFailed(_)
-    ));
+    assert!(matches!(err, solid_pod_rs::PodError::PreconditionFailed(_)));
 }
 
 // ---------------------------------------------------------------------------

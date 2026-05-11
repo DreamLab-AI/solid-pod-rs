@@ -116,12 +116,13 @@ async fn pod_get(
             let mut rsp = HttpResponse::Ok().body(body.to_vec());
             let _ = rsp.headers_mut().insert(
                 actix_web::http::header::CONTENT_TYPE,
-                actix_web::http::header::HeaderValue::from_str(&meta.content_type)
-                    .unwrap_or_else(|_| {
+                actix_web::http::header::HeaderValue::from_str(&meta.content_type).unwrap_or_else(
+                    |_| {
                         actix_web::http::header::HeaderValue::from_static(
                             "application/octet-stream",
                         )
-                    }),
+                    },
+                ),
             );
             if let Ok(v) = actix_web::http::header::HeaderValue::from_str(&wac_allow) {
                 rsp.headers_mut().insert(
@@ -156,8 +157,7 @@ async fn pod_put(
         .await
         .map_err(to_actix)?;
     let mut rsp = HttpResponse::Created().finish();
-    if let Ok(etag) =
-        actix_web::http::header::HeaderValue::from_str(&format!("\"{}\"", meta.etag))
+    if let Ok(etag) = actix_web::http::header::HeaderValue::from_str(&format!("\"{}\"", meta.etag))
     {
         rsp.headers_mut()
             .insert(actix_web::http::header::ETAG, etag);

@@ -231,7 +231,8 @@ impl Storage for FsBackend {
                     .unwrap_or_else(chrono::Utc::now)
             })
             .unwrap_or_else(chrono::Utc::now);
-        self.read_meta(path, body.len() as u64, etag, modified).await
+        self.read_meta(path, body.len() as u64, etag, modified)
+            .await
     }
 
     async fn exists(&self, path: &str) -> Result<bool, PodError> {
@@ -247,11 +248,7 @@ impl Storage for FsBackend {
         };
         let dir_path = self.resolve(&container)?;
         fs::create_dir_all(&dir_path).await?;
-        Ok(ResourceMeta::new(
-            "container",
-            0,
-            "application/ld+json",
-        ))
+        Ok(ResourceMeta::new("container", 0, "application/ld+json"))
     }
 
     async fn watch(&self, path: &str) -> Result<mpsc::Receiver<StorageEvent>, PodError> {
@@ -262,8 +259,7 @@ impl Storage for FsBackend {
         let root = self.root.clone();
         let (tx, rx) = mpsc::channel::<StorageEvent>(64);
 
-        let (raw_tx, raw_rx) =
-            std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+        let (raw_tx, raw_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
         let mut watcher = notify::recommended_watcher(move |res| {
             let _ = raw_tx.send(res);
         })?;

@@ -14,10 +14,9 @@
 //!   * Round-trip of conditions through the Turtle serialiser.
 
 use solid_pod_rs::wac::{
-    evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl, validate_acl_document,
-    AccessMode, AclAuthorization, AclDocument, ClientConditionBody, Condition,
-    ConditionRegistry, IdOrIds, IdRef, IssuerConditionBody, RequestContext,
-    StaticGroupMembership,
+    evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl, validate_acl_document, AccessMode,
+    AclAuthorization, AclDocument, ClientConditionBody, Condition, ConditionRegistry, IdOrIds,
+    IdRef, IssuerConditionBody, RequestContext, StaticGroupMembership,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,7 +44,9 @@ fn doc_with_conditions(conds: Vec<Condition>) -> AclDocument {
             origin: None,
             access_to: Some(IdOrIds::Single(IdRef { id: "/r".into() })),
             default: None,
-            mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
+            mode: Some(IdOrIds::Single(IdRef {
+                id: "acl:Read".into(),
+            })),
             condition: Some(conds),
         }]),
     }
@@ -310,7 +311,10 @@ fn serializer_round_trip_preserves_conditions() {
 
     let reparsed = parse_turtle_acl(&ttl).expect("re-parse");
     let auth = reparsed.graph.as_ref().unwrap().first().unwrap();
-    let conds = auth.condition.as_ref().expect("conditions survive round-trip");
+    let conds = auth
+        .condition
+        .as_ref()
+        .expect("conditions survive round-trip");
     assert_eq!(conds.len(), 2);
     assert!(matches!(conds[0], Condition::Client(_)));
     assert!(matches!(conds[1], Condition::Issuer(_)));

@@ -356,10 +356,7 @@ where
     // malformed values are ignored (forward-compat with unknown units).
     if let Some(v) = get("JSS_DEFAULT_QUOTA").or_else(|| get("JSS_QUOTA_DEFAULT_BYTES")) {
         if let Ok(bytes) = parse_size(&v) {
-            security.insert(
-                "default_quota_bytes".into(),
-                Value::Number(bytes.into()),
-            );
+            security.insert("default_quota_bytes".into(), Value::Number(bytes.into()));
         }
     }
 
@@ -394,10 +391,7 @@ where
     }
     if let Some(v) = get("JSS_RATE_LIMIT_WRITES_PER_MIN") {
         if let Ok(n) = v.parse::<u64>() {
-            extras.insert(
-                "rate_limit_writes_per_min".into(),
-                Value::Number(n.into()),
-            );
+            extras.insert("rate_limit_writes_per_min".into(), Value::Number(n.into()));
         }
     }
     if let Some(v) = get("JSS_SUBDOMAINS") {
@@ -504,10 +498,7 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
     }
 
     // Reject malformed numerics (multi-dot, leading/trailing dot).
-    if num_part.matches('.').count() > 1
-        || num_part.starts_with('.')
-        || num_part.ends_with('.')
-    {
+    if num_part.matches('.').count() > 1 || num_part.starts_with('.') || num_part.ends_with('.') {
         return Err(format!("parse_size: invalid number {num_part:?}"));
     }
 
@@ -516,7 +507,9 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .map_err(|e| format!("parse_size: bad number {num_part:?}: {e}"))?;
 
     if !num.is_finite() || num < 0.0 {
-        return Err(format!("parse_size: non-negative finite number required, got {num}"));
+        return Err(format!(
+            "parse_size: non-negative finite number required, got {num}"
+        ));
     }
 
     // IEC (binary) suffixes carry the `i` between the prefix and B.

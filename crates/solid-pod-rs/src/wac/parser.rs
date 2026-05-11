@@ -37,10 +37,7 @@ pub fn parse_turtle_acl(input: &str) -> Result<AclDocument, PodError> {
 /// parameter instead of reading from the `JSS_MAX_ACL_BYTES` environment
 /// variable. Returns `PodError::PayloadTooLarge` (HTTP 413 equivalent)
 /// when `input.len() > max_bytes`.
-pub fn parse_turtle_acl_with_limit(
-    input: &str,
-    max_bytes: usize,
-) -> Result<AclDocument, PodError> {
+pub fn parse_turtle_acl_with_limit(input: &str, max_bytes: usize) -> Result<AclDocument, PodError> {
     if input.len() > max_bytes {
         return Err(PodError::PayloadTooLarge(format!(
             "ACL body exceeds {max_bytes} bytes"
@@ -64,7 +61,10 @@ pub fn parse_turtle_acl_with_limit(
             if let Some((name, iri_part)) = rest.split_once(':') {
                 let name = name.trim().to_string();
                 let iri_part = iri_part.trim().trim_end_matches('.').trim();
-                let iri = iri_part.trim_start_matches('<').trim_end_matches('>').trim();
+                let iri = iri_part
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .trim();
                 prefixes.insert(name, iri.to_string());
             }
         } else {
@@ -183,8 +183,7 @@ fn parse_turtle_authorization(
         match pred_expanded.as_str() {
             "a" | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" | "rdf:type"
                 if objects.iter().any(|o| {
-                    o == "http://www.w3.org/ns/auth/acl#Authorization"
-                        || o == "acl:Authorization"
+                    o == "http://www.w3.org/ns/auth/acl#Authorization" || o == "acl:Authorization"
                 }) =>
             {
                 any_authz = true;
@@ -371,9 +370,7 @@ fn parse_turtle_condition_body(
         let pred_expanded = expand_curie_or_iri(&pred, prefixes);
         let objects = parse_object_list(rest.trim(), prefixes);
         match pred_expanded.as_str() {
-            "a"
-            | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-            | "rdf:type" => {
+            "a" | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" | "rdf:type" => {
                 if let Some(first) = objects.first() {
                     type_iri = Some(normalise_condition_type(first));
                 }

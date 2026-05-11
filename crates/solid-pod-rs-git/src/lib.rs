@@ -42,7 +42,6 @@
 //! (path overridable via `GIT_HTTP_BACKEND_PATH`) and shuttles bytes.
 
 #![doc = include_str!("../README.md")]
-
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]

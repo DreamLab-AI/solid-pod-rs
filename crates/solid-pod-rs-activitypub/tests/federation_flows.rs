@@ -13,9 +13,9 @@ use solid_pod_rs_activitypub::{
     error::{InboxError, OutboxError},
     http_sig::VerifiedActor,
     inbox::{build_accept, handle_inbox, InboxOutcome},
-    negotiate_actor_format, ActorFormat,
+    negotiate_actor_format,
     outbox::{handle_outbox, handle_outbox_post},
-    Store,
+    ActorFormat, Store,
 };
 
 // ---------------------------------------------------------------------------
@@ -170,10 +170,7 @@ async fn outbox_post_raw_note_wraps_in_create() {
     let delivery = handle_outbox_post(&store, &actor, note).await.unwrap();
     assert_eq!(delivery.activity["type"], "Create");
     assert_eq!(delivery.activity["object"]["type"], "Note");
-    assert_eq!(
-        delivery.activity["object"]["content"],
-        "Hello federation!"
-    );
+    assert_eq!(delivery.activity["object"]["content"], "Hello federation!");
     // attributedTo should be stamped.
     assert_eq!(delivery.activity["object"]["attributedTo"], actor.id);
     // published should be stamped on both Create and Note.
@@ -192,7 +189,10 @@ async fn outbox_post_preformed_create_passthrough() {
     });
     let delivery = handle_outbox_post(&store, &actor, create).await.unwrap();
     assert_eq!(delivery.activity["type"], "Create");
-    assert_eq!(delivery.activity["id"], "https://pod.example/activities/custom-1");
+    assert_eq!(
+        delivery.activity["id"],
+        "https://pod.example/activities/custom-1"
+    );
     assert_eq!(delivery.activity["object"]["content"], "pre-wrapped note");
 }
 
@@ -449,12 +449,12 @@ fn build_accept_wraps_follow_with_context() {
         "object": "https://pod.example/profile/card.jsonld#me"
     });
     let accept = build_accept("https://pod.example/profile/card.jsonld#me", &follow);
-    assert_eq!(
-        accept["@context"],
-        "https://www.w3.org/ns/activitystreams"
-    );
+    assert_eq!(accept["@context"], "https://www.w3.org/ns/activitystreams");
     assert_eq!(accept["type"], "Accept");
-    assert_eq!(accept["actor"], "https://pod.example/profile/card.jsonld#me");
+    assert_eq!(
+        accept["actor"],
+        "https://pod.example/profile/card.jsonld#me"
+    );
     assert_eq!(accept["object"]["id"], "https://remote/follows/42");
     assert!(accept["id"].as_str().unwrap().contains("/accept/"));
 }
@@ -513,10 +513,7 @@ async fn delivery_worker_enqueue_to_inboxes_creates_queue_rows() {
         "https://b/inbox".to_string(),
         "https://c/inbox".to_string(),
     ];
-    let count = worker
-        .enqueue_to_inboxes("act-1", &inboxes)
-        .await
-        .unwrap();
+    let count = worker.enqueue_to_inboxes("act-1", &inboxes).await.unwrap();
     assert_eq!(count, 3);
 
     // Verify all three are in the delivery queue.

@@ -4,9 +4,7 @@
 //! `validate_password_length` rejects short passwords and accepts
 //! passwords at or above the minimum.
 
-use solid_pod_rs_idp::credentials::{
-    validate_password_length, LoginError, MIN_PASSWORD_LENGTH,
-};
+use solid_pod_rs_idp::credentials::{validate_password_length, LoginError, MIN_PASSWORD_LENGTH};
 
 #[test]
 fn min_password_length_constant_equals_8() {

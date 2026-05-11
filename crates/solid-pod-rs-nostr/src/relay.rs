@@ -72,12 +72,12 @@ impl Event {
         if computed.to_lowercase() != self.id.to_lowercase() {
             return Err(RelayError::IdMismatch);
         }
-        let pk_bytes = hex::decode(&self.pubkey)
-            .map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
-        let sig_bytes = hex::decode(&self.sig)
-            .map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
-        let id_bytes = hex::decode(&computed)
-            .map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
+        let pk_bytes =
+            hex::decode(&self.pubkey).map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
+        let sig_bytes =
+            hex::decode(&self.sig).map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
+        let id_bytes =
+            hex::decode(&computed).map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
         let vk = VerifyingKey::from_bytes(&pk_bytes)
             .map_err(|e| RelayError::BadSignature(e.to_string()))?;
         let sig = Signature::try_from(sig_bytes.as_slice())
@@ -228,11 +228,7 @@ pub trait EventStore: Send + Sync {
     fn snapshot(&self) -> Vec<Event>;
     /// Replace the event at the first index matching `predicate`.
     /// Returns `true` if a replacement was performed.
-    fn replace_where(
-        &self,
-        predicate: &dyn Fn(&Event) -> bool,
-        event: Event,
-    ) -> bool;
+    fn replace_where(&self, predicate: &dyn Fn(&Event) -> bool, event: Event) -> bool;
     /// Current event count.
     fn len(&self) -> usize;
     /// Whether the store is empty.
@@ -284,11 +280,7 @@ impl EventStore for InMemoryEventStore {
             .clone()
     }
 
-    fn replace_where(
-        &self,
-        predicate: &dyn Fn(&Event) -> bool,
-        event: Event,
-    ) -> bool {
+    fn replace_where(&self, predicate: &dyn Fn(&Event) -> bool, event: Event) -> bool {
         let mut guard = self.inner.lock().expect("event store lock poisoned");
         for slot in guard.iter_mut() {
             if predicate(slot) {
@@ -351,11 +343,7 @@ pub struct Relay {
 impl Relay {
     /// Build a relay with the given store, info document, and broadcast
     /// channel capacity.
-    pub fn new(
-        store: Arc<dyn EventStore>,
-        info: RelayInfo,
-        broadcast_capacity: usize,
-    ) -> Self {
+    pub fn new(store: Arc<dyn EventStore>, info: RelayInfo, broadcast_capacity: usize) -> Self {
         let (events_tx, _) = broadcast::channel(broadcast_capacity.max(1));
         Self {
             store,
@@ -550,10 +538,7 @@ mod tests {
         let mut bytes = hex::decode(&ev.sig).unwrap();
         bytes[0] ^= 0x01;
         ev.sig = hex::encode(bytes);
-        assert!(matches!(
-            ev.verify(),
-            Err(RelayError::BadSignature(_))
-        ));
+        assert!(matches!(ev.verify(), Err(RelayError::BadSignature(_))));
     }
 
     #[test]

@@ -14,7 +14,11 @@ use crate::wac::evaluator::GroupMembership;
 /// Body of an `acl:IssuerCondition`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct IssuerConditionBody {
-    #[serde(rename = "acl:issuer", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "acl:issuer",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub issuer: Option<IdOrIds>,
 
     #[serde(

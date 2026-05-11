@@ -196,10 +196,7 @@ mod tests {
             .await
             .unwrap();
         assert!(out.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout).trim(),
-            "updateInstead"
-        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "updateInstead");
 
         let out2 = Command::new("git")
             .arg("config")

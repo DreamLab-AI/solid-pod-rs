@@ -260,11 +260,7 @@ fn jwk_to_pubkey(jwk: &JwkLite) -> Result<DidKeyPubkey, DidKeyError> {
     }
 }
 
-fn verify_signature(
-    pubkey: &DidKeyPubkey,
-    msg: &[u8],
-    sig: &[u8],
-) -> Result<(), DidKeyError> {
+fn verify_signature(pubkey: &DidKeyPubkey, msg: &[u8], sig: &[u8]) -> Result<(), DidKeyError> {
     match pubkey {
         DidKeyPubkey::Ed25519(bytes) => {
             use ed25519_dalek::{Signature, Verifier, VerifyingKey};

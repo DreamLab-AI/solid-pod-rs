@@ -130,9 +130,7 @@ impl GitAuth for BasicNostrExtractor {
             // handles this.
             stripped.trim().to_string()
         } else {
-            return Err(AuthError::Malformed(
-                "unknown Authorization scheme".into(),
-            ));
+            return Err(AuthError::Malformed("unknown Authorization scheme".into()));
         };
 
         // Wrap the raw token back into the `Nostr ` header shape that

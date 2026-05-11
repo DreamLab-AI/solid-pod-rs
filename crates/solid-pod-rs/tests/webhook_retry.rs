@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use solid_pod_rs::notifications::{
-    ChangeNotification, WebhookChannelManager, WebhookDelivery,
-};
+use solid_pod_rs::notifications::{ChangeNotification, WebhookChannelManager, WebhookDelivery};
 
 fn sample_note(object: &str) -> ChangeNotification {
     ChangeNotification {
@@ -50,16 +48,10 @@ async fn webhook_4xx_retains_subscription_except_410() {
         .with_circuit_threshold(100); // don't interfere
 
     let sub_401 = mgr
-        .subscribe(
-            "/public/",
-            &format!("{}/hook-401", server_401.uri()),
-        )
+        .subscribe("/public/", &format!("{}/hook-401", server_401.uri()))
         .await;
     let sub_410 = mgr
-        .subscribe(
-            "/public/",
-            &format!("{}/hook-410", server_410.uri()),
-        )
+        .subscribe("/public/", &format!("{}/hook-410", server_410.uri()))
         .await;
     assert_eq!(mgr.active_subscriptions().await, 2);
 
@@ -108,9 +100,7 @@ async fn webhook_5xx_retry_honours_retry_after_then_succeeds() {
     // Two 503s with Retry-After: 1, then a 200.
     Mock::given(method("POST"))
         .and(path("/hook"))
-        .respond_with(
-            ResponseTemplate::new(503).insert_header("Retry-After", "1"),
-        )
+        .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "1"))
         .up_to_n_times(2)
         .mount(&server)
         .await;
@@ -198,8 +188,7 @@ async fn webhook_circuit_breaker_opens_after_threshold() {
 /// that cap — i.e. the distribution is not degenerate.
 #[test]
 fn webhook_jitter_within_window() {
-    let mgr = WebhookChannelManager::new()
-        .with_max_backoff(Duration::from_secs(10));
+    let mgr = WebhookChannelManager::new().with_max_backoff(Duration::from_secs(10));
     // Cap at attempt=2 is retry_base * 4 = 2s. We assert all samples
     // lie within [0.8 * cap, cap] (±20% window) and span at least
     // ~10% of that window.
@@ -208,17 +197,9 @@ fn webhook_jitter_within_window() {
     let mut max = Duration::ZERO;
     for _ in 0..100 {
         let d = mgr.compute_backoff(2);
-        assert!(
-            d <= cap,
-            "back-off {d:?} exceeded cap {cap:?}"
-        );
-        let floor = Duration::from_nanos(
-            (cap.as_nanos() as f64 * 0.8) as u64,
-        );
-        assert!(
-            d >= floor,
-            "back-off {d:?} below 80% floor {floor:?}"
-        );
+        assert!(d <= cap, "back-off {d:?} exceeded cap {cap:?}");
+        let floor = Duration::from_nanos((cap.as_nanos() as f64 * 0.8) as u64);
+        assert!(d >= floor, "back-off {d:?} below 80% floor {floor:?}");
         if d < min {
             min = d;
         }

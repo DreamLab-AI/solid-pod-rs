@@ -12,14 +12,12 @@
 use std::sync::Arc;
 
 use solid_pod_rs_idp::discovery::build_discovery;
+use solid_pod_rs_idp::error::ProviderError;
 use solid_pod_rs_idp::jwks::Jwks;
-use solid_pod_rs_idp::provider::{
-    AuthorizeRequest, AuthorizeResponse, Provider, ProviderConfig,
-};
+use solid_pod_rs_idp::provider::{AuthorizeRequest, AuthorizeResponse, Provider, ProviderConfig};
 use solid_pod_rs_idp::registration::{register_client, ClientStore, RegistrationRequest};
 use solid_pod_rs_idp::session::SessionStore;
 use solid_pod_rs_idp::user_store::{InMemoryUserStore, UserStore};
-use solid_pod_rs_idp::error::ProviderError;
 
 /// Construct a Provider with a registered client and a seeded user.
 /// Returns (provider, client_id, pkce_verifier).
@@ -124,7 +122,10 @@ fn discovery_document_contains_all_required_endpoints() {
     assert_eq!(doc.userinfo_endpoint, "https://pod.example/idp/me");
     assert_eq!(doc.jwks_uri, "https://pod.example/.well-known/jwks.json");
     assert_eq!(doc.registration_endpoint, "https://pod.example/idp/reg");
-    assert_eq!(doc.end_session_endpoint, "https://pod.example/idp/session/end");
+    assert_eq!(
+        doc.end_session_endpoint,
+        "https://pod.example/idp/session/end"
+    );
     assert_eq!(
         doc.introspection_endpoint,
         "https://pod.example/idp/token/introspection"
@@ -145,13 +146,17 @@ fn discovery_document_advertises_solid_oidc_profile() {
 #[test]
 fn discovery_document_advertises_dpop_es256() {
     let doc = build_discovery("https://pod.example");
-    assert!(doc.dpop_signing_alg_values_supported.contains(&"ES256".to_string()));
+    assert!(doc
+        .dpop_signing_alg_values_supported
+        .contains(&"ES256".to_string()));
 }
 
 #[test]
 fn discovery_document_advertises_pkce_s256() {
     let doc = build_discovery("https://pod.example");
-    assert!(doc.code_challenge_methods_supported.contains(&"S256".to_string()));
+    assert!(doc
+        .code_challenge_methods_supported
+        .contains(&"S256".to_string()));
 }
 
 #[test]
@@ -183,7 +188,9 @@ fn discovery_document_serialises_to_json() {
     let json = serde_json::to_value(&doc).unwrap();
     assert_eq!(json["issuer"], "https://pod.example/");
     assert!(json["scopes_supported"].is_array());
-    assert!(json["authorization_response_iss_parameter_supported"].as_bool().unwrap());
+    assert!(json["authorization_response_iss_parameter_supported"]
+        .as_bool()
+        .unwrap());
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +211,9 @@ async fn authorize_without_session_returns_needs_login() {
         session_account_id: None,
     };
     match p.authorize(req).await.unwrap() {
-        AuthorizeResponse::NeedsLogin { client_id, state, .. } => {
+        AuthorizeResponse::NeedsLogin {
+            client_id, state, ..
+        } => {
             assert!(client_id.starts_with("client_"));
             assert_eq!(state.as_deref(), Some("state-1"));
         }
@@ -227,7 +236,12 @@ async fn authorize_with_session_returns_redirect_with_code() {
         session_account_id: Some("acct-1".into()),
     };
     match p.authorize(req).await.unwrap() {
-        AuthorizeResponse::Redirect { redirect_uri, code, state, iss } => {
+        AuthorizeResponse::Redirect {
+            redirect_uri,
+            code,
+            state,
+            iss,
+        } => {
             assert_eq!(redirect_uri, "https://app.example/cb");
             assert!(!code.is_empty());
             assert_eq!(code.len(), 64, "code should be 32 bytes hex");
@@ -386,17 +400,35 @@ async fn authorize_with_no_state_echoes_none() {
 
 #[test]
 fn provider_error_code_mapping() {
-    assert_eq!(ProviderError::InvalidRequest("x".into()).code(), "invalid_request");
-    assert_eq!(ProviderError::InvalidGrant("x".into()).code(), "invalid_grant");
-    assert_eq!(ProviderError::InvalidClient("x".into()).code(), "invalid_client");
-    assert_eq!(ProviderError::InvalidDpop("x".into()).code(), "invalid_dpop_proof");
-    assert_eq!(ProviderError::ClientDocument("x".into()).code(), "invalid_client");
+    assert_eq!(
+        ProviderError::InvalidRequest("x".into()).code(),
+        "invalid_request"
+    );
+    assert_eq!(
+        ProviderError::InvalidGrant("x".into()).code(),
+        "invalid_grant"
+    );
+    assert_eq!(
+        ProviderError::InvalidClient("x".into()).code(),
+        "invalid_client"
+    );
+    assert_eq!(
+        ProviderError::InvalidDpop("x".into()).code(),
+        "invalid_dpop_proof"
+    );
+    assert_eq!(
+        ProviderError::ClientDocument("x".into()).code(),
+        "invalid_client"
+    );
     assert_eq!(
         ProviderError::PasswordTooShort { min_length: 8 }.code(),
         "invalid_request"
     );
     assert_eq!(
-        ProviderError::RateLimited { retry_after_secs: 60 }.code(),
+        ProviderError::RateLimited {
+            retry_after_secs: 60
+        }
+        .code(),
         "rate_limited"
     );
     assert_eq!(ProviderError::UserStore("x".into()).code(), "server_error");

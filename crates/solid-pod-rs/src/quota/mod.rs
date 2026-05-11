@@ -117,9 +117,8 @@ mod fs_impl {
         async fn read_sidecar(&self, pod: &str) -> std::io::Result<Option<QuotaUsage>> {
             match fs::read(self.quota_file(pod)).await {
                 Ok(bytes) => {
-                    let parsed: QuotaUsage = serde_json::from_slice(&bytes).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                    })?;
+                    let parsed: QuotaUsage = serde_json::from_slice(&bytes)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                     Ok(Some(parsed))
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -139,9 +138,8 @@ mod fs_impl {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).await?;
             }
-            let body = serde_json::to_vec_pretty(usage).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
+            let body = serde_json::to_vec_pretty(usage)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             let tmp = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let nanos = SystemTime::now()
@@ -215,9 +213,8 @@ mod fs_impl {
         fn dir_size_boxed<'a>(
             &'a self,
             dir: &'a Path,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = std::io::Result<u64>> + Send + 'a>,
-        > {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<u64>> + Send + 'a>>
+        {
             Box::pin(async move {
                 let mut total: u64 = 0;
                 let mut rd = match fs::read_dir(dir).await {
@@ -232,9 +229,7 @@ mod fs_impl {
                     }
                     let ft = entry.file_type().await?;
                     if ft.is_dir() {
-                        total = total.saturating_add(
-                            self.dir_size_boxed(&entry.path()).await?,
-                        );
+                        total = total.saturating_add(self.dir_size_boxed(&entry.path()).await?);
                     } else if ft.is_file() {
                         let md = entry.metadata().await?;
                         total = total.saturating_add(md.len());
@@ -274,21 +269,14 @@ mod fs_impl {
         }
 
         async fn record(&self, pod: &str, delta_bytes: i64) {
-            let current = self
-                .effective(pod)
-                .await
-                .unwrap_or(QuotaUsage {
-                    used_bytes: 0,
-                    limit_bytes: self.default_limit,
-                });
+            let current = self.effective(pod).await.unwrap_or(QuotaUsage {
+                used_bytes: 0,
+                limit_bytes: self.default_limit,
+            });
             let new_used = if delta_bytes >= 0 {
-                current
-                    .used_bytes
-                    .saturating_add(delta_bytes as u64)
+                current.used_bytes.saturating_add(delta_bytes as u64)
             } else {
-                current
-                    .used_bytes
-                    .saturating_sub((-delta_bytes) as u64)
+                current.used_bytes.saturating_sub((-delta_bytes) as u64)
             };
             let updated = QuotaUsage {
                 used_bytes: new_used,

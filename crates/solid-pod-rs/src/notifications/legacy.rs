@@ -350,12 +350,8 @@ impl LegacyNotificationChannel {
             match url::Url::parse(&target) {
                 Ok(parsed) => {
                     let host = parsed.host_str().unwrap_or("");
-                    let port_suffix = parsed
-                        .port()
-                        .map(|p| format!(":{p}"))
-                        .unwrap_or_default();
-                    let target_origin =
-                        format!("{}://{}{}", parsed.scheme(), host, port_suffix);
+                    let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+                    let target_origin = format!("{}://{}{}", parsed.scheme(), host, port_suffix);
                     if &target_origin != server_origin {
                         return Err(format!("err {target} forbidden"));
                     }
@@ -516,7 +512,8 @@ mod tests {
     fn parse_subscribe_trims_whitespace_and_crlf() {
         let got = LegacyNotificationChannel::parse_subscribe("sub https://pod.example.com/x\r\n");
         assert_eq!(got, Some("https://pod.example.com/x".to_string()));
-        let got = LegacyNotificationChannel::parse_subscribe("  sub   https://pod.example.com/x   ");
+        let got =
+            LegacyNotificationChannel::parse_subscribe("  sub   https://pod.example.com/x   ");
         assert_eq!(got, Some("https://pod.example.com/x".to_string()));
     }
 
@@ -593,8 +590,10 @@ mod tests {
         let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
         let mut chan =
             LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
-        chan.subscribe("https://pod.example.com/foo/".into()).unwrap();
-        chan.subscribe("https://pod.example.com/bar.ttl".into()).unwrap();
+        chan.subscribe("https://pod.example.com/foo/".into())
+            .unwrap();
+        chan.subscribe("https://pod.example.com/bar.ttl".into())
+            .unwrap();
         assert!(chan.matches_subscription("https://pod.example.com/foo/"));
         assert!(chan.matches_subscription("https://pod.example.com/foo/deep/nested"));
         assert!(chan.matches_subscription("https://pod.example.com/bar.ttl"));
@@ -710,7 +709,9 @@ pub struct LegacyResponse {
 
 impl LegacyResponse {
     fn one(frame: LegacyFrame) -> Self {
-        Self { frames: vec![frame] }
+        Self {
+            frames: vec![frame],
+        }
     }
 
     fn empty() -> Self {
@@ -814,9 +815,7 @@ impl LegacyWebSocketSession {
         // An already-subscribed URI is idempotent — JSS's `Set` absorbs
         // the duplicate without tripping the cap, and we match that.
         if !self.subs.contains(uri) && self.subs.len() >= self.max_subs {
-            return LegacyResponse::one(LegacyFrame::Err(
-                "subscription limit reached".to_string(),
-            ));
+            return LegacyResponse::one(LegacyFrame::Err("subscription limit reached".to_string()));
         }
         // WAC Read check on subscription. Mirrors JSS
         // `websocket.js:73-77`: deny closes the sub attempt with
@@ -995,7 +994,10 @@ mod session_tests {
     #[test]
     fn ancestor_containers_relative_path_climbs() {
         let got = ancestor_containers("/a/b/c");
-        assert_eq!(got, vec!["/a/b/".to_string(), "/a/".to_string(), "/".to_string()]);
+        assert_eq!(
+            got,
+            vec!["/a/b/".to_string(), "/a/".to_string(), "/".to_string()]
+        );
     }
 
     #[test]
@@ -1023,7 +1025,10 @@ mod session_tests {
     #[test]
     fn legacy_frame_to_wire_roundtrip() {
         assert_eq!(LegacyFrame::Ack("/x".into()).to_wire(), "ack /x");
-        assert_eq!(LegacyFrame::Err("forbidden".into()).to_wire(), "err forbidden");
+        assert_eq!(
+            LegacyFrame::Err("forbidden".into()).to_wire(),
+            "err forbidden"
+        );
         assert_eq!(LegacyFrame::Pub("/x".into()).to_wire(), "pub /x");
     }
 }

@@ -12,9 +12,7 @@
 
 #![cfg(feature = "acl-origin")]
 
-use solid_pod_rs::wac::{
-    evaluate_access, parse_turtle_acl, AccessMode, Origin,
-};
+use solid_pod_rs::wac::{evaluate_access, parse_turtle_acl, AccessMode, Origin};
 
 fn doc_without_origin() -> solid_pod_rs::wac::AclDocument {
     let ttl = r#"

@@ -105,7 +105,11 @@ async fn f6a_defaults_produce_valid_config() {
     assert!(cfg.security.acl_origin_enabled);
     assert_eq!(
         cfg.security.dotfile_allowlist,
-        vec![".acl".to_string(), ".meta".to_string(), ".account".to_string()]
+        vec![
+            ".acl".to_string(),
+            ".meta".to_string(),
+            ".account".to_string()
+        ]
     );
 }
 

@@ -23,7 +23,9 @@ fn auth_with_condition(cond: Option<Vec<Condition>>) -> AclAuthorization {
         origin: None,
         access_to: Some(IdOrIds::Single(IdRef { id: "/".into() })),
         default: None,
-        mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
+        mode: Some(IdOrIds::Single(IdRef {
+            id: "acl:Read".into(),
+        })),
         condition: cond,
     }
 }

@@ -50,7 +50,6 @@
 //! 6. WAC-on-write -- PUT/POST/PATCH/DELETE require a write/append grant.
 
 #![doc = include_str!("../README.md")]
-
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
@@ -168,9 +167,7 @@ fn to_actix(e: PodError) -> ActixError {
         PodError::Unsupported(_) => actix_web::error::ErrorUnsupportedMediaType(e.to_string()),
         PodError::Forbidden => actix_web::error::ErrorForbidden(e.to_string()),
         PodError::Unauthenticated => actix_web::error::ErrorUnauthorized(e.to_string()),
-        PodError::PreconditionFailed(_) => {
-            actix_web::error::ErrorPreconditionFailed(e.to_string())
-        }
+        PodError::PreconditionFailed(_) => actix_web::error::ErrorPreconditionFailed(e.to_string()),
         _ => actix_web::error::ErrorInternalServerError(e.to_string()),
     }
 }
@@ -207,12 +204,10 @@ fn agent_uri(pubkey: Option<&String>) -> Option<String> {
 /// the RDF container listing. Solid clients that send `Accept: text/turtle`
 /// or `application/ld+json` skip this path entirely.
 fn accept_includes_html(accept: &str) -> bool {
-    accept
-        .split(',')
-        .any(|entry| {
-            let mime = entry.split(';').next().unwrap_or("").trim();
-            mime.eq_ignore_ascii_case("text/html")
-        })
+    accept.split(',').any(|entry| {
+        let mime = entry.split(';').next().unwrap_or("").trim();
+        mime.eq_ignore_ascii_case("text/html")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +266,8 @@ async fn enforce_write(
     let mut rsp = HttpResponse::new(status);
     rsp.headers_mut().insert(
         header::HeaderName::from_static("wac-allow"),
-        header::HeaderValue::from_str(&allow_header).unwrap_or(header::HeaderValue::from_static("")),
+        header::HeaderValue::from_str(&allow_header)
+            .unwrap_or(header::HeaderValue::from_static("")),
     );
     Err(actix_web::error::InternalError::from_response(body, rsp).into())
 }
@@ -320,7 +316,9 @@ async fn handle_get(
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
     if ldp::is_container(&path) {
-        let accept = req.headers().get(header::ACCEPT)
+        let accept = req
+            .headers()
+            .get(header::ACCEPT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
@@ -349,15 +347,18 @@ async fn handle_get(
             .map_err(to_actix)?;
 
         // Mashlib: serve HTML wrapper for browser navigation.
-        let sec_fetch_dest = req.headers().get("sec-fetch-dest")
+        let sec_fetch_dest = req
+            .headers()
+            .get("sec-fetch-dest")
             .and_then(|v| v.to_str().ok());
-        if mashlib::should_serve(accept, sec_fetch_dest, "application/ld+json", state.mashlib.enabled) {
+        if mashlib::should_serve(
+            accept,
+            sec_fetch_dest,
+            "application/ld+json",
+            state.mashlib.enabled,
+        ) {
             let json_ld = serde_json::to_string(&v).ok();
-            let html = mashlib::generate_html(
-                &path,
-                &state.mashlib,
-                json_ld.as_deref(),
-            );
+            let html = mashlib::generate_html(&path, &state.mashlib, json_ld.as_deref());
             let mut rsp = HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
                 .insert_header(("X-Frame-Options", "DENY"))
@@ -384,22 +385,27 @@ async fn handle_get(
     match state.storage.get(&path).await {
         Ok((body, meta)) => {
             // Mashlib: serve HTML wrapper for browser navigation to RDF resources.
-            let accept = req.headers().get(header::ACCEPT)
+            let accept = req
+                .headers()
+                .get(header::ACCEPT)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            let sec_fetch_dest = req.headers().get("sec-fetch-dest")
+            let sec_fetch_dest = req
+                .headers()
+                .get("sec-fetch-dest")
                 .and_then(|v| v.to_str().ok());
-            if mashlib::should_serve(accept, sec_fetch_dest, &meta.content_type, state.mashlib.enabled) {
+            if mashlib::should_serve(
+                accept,
+                sec_fetch_dest,
+                &meta.content_type,
+                state.mashlib.enabled,
+            ) {
                 let embed = if body.len() <= state.mashlib.data_island_max_bytes {
                     std::str::from_utf8(&body).ok().map(|s| s.to_string())
                 } else {
                     None
                 };
-                let html = mashlib::generate_html(
-                    &path,
-                    &state.mashlib,
-                    embed.as_deref(),
-                );
+                let html = mashlib::generate_html(&path, &state.mashlib, embed.as_deref());
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
                     .insert_header(("X-Frame-Options", "DENY"))
@@ -415,8 +421,9 @@ async fn handle_get(
             let mut rsp = HttpResponse::Ok().body(body.to_vec());
             rsp.headers_mut().insert(
                 header::CONTENT_TYPE,
-                header::HeaderValue::from_str(&meta.content_type)
-                    .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+                header::HeaderValue::from_str(&meta.content_type).unwrap_or_else(|_| {
+                    header::HeaderValue::from_static("application/octet-stream")
+                }),
             );
             if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                 rsp.headers_mut().insert(header::ETAG, etag);
@@ -436,8 +443,7 @@ fn has_basic_container_link(req: &HttpRequest) -> bool {
         .get_all(header::LINK)
         .filter_map(|v| v.to_str().ok())
         .any(|v| {
-            v.contains("http://www.w3.org/ns/ldp#BasicContainer")
-                && v.contains("rel=\"type\"")
+            v.contains("http://www.w3.org/ns/ldp#BasicContainer") && v.contains("rel=\"type\"")
         })
 }
 
@@ -563,9 +569,7 @@ async fn handle_patch(
     };
     let body_str = match std::str::from_utf8(&body) {
         Ok(s) => s.to_string(),
-        Err(_) => {
-            return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8"))
-        }
+        Err(_) => return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8")),
     };
 
     // Existing resource?
@@ -579,11 +583,11 @@ async fn handle_patch(
             // the handler thin; richer mutation semantics live in
             // the library crate.
             let out = match dialect {
-                ldp::PatchDialect::N3 => ldp::apply_n3_patch(ldp::Graph::new(), &body_str)
-                    .map_err(patch_parse_err),
+                ldp::PatchDialect::N3 => {
+                    ldp::apply_n3_patch(ldp::Graph::new(), &body_str).map_err(patch_parse_err)
+                }
                 ldp::PatchDialect::SparqlUpdate => {
-                    ldp::apply_sparql_patch(ldp::Graph::new(), &body_str)
-                        .map_err(patch_parse_err)
+                    ldp::apply_sparql_patch(ldp::Graph::new(), &body_str).map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::JsonPatch => {
                     let mut json: serde_json::Value = match serde_json::from_slice(&current_body) {
@@ -595,7 +599,9 @@ async fn handle_patch(
                         Err(e) => return Err(to_actix(PodError::BadRequest(e.to_string()))),
                     };
                     ldp::apply_json_patch(&mut json, &patch).map_err(to_actix)?;
-                    let bytes = serde_json::to_vec(&json).map_err(PodError::from).map_err(to_actix)?;
+                    let bytes = serde_json::to_vec(&json)
+                        .map_err(PodError::from)
+                        .map_err(to_actix)?;
                     let _ = state
                         .storage
                         .put(&path, Bytes::from(bytes), &meta.content_type)
@@ -773,7 +779,10 @@ async fn handle_well_known_webfinger(
                 .trim_start_matches("https://")
         )
     });
-    let webid = format!("{}/profile/card#me", state.nodeinfo.base_url.trim_end_matches('/'));
+    let webid = format!(
+        "{}/profile/card#me",
+        state.nodeinfo.base_url.trim_end_matches('/')
+    );
     match interop::webfinger_response(&resource, &state.nodeinfo.base_url, &webid) {
         Some(jrd) => HttpResponse::Ok()
             .content_type("application/jrd+json")
@@ -828,10 +837,7 @@ struct CreateAccountRequest {
     name: Option<String>,
 }
 
-async fn handle_pod_check(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
+async fn handle_pod_check(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let pod_name = path.into_inner();
     let pod_root = format!("/{pod_name}/");
     match state.storage.exists(&pod_root).await {
@@ -847,7 +853,7 @@ async fn handle_create_account(
     let pod_root = format!("/{}/", body.username);
     if state.storage.exists(&pod_root).await.unwrap_or(false) {
         return Ok(
-            HttpResponse::Conflict().json(serde_json::json!({"error": "account already exists"})),
+            HttpResponse::Conflict().json(serde_json::json!({"error": "account already exists"}))
         );
     }
 
@@ -922,7 +928,10 @@ async fn handle_copy(
     let src_acl = format!("{}.acl", source.trim_end_matches('/'));
     let dst_acl = format!("{}.acl", dest.trim_end_matches('/'));
     if let Ok((acl_body, acl_meta)) = state.storage.get(&src_acl).await {
-        let _ = state.storage.put(&dst_acl, acl_body, &acl_meta.content_type).await;
+        let _ = state
+            .storage
+            .put(&dst_acl, acl_body, &acl_meta.content_type)
+            .await;
     }
 
     let mut rsp = HttpResponse::Created().finish();
@@ -977,9 +986,7 @@ async fn handle_glob_get(
         return Ok(HttpResponse::NotFound().body("no matching RDF resources"));
     }
 
-    Ok(HttpResponse::Ok()
-        .content_type("text/turtle")
-        .body(merged))
+    Ok(HttpResponse::Ok().content_type("text/turtle").body(merged))
 }
 
 // ---------------------------------------------------------------------------
@@ -992,9 +999,7 @@ struct LoginPasswordRequest {
     password: String,
 }
 
-async fn handle_login_password(
-    body: web::Json<LoginPasswordRequest>,
-) -> HttpResponse {
+async fn handle_login_password(body: web::Json<LoginPasswordRequest>) -> HttpResponse {
     let _ = (&body.username, &body.password);
     HttpResponse::Ok().json(serde_json::json!({
         "message": "login endpoint active"
@@ -1006,9 +1011,7 @@ struct PasswordResetRequest {
     username: String,
 }
 
-async fn handle_password_reset_request(
-    body: web::Json<PasswordResetRequest>,
-) -> HttpResponse {
+async fn handle_password_reset_request(body: web::Json<PasswordResetRequest>) -> HttpResponse {
     let _ = &body.username;
     HttpResponse::Ok().json(serde_json::json!({
         "message": "if an account with that username exists, a reset link has been sent"
@@ -1021,9 +1024,7 @@ struct PasswordChangeRequest {
     new_password: String,
 }
 
-async fn handle_password_change(
-    body: web::Json<PasswordChangeRequest>,
-) -> HttpResponse {
+async fn handle_password_change(body: web::Json<PasswordChangeRequest>) -> HttpResponse {
     let _ = (&body.token, &body.new_password);
     HttpResponse::Ok().json(serde_json::json!({
         "message": "password changed"
@@ -1082,8 +1083,9 @@ fn validate_proxy_target(target: &str) -> Result<url::Url, HttpResponse> {
     let parsed = match url::Url::parse(target) {
         Ok(u) => u,
         Err(_) => {
-            return Err(HttpResponse::BadRequest()
-                .json(serde_json::json!({"error": "invalid target URL"})));
+            return Err(
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid target URL"}))
+            );
         }
     };
 
@@ -1116,8 +1118,9 @@ fn validate_proxy_target(target: &str) -> Result<url::Url, HttpResponse> {
                 .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
         }
     } else {
-        return Err(HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "target URL has no host"})));
+        return Err(
+            HttpResponse::BadRequest().json(serde_json::json!({"error": "target URL has no host"}))
+        );
     }
 
     Ok(parsed)
@@ -1156,7 +1159,11 @@ async fn handle_proxy(
 
     let byte_cap = std::env::var("PROXY_BYTE_CAP")
         .ok()
-        .and_then(|v| solid_pod_rs::config::sources::parse_size(&v).map(|u| u as usize).ok())
+        .and_then(|v| {
+            solid_pod_rs::config::sources::parse_size(&v)
+                .map(|u| u as usize)
+                .ok()
+        })
         .unwrap_or(DEFAULT_PROXY_BYTE_CAP);
 
     loop {
@@ -1242,17 +1249,15 @@ async fn handle_proxy(
             .map_err(|e| actix_web::error::ErrorBadGateway(format!("body read: {e}")))?;
 
         if body_bytes.len() > byte_cap {
-            return Ok(HttpResponse::PayloadTooLarge()
-                .json(serde_json::json!({
-                    "error": "proxied response exceeds byte cap",
-                    "limit": byte_cap
-                })));
+            return Ok(HttpResponse::PayloadTooLarge().json(serde_json::json!({
+                "error": "proxied response exceeds byte cap",
+                "limit": byte_cap
+            })));
         }
 
         // Build the response.
         let mut rsp = HttpResponse::build(
-            StatusCode::from_u16(upstream_status)
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         );
         rsp.insert_header(("Content-Type", upstream_content_type.as_str()));
         rsp.insert_header(("X-Proxy-Status", upstream_status.to_string()));
@@ -1549,9 +1554,7 @@ pub fn build_app(
     impl actix_web::dev::ServiceFactory<
         ServiceRequest,
         Config = (),
-        Response = ServiceResponse<
-            EitherBody<EitherBody<BoxBody>>,
-        >,
+        Response = ServiceResponse<EitherBody<EitherBody<BoxBody>>>,
         Error = ActixError,
         InitError = (),
     >,
@@ -1580,10 +1583,7 @@ pub fn build_app(
     // policy's `response_headers` on every response; full preflight
     // handling lives in the sibling S7-A work.
     app = app
-        .route(
-            "/.well-known/solid",
-            web::get().to(handle_well_known_solid),
-        )
+        .route("/.well-known/solid", web::get().to(handle_well_known_solid))
         .route(
             "/.well-known/webfinger",
             web::get().to(handle_well_known_webfinger),
@@ -1616,8 +1616,14 @@ pub fn build_app(
         .route("/api/accounts/new", web::post().to(handle_create_account))
         .route("/pods/check/{name}", web::get().to(handle_pod_check))
         .route("/login/password", web::post().to(handle_login_password))
-        .route("/account/password/reset", web::post().to(handle_password_reset_request))
-        .route("/account/password/change", web::post().to(handle_password_change));
+        .route(
+            "/account/password/reset",
+            web::post().to(handle_password_reset_request),
+        )
+        .route(
+            "/account/password/change",
+            web::post().to(handle_password_change),
+        );
 
     // Container POST and PUT (trailing slash) must register before the
     // catch-all so the trailing-slash variant wins.
@@ -1628,6 +1634,12 @@ pub fn build_app(
         .route("/{tail:.*}", web::put().to(handle_put))
         .route("/{tail:.*}", web::patch().to(handle_patch))
         .route("/{tail:.*}", web::delete().to(handle_delete))
-        .route("/{tail:.*}", web::method(actix_web::http::Method::from_bytes(b"COPY").unwrap()).to(handle_copy))
-        .route("/{tail:.*}", web::method(actix_web::http::Method::OPTIONS).to(handle_options))
+        .route(
+            "/{tail:.*}",
+            web::method(actix_web::http::Method::from_bytes(b"COPY").unwrap()).to(handle_copy),
+        )
+        .route(
+            "/{tail:.*}",
+            web::method(actix_web::http::Method::OPTIONS).to(handle_options),
+        )
 }

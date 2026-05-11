@@ -73,7 +73,9 @@ fn did_nostr_document_emits_minimal_schema() {
     // Tier-1 must also include the secp256k1-2019 suite context.
     let contexts = doc["@context"].as_array().expect("@context array");
     assert!(
-        contexts.iter().any(|c| c == "https://w3id.org/security/suites/secp256k1-2019/v1"),
+        contexts
+            .iter()
+            .any(|c| c == "https://w3id.org/security/suites/secp256k1-2019/v1"),
         "DID Doc must include the secp256k1-2019 suite context (ADR-074 D1)",
     );
 }
@@ -186,8 +188,8 @@ async fn did_nostr_resolver_caches_negative_result() {
         .await;
 
     let ssrf = Arc::new(SsrfPolicy::new().with_allow_loopback(true));
-    let resolver = DidNostrResolver::new(ssrf)
-        .with_ttls(Duration::from_secs(300), Duration::from_secs(60));
+    let resolver =
+        DidNostrResolver::new(ssrf).with_ttls(Duration::from_secs(300), Duration::from_secs(60));
 
     let first = resolver.resolve(&server.uri(), TEST_PUBKEY).await;
     assert!(first.is_none(), "404 must resolve to None");

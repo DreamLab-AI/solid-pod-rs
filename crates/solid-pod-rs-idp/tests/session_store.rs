@@ -88,8 +88,7 @@ fn lookup_unknown_session_returns_unknown_error() {
 
 #[test]
 fn lookup_expired_session_returns_expired_error() {
-    let store = SessionStore::new()
-        .with_ttls(Duration::from_millis(1), Duration::from_secs(600));
+    let store = SessionStore::new().with_ttls(Duration::from_millis(1), Duration::from_secs(600));
     let id = store.create_session("acct-exp");
     std::thread::sleep(Duration::from_millis(15));
     let err = store.lookup(&id).unwrap_err();
@@ -175,7 +174,10 @@ fn take_code_is_single_use() {
     let first = store.take_code(&rec.code);
     assert!(first.is_some(), "first take must succeed");
     let second = store.take_code(&rec.code);
-    assert!(second.is_none(), "second take must return None (single-use)");
+    assert!(
+        second.is_none(),
+        "second take must return None (single-use)"
+    );
 }
 
 #[test]
@@ -186,8 +188,7 @@ fn take_code_returns_none_for_unknown_code() {
 
 #[test]
 fn take_code_returns_none_for_expired_code() {
-    let store = SessionStore::new()
-        .with_ttls(Duration::from_secs(86400), Duration::from_millis(1));
+    let store = SessionStore::new().with_ttls(Duration::from_secs(86400), Duration::from_millis(1));
     let rec = store.issue_code("c-exp", "a-exp", "https://app/cb", None, None);
     std::thread::sleep(Duration::from_millis(15));
     assert!(
@@ -218,19 +219,16 @@ fn concurrent_session_creation_produces_distinct_ids() {
     let handles: Vec<_> = (0..50)
         .map(|i| {
             let s = store.clone();
-            std::thread::spawn(move || {
-                s.create_session(format!("acct-{i}"))
-                    .as_str()
-                    .to_string()
-            })
+            std::thread::spawn(move || s.create_session(format!("acct-{i}")).as_str().to_string())
         })
         .collect();
 
-    let ids: HashSet<String> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
-    assert_eq!(ids.len(), 50, "50 concurrent creates must yield 50 distinct session ids");
+    let ids: HashSet<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(
+        ids.len(),
+        50,
+        "50 concurrent creates must yield 50 distinct session ids"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +237,7 @@ fn concurrent_session_creation_produces_distinct_ids() {
 
 #[test]
 fn with_ttls_overrides_both_session_and_code_ttl() {
-    let store = SessionStore::new()
-        .with_ttls(Duration::from_secs(1), Duration::from_secs(1));
+    let store = SessionStore::new().with_ttls(Duration::from_secs(1), Duration::from_secs(1));
 
     // Session with 1s TTL — immediate lookup succeeds.
     let id = store.create_session("acct-ttl");

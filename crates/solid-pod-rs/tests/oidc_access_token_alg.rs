@@ -31,14 +31,10 @@ use jsonwebtoken::jwk::{
     AlgorithmParameters, CommonParameters, EllipticCurve, EllipticCurveKeyParameters,
     EllipticCurveKeyType, Jwk as JwtJwk, JwkSet, KeyAlgorithm, PublicKeyUse,
 };
-use p256::{
-    ecdsa::{signature::Signer, Signature as EcSignature, SigningKey},
-};
+use p256::ecdsa::{signature::Signer, Signature as EcSignature, SigningKey};
 use serde::{Deserialize, Serialize};
 use solid_pod_rs::error::PodError;
-use solid_pod_rs::oidc::{
-    verify_access_token, AccessTokenVerified, CnfClaim, TokenVerifyKey,
-};
+use solid_pod_rs::oidc::{verify_access_token, AccessTokenVerified, CnfClaim, TokenVerifyKey};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccessTokenClaims {
@@ -55,10 +51,9 @@ struct AccessTokenClaims {
 
 fn ec_keypair() -> (SigningKey, JwtJwk, String) {
     let seed: [u8; 32] = [
-        0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-        0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
-        0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
-        0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e,
+        0x3f, 0x40,
     ];
     let sk = SigningKey::from_bytes(&seed.into()).unwrap();
     let vk = sk.verifying_key();
@@ -143,7 +138,9 @@ fn oidc_access_token_rs256_rejected_when_hs256_only_configured() {
         iat: 1_700_000_000,
         webid: Some("https://me.example/profile#me".into()),
         client_id: Some("c".into()),
-        cnf: Some(CnfClaim { jkt: "THUMB".into() }),
+        cnf: Some(CnfClaim {
+            jkt: "THUMB".into(),
+        }),
         scope: Some("openid".into()),
     };
     let tok = forge_rs256_lookalike(&claims);
@@ -179,7 +176,9 @@ fn oidc_access_token_alg_none_rejected() {
         iat: 1_700_000_000,
         webid: Some("https://me.example/profile#me".into()),
         client_id: None,
-        cnf: Some(CnfClaim { jkt: "THUMB".into() }),
+        cnf: Some(CnfClaim {
+            jkt: "THUMB".into(),
+        }),
         scope: None,
     };
     let tok = forge_alg_none_token(&claims);
@@ -217,7 +216,9 @@ fn oidc_access_token_dispatches_es256_against_jwks() {
         iat: 1_700_000_000,
         webid: Some("https://me.example/profile#me".into()),
         client_id: Some("c".into()),
-        cnf: Some(CnfClaim { jkt: "THUMB".into() }),
+        cnf: Some(CnfClaim {
+            jkt: "THUMB".into(),
+        }),
         scope: Some("openid webid".into()),
     };
     let tok = sign_es256_jwt(&sk, &kid, &claims);

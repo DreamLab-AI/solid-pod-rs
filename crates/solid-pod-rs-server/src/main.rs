@@ -113,22 +113,17 @@ async fn build_storage(cfg: &StorageBackendConfig) -> anyhow::Result<Arc<dyn Sto
 }
 
 #[cfg(feature = "tls")]
-fn load_rustls_config(
-    cert_path: &str,
-    key_path: &str,
-) -> anyhow::Result<rustls::ServerConfig> {
+fn load_rustls_config(cert_path: &str, key_path: &str) -> anyhow::Result<rustls::ServerConfig> {
     use std::fs::File;
     use std::io::BufReader;
 
-    let cert_file = File::open(cert_path)
-        .with_context(|| format!("open SSL cert {cert_path}"))?;
+    let cert_file = File::open(cert_path).with_context(|| format!("open SSL cert {cert_path}"))?;
     let mut cert_reader = BufReader::new(cert_file);
     let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .context("parse SSL cert chain")?;
 
-    let key_file = File::open(key_path)
-        .with_context(|| format!("open SSL key {key_path}"))?;
+    let key_file = File::open(key_path).with_context(|| format!("open SSL key {key_path}"))?;
     let mut key_reader = BufReader::new(key_file);
     let key = rustls_pemfile::private_key(&mut key_reader)
         .context("parse SSL private key")?

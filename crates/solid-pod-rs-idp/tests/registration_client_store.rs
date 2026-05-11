@@ -41,8 +41,12 @@ async fn register_client_preserves_redirect_uris() {
     };
     let doc = register_client(&store, req).await.unwrap();
     assert_eq!(doc.redirect_uris.len(), 2);
-    assert!(doc.redirect_uris.contains(&"https://app.example/cb".to_string()));
-    assert!(doc.redirect_uris.contains(&"https://app.example/cb2".to_string()));
+    assert!(doc
+        .redirect_uris
+        .contains(&"https://app.example/cb".to_string()));
+    assert!(doc
+        .redirect_uris
+        .contains(&"https://app.example/cb2".to_string()));
 }
 
 #[tokio::test]
@@ -224,10 +228,7 @@ async fn find_url_client_id_triggers_ssrf_guard_for_private_ip() {
 #[tokio::test]
 async fn find_url_client_id_blocks_192_168_range() {
     let store = ClientStore::new();
-    let err = store
-        .find("http://192.168.1.1/client")
-        .await
-        .unwrap_err();
+    let err = store.find("http://192.168.1.1/client").await.unwrap_err();
     assert!(
         matches!(err, RegError::Ssrf(_)),
         "192.168.x.x must be SSRF-blocked, got {err:?}"
@@ -273,7 +274,11 @@ async fn multiple_registrations_produce_distinct_client_ids() {
         ids.push(doc.client_id);
     }
     let unique: std::collections::HashSet<_> = ids.iter().collect();
-    assert_eq!(unique.len(), 10, "10 registrations must produce 10 distinct ids");
+    assert_eq!(
+        unique.len(),
+        10,
+        "10 registrations must produce 10 distinct ids"
+    );
 }
 
 // ---------------------------------------------------------------------------

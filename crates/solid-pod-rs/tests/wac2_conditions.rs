@@ -13,8 +13,8 @@
 
 use solid_pod_rs::wac::{
     evaluate_access_ctx, wac_allow_header_with_dispatcher, AccessMode, AclAuthorization,
-    AclDocument, ClientConditionBody, Condition, ConditionOutcome, ConditionRegistry,
-    IdOrIds, IdRef, IssuerConditionBody, RequestContext, StaticGroupMembership,
+    AclDocument, ClientConditionBody, Condition, ConditionOutcome, ConditionRegistry, IdOrIds,
+    IdRef, IssuerConditionBody, RequestContext, StaticGroupMembership,
 };
 
 fn owner_rule_with_condition(
@@ -268,12 +268,8 @@ fn wac2_conjunctive_conditions_and_gate() {
 #[test]
 fn wac2_monotonicity_invariant() {
     // Rule WITHOUT conditions — always grants for matching agent/mode/path.
-    let rule_plain = owner_rule_with_condition(
-        "did:nostr:alice",
-        "/private/note",
-        "acl:Read",
-        None,
-    );
+    let rule_plain =
+        owner_rule_with_condition("did:nostr:alice", "/private/note", "acl:Read", None);
     let doc_plain = doc_with(vec![rule_plain.clone()]);
 
     // Rule WITH always-true condition (client matches).
@@ -347,9 +343,15 @@ fn wac2_monotonicity_invariant() {
     // Plain grant.
     assert!(plain);
     // Satisfied condition == plain rule (no further restriction).
-    assert_eq!(plain, satisfied, "satisfied condition must be identical to no condition");
+    assert_eq!(
+        plain, satisfied,
+        "satisfied condition must be identical to no condition"
+    );
     // Unsatisfiable condition strictly narrower.
-    assert!(!denied, "unsatisfiable condition must strictly narrow the grant");
+    assert!(
+        !denied,
+        "unsatisfiable condition must strictly narrow the grant"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -374,12 +376,7 @@ fn wac2_wac_allow_header_omits_gated_modes() {
         Some(vec![gated_write]),
     );
     // Also grant ungated Read so user="" still has something.
-    let rule_read = owner_rule_with_condition(
-        "did:nostr:alice",
-        "/private/note",
-        "acl:Read",
-        None,
-    );
+    let rule_read = owner_rule_with_condition("did:nostr:alice", "/private/note", "acl:Read", None);
     let doc = doc_with(vec![rule_read, rule_write]);
     let registry = ConditionRegistry::default_with_client_and_issuer();
     let ctx = RequestContext {
@@ -395,7 +392,10 @@ fn wac2_wac_allow_header_omits_gated_modes() {
         &StaticGroupMembership::new(),
         &registry,
     );
-    assert!(hdr.contains("user=\"read\""), "expected user=\"read\", got {hdr}");
+    assert!(
+        hdr.contains("user=\"read\""),
+        "expected user=\"read\", got {hdr}"
+    );
     assert!(
         !hdr.contains("write"),
         "WAC-Allow must omit write gated by unsatisfied condition; got {hdr}"

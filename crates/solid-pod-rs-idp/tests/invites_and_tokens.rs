@@ -14,13 +14,13 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use solid_pod_rs_idp::credentials::validate_password_length;
 use solid_pod_rs_idp::invites::{
     mint_token, parse_duration, InMemoryInviteStore, Invite, InviteStore,
 };
 use solid_pod_rs_idp::jwks::{Jwks, SigningKey};
 use solid_pod_rs_idp::tokens::{ath_hash, issue_access_token};
 use solid_pod_rs_idp::user_store::InMemoryUserStore;
-use solid_pod_rs_idp::credentials::validate_password_length;
 
 // ===========================================================================
 // mint_token
@@ -72,13 +72,19 @@ fn parse_duration_hours() {
 fn parse_duration_days() {
     assert_eq!(parse_duration("7d").unwrap(), Duration::from_secs(604_800));
     assert_eq!(parse_duration("1d").unwrap(), Duration::from_secs(86_400));
-    assert_eq!(parse_duration("30d").unwrap(), Duration::from_secs(2_592_000));
+    assert_eq!(
+        parse_duration("30d").unwrap(),
+        Duration::from_secs(2_592_000)
+    );
 }
 
 #[test]
 fn parse_duration_weeks() {
     assert_eq!(parse_duration("1w").unwrap(), Duration::from_secs(604_800));
-    assert_eq!(parse_duration("2w").unwrap(), Duration::from_secs(1_209_600));
+    assert_eq!(
+        parse_duration("2w").unwrap(),
+        Duration::from_secs(1_209_600)
+    );
 }
 
 #[test]
@@ -279,7 +285,10 @@ fn issue_access_token_jti_is_unique() {
     let key = jwks.active_key();
     let t1 = issue_access_token(&key, "i", "w", "a", "c", "s", None, 0, 60).unwrap();
     let t2 = issue_access_token(&key, "i", "w", "a", "c", "s", None, 0, 60).unwrap();
-    assert_ne!(t1.payload.jti, t2.payload.jti, "jti must be unique per token");
+    assert_ne!(
+        t1.payload.jti, t2.payload.jti,
+        "jti must be unique per token"
+    );
 }
 
 // ===========================================================================
@@ -289,7 +298,10 @@ fn issue_access_token_jti_is_unique() {
 #[test]
 fn ath_hash_known_value() {
     // SHA-256("foo") base64url-noPad
-    assert_eq!(ath_hash("foo"), "LCa0a2j_xo_5m0U8HTBBNBNCLXBkg7-g-YpeiGJm564");
+    assert_eq!(
+        ath_hash("foo"),
+        "LCa0a2j_xo_5m0U8HTBBNBNCLXBkg7-g-YpeiGJm564"
+    );
 }
 
 #[test]
@@ -440,7 +452,10 @@ async fn user_store_verify_password_works() {
         .verify_password(&user, "correct-horse-battery-staple")
         .await
         .unwrap());
-    assert!(!store.verify_password(&user, "wrong-password").await.unwrap());
+    assert!(!store
+        .verify_password(&user, "wrong-password")
+        .await
+        .unwrap());
 }
 
 // ===========================================================================

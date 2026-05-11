@@ -54,11 +54,7 @@ fn cors_preflight_echoes_allowed_origin() {
 fn cors_preflight_blocks_unlisted_origin() {
     let policy = CorsPolicy::new().with_allowed_origins(AllowedOrigins::Exact(two_origins()));
 
-    let result = policy.preflight_headers(
-        Some("https://attacker.example"),
-        "GET",
-        "authorization",
-    );
+    let result = policy.preflight_headers(Some("https://attacker.example"), "GET", "authorization");
     assert!(
         result.is_none(),
         "unlisted origin must return None (caller emits 403/no-CORS)"
@@ -181,7 +177,10 @@ fn cors_from_env_reads_all_three_vars() {
 
     // Unlisted origin must be blocked.
     let blocked = policy.preflight_headers(Some("https://c.example"), "GET", "");
-    assert!(blocked.is_none(), "unlisted origin from env must be blocked");
+    assert!(
+        blocked.is_none(),
+        "unlisted origin from env must be blocked"
+    );
 
     // Listed origin must be echoed, and Max-Age must reflect env.
     let ok = policy

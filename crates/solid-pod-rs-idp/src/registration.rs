@@ -243,8 +243,8 @@ impl ClientStore {
 
         // Parse the URL so we can assert it's a valid HTTPS target
         // before spending any bytes on the wire.
-        let parsed = Url::parse(url)
-            .map_err(|e| RegError::InvalidDocument(format!("URL parse: {e}")))?;
+        let parsed =
+            Url::parse(url).map_err(|e| RegError::InvalidDocument(format!("URL parse: {e}")))?;
         // JSS's `validateExternalUrl` also enforces `requireHttps:true`;
         // we drop that to http-or-https since the SSRF check catches
         // the RFC1918 case anyway, and some Solid test rigs use plain
@@ -497,9 +497,15 @@ mod tests {
         let store = ClientStore::new().allow_unsafe_urls_for_testing();
         let doc = store.find(&cid_url).await.unwrap().unwrap();
         assert_eq!(doc.client_id, cid_url);
-        assert_eq!(doc.redirect_uris, vec!["https://app.example/cb".to_string()]);
+        assert_eq!(
+            doc.redirect_uris,
+            vec!["https://app.example/cb".to_string()]
+        );
         assert_eq!(doc.client_name.as_deref(), Some("Federated App"));
-        assert_eq!(doc.client_id_document_url.as_deref(), Some(cid_url.as_str()));
+        assert_eq!(
+            doc.client_id_document_url.as_deref(),
+            Some(cid_url.as_str())
+        );
 
         // Second lookup MUST be cache-served (mock `.expect(1)` above).
         let _ = store.find(&cid_url).await.unwrap().unwrap();

@@ -243,7 +243,9 @@ fn parse_signature_header(raw: &str) -> Result<SignatureHeader, SigError> {
         return Err(SigError::MissingKeyId);
     }
     if out.signature_b64.is_empty() {
-        return Err(SigError::MalformedSignature("missing signature= value".into()));
+        return Err(SigError::MalformedSignature(
+            "missing signature= value".into(),
+        ));
     }
     if out.algorithm.is_empty() {
         // Mastodon used to omit this — default to rsa-sha256 per
@@ -272,9 +274,9 @@ fn build_signature_base(req: &SignedRequest, header_list: &[String]) -> Result<S
                 ));
             }
             name => {
-                let v = req
-                    .get(name)
-                    .ok_or_else(|| SigError::VerifyFailed(format!("missing covered header: {name}")))?;
+                let v = req.get(name).ok_or_else(|| {
+                    SigError::VerifyFailed(format!("missing covered header: {name}"))
+                })?;
                 lines.push(format!("{name}: {v}"));
             }
         }
@@ -356,15 +358,11 @@ pub async fn verify_request_signature(
     // Digest check — if the covered set includes `digest`, the body
     // must hash to the header's value. This is mandatory for POST.
     if parsed.headers.iter().any(|h| h == "digest") {
-        let received = req
-            .get("digest")
-            .ok_or(SigError::MissingHeader("digest"))?;
+        let received = req.get("digest").ok_or(SigError::MissingHeader("digest"))?;
         let computed = digest_header(&req.body);
         // Mastodon historically uses `SHA-256=...`; some servers use
         // the RFC 9530 `sha-256=:<b64>:` form. Tolerate both.
-        if received != computed
-            && !received.eq_ignore_ascii_case(&computed)
-        {
+        if received != computed && !received.eq_ignore_ascii_case(&computed) {
             let rfc9530 = {
                 let digest = Sha256::digest(&req.body);
                 format!("sha-256=:{}:", B64.encode(digest))
@@ -432,8 +430,8 @@ pub fn sign_request(
     }
     let base = base_lines.join("\n");
 
-    let sk = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
-        .map_err(|e| SigError::Rsa(e.to_string()))?;
+    let sk =
+        RsaPrivateKey::from_pkcs8_pem(private_key_pem).map_err(|e| SigError::Rsa(e.to_string()))?;
     let signer = SigningKey::<Sha256>::new(sk);
     let sig: RsaSignature = signer.sign(base.as_bytes());
     let sig_b64 = B64.encode(sig.to_bytes());
@@ -448,15 +446,13 @@ pub fn sign_request(
     // Append canonical headers — de-dup if already set.
     req.headers.retain(|(n, _)| {
         let ln = n.to_ascii_lowercase();
-        ln != "host"
-            && ln != "date"
-            && ln != "digest"
-            && ln != "signature"
+        ln != "host" && ln != "date" && ln != "digest" && ln != "signature"
     });
     req.headers.push(("Host".to_string(), host.to_string()));
     req.headers.push(("Date".to_string(), date));
     req.headers.push(("Digest".to_string(), digest));
-    req.headers.push(("Signature".to_string(), signature_header));
+    req.headers
+        .push(("Signature".to_string(), signature_header));
     Ok(())
 }
 
@@ -574,10 +570,7 @@ mod tests {
         req.body = b"{\"tampered\":true}".to_vec();
         let resolver = StaticResolver { pem: pub_pem };
         let res = verify_request_signature(&req, &resolver).await;
-        assert!(
-            matches!(res, Err(SigError::DigestMismatch)),
-            "got {res:?}"
-        );
+        assert!(matches!(res, Err(SigError::DigestMismatch)), "got {res:?}");
     }
 
     #[tokio::test]
@@ -586,9 +579,7 @@ mod tests {
         let (_, other_pub_pem) = fresh_keypair();
         let key_id = "https://remote.example/actor#main-key";
         let req = build_signed_inbound("POST", "/inbox", b"{}", &priv_pem, key_id);
-        let resolver = StaticResolver {
-            pem: other_pub_pem,
-        };
+        let resolver = StaticResolver { pem: other_pub_pem };
         let res = verify_request_signature(&req, &resolver).await;
         assert!(matches!(res, Err(SigError::VerifyFailed(_))));
     }

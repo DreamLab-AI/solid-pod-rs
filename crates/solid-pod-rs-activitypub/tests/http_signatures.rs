@@ -99,10 +99,7 @@ fn digest_header_empty_body() {
     let d = digest_header(b"");
     assert!(d.starts_with("SHA-256="));
     // SHA-256 of empty string is well-known.
-    assert_eq!(
-        d,
-        "SHA-256=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
-    );
+    assert_eq!(d, "SHA-256=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
 }
 
 #[test]
@@ -156,14 +153,9 @@ async fn sign_then_verify_roundtrip() {
         inbound.headers.insert(k.to_ascii_lowercase(), v.clone());
     }
     let resolver = StaticResolver { pem: pub_pem };
-    let actor = verify_request_signature(&inbound, &resolver)
-        .await
-        .unwrap();
+    let actor = verify_request_signature(&inbound, &resolver).await.unwrap();
     assert_eq!(actor.key_id, key_id);
-    assert_eq!(
-        actor.actor_url,
-        "https://pod.example/profile/card.jsonld"
-    );
+    assert_eq!(actor.actor_url, "https://pod.example/profile/card.jsonld");
 }
 
 // ===========================================================================
@@ -212,10 +204,8 @@ async fn verify_rejects_tampered_header_fresh_date() {
     // Tamper the Date header to a fresh but different value — passes
     // the freshness check but invalidates the signature base string.
     let slightly_off = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-    req.headers.insert(
-        "date".to_string(),
-        httpdate::fmt_http_date(slightly_off),
-    );
+    req.headers
+        .insert("date".to_string(), httpdate::fmt_http_date(slightly_off));
     let resolver = StaticResolver { pem: pub_pem };
     let result = verify_request_signature(&req, &resolver).await;
     assert!(
@@ -416,8 +406,6 @@ async fn sign_verify_large_body() {
         inbound.headers.insert(k.to_ascii_lowercase(), v.clone());
     }
     let resolver = StaticResolver { pem: pub_pem };
-    let actor = verify_request_signature(&inbound, &resolver)
-        .await
-        .unwrap();
+    let actor = verify_request_signature(&inbound, &resolver).await.unwrap();
     assert_eq!(actor.key_id, key_id);
 }

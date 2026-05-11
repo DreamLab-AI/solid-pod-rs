@@ -102,8 +102,12 @@ async fn remove_nonexistent_follower_returns_zero() {
 #[tokio::test]
 async fn follower_count_reflects_additions_and_removals() {
     let s = fresh().await;
-    s.add_follower("me", "a", Some("https://a/inbox")).await.unwrap();
-    s.add_follower("me", "b", Some("https://b/inbox")).await.unwrap();
+    s.add_follower("me", "a", Some("https://a/inbox"))
+        .await
+        .unwrap();
+    s.add_follower("me", "b", Some("https://b/inbox"))
+        .await
+        .unwrap();
     s.add_follower("me", "c", None).await.unwrap();
     assert_eq!(s.follower_count("me").await.unwrap(), 3);
     s.remove_follower("me", "b").await.unwrap();
@@ -113,9 +117,13 @@ async fn follower_count_reflects_additions_and_removals() {
 #[tokio::test]
 async fn follower_inboxes_excludes_null_inboxes() {
     let s = fresh().await;
-    s.add_follower("me", "a", Some("https://a/inbox")).await.unwrap();
+    s.add_follower("me", "a", Some("https://a/inbox"))
+        .await
+        .unwrap();
     s.add_follower("me", "b", None).await.unwrap();
-    s.add_follower("me", "c", Some("https://c/inbox")).await.unwrap();
+    s.add_follower("me", "c", Some("https://c/inbox"))
+        .await
+        .unwrap();
     let inboxes = s.follower_inboxes("me").await.unwrap();
     assert_eq!(inboxes.len(), 2);
     assert!(inboxes.contains(&"https://a/inbox".to_string()));
@@ -132,8 +140,12 @@ async fn follower_inboxes_returns_empty_for_unknown_actor() {
 #[tokio::test]
 async fn get_follower_inboxes_is_alias_for_follower_inboxes() {
     let s = fresh().await;
-    s.add_follower("me", "a", Some("https://a/inbox")).await.unwrap();
-    s.add_follower("me", "b", Some("https://b/inbox")).await.unwrap();
+    s.add_follower("me", "a", Some("https://a/inbox"))
+        .await
+        .unwrap();
+    s.add_follower("me", "b", Some("https://b/inbox"))
+        .await
+        .unwrap();
     let via_method = s.follower_inboxes("me").await.unwrap();
     let via_alias = s.get_follower_inboxes("me").await.unwrap();
     assert_eq!(via_method, via_alias);
@@ -170,7 +182,10 @@ async fn add_following_starts_unaccepted() {
 async fn accept_following_marks_as_accepted() {
     let s = fresh().await;
     s.add_following("me", "https://remote/actor").await.unwrap();
-    let affected = s.accept_following("me", "https://remote/actor").await.unwrap();
+    let affected = s
+        .accept_following("me", "https://remote/actor")
+        .await
+        .unwrap();
     assert_eq!(affected, 1);
     assert!(s.is_following("me", "https://remote/actor").await.unwrap());
 }
@@ -274,7 +289,10 @@ async fn record_outbox_generates_id_when_missing() {
     let s = fresh().await;
     let act = json!({"type": "Create"});
     let id = s.record_outbox("me", &act).await.unwrap();
-    assert!(id.starts_with("urn:uuid:"), "generated id should be a UUID URN, got: {id}");
+    assert!(
+        id.starts_with("urn:uuid:"),
+        "generated id should be a UUID URN, got: {id}"
+    );
 }
 
 #[tokio::test]
@@ -459,7 +477,10 @@ async fn is_actor_cache_fresh_within_window() {
     let id = "https://remote/actor";
     s.cache_actor(id, &json!({"type": "Person"})).await.unwrap();
     // Just cached: should be fresh within a 1-hour window.
-    assert!(s.is_actor_cache_fresh(id, Duration::hours(1)).await.unwrap());
+    assert!(s
+        .is_actor_cache_fresh(id, Duration::hours(1))
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

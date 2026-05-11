@@ -32,7 +32,6 @@
 //! - RFC 7519 (JWT), RFC 7515 (JWS), RFC 8037 (EdDSA JOSE).
 
 #![doc = include_str!("../README.md")]
-
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 

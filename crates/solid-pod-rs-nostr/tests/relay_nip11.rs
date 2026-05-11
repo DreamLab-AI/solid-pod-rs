@@ -16,7 +16,10 @@ fn relay_serves_nip11_info_compatible_with_jss() {
 
     // Required NIP-11 top-level fields.
     assert!(!info.name.is_empty(), "name must not be empty");
-    assert!(!info.description.is_empty(), "description must not be empty");
+    assert!(
+        !info.description.is_empty(),
+        "description must not be empty"
+    );
     assert!(!info.software.is_empty(), "software must not be empty");
     assert!(!info.version.is_empty(), "version must not be empty");
 
@@ -38,8 +41,8 @@ fn relay_serves_nip11_info_compatible_with_jss() {
 
 #[test]
 fn custom_relay_info_round_trips() {
-    use std::sync::Arc;
     use solid_pod_rs_nostr::InMemoryEventStore;
+    use std::sync::Arc;
 
     let info = RelayInfo {
         name: "custom-relay".into(),

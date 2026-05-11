@@ -181,10 +181,7 @@ pub fn sign_request(
     let sig_b64 = B64.encode(sig.to_bytes());
 
     // 4. Assemble the RFC 9421 headers.
-    let signature_input = format!(
-        "sig1={}",
-        signature_params_value(now_unix, &cfg.keyid)
-    );
+    let signature_input = format!("sig1={}", signature_params_value(now_unix, &cfg.keyid));
     let signature = format!("sig1=:{}:", sig_b64);
 
     let headers = vec![
@@ -230,9 +227,7 @@ fn find_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a st
 /// whitespace but strict about the covered-component list — if a
 /// receiver sees a different component set, it should reject the
 /// request outright (returned here as [`SignatureError::MalformedInput`]).
-fn parse_signature_input(
-    raw: &str,
-) -> Result<(u64, String), SignatureError> {
+fn parse_signature_input(raw: &str) -> Result<(u64, String), SignatureError> {
     // Strip the "sig1=" prefix.
     let after = raw
         .strip_prefix("sig1=")
@@ -266,9 +261,7 @@ fn parse_signature_input(
         if part.is_empty() {
             continue;
         }
-        let (k, v) = part
-            .split_once('=')
-            .ok_or(SignatureError::MalformedInput)?;
+        let (k, v) = part.split_once('=').ok_or(SignatureError::MalformedInput)?;
         match k {
             "created" => {
                 created = Some(v.parse().map_err(|_| SignatureError::MalformedInput)?);
@@ -333,8 +326,7 @@ pub fn verify_signed_request(
         .ok_or(SignatureError::MissingHeader("content-type"))?;
     let received_digest = find_header(headers, "content-digest")
         .ok_or(SignatureError::MissingHeader("content-digest"))?;
-    let date =
-        find_header(headers, "date").ok_or(SignatureError::MissingHeader("date"))?;
+    let date = find_header(headers, "date").ok_or(SignatureError::MissingHeader("date"))?;
     let notification_id = find_header(headers, "x-solid-notification-id")
         .ok_or(SignatureError::MissingHeader("x-solid-notification-id"))?;
 

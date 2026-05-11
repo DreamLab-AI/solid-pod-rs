@@ -18,9 +18,7 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use solid_pod_rs::ldp::{
-    negotiate_format, render_container_jsonld, Graph, PreferHeader,
-};
+use solid_pod_rs::ldp::{negotiate_format, render_container_jsonld, Graph, PreferHeader};
 
 fn ntriples_payload_100() -> String {
     let mut out = String::new();
@@ -67,11 +65,7 @@ fn bench_roundtrip_to_jsonld(c: &mut Criterion) {
         b.iter(|| {
             // Parse → re-render as JSON-LD container.
             let g = Graph::parse_ntriples(black_box(&payload)).unwrap();
-            let jsonld = render_container_jsonld(
-                "/docs/",
-                &members,
-                PreferHeader::default(),
-            );
+            let jsonld = render_container_jsonld("/docs/", &members, PreferHeader::default());
             black_box((g, jsonld));
         });
     });

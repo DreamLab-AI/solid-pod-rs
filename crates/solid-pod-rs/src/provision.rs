@@ -114,7 +114,9 @@ fn build_public_type_index_acl(webid: &str, resource_path: &str) -> AclDocument 
         })),
         default: None,
         mode: Some(IdOrIds::Multiple(vec![
-            IdRef { id: "acl:Read".into() },
+            IdRef {
+                id: "acl:Read".into(),
+            },
             IdRef {
                 id: "acl:Write".into(),
             },
@@ -137,7 +139,9 @@ fn build_public_type_index_acl(webid: &str, resource_path: &str) -> AclDocument 
             id: resource_path.into(),
         })),
         default: None,
-        mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
+        mode: Some(IdOrIds::Single(IdRef {
+            id: "acl:Read".into(),
+        })),
         condition: None,
     };
     AclDocument {
@@ -181,11 +185,7 @@ pub async fn provision_pod<S: Storage + ?Sized>(
         // materialise a bare container without a body.
         let meta_key = format!("{}.meta", c.trim_end_matches('/'));
         match storage
-            .put(
-                &meta_key,
-                Bytes::from_static(b"{}"),
-                "application/ld+json",
-            )
+            .put(&meta_key, Bytes::from_static(b"{}"), "application/ld+json")
             .await
         {
             Ok(_) => created.push(c.clone()),
@@ -195,11 +195,8 @@ pub async fn provision_pod<S: Storage + ?Sized>(
     }
 
     // Write WebID profile.
-    let webid_html = generate_webid_html(
-        &plan.pubkey,
-        plan.display_name.as_deref(),
-        &plan.pod_base,
-    );
+    let webid_html =
+        generate_webid_html(&plan.pubkey, plan.display_name.as_deref(), &plan.pod_base);
     storage
         .put(
             "/profile/card",
@@ -514,23 +511,11 @@ mod tests {
             );
 
             assert!(
-                evaluate_access(
-                    Some(&doc),
-                    None,
-                    &resource_iri,
-                    AccessMode::Read,
-                    None,
-                ),
+                evaluate_access(Some(&doc), None, &resource_iri, AccessMode::Read, None,),
                 "public/anonymous read must be granted on publicTypeIndex.jsonld",
             );
             assert!(
-                !evaluate_access(
-                    Some(&doc),
-                    None,
-                    &resource_iri,
-                    AccessMode::Write,
-                    None,
-                ),
+                !evaluate_access(Some(&doc), None, &resource_iri, AccessMode::Write, None,),
                 "anonymous must not be granted write",
             );
         }

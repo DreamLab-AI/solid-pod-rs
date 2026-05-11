@@ -315,8 +315,7 @@ impl Nip07SchnorrSso {
         // The digest uses the *profile* pubkey, not the caller-supplied one,
         // because the client signed against the key they hold (which should
         // match the profile's verificationMethod).
-        let digest =
-            Self::canonical_digest(&challenge.token, user_id, &profile_pubkey_hex);
+        let digest = Self::canonical_digest(&challenge.token, user_id, &profile_pubkey_hex);
         profile_vk
             .verify(&digest, &sig)
             .map_err(|e| SchnorrError::InvalidSignature(e.to_string()))?;
@@ -485,11 +484,7 @@ mod tests {
             let challenge = sso.issue_challenge("u-1").await.unwrap();
 
             // Client signs with the profile key.
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-1",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-1", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 
@@ -519,23 +514,13 @@ mod tests {
             let store = InMemoryUserStore::new();
 
             let challenge = sso.issue_challenge("u-2").await.unwrap();
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-2",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-2", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 
             // Direct pubkey verification succeeds without needing fallback.
             let result = sso
-                .verify_response_with_username_fallback(
-                    "u-2",
-                    &pk_hex,
-                    &sig_hex,
-                    None,
-                    &store,
-                )
+                .verify_response_with_username_fallback("u-2", &pk_hex, &sig_hex, None, &store)
                 .await
                 .unwrap();
 
@@ -552,21 +537,14 @@ mod tests {
             let store = InMemoryUserStore::new();
 
             let challenge = sso.issue_challenge("u-3").await.unwrap();
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-3",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-3", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 
             let wrong_pk = "b".repeat(64);
             let err = sso
                 .verify_response_with_username_fallback(
-                    "u-3",
-                    &wrong_pk,
-                    &sig_hex,
-                    None, // no username
+                    "u-3", &wrong_pk, &sig_hex, None, // no username
                     &store,
                 )
                 .await
@@ -584,11 +562,7 @@ mod tests {
             let store = InMemoryUserStore::new();
 
             let challenge = sso.issue_challenge("u-4").await.unwrap();
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-4",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-4", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 
@@ -628,11 +602,7 @@ mod tests {
                 .unwrap();
 
             let challenge = sso.issue_challenge("u-5").await.unwrap();
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-5",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-5", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 
@@ -705,11 +675,7 @@ mod tests {
                 .unwrap();
 
             let challenge = sso.issue_challenge("u-7").await.unwrap();
-            let digest = Nip07SchnorrSso::canonical_digest(
-                &challenge.token,
-                "u-7",
-                &pk_hex,
-            );
+            let digest = Nip07SchnorrSso::canonical_digest(&challenge.token, "u-7", &pk_hex);
             let sig: k256::schnorr::Signature = sk.sign(&digest);
             let sig_hex = hex::encode(sig.to_bytes());
 

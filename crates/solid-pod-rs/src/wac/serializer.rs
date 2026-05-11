@@ -75,10 +75,7 @@ fn emit_conditions(out: &mut String, conds: Option<&[Condition]>) {
                 emit_body_pair(out, "acl:issuerClass", &body.issuer_class);
             }
             Condition::Payment(body) => {
-                out.push_str(&format!(
-                    " ;\n        acl:costSats {}",
-                    body.cost_sats
-                ));
+                out.push_str(&format!(" ;\n        acl:costSats {}", body.cost_sats));
             }
             Condition::Unknown { .. } => {}
         }

@@ -158,7 +158,9 @@ mod tests {
         let a = mint_token();
         let b = mint_token();
         assert_ne!(a, b);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         // 32 raw bytes => 43 base64url chars (no padding).
         assert_eq!(a.len(), 43);
     }

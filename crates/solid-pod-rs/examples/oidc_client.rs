@@ -114,13 +114,8 @@ mod run {
             ))?
         };
         #[cfg(not(feature = "dpop-replay-cache"))]
-        let verified_dpop = verify_dpop_proof(
-            &dpop_proof,
-            "https://pod.example/resource",
-            "GET",
-            now,
-            60,
-        )?;
+        let verified_dpop =
+            verify_dpop_proof(&dpop_proof, "https://pod.example/resource", "GET", now, 60)?;
         assert_eq!(verified_dpop.jkt, jkt);
 
         // --------------------------------------------------------------
@@ -129,13 +124,7 @@ mod run {
         let at_secret = b"at-demo-secret";
         let at = issue_access_token(at_secret, issuer, &jkt, now + 3600, now)?;
         let keyset = solid_pod_rs::oidc::TokenVerifyKey::Symmetric(at_secret.to_vec());
-        let verified = verify_access_token(
-            &at,
-            &keyset,
-            issuer,
-            &verified_dpop.jkt,
-            now,
-        )?;
+        let verified = verify_access_token(&at, &keyset, issuer, &verified_dpop.jkt, now)?;
         println!(
             "[verify]    webid={} client={}",
             verified.webid,
@@ -214,7 +203,9 @@ mod run {
             iat,
             webid: Some("https://me.example/profile#me".into()),
             client_id: Some("client-123".into()),
-            cnf: Some(CnfClaim { jkt: jkt.to_string() }),
+            cnf: Some(CnfClaim {
+                jkt: jkt.to_string(),
+            }),
             scope: Some("openid webid".into()),
         };
         Ok(encode(

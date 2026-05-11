@@ -65,13 +65,10 @@ pub async fn delete_account(
     }
 
     // --- delete ---
-    let deleted = user_store
-        .delete(user_id)
-        .await
-        .map_err(|e| match e {
-            UserStoreError::NotImplemented => AccountDeleteError::NotImplemented,
-            other => AccountDeleteError::UserStore(other.to_string()),
-        })?;
+    let deleted = user_store.delete(user_id).await.map_err(|e| match e {
+        UserStoreError::NotImplemented => AccountDeleteError::NotImplemented,
+        other => AccountDeleteError::UserStore(other.to_string()),
+    })?;
 
     if !deleted {
         return Err(AccountDeleteError::NotFound);
@@ -121,7 +118,10 @@ mod tests {
             confirmation: "delete my account".into(), // wrong case
         };
         let err = delete_account("acct-del", &req, &store).await.unwrap_err();
-        assert!(matches!(err, AccountDeleteError::ConfirmationMismatch { .. }));
+        assert!(matches!(
+            err,
+            AccountDeleteError::ConfirmationMismatch { .. }
+        ));
 
         // User should still exist.
         assert!(store.find_by_id("acct-del").await.unwrap().is_some());
@@ -134,7 +134,10 @@ mod tests {
             confirmation: "".into(),
         };
         let err = delete_account("acct-del", &req, &store).await.unwrap_err();
-        assert!(matches!(err, AccountDeleteError::ConfirmationMismatch { .. }));
+        assert!(matches!(
+            err,
+            AccountDeleteError::ConfirmationMismatch { .. }
+        ));
     }
 
     #[tokio::test]
@@ -143,7 +146,9 @@ mod tests {
         let req = AccountDeleteRequest {
             confirmation: "DELETE MY ACCOUNT".into(),
         };
-        let err = delete_account("nonexistent", &req, &store).await.unwrap_err();
+        let err = delete_account("nonexistent", &req, &store)
+            .await
+            .unwrap_err();
         assert!(matches!(err, AccountDeleteError::NotFound));
     }
 

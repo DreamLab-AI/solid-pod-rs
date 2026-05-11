@@ -139,10 +139,7 @@ async fn account_delete_nonexistent_user_returns_false() {
     let deleted = run_account_delete(&args, &store, &mut prompt)
         .await
         .unwrap();
-    assert!(
-        !deleted,
-        "deleting a nonexistent user must return false"
-    );
+    assert!(!deleted, "deleting a nonexistent user must return false");
     assert_eq!(
         store.deletes.lock().as_slice(),
         &["nobody".to_string()],

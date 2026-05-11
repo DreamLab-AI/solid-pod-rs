@@ -39,7 +39,9 @@ fn make_memory() -> Arc<dyn Storage> {
 
 fn make_fs() -> (Arc<dyn Storage>, TempDir) {
     let dir = TempDir::new().expect("tempdir");
-    let fsb = rt().block_on(FsBackend::new(dir.path())).expect("fs backend");
+    let fsb = rt()
+        .block_on(FsBackend::new(dir.path()))
+        .expect("fs backend");
     (Arc::new(fsb), dir)
 }
 
@@ -59,7 +61,11 @@ fn bench_sequential_put(c: &mut Criterion) {
             counter += 1;
             rt.block_on(async {
                 storage
-                    .put(&path, Bytes::from(payload.clone()), "application/octet-stream")
+                    .put(
+                        &path,
+                        Bytes::from(payload.clone()),
+                        "application/octet-stream",
+                    )
                     .await
                     .unwrap();
             });
@@ -75,7 +81,11 @@ fn bench_sequential_put(c: &mut Criterion) {
             counter += 1;
             rt.block_on(async {
                 storage
-                    .put(&path, Bytes::from(payload.clone()), "application/octet-stream")
+                    .put(
+                        &path,
+                        Bytes::from(payload.clone()),
+                        "application/octet-stream",
+                    )
                     .await
                     .unwrap();
             });
@@ -213,5 +223,10 @@ fn bench_list_10k(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_sequential_put, bench_random_get, bench_list_10k);
+criterion_group!(
+    benches,
+    bench_sequential_put,
+    bench_random_get,
+    bench_list_10k
+);
 criterion_main!(benches);

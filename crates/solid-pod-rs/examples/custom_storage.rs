@@ -176,10 +176,7 @@ impl Storage for BTreeBackend {
                 };
                 let under = filter_path == "/"
                     || target == filter_path
-                    || target.starts_with(&format!(
-                        "{}/",
-                        filter_path.trim_end_matches('/')
-                    ));
+                    || target.starts_with(&format!("{}/", filter_path.trim_end_matches('/')));
                 if under && tx.send(event).await.is_err() {
                     return;
                 }
@@ -210,7 +207,10 @@ async fn main() -> Result<(), PodError> {
     println!("LIST /notes        -> {listing:?}");
 
     let (body, _) = backend.get("/notes/a.txt").await?;
-    println!("GET  /notes/a.txt  -> {:?}", std::str::from_utf8(&body).unwrap_or(""));
+    println!(
+        "GET  /notes/a.txt  -> {:?}",
+        std::str::from_utf8(&body).unwrap_or("")
+    );
 
     backend.delete("/notes/a.txt").await?;
     println!("DEL  /notes/a.txt");
@@ -226,11 +226,10 @@ async fn main() -> Result<(), PodError> {
     backend
         .put("/notes/c.txt", Bytes::from_static(b"charlie"), "text/plain")
         .await?;
-    if let Some(ev) =
-        tokio::time::timeout(std::time::Duration::from_secs(1), watcher.recv())
-            .await
-            .ok()
-            .flatten()
+    if let Some(ev) = tokio::time::timeout(std::time::Duration::from_secs(1), watcher.recv())
+        .await
+        .ok()
+        .flatten()
     {
         println!("watcher received: {ev:?}");
     }

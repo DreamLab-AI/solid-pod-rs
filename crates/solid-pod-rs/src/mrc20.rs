@@ -148,10 +148,7 @@ pub fn validate_mrc20_state(state: &Mrc20State) -> Result<(), PaymentError> {
 ///
 /// Uses RFC 8785 JCS for deterministic serialization — **not**
 /// `serde_json::to_string` which does not guarantee key ordering.
-pub fn verify_state_link(
-    state: &Mrc20State,
-    prev_state: &Mrc20State,
-) -> Result<(), PaymentError> {
+pub fn verify_state_link(state: &Mrc20State, prev_state: &Mrc20State) -> Result<(), PaymentError> {
     let prev_value = serde_json::to_value(prev_state)
         .map_err(|e| PaymentError::InvalidState(format!("serialize: {e}")))?;
     let prev_jcs = jcs(&prev_value);
@@ -276,9 +273,8 @@ mod anchor {
         let mut current_compressed = pubkey_bytes;
 
         for state_jcs in state_strings {
-            let t = bt_scalar(&current_compressed, state_jcs).ok_or_else(|| {
-                PaymentError::InvalidState("scalar derivation failed".into())
-            })?;
+            let t = bt_scalar(&current_compressed, state_jcs)
+                .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
             p = p + (ProjectivePoint::GENERATOR * t);
             let affine = p.to_affine();
             let encoded = k256::PublicKey::from_affine(affine)
@@ -305,9 +301,8 @@ mod anchor {
         let mut current_compressed = pubkey.to_sec1_bytes().to_vec();
 
         for state_jcs in state_strings {
-            let t = bt_scalar(&current_compressed, state_jcs).ok_or_else(|| {
-                PaymentError::InvalidState("scalar derivation failed".into())
-            })?;
+            let t = bt_scalar(&current_compressed, state_jcs)
+                .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
             d = d + t;
             let new_sk = SecretKey::new(d.into());
             current_compressed = new_sk.public_key().to_sec1_bytes().to_vec();
@@ -372,7 +367,9 @@ mod anchor {
         enc.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
 
         let plm = polymod(&enc) ^ BECH32M_CONST;
-        let checksum: Vec<u8> = (0..6).map(|i| ((plm >> (5 * (5 - i))) & 31) as u8).collect();
+        let checksum: Vec<u8> = (0..6)
+            .map(|i| ((plm >> (5 * (5 - i))) & 31) as u8)
+            .collect();
 
         let mut result = String::with_capacity(hrp.len() + 1 + values.len() + 6);
         result.push_str(hrp);
@@ -846,7 +843,10 @@ mod tests {
             let pubkey = test_pubkey_compressed();
             let states = vec!["genesis".into()];
             let addr = bt_address(&pubkey, &states, "testnet4").unwrap();
-            assert!(addr.starts_with("tb1p"), "expected tb1p prefix, got: {addr}");
+            assert!(
+                addr.starts_with("tb1p"),
+                "expected tb1p prefix, got: {addr}"
+            );
         }
 
         #[test]
@@ -854,7 +854,10 @@ mod tests {
             let pubkey = test_pubkey_compressed();
             let states = vec!["genesis".into()];
             let addr = bt_address(&pubkey, &states, "mainnet").unwrap();
-            assert!(addr.starts_with("bc1p"), "expected bc1p prefix, got: {addr}");
+            assert!(
+                addr.starts_with("bc1p"),
+                "expected bc1p prefix, got: {addr}"
+            );
         }
 
         #[test]
@@ -885,7 +888,8 @@ mod tests {
             let next = transfer_state(&genesis_hash);
             let pubkey = test_pubkey_compressed();
 
-            let result = verify_mrc20_anchor(&next, &genesis, "recipient", &pubkey, &[], "testnet4");
+            let result =
+                verify_mrc20_anchor(&next, &genesis, "recipient", &pubkey, &[], "testnet4");
             assert!(result.is_err());
         }
 
@@ -897,7 +901,12 @@ mod tests {
             let next = transfer_state(&genesis_hash);
 
             let result = verify_mrc20_anchor(
-                &next, &genesis, "recipient", "short", &["s1".into()], "testnet4",
+                &next,
+                &genesis,
+                "recipient",
+                "short",
+                &["s1".into()],
+                "testnet4",
             );
             assert!(result.is_err());
         }

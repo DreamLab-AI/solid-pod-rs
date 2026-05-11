@@ -195,7 +195,12 @@ fn canonical_issuer(u: &Url) -> String {
 /// `ip:port`. This defeats DNS rebinding between the SSRF check and
 /// the subsequent TCP connect: the kernel connects to the approved IP
 /// even if the OS resolver would now hand back a different address.
-fn pinned_client(base: &Client, host: &str, ip: std::net::IpAddr, port: u16) -> reqwest::Result<Client> {
+fn pinned_client(
+    base: &Client,
+    host: &str,
+    ip: std::net::IpAddr,
+    port: u16,
+) -> reqwest::Result<Client> {
     // We deliberately build a fresh client rather than clone-and-mutate
     // `base` because reqwest's builder consumes itself. The base client
     // is retained so call sites can carry shared connection-pool
@@ -224,10 +229,12 @@ pub async fn fetch_oidc_config(
         .host_str()
         .ok_or_else(|| PodError::Nip98(format!("issuer URL missing host: {issuer}")))?
         .to_string();
-    let port = issuer.port_or_known_default().unwrap_or(match issuer.scheme() {
-        "https" => 443,
-        _ => 80,
-    });
+    let port = issuer
+        .port_or_known_default()
+        .unwrap_or(match issuer.scheme() {
+            "https" => 443,
+            _ => 80,
+        });
 
     let pinned = pinned_client(client, &host, approved_ip, port)
         .map_err(|e| PodError::Backend(format!("reqwest client build failed: {e}")))?;

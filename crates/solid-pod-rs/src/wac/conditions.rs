@@ -137,15 +137,15 @@ impl Serialize for Condition {
 impl<'de> Deserialize<'de> for Condition {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let raw: serde_json::Value = Deserialize::deserialize(de)?;
-        let obj = raw.as_object().ok_or_else(|| {
-            serde::de::Error::custom("acl:condition entry must be a JSON object")
-        })?;
+        let obj = raw
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("acl:condition entry must be a JSON object"))?;
         let type_iri_value = obj
             .get("@type")
             .ok_or_else(|| serde::de::Error::custom("acl:condition missing @type"))?;
-        let type_iri_str = type_iri_value.as_str().ok_or_else(|| {
-            serde::de::Error::custom("acl:condition @type must be a string")
-        })?;
+        let type_iri_str = type_iri_value
+            .as_str()
+            .ok_or_else(|| serde::de::Error::custom("acl:condition @type must be a string"))?;
         let matches_client = matches!(
             type_iri_str,
             "acl:ClientCondition"
@@ -165,16 +165,13 @@ impl<'de> Deserialize<'de> for Condition {
                 | "https://www.w3.org/ns/auth/acl#PaymentCondition"
         );
         if matches_client {
-            let body =
-                ClientConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
+            let body = ClientConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Client(body))
         } else if matches_issuer {
-            let body =
-                IssuerConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
+            let body = IssuerConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Issuer(body))
         } else if matches_payment {
-            let body =
-                PaymentConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
+            let body = PaymentConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Payment(body))
         } else {
             Ok(Condition::Unknown {

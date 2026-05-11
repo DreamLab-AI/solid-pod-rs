@@ -157,14 +157,12 @@ impl WebLedger {
 
     pub fn debit(&mut self, did: &str, amount: u64) -> Result<u64, PaymentError> {
         self.updated = now_secs();
-        let entry = self
-            .entries
-            .iter_mut()
-            .find(|e| e.url == did)
-            .ok_or(PaymentError::InsufficientBalance {
+        let entry = self.entries.iter_mut().find(|e| e.url == did).ok_or(
+            PaymentError::InsufficientBalance {
                 balance: 0,
                 cost: amount,
-            })?;
+            },
+        )?;
         let current = entry.amount.sats();
         if current < amount {
             return Err(PaymentError::InsufficientBalance {
@@ -295,13 +293,15 @@ pub fn pay_info(config: &PayConfig) -> serde_json::Value {
         });
     }
     if !config.chains.is_empty() {
-        info["chains"] = serde_json::json!(
-            config.chains.iter().map(|c| serde_json::json!({
+        info["chains"] = serde_json::json!(config
+            .chains
+            .iter()
+            .map(|c| serde_json::json!({
                 "id": c.id,
                 "unit": c.unit,
                 "name": c.name
-            })).collect::<Vec<_>>()
-        );
+            }))
+            .collect::<Vec<_>>());
         info["pool"] = serde_json::json!("/pay/.pool");
     }
     info
@@ -316,7 +316,11 @@ pub fn pay_info(config: &PayConfig) -> serde_json::Value {
 /// Returns a `Vec<(header_name, header_value)>` that the transport layer
 /// appends to the HTTP response. Framework-agnostic — actix-web, axum,
 /// and Worker consumers each adapt these to their header type.
-pub fn payment_response_headers(balance: u64, cost: u64, currency: &str) -> Vec<(&'static str, String)> {
+pub fn payment_response_headers(
+    balance: u64,
+    cost: u64,
+    currency: &str,
+) -> Vec<(&'static str, String)> {
     vec![
         ("X-Balance", balance.to_string()),
         ("X-Cost", cost.to_string()),
@@ -394,9 +398,7 @@ pub fn parse_txo_uri(input: &str) -> Result<TxoDeposit, PaymentError> {
     let cleaned = trimmed.strip_prefix("bitcoin:").unwrap_or(trimmed);
     let parts: Vec<&str> = cleaned.split(':').collect();
     if parts.len() != 2 {
-        return Err(PaymentError::InvalidTxo(
-            "expected txid:vout format".into(),
-        ));
+        return Err(PaymentError::InvalidTxo("expected txid:vout format".into()));
     }
     let txid = parts[0];
     let vout: u32 = parts[1]
@@ -412,9 +414,7 @@ pub fn parse_txo_uri(input: &str) -> Result<TxoDeposit, PaymentError> {
 
 fn validate_txid(txid: &str) -> Result<(), PaymentError> {
     if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(PaymentError::InvalidTxo(
-            "txid must be 64 hex chars".into(),
-        ));
+        return Err(PaymentError::InvalidTxo("txid must be 64 hex chars".into()));
     }
     Ok(())
 }
@@ -427,7 +427,7 @@ fn validate_txid(txid: &str) -> Result<(), PaymentError> {
 /// implementation (JCS, BIP-341, state-chain verification) live in
 /// [`crate::mrc20`]. These re-exports let existing consumers that import
 /// MRC20 types from `payments` continue to compile without changes.
-pub use crate::mrc20::{Mrc20Op, Mrc20State, verify_state_link};
+pub use crate::mrc20::{verify_state_link, Mrc20Op, Mrc20State};
 
 // ---------------------------------------------------------------------------
 // Payment store trait (storage abstraction)

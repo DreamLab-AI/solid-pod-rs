@@ -116,9 +116,5 @@ fn bench_concurrent_fresh(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_single_threaded_fresh,
-    bench_concurrent_fresh
-);
+criterion_group!(benches, bench_single_threaded_fresh, bench_concurrent_fresh);
 criterion_main!(benches);

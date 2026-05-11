@@ -3,7 +3,7 @@
 
 # Minimum supported Rust version. Any lint that requires a newer feature will
 # be silenced below this version.
-msrv = "1.75"
+msrv = "1.85"
 
 # Complexity thresholds — kept close to defaults but tightened where it makes
 # sense for a server-side library that favours small, auditable functions.

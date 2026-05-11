@@ -204,11 +204,7 @@ mod lru_impl {
                 .map(|(route, max, window)| {
                     assert!(max > 0, "rate-limit max must be non-zero");
                     assert!(!window.is_zero(), "rate-limit window must be non-zero");
-                    RoutePolicy {
-                        route,
-                        max,
-                        window,
-                    }
+                    RoutePolicy { route, max, window }
                 })
                 .collect();
 

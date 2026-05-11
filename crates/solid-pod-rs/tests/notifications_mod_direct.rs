@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use solid_pod_rs::notifications::{
-    discovery_document, as_ns, ChangeNotification, ChannelType, InMemoryNotifications,
+    as_ns, discovery_document, ChangeNotification, ChannelType, InMemoryNotifications,
     Notifications, Subscription, WebSocketChannelManager, WebhookChannelManager,
 };
 use solid_pod_rs::storage::StorageEvent;
@@ -107,7 +107,11 @@ fn discovery_document_advertises_all_channels() {
     let arr = doc["channelTypes"]
         .as_array()
         .expect("channelTypes is an array");
-    assert_eq!(arr.len(), 2, "exactly WebSocketChannel2023 + WebhookChannel2023");
+    assert_eq!(
+        arr.len(),
+        2,
+        "exactly WebSocketChannel2023 + WebhookChannel2023"
+    );
     let ids: Vec<&str> = arr
         .iter()
         .map(|v| v["id"].as_str().expect("channel id"))
@@ -183,7 +187,9 @@ fn change_notification_serialises_with_activity_streams_envelope() {
 async fn subscription_matches_exact_resource_uri() {
     let m = WebhookChannelManager::new();
     // Subscribe at the exact path — no container semantics.
-    let sub = m.subscribe("/exact/resource", "https://client.example/hook").await;
+    let sub = m
+        .subscribe("/exact/resource", "https://client.example/hook")
+        .await;
     assert_eq!(sub.topic, "/exact/resource");
     assert_eq!(sub.channel_type, ChannelType::WebhookChannel2023);
     assert_eq!(sub.receive_from, "https://client.example/hook");
@@ -200,9 +206,7 @@ async fn subscription_matches_exact_resource_uri() {
 #[tokio::test]
 async fn subscription_prefix_matches_container_subtree() {
     let m = WebhookChannelManager::new();
-    let sub = m
-        .subscribe("/public/", "https://client.example/hook")
-        .await;
+    let sub = m.subscribe("/public/", "https://client.example/hook").await;
     // The WebhookChannelManager::publish impl uses `topic.starts_with(t)
     // || t == topic` for matching — prove that semantic by checking the
     // stored subscription topic is a prefix of a nested resource path.

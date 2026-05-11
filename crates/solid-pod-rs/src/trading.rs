@@ -114,12 +114,10 @@ impl WebLedger {
                     })
                 }
             }
-            crate::payments::LedgerAmount::Simple(_) => {
-                Err(PaymentError::InsufficientBalance {
-                    balance: 0,
-                    cost: amount,
-                })
-            }
+            crate::payments::LedgerAmount::Simple(_) => Err(PaymentError::InsufficientBalance {
+                balance: 0,
+                cost: amount,
+            }),
         }
     }
 }
@@ -217,18 +215,12 @@ impl OrderBook {
     }
 
     /// Cancel an order. Only the original seller can cancel.
-    pub fn cancel_order(
-        &mut self,
-        id: &str,
-        seller: &str,
-    ) -> Result<SellOrder, PaymentError> {
+    pub fn cancel_order(&mut self, id: &str, seller: &str) -> Result<SellOrder, PaymentError> {
         let idx = self
             .orders
             .iter()
             .position(|o| o.id == id)
-            .ok_or_else(|| {
-                PaymentError::InvalidTxo(format!("order {id} not found"))
-            })?;
+            .ok_or_else(|| PaymentError::InvalidTxo(format!("order {id} not found")))?;
 
         if self.orders[idx].seller != seller {
             return Err(PaymentError::InvalidTxo(format!(
@@ -255,9 +247,7 @@ impl OrderBook {
             .orders
             .iter()
             .position(|o| o.id == id)
-            .ok_or_else(|| {
-                PaymentError::InvalidTxo(format!("order {id} not found"))
-            })?;
+            .ok_or_else(|| PaymentError::InvalidTxo(format!("order {id} not found")))?;
 
         let order = &self.orders[idx];
 
@@ -265,9 +255,7 @@ impl OrderBook {
         let total_cost = order
             .sell_amount
             .checked_mul(order.price)
-            .ok_or_else(|| {
-                PaymentError::InvalidTxo("price overflow".into())
-            })?;
+            .ok_or_else(|| PaymentError::InvalidTxo("price overflow".into()))?;
 
         // Verify buyer can afford it.
         let buyer_balance = ledger.get_currency_balance(buyer, &order.buy_currency);
@@ -279,8 +267,7 @@ impl OrderBook {
         }
 
         // Verify seller still has the tokens to sell.
-        let seller_balance =
-            ledger.get_currency_balance(&order.seller, &order.sell_currency);
+        let seller_balance = ledger.get_currency_balance(&order.seller, &order.sell_currency);
         if seller_balance < order.sell_amount {
             return Err(PaymentError::InsufficientBalance {
                 balance: seller_balance,
@@ -393,10 +380,10 @@ impl AmmPool {
             isqrt_u128(product) as u64
         } else {
             // Proportional to existing reserves: min(a/A, b/B) * total.
-            let share_a = (amount_a as u128) * (self.total_shares as u128)
-                / (self.reserve_a as u128);
-            let share_b = (amount_b as u128) * (self.total_shares as u128)
-                / (self.reserve_b as u128);
+            let share_a =
+                (amount_a as u128) * (self.total_shares as u128) / (self.reserve_a as u128);
+            let share_b =
+                (amount_b as u128) * (self.total_shares as u128) / (self.reserve_b as u128);
             share_a.min(share_b) as u64
         };
 
@@ -424,11 +411,7 @@ impl AmmPool {
         shares: u64,
         ledger: &mut WebLedger,
     ) -> Result<(u64, u64), PaymentError> {
-        let provider_shares = self
-            .shares
-            .get(provider)
-            .copied()
-            .unwrap_or(0);
+        let provider_shares = self.shares.get(provider).copied().unwrap_or(0);
 
         if provider_shares < shares {
             return Err(PaymentError::InsufficientBalance {
@@ -443,11 +426,9 @@ impl AmmPool {
 
         // Proportional withdrawal.
         let amount_a =
-            ((self.reserve_a as u128) * (shares as u128) / (self.total_shares as u128))
-                as u64;
+            ((self.reserve_a as u128) * (shares as u128) / (self.total_shares as u128)) as u64;
         let amount_b =
-            ((self.reserve_b as u128) * (shares as u128) / (self.total_shares as u128))
-                as u64;
+            ((self.reserve_b as u128) * (shares as u128) / (self.total_shares as u128)) as u64;
 
         self.reserve_a = self.reserve_a.saturating_sub(amount_a);
         self.reserve_b = self.reserve_b.saturating_sub(amount_b);
@@ -488,17 +469,16 @@ impl AmmPool {
             ));
         }
 
-        let (reserve_in, reserve_out, to_currency) =
-            if from_currency == self.currency_a {
-                (self.reserve_a, self.reserve_b, self.currency_b.clone())
-            } else if from_currency == self.currency_b {
-                (self.reserve_b, self.reserve_a, self.currency_a.clone())
-            } else {
-                return Err(PaymentError::InvalidTxo(format!(
-                    "currency {from_currency} not in pool ({}/{})",
-                    self.currency_a, self.currency_b
-                )));
-            };
+        let (reserve_in, reserve_out, to_currency) = if from_currency == self.currency_a {
+            (self.reserve_a, self.reserve_b, self.currency_b.clone())
+        } else if from_currency == self.currency_b {
+            (self.reserve_b, self.reserve_a, self.currency_a.clone())
+        } else {
+            return Err(PaymentError::InvalidTxo(format!(
+                "currency {from_currency} not in pool ({}/{})",
+                self.currency_a, self.currency_b
+            )));
+        };
 
         if reserve_in == 0 || reserve_out == 0 {
             return Err(PaymentError::InvalidTxo("pool is empty".into()));
@@ -507,8 +487,7 @@ impl AmmPool {
         // Constant-product with fee, using u128 intermediates.
         let fee_factor = 10_000u128 - (self.fee_bps as u128);
         let numerator = (reserve_out as u128) * (amount_in as u128) * fee_factor;
-        let denominator =
-            (reserve_in as u128) * 10_000u128 + (amount_in as u128) * fee_factor;
+        let denominator = (reserve_in as u128) * 10_000u128 + (amount_in as u128) * fee_factor;
 
         let amount_out = (numerator / denominator) as u64;
 
@@ -520,8 +499,7 @@ impl AmmPool {
 
         // Fee retained in pool = amount_in - effective_input.
         // effective_input = amount_in * fee_factor / 10000
-        let effective_input =
-            ((amount_in as u128) * fee_factor / 10_000u128) as u64;
+        let effective_input = ((amount_in as u128) * fee_factor / 10_000u128) as u64;
         let fee = amount_in - effective_input;
 
         // Debit trader's input currency, credit output currency.
@@ -720,16 +698,16 @@ mod tests {
         let mut book = OrderBook::new();
 
         // Alice sells 100 tbtc4 at 2 tbtc3 each (buyer pays 200 tbtc3).
-        let order =
-            book.create_order("did:nostr:alice", "tbtc4", 100, "tbtc3", 2);
+        let order = book.create_order("did:nostr:alice", "tbtc4", 100, "tbtc3", 2);
 
         // Bob buys (pays 200 tbtc3, receives 100 tbtc4).
-        let result =
-            book.execute_swap(&order.id, "did:nostr:bob", &mut ledger).unwrap();
+        let result = book
+            .execute_swap(&order.id, "did:nostr:bob", &mut ledger)
+            .unwrap();
 
-        assert_eq!(result.amount_in, 200);  // Bob paid 200 tbtc3
+        assert_eq!(result.amount_in, 200); // Bob paid 200 tbtc3
         assert_eq!(result.amount_out, 100); // Bob received 100 tbtc4
-        assert_eq!(result.fee, 0);          // No fee on order book
+        assert_eq!(result.fee, 0); // No fee on order book
 
         // Verify balances.
         assert_eq!(
@@ -759,12 +737,12 @@ mod tests {
         let mut book = OrderBook::new();
 
         // Alice sells 100 tbtc4 at price 200 tbtc3 each — total cost 20_000.
-        let order =
-            book.create_order("did:nostr:alice", "tbtc4", 100, "tbtc3", 200);
+        let order = book.create_order("did:nostr:alice", "tbtc4", 100, "tbtc3", 200);
 
         // Bob only has 12_000 tbtc3.
-        let err =
-            book.execute_swap(&order.id, "did:nostr:bob", &mut ledger).unwrap_err();
+        let err = book
+            .execute_swap(&order.id, "did:nostr:bob", &mut ledger)
+            .unwrap_err();
         assert!(matches!(err, PaymentError::InsufficientBalance { .. }));
 
         // Order still present.
@@ -869,7 +847,10 @@ mod tests {
         let k_after = (pool.reserve_a as u128) * (pool.reserve_b as u128);
 
         // With fee, k must strictly increase (fee retained in reserves).
-        assert!(k_after > k_before, "k should increase with fee: {k_before} → {k_after}");
+        assert!(
+            k_after > k_before,
+            "k should increase with fee: {k_before} → {k_after}"
+        );
 
         // Fee is 0.3% of 1000 = 3.
         assert_eq!(result.fee, 3);
@@ -890,7 +871,8 @@ mod tests {
             .unwrap();
 
         // Do a swap to generate fees.
-        pool.swap("did:nostr:bob", "tbtc4", 500, &mut ledger).unwrap();
+        pool.swap("did:nostr:bob", "tbtc4", 500, &mut ledger)
+            .unwrap();
 
         // Alice removes all her shares.
         let (got_a, got_b) = pool
@@ -933,14 +915,12 @@ mod tests {
 
         let mut exchange = Exchange::new();
 
-        let pool1 =
-            exchange.get_or_create_pool("tbtc4", "tbtc3", AmmPool::DEFAULT_FEE_BPS);
+        let pool1 = exchange.get_or_create_pool("tbtc4", "tbtc3", AmmPool::DEFAULT_FEE_BPS);
         pool1
             .add_liquidity("did:nostr:alice", 1_000, 1_000, &mut ledger)
             .unwrap();
 
-        let pool2 =
-            exchange.get_or_create_pool("tbtc4", "signet", AmmPool::DEFAULT_FEE_BPS);
+        let pool2 = exchange.get_or_create_pool("tbtc4", "signet", AmmPool::DEFAULT_FEE_BPS);
         pool2
             .add_liquidity("did:nostr:alice", 1_000, 2_000, &mut ledger)
             .unwrap();

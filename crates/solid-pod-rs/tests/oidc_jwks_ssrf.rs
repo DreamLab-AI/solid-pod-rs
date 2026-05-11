@@ -94,9 +94,7 @@ async fn oidc_jwks_fetch_runs_ssrf_twice() {
         .expect_err("jwks_uri pointing at metadata IP must be blocked");
     let msg = format!("{err}");
     assert!(
-        msg.contains("SSRF")
-            || msg.contains("Reserved")
-            || msg.contains("169.254.169.254"),
+        msg.contains("SSRF") || msg.contains("Reserved") || msg.contains("169.254.169.254"),
         "expected SSRF error for jwks_uri, got: {msg}"
     );
 }

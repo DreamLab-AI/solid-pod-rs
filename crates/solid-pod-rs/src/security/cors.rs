@@ -196,10 +196,7 @@ impl CorsPolicy {
         out.push(("Access-Control-Allow-Headers", normalised));
 
         // Max-Age for preflight cache.
-        out.push((
-            "Access-Control-Max-Age",
-            self.max_age.as_secs().to_string(),
-        ));
+        out.push(("Access-Control-Max-Age", self.max_age.as_secs().to_string()));
 
         Some(out)
     }

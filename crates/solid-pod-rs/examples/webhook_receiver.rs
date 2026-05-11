@@ -43,10 +43,7 @@ struct AppState {
     received: Arc<AtomicU64>,
 }
 
-async fn hook(
-    State(state): State<AppState>,
-    Json(note): Json<ChangeNotification>,
-) -> StatusCode {
+async fn hook(State(state): State<AppState>, Json(note): Json<ChangeNotification>) -> StatusCode {
     let n = state.received.fetch_add(1, Ordering::Relaxed) + 1;
     println!(
         "[{kind}] {object} (id={id}) total_received={n}",

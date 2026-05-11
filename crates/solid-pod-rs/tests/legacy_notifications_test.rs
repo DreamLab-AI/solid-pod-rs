@@ -23,7 +23,10 @@ use tokio::time::timeout;
 fn f3a_to_legacy_line_created_is_pub_uri() {
     let ev = StorageEvent::Created("https://pod.example.com/foo.ttl".into());
     let line = LegacyNotificationChannel::to_legacy_line(&ev);
-    assert_eq!(line, Some("pub https://pod.example.com/foo.ttl".to_string()));
+    assert_eq!(
+        line,
+        Some("pub https://pod.example.com/foo.ttl".to_string())
+    );
 }
 
 /// F3b: `parse_subscribe` extracts the target URI from a valid `sub` line.
@@ -49,8 +52,7 @@ fn f3c_parse_subscribe_rejects_malformed() {
 #[test]
 fn f3d_subscription_prefix_match() {
     let (_tx, rx) = broadcast::channel::<StorageEvent>(16);
-    let mut chan =
-        LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
+    let mut chan = LegacyNotificationChannel::new(rx).with_authorizer(Arc::new(AllowAllAuthorizer));
     chan.subscribe("https://example.org/foo/".into()).unwrap();
 
     // Direct container match.

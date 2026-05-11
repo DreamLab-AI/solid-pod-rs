@@ -110,10 +110,7 @@ fn build_nip98_header(url: &str, method: &str, body: Option<&[u8]>) -> String {
     ];
     if let Some(b) = body {
         if !b.is_empty() {
-            tags.push(vec![
-                "payload".to_string(),
-                hex::encode(Sha256::digest(b)),
-            ]);
+            tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
         }
     }
 

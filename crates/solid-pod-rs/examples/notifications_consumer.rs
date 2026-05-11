@@ -63,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Message::Text(text) => {
                 match serde_json::from_str::<ChangeNotification>(&text) {
                     Ok(note) => {
-                        let pretty = serde_json::to_string_pretty(&note)
-                            .unwrap_or_else(|_| text.clone());
+                        let pretty =
+                            serde_json::to_string_pretty(&note).unwrap_or_else(|_| text.clone());
                         println!("{pretty}");
                     }
                     Err(_) => {

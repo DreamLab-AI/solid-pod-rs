@@ -127,10 +127,10 @@ impl SessionStore {
     /// Create a fresh session for `account_id` and return its id.
     pub fn create_session(&self, account_id: impl Into<String>) -> SessionId {
         let id = SessionId::generate();
-        self.inner
-            .write()
-            .sessions
-            .insert(id.as_str().to_string(), SessionRecord::new(account_id.into()));
+        self.inner.write().sessions.insert(
+            id.as_str().to_string(),
+            SessionRecord::new(account_id.into()),
+        );
         id
     }
 
@@ -235,8 +235,7 @@ mod tests {
 
     #[test]
     fn auth_code_expires() {
-        let s = SessionStore::new()
-            .with_ttls(Duration::from_secs(60), Duration::from_millis(1));
+        let s = SessionStore::new().with_ttls(Duration::from_secs(60), Duration::from_millis(1));
         let rec = s.issue_code("c-1", "acct-4", "https://app/cb", None, None);
         std::thread::sleep(Duration::from_millis(10));
         assert!(s.take_code(&rec.code).is_none());

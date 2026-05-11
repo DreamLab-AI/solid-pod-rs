@@ -136,9 +136,9 @@ pub use evaluator::{
     evaluate_access_with_groups, GroupMembership, StaticGroupMembership,
 };
 pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
-pub use payment::{total_payment_cost, PaymentConditionBody, PaymentConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
+pub use payment::{total_payment_cost, PaymentConditionBody, PaymentConditionEvaluator};
 pub use resolver::AclResolver;
 #[cfg(feature = "tokio-runtime")]
 pub use resolver::StorageAclResolver;
@@ -300,7 +300,9 @@ mod tests {
             origin: None,
             access_to: Some(IdOrIds::Single(IdRef { id: path.into() })),
             default: None,
-            mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
+            mode: Some(IdOrIds::Single(IdRef {
+                id: "acl:Read".into(),
+            })),
             condition: None,
         }
     }
@@ -313,7 +315,13 @@ mod tests {
     #[test]
     fn public_read_grants_anonymous() {
         let doc = make_doc(vec![public_read("/")]);
-        assert!(evaluate_access(Some(&doc), None, "/", AccessMode::Read, None));
+        assert!(evaluate_access(
+            Some(&doc),
+            None,
+            "/",
+            AccessMode::Read,
+            None
+        ));
     }
 
     #[test]
@@ -370,8 +378,20 @@ mod tests {
                 acl:mode acl:Read .
         "#;
         let doc = parse_turtle_acl(ttl).unwrap();
-        assert!(evaluate_access(Some(&doc), None, "/", AccessMode::Read, None));
-        assert!(!evaluate_access(Some(&doc), None, "/", AccessMode::Write, None));
+        assert!(evaluate_access(
+            Some(&doc),
+            None,
+            "/",
+            AccessMode::Read,
+            None
+        ));
+        assert!(!evaluate_access(
+            Some(&doc),
+            None,
+            "/",
+            AccessMode::Write,
+            None
+        ));
     }
 
     #[test]

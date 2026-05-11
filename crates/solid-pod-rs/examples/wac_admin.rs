@@ -51,7 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "grant" => {
             let agent = args.next().ok_or("missing agent URI")?;
             let target = args.next().ok_or("missing target path")?;
-            let mode = args.next().ok_or("missing mode (Read/Write/Append/Control)")?;
+            let mode = args
+                .next()
+                .ok_or("missing mode (Read/Write/Append/Control)")?;
             grant(storage.clone(), &agent, &target, &mode).await?;
         }
         "show" => {
@@ -78,7 +80,11 @@ async fn grant(
     let mode_iri = mode_to_iri(mode)?;
     // Default (inherited) for containers, accessTo otherwise.
     let is_container = target.ends_with('/');
-    let key = if is_container { "acl:default" } else { "acl:accessTo" };
+    let key = if is_container {
+        "acl:default"
+    } else {
+        "acl:accessTo"
+    };
     let acl_body = serde_json::json!({
         "@context": {
             "acl": "http://www.w3.org/ns/auth/acl#",
@@ -101,10 +107,7 @@ async fn grant(
     Ok(())
 }
 
-async fn show(
-    storage: Arc<FsBackend>,
-    resource: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn show(storage: Arc<FsBackend>, resource: &str) -> Result<(), Box<dyn std::error::Error>> {
     let resolver = StorageAclResolver::new(storage);
     match resolver.find_effective_acl(resource).await? {
         Some(_doc) => {

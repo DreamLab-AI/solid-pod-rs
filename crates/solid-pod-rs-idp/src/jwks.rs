@@ -255,9 +255,9 @@ impl Jwks {
     pub fn prune_expired(&self) {
         let mut inner = self.inner.write();
         let retention = self.retention;
-        inner.retired.retain(|(_, ts)| {
-            ts.elapsed().unwrap_or(Duration::ZERO) < retention
-        });
+        inner
+            .retired
+            .retain(|(_, ts)| ts.elapsed().unwrap_or(Duration::ZERO) < retention);
     }
 
     /// Render the public JWKS document (active + all retained
@@ -308,7 +308,9 @@ mod tests {
 
     #[test]
     fn prune_expired_drops_retired_keys_past_retention() {
-        let jwks = Jwks::generate_es256().unwrap().with_retention(Duration::from_millis(1));
+        let jwks = Jwks::generate_es256()
+            .unwrap()
+            .with_retention(Duration::from_millis(1));
         jwks.rotate().unwrap();
         std::thread::sleep(Duration::from_millis(20));
         jwks.prune_expired();

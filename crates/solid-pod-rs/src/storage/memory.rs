@@ -206,9 +206,7 @@ impl Storage for MemoryBackend {
                     | StorageEvent::Updated(p)
                     | StorageEvent::Deleted(p) => p.clone(),
                 };
-                if MemoryBackend::is_under(&target, &filter_path)
-                    && tx.send(event).await.is_err()
-                {
+                if MemoryBackend::is_under(&target, &filter_path) && tx.send(event).await.is_err() {
                     return;
                 }
             }

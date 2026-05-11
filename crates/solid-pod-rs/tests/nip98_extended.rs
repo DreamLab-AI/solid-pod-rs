@@ -18,9 +18,7 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use sha2::{Digest, Sha256};
-use solid_pod_rs::auth::nip98::{
-    authorization_header, compute_event_id, verify_at, Nip98Event,
-};
+use solid_pod_rs::auth::nip98::{authorization_header, compute_event_id, verify_at, Nip98Event};
 use solid_pod_rs::PodError;
 
 // TIMESTAMP_TOLERANCE is a private const in auth::nip98. The value (60s)
@@ -46,12 +44,7 @@ fn encode_event(event: &serde_json::Value) -> String {
     BASE64.encode(serde_json::to_string(event).unwrap().as_bytes())
 }
 
-fn build_event(
-    url: &str,
-    method: &str,
-    ts: u64,
-    body: Option<&[u8]>,
-) -> serde_json::Value {
+fn build_event(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> serde_json::Value {
     let (sk, pubkey) = test_signing_key();
     let mut tags = vec![
         vec!["u".to_string(), url.to_string()],
@@ -100,15 +93,13 @@ fn nip98_skew_window_enforced() {
     // Now is (TIMESTAMP_TOLERANCE + 1) seconds ahead — strictly outside
     // the tolerance window → Err.
     let now_ahead = ts_event + TIMESTAMP_TOLERANCE + 1;
-    let err =
-        verify_at(&hdr, "https://a.example/r", "GET", None, now_ahead).unwrap_err();
+    let err = verify_at(&hdr, "https://a.example/r", "GET", None, now_ahead).unwrap_err();
     assert!(matches!(err, PodError::Nip98(_)));
     assert!(format!("{err}").contains("timestamp"));
 
     // Symmetric: now is (TIMESTAMP_TOLERANCE + 1) seconds behind → Err.
     let now_behind = ts_event - TIMESTAMP_TOLERANCE - 1;
-    let err =
-        verify_at(&hdr, "https://a.example/r", "GET", None, now_behind).unwrap_err();
+    let err = verify_at(&hdr, "https://a.example/r", "GET", None, now_behind).unwrap_err();
     assert!(matches!(err, PodError::Nip98(_)));
 }
 
@@ -161,9 +152,12 @@ fn nip98_payload_hash_required_when_present() {
     // (b) Event was built over `body`; request carries a DIFFERENT body
     //     of the same length → tag mismatch → reject with a Nip98 error.
     let tampered = b"{\"hello\":\"evil!\"}" as &[u8];
-    assert_eq!(tampered.len(), body.len(), "same-length tamper stays out of length-guard");
-    let err =
-        verify_at(&hdr, "https://a.example/r", "POST", Some(tampered), ts).unwrap_err();
+    assert_eq!(
+        tampered.len(),
+        body.len(),
+        "same-length tamper stays out of length-guard"
+    );
+    let err = verify_at(&hdr, "https://a.example/r", "POST", Some(tampered), ts).unwrap_err();
     assert!(matches!(err, PodError::Nip98(_)));
     assert!(
         format!("{err}").to_lowercase().contains("payload"),

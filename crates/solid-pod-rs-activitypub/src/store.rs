@@ -155,13 +155,11 @@ impl Store {
         actor_id: &str,
         follower_id: &str,
     ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "DELETE FROM followers WHERE actor_id = ?1 AND follower_id = ?2",
-        )
-        .bind(actor_id)
-        .bind(follower_id)
-        .execute(&self.pool)
-        .await?;
+        let res = sqlx::query("DELETE FROM followers WHERE actor_id = ?1 AND follower_id = ?2")
+            .bind(actor_id)
+            .bind(follower_id)
+            .execute(&self.pool)
+            .await?;
         Ok(res.rows_affected())
     }
 
@@ -170,13 +168,12 @@ impl Store {
         actor_id: &str,
         follower_id: &str,
     ) -> Result<bool, sqlx::Error> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT 1 FROM followers WHERE actor_id = ?1 AND follower_id = ?2",
-        )
-        .bind(actor_id)
-        .bind(follower_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM followers WHERE actor_id = ?1 AND follower_id = ?2")
+                .bind(actor_id)
+                .bind(follower_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.is_some())
     }
 
@@ -199,21 +196,16 @@ impl Store {
     }
 
     pub async fn follower_count(&self, actor_id: &str) -> Result<i64, sqlx::Error> {
-        let (n,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM followers WHERE actor_id = ?1")
-                .bind(actor_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM followers WHERE actor_id = ?1")
+            .bind(actor_id)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n)
     }
 
     // -------------------------- following --------------------------------
 
-    pub async fn add_following(
-        &self,
-        actor_id: &str,
-        target_id: &str,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn add_following(&self, actor_id: &str, target_id: &str) -> Result<(), sqlx::Error> {
         let now = Utc::now();
         sqlx::query(
             "INSERT OR REPLACE INTO following (actor_id, target_id, requested_at, accepted) \
@@ -232,28 +224,22 @@ impl Store {
         actor_id: &str,
         target_id: &str,
     ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "UPDATE following SET accepted = 1 WHERE actor_id = ?1 AND target_id = ?2",
-        )
-        .bind(actor_id)
-        .bind(target_id)
-        .execute(&self.pool)
-        .await?;
+        let res =
+            sqlx::query("UPDATE following SET accepted = 1 WHERE actor_id = ?1 AND target_id = ?2")
+                .bind(actor_id)
+                .bind(target_id)
+                .execute(&self.pool)
+                .await?;
         Ok(res.rows_affected())
     }
 
-    pub async fn is_following(
-        &self,
-        actor_id: &str,
-        target_id: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT accepted FROM following WHERE actor_id = ?1 AND target_id = ?2",
-        )
-        .bind(actor_id)
-        .bind(target_id)
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn is_following(&self, actor_id: &str, target_id: &str) -> Result<bool, sqlx::Error> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT accepted FROM following WHERE actor_id = ?1 AND target_id = ?2")
+                .bind(actor_id)
+                .bind(target_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(matches!(row, Some((1,))))
     }
 
@@ -288,12 +274,11 @@ impl Store {
     }
 
     pub async fn get_inbox(&self, id: &str) -> Result<Option<InboxRow>, sqlx::Error> {
-        let row: Option<(String, String, String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT id, actor_id, activity, received_at FROM inbox WHERE id = ?1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String, String, String, DateTime<Utc>)> =
+            sqlx::query_as("SELECT id, actor_id, activity, received_at FROM inbox WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|(id, actor_id, activity, received_at)| InboxRow {
             id,
             actor_id,
@@ -335,11 +320,7 @@ impl Store {
         Ok(id)
     }
 
-    pub async fn mark_outbox_state(
-        &self,
-        id: &str,
-        state: &str,
-    ) -> Result<u64, sqlx::Error> {
+    pub async fn mark_outbox_state(&self, id: &str, state: &str) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("UPDATE outbox SET delivery_state = ?1 WHERE id = ?2")
             .bind(state)
             .bind(id)
@@ -407,8 +388,7 @@ impl Store {
         delay_secs: i64,
         error: &str,
     ) -> Result<u64, sqlx::Error> {
-        let next_retry =
-            Utc::now() + chrono::Duration::seconds(delay_secs.max(0));
+        let next_retry = Utc::now() + chrono::Duration::seconds(delay_secs.max(0));
         let res = sqlx::query(
             "UPDATE delivery_queue \
              SET attempts = attempts + 1, next_retry = ?1, last_error = ?2 \
@@ -438,14 +418,12 @@ impl Store {
     ) -> Result<(), sqlx::Error> {
         let body = serde_json::to_string(data).unwrap_or_else(|_| "{}".into());
         let now = Utc::now();
-        sqlx::query(
-            "INSERT OR REPLACE INTO actors (id, data, fetched_at) VALUES (?1, ?2, ?3)",
-        )
-        .bind(actor_id)
-        .bind(&body)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT OR REPLACE INTO actors (id, data, fetched_at) VALUES (?1, ?2, ?3)")
+            .bind(actor_id)
+            .bind(&body)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -454,12 +432,11 @@ impl Store {
         &self,
         actor_id: &str,
     ) -> Result<Option<(serde_json::Value, DateTime<Utc>)>, sqlx::Error> {
-        let row: Option<(String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT data, fetched_at FROM actors WHERE id = ?1",
-        )
-        .bind(actor_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String, DateTime<Utc>)> =
+            sqlx::query_as("SELECT data, fetched_at FROM actors WHERE id = ?1")
+                .bind(actor_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|(data, fetched_at)| {
             let parsed = serde_json::from_str(&data).unwrap_or(serde_json::Value::Null);
             (parsed, fetched_at)
@@ -492,11 +469,10 @@ impl Store {
         &self,
         activity_id: &str,
     ) -> Result<Option<serde_json::Value>, sqlx::Error> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT activity FROM outbox WHERE id = ?1")
-                .bind(activity_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(String,)> = sqlx::query_as("SELECT activity FROM outbox WHERE id = ?1")
+            .bind(activity_id)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.and_then(|(s,)| serde_json::from_str(&s).ok()))
     }
 }
@@ -614,7 +590,10 @@ mod tests {
         // is not valid, so we rely on the insertion delay.
         // Instead, just verify uncached actors are not fresh.
         assert!(!s
-            .is_actor_cache_fresh("https://never-cached.example/actor", chrono::Duration::hours(1))
+            .is_actor_cache_fresh(
+                "https://never-cached.example/actor",
+                chrono::Duration::hours(1)
+            )
             .await
             .unwrap());
     }
@@ -643,25 +622,22 @@ mod tests {
         s.cache_actor(actor_id, &data).await.unwrap();
 
         // Read the raw fetched_at string from SQLite to confirm format.
-        let (raw,): (String,) = sqlx::query_as(
-            "SELECT fetched_at FROM actors WHERE id = ?1",
-        )
-        .bind(actor_id)
-        .fetch_one(s.pool())
-        .await
-        .unwrap();
+        let (raw,): (String,) = sqlx::query_as("SELECT fetched_at FROM actors WHERE id = ?1")
+            .bind(actor_id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
         // chrono serialises to ISO 8601: "2026-05-06T12:34:56.123456789Z"
         // or "2026-05-06 12:34:56 UTC". Either way it must parse back.
-        let parsed = chrono::DateTime::parse_from_rfc3339(&raw)
-            .or_else(|_| {
-                // sqlx may store in "YYYY-MM-DD HH:MM:SS" form.
-                chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%d %H:%M:%S%.f")
-                    .map(|ndt| ndt.and_utc().fixed_offset())
-                    .or_else(|_| {
-                        chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%dT%H:%M:%S%.f")
-                            .map(|ndt| ndt.and_utc().fixed_offset())
-                    })
-            });
+        let parsed = chrono::DateTime::parse_from_rfc3339(&raw).or_else(|_| {
+            // sqlx may store in "YYYY-MM-DD HH:MM:SS" form.
+            chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%d %H:%M:%S%.f")
+                .map(|ndt| ndt.and_utc().fixed_offset())
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%dT%H:%M:%S%.f")
+                        .map(|ndt| ndt.and_utc().fixed_offset())
+                })
+        });
         assert!(parsed.is_ok(), "fetched_at is not a valid datetime: {raw}");
     }
 
@@ -685,9 +661,15 @@ mod tests {
     async fn follower_inbox_fanout_enqueues_all() {
         let s = fresh().await;
         let actor_id = "me";
-        s.add_follower(actor_id, "a", Some("https://a/inbox")).await.unwrap();
-        s.add_follower(actor_id, "b", Some("https://b/inbox")).await.unwrap();
-        s.add_follower(actor_id, "c", Some("https://c/inbox")).await.unwrap();
+        s.add_follower(actor_id, "a", Some("https://a/inbox"))
+            .await
+            .unwrap();
+        s.add_follower(actor_id, "b", Some("https://b/inbox"))
+            .await
+            .unwrap();
+        s.add_follower(actor_id, "c", Some("https://c/inbox"))
+            .await
+            .unwrap();
 
         let inboxes = s.get_follower_inboxes(actor_id).await.unwrap();
         let activity_id = "https://me/out/fanout-1";
@@ -696,13 +678,12 @@ mod tests {
         }
 
         // Count delivery-queue rows for this activity.
-        let (n,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM delivery_queue WHERE activity_id = ?1",
-        )
-        .bind(activity_id)
-        .fetch_one(s.pool())
-        .await
-        .unwrap();
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM delivery_queue WHERE activity_id = ?1")
+                .bind(activity_id)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
         assert_eq!(n, 3);
     }
 }

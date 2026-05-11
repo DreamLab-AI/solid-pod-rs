@@ -47,8 +47,7 @@ pub mod iri {
     pub const LDP_PREFER_MINIMAL_CONTAINER: &str =
         "http://www.w3.org/ns/ldp#PreferMinimalContainer";
     /// Prefer token for contained-IRIs-only responses.
-    pub const LDP_PREFER_CONTAINED_IRIS: &str =
-        "http://www.w3.org/ns/ldp#PreferContainedIRIs";
+    pub const LDP_PREFER_CONTAINED_IRIS: &str = "http://www.w3.org/ns/ldp#PreferContainedIRIs";
     /// Prefer token for membership triples.
     pub const LDP_PREFER_MEMBERSHIP: &str = "http://www.w3.org/ns/ldp#PreferMembership";
 
@@ -285,7 +284,12 @@ impl RdfFormat {
     }
 
     pub fn from_mime(mime: &str) -> Option<Self> {
-        let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let mime = mime
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         match mime.as_str() {
             "text/turtle" | "application/turtle" | "application/x-turtle" => {
                 Some(RdfFormat::Turtle)
@@ -371,10 +375,7 @@ pub fn infer_dotfile_content_type(path: &str) -> Option<&'static str> {
     if trimmed.is_empty() {
         return None;
     }
-    let basename = trimmed
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())?;
+    let basename = trimmed.rsplit('/').next().filter(|s| !s.is_empty())?;
 
     // Suffix test, per JSS's `.acl` / `.meta` matcher. Includes the
     // bare-name case (`.acl`, `.meta`) because `str::ends_with` is true
@@ -643,7 +644,9 @@ fn parse_nt_line(line: &str) -> Result<Triple, String> {
 fn read_term(input: &str) -> Result<(Term, &str), String> {
     let input = input.trim_start();
     if let Some(rest) = input.strip_prefix('<') {
-        let end = rest.find('>').ok_or_else(|| "unterminated IRI".to_string())?;
+        let end = rest
+            .find('>')
+            .ok_or_else(|| "unterminated IRI".to_string())?;
         let iri = &rest[..end];
         Ok((Term::Iri(iri.to_string()), &rest[end + 1..]))
     } else if let Some(rest) = input.strip_prefix("_:") {
@@ -654,7 +657,10 @@ fn read_term(input: &str) -> Result<(Term, &str), String> {
     } else if input.starts_with('"') {
         read_literal(input)
     } else {
-        Err(format!("unexpected char: {}", input.chars().next().unwrap_or('?')))
+        Err(format!(
+            "unexpected char: {}",
+            input.chars().next().unwrap_or('?')
+        ))
     }
 }
 
@@ -690,7 +696,9 @@ fn read_literal(input: &str) -> Result<(Term, &str), String> {
     }
     let rest = &input[i..];
     let (datatype, language, rest) = if let Some(r) = rest.strip_prefix("^^<") {
-        let end = r.find('>').ok_or_else(|| "unterminated datatype IRI".to_string())?;
+        let end = r
+            .find('>')
+            .ok_or_else(|| "unterminated datatype IRI".to_string())?;
         (Some(r[..end].to_string()), None, &r[end + 1..])
     } else if let Some(r) = rest.strip_prefix('@') {
         let end = r
@@ -832,7 +840,11 @@ pub fn render_container_jsonld(
                     ContainerMember {
                         id: format!("{base}{m}"),
                         types: if is_dir {
-                            vec![iri::LDP_BASIC_CONTAINER, iri::LDP_CONTAINER, iri::LDP_RESOURCE]
+                            vec![
+                                iri::LDP_BASIC_CONTAINER,
+                                iri::LDP_CONTAINER,
+                                iri::LDP_RESOURCE,
+                            ]
                         } else {
                             vec![iri::LDP_RESOURCE]
                         },
@@ -876,10 +888,7 @@ pub fn render_container_turtle(
     match prefer.representation {
         ContainerRepresentation::ContainedIRIsOnly => {
             let _ = writeln!(out, "<{container_path}> ldp:contains");
-            let list: Vec<String> = members
-                .iter()
-                .map(|m| format!("    <{base}{m}>"))
-                .collect();
+            let list: Vec<String> = members.iter().map(|m| format!("    <{base}{m}>")).collect();
             let _ = writeln!(out, "{} .", list.join(",\n"));
         }
         ContainerRepresentation::MinimalContainer => {
@@ -975,10 +984,7 @@ pub fn apply_n3_patch(target: Graph, patch: &str) -> Result<PatchOutcome, PodErr
 
     let mut graph = target;
     let inserted_count = insert_graph.len();
-    let deleted_count = delete_graph
-        .triples()
-        .filter(|t| graph.contains(t))
-        .count();
+    let deleted_count = delete_graph.triples().filter(|t| graph.contains(t)).count();
     graph.subtract(&delete_graph);
     graph.extend(&insert_graph);
 
@@ -1435,10 +1441,7 @@ impl ByteRange {
 /// is syntactically valid but unsatisfiable (clients must receive
 /// `416 Range Not Satisfiable`), and `Ok(Some(range))` for the
 /// happy path.
-pub fn parse_range_header(
-    header: Option<&str>,
-    total: u64,
-) -> Result<Option<ByteRange>, PodError> {
+pub fn parse_range_header(header: Option<&str>, total: u64) -> Result<Option<ByteRange>, PodError> {
     let raw = match header {
         Some(v) if !v.trim().is_empty() => v.trim(),
         _ => return Ok(None),
@@ -1514,10 +1517,7 @@ pub enum RangeOutcome {
 /// maps "empty body + header present" and "range past end" to
 /// `NotSatisfiable`. Malformed headers still return `Err` so callers
 /// can reply `400`.
-pub fn parse_range_header_v2(
-    header: Option<&str>,
-    total: u64,
-) -> Result<RangeOutcome, PodError> {
+pub fn parse_range_header_v2(header: Option<&str>, total: u64) -> Result<RangeOutcome, PodError> {
     let raw = match header {
         Some(v) if !v.trim().is_empty() => v.trim(),
         _ => return Ok(RangeOutcome::Full),
@@ -1541,7 +1541,10 @@ pub fn parse_range_header_v2(
         if suffix == 0 {
             return Ok(RangeOutcome::NotSatisfiable);
         }
-        ByteRange { start: total.saturating_sub(suffix), end: total - 1 }
+        ByteRange {
+            start: total.saturating_sub(suffix),
+            end: total - 1,
+        }
     } else {
         let start: u64 = start_s
             .parse()
@@ -1768,8 +1771,9 @@ pub fn apply_json_patch(
                 let value = op
                     .get("value")
                     .ok_or_else(|| PodError::Unsupported("test requires value".into()))?;
-                let actual = json_pointer_get(target, path)
-                    .ok_or_else(|| PodError::PreconditionFailed(format!("test path missing: {path}")))?;
+                let actual = json_pointer_get(target, path).ok_or_else(|| {
+                    PodError::PreconditionFailed(format!("test path missing: {path}"))
+                })?;
                 if actual != value {
                     return Err(PodError::PreconditionFailed(format!(
                         "test failed at {path}"
@@ -1781,9 +1785,9 @@ pub fn apply_json_patch(
                     .get("from")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| PodError::Unsupported("copy requires from".into()))?;
-                let value = json_pointer_get(target, from)
-                    .cloned()
-                    .ok_or_else(|| PodError::PreconditionFailed(format!("copy from missing: {from}")))?;
+                let value = json_pointer_get(target, from).cloned().ok_or_else(|| {
+                    PodError::PreconditionFailed(format!("copy from missing: {from}"))
+                })?;
                 json_pointer_set(target, path, value, true)?;
             }
             "move" => {
@@ -1791,9 +1795,9 @@ pub fn apply_json_patch(
                     .get("from")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| PodError::Unsupported("move requires from".into()))?;
-                let value = json_pointer_get(target, from)
-                    .cloned()
-                    .ok_or_else(|| PodError::PreconditionFailed(format!("move from missing: {from}")))?;
+                let value = json_pointer_get(target, from).cloned().ok_or_else(|| {
+                    PodError::PreconditionFailed(format!("move from missing: {from}"))
+                })?;
                 json_pointer_remove(target, from)?;
                 json_pointer_set(target, path, value, true)?;
             }
@@ -1879,9 +1883,9 @@ fn json_pointer_set(
                 a.push(value);
                 return Ok(());
             }
-            let idx: usize = last.parse().map_err(|_| {
-                PodError::Unsupported(format!("array index not numeric: {last}"))
-            })?;
+            let idx: usize = last
+                .parse()
+                .map_err(|_| PodError::Unsupported(format!("array index not numeric: {last}")))?;
             if add_mode {
                 if idx > a.len() {
                     return Err(PodError::PreconditionFailed(format!(
@@ -1926,7 +1930,12 @@ pub enum PatchDialect {
 }
 
 pub fn patch_dialect_from_mime(mime: &str) -> Option<PatchDialect> {
-    let m = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     match m.as_str() {
         "text/n3" | "application/n3" => Some(PatchDialect::N3),
         "application/sparql-update" | "application/sparql-update+update" => {
@@ -2002,10 +2011,7 @@ pub fn apply_patch_to_absent(
 #[cfg(feature = "tokio-runtime")]
 #[async_trait]
 pub trait LdpContainerOps: Storage {
-    async fn container_representation(
-        &self,
-        path: &str,
-    ) -> Result<serde_json::Value, PodError> {
+    async fn container_representation(&self, path: &str) -> Result<serde_json::Value, PodError> {
         let children = self.list(path).await?;
         Ok(render_container(path, &children))
     }
@@ -2270,8 +2276,7 @@ mod tests {
 
     #[test]
     fn preconditions_if_none_match_match_on_get_returns_304() {
-        let got =
-            evaluate_preconditions("GET", Some("etag123"), None, Some("\"etag123\""));
+        let got = evaluate_preconditions("GET", Some("etag123"), None, Some("\"etag123\""));
         assert_eq!(got, ConditionalOutcome::NotModified);
     }
 
@@ -2289,7 +2294,9 @@ mod tests {
 
     #[test]
     fn range_parses_start_end() {
-        let r = parse_range_header(Some("bytes=0-99"), 1000).unwrap().unwrap();
+        let r = parse_range_header(Some("bytes=0-99"), 1000)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.start, 0);
         assert_eq!(r.end, 99);
         assert_eq!(r.length(), 100);
@@ -2297,14 +2304,18 @@ mod tests {
 
     #[test]
     fn range_parses_open_ended() {
-        let r = parse_range_header(Some("bytes=500-"), 1000).unwrap().unwrap();
+        let r = parse_range_header(Some("bytes=500-"), 1000)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.start, 500);
         assert_eq!(r.end, 999);
     }
 
     #[test]
     fn range_parses_suffix() {
-        let r = parse_range_header(Some("bytes=-200"), 1000).unwrap().unwrap();
+        let r = parse_range_header(Some("bytes=-200"), 1000)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.start, 800);
         assert_eq!(r.end, 999);
     }
@@ -2317,7 +2328,9 @@ mod tests {
 
     #[test]
     fn range_content_range_header_value() {
-        let r = parse_range_header(Some("bytes=0-99"), 1000).unwrap().unwrap();
+        let r = parse_range_header(Some("bytes=0-99"), 1000)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.content_range(1000), "bytes 0-99/1000");
     }
 
@@ -2366,7 +2379,9 @@ mod tests {
             Some(CACHE_CONTROL_RDF)
         );
         assert_eq!(
-            cache_control_for("application/ld+json; profile=\"http://www.w3.org/ns/json-ld#compacted\""),
+            cache_control_for(
+                "application/ld+json; profile=\"http://www.w3.org/ns/json-ld#compacted\""
+            ),
             Some(CACHE_CONTROL_RDF)
         );
     }

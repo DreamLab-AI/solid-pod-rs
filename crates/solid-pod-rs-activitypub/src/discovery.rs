@@ -98,8 +98,7 @@ mod tests {
         assert_eq!(doc["software"]["name"], "solid-pod-rs");
         assert_eq!(doc["software"]["version"], "0.4.0");
         let protocols = doc["protocols"].as_array().unwrap();
-        let protocol_strs: Vec<&str> =
-            protocols.iter().map(|v| v.as_str().unwrap()).collect();
+        let protocol_strs: Vec<&str> = protocols.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(protocol_strs.contains(&"activitypub"));
         assert!(protocol_strs.contains(&"solid"));
         assert_eq!(doc["usage"]["users"]["total"], 1);

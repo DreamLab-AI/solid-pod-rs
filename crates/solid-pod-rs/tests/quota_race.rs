@@ -21,10 +21,7 @@ const POD: &str = "alice";
 async fn quota_concurrent_writes_never_corrupt_sidecar() {
     let tmp = TempDir::new().unwrap();
     fs::create_dir_all(tmp.path().join(POD)).unwrap();
-    let store = Arc::new(FsQuotaStore::new(
-        tmp.path().to_path_buf(),
-        10_000_000,
-    ));
+    let store = Arc::new(FsQuotaStore::new(tmp.path().to_path_buf(), 10_000_000));
 
     // Pre-seed a known baseline sidecar so we can reason about the
     // final state. reconcile() later will rewrite against disk truth
@@ -71,7 +68,10 @@ async fn quota_concurrent_writes_never_corrupt_sidecar() {
     // coherent result. With zero real data files on disk the
     // reconciled `used_bytes` must be 0.
     let reconciled = store.reconcile(POD).await.expect("reconcile failed");
-    assert_eq!(reconciled.used_bytes, 0, "no data files should mean 0 usage");
+    assert_eq!(
+        reconciled.used_bytes, 0,
+        "no data files should mean 0 usage"
+    );
     assert_eq!(reconciled.limit_bytes, 10_000_000);
 }
 
@@ -96,10 +96,7 @@ async fn reconcile_sweeps_tempfile_orphans() {
     let reconciled = store.reconcile(POD).await.expect("reconcile failed");
 
     // Orphans gone.
-    assert!(
-        !orphan.exists(),
-        "reconcile did not sweep .tmp-* orphan #1"
-    );
+    assert!(!orphan.exists(), "reconcile did not sweep .tmp-* orphan #1");
     assert!(
         !orphan2.exists(),
         "reconcile did not sweep .tmp-* orphan #2"

@@ -320,8 +320,8 @@ impl PasskeyBackend for WebauthnPasskey {
         if let serde_json::Value::Object(ref mut map) = value {
             map.insert("id".into(), serde_json::Value::String(resp.id.clone()));
         }
-        let reg: RegisterPublicKeyCredential = serde_json::from_value(value)
-            .map_err(|e| PasskeyError::Parse(e.to_string()))?;
+        let reg: RegisterPublicKeyCredential =
+            serde_json::from_value(value).map_err(|e| PasskeyError::Parse(e.to_string()))?;
         let passkey = self
             .webauthn
             .finish_passkey_registration(&reg, &state)
@@ -385,8 +385,8 @@ impl PasskeyBackend for WebauthnPasskey {
         if let serde_json::Value::Object(ref mut map) = value {
             map.insert("id".into(), serde_json::Value::String(resp.id.clone()));
         }
-        let cred: PublicKeyCredential = serde_json::from_value(value)
-            .map_err(|e| PasskeyError::Parse(e.to_string()))?;
+        let cred: PublicKeyCredential =
+            serde_json::from_value(value).map_err(|e| PasskeyError::Parse(e.to_string()))?;
         let auth_result = self
             .webauthn
             .finish_passkey_authentication(&cred, &state)
@@ -429,10 +429,7 @@ mod tests {
         let backend = PasskeyTodo;
         let err = backend.registration_options("acct-1").await.unwrap_err();
         assert!(matches!(err, PasskeyError::Unimplemented));
-        let err = backend
-            .authentication_options("acct-1")
-            .await
-            .unwrap_err();
+        let err = backend.authentication_options("acct-1").await.unwrap_err();
         assert!(matches!(err, PasskeyError::Unimplemented));
     }
 

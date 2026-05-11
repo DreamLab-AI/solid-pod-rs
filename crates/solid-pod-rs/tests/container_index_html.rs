@@ -38,7 +38,11 @@ async fn make_state() -> AppState {
             acl:mode acl:Read, acl:Write, acl:Append, acl:Control .
     "#;
     backend
-        .put("/.acl", Bytes::copy_from_slice(ttl.as_bytes()), "text/turtle")
+        .put(
+            "/.acl",
+            Bytes::copy_from_slice(ttl.as_bytes()),
+            "text/turtle",
+        )
         .await
         .unwrap();
 

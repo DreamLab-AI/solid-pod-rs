@@ -99,16 +99,16 @@ pub fn verify_at(
         )));
     }
 
-    let token_url = get_tag(&event, "u")
-        .ok_or_else(|| PodError::Nip98("missing 'u' tag".into()))?;
+    let token_url =
+        get_tag(&event, "u").ok_or_else(|| PodError::Nip98("missing 'u' tag".into()))?;
     if normalize_url(&token_url) != normalize_url(expected_url) {
         return Err(PodError::Nip98(format!(
             "URL mismatch: token={token_url}, expected={expected_url}"
         )));
     }
 
-    let token_method = get_tag(&event, "method")
-        .ok_or_else(|| PodError::Nip98("missing 'method' tag".into()))?;
+    let token_method =
+        get_tag(&event, "method").ok_or_else(|| PodError::Nip98("missing 'method' tag".into()))?;
     if token_method.to_uppercase() != expected_method.to_uppercase() {
         return Err(PodError::Nip98(format!(
             "method mismatch: token={token_method}, expected={expected_method}"
@@ -181,16 +181,16 @@ pub fn verify_schnorr_signature(event: &Nip98Event) -> Result<(), PodError> {
     }
     let pub_bytes = hex::decode(&event.pubkey)
         .map_err(|e| PodError::Nip98(format!("pubkey hex decode: {e}")))?;
-    let sig_bytes = hex::decode(&event.sig)
-        .map_err(|e| PodError::Nip98(format!("sig hex decode: {e}")))?;
+    let sig_bytes =
+        hex::decode(&event.sig).map_err(|e| PodError::Nip98(format!("sig hex decode: {e}")))?;
     if sig_bytes.len() != 64 {
         return Err(PodError::Nip98(format!(
             "sig wrong length: {}",
             sig_bytes.len()
         )));
     }
-    let id_bytes = hex::decode(&computed_id)
-        .map_err(|e| PodError::Nip98(format!("id hex decode: {e}")))?;
+    let id_bytes =
+        hex::decode(&computed_id).map_err(|e| PodError::Nip98(format!("id hex decode: {e}")))?;
 
     let vk = VerifyingKey::from_bytes(&pub_bytes)
         .map_err(|e| PodError::Nip98(format!("pubkey parse: {e}")))?;
@@ -289,9 +289,7 @@ fn verify_nip98_proof(
                 Err(SelfSignedError::Malformed(msg))
             }
         }
-        Err(_) if !looks_like_header => {
-            Err(SelfSignedError::UnrecognisedFormat)
-        }
+        Err(_) if !looks_like_header => Err(SelfSignedError::UnrecognisedFormat),
         Err(e) => Err(SelfSignedError::Malformed(e.to_string())),
     }
 }
@@ -303,7 +301,12 @@ impl SelfSignedVerifier for Nip98Verifier {
         &self,
         envelope: &ProofEnvelope<'_>,
     ) -> Result<Option<VerifiedSubject>, SelfSignedError> {
-        match verify_nip98_proof(envelope.proof, envelope.uri, envelope.method, envelope.now_unix) {
+        match verify_nip98_proof(
+            envelope.proof,
+            envelope.uri,
+            envelope.method,
+            envelope.now_unix,
+        ) {
             Ok(v) => Ok(Some(VerifiedSubject {
                 did: format!("urn:nip98:{}", v.pubkey),
                 verification_method: format!("urn:nip98:{}#key-0", v.pubkey),
@@ -526,8 +529,7 @@ mod tests {
                 use k256::schnorr::signature::Signer;
                 let (sk, _) = test_signing_key();
                 let id_bytes: Vec<u8> = hex::decode(&id).expect("id is valid hex");
-                let signature: k256::schnorr::Signature =
-                    sk.sign(&id_bytes);
+                let signature: k256::schnorr::Signature = sk.sign(&id_bytes);
                 hex::encode(signature.to_bytes())
             }
             #[cfg(not(feature = "nip98-schnorr"))]

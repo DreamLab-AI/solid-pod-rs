@@ -222,25 +222,19 @@ mod tests {
             "https://pod.example/profile/card.jsonld#main-key"
         );
         assert_eq!(actor.public_key.owner, actor.id);
-        assert!(actor
-            .public_key
-            .public_key_pem
-            .contains("BEGIN PUBLIC KEY"));
+        assert!(actor.public_key.public_key_pem.contains("BEGIN PUBLIC KEY"));
         assert_eq!(
-            actor.endpoints.as_ref().and_then(|e| e.shared_inbox.as_deref()),
+            actor
+                .endpoints
+                .as_ref()
+                .and_then(|e| e.shared_inbox.as_deref()),
             Some("https://pod.example/inbox")
         );
     }
 
     #[test]
     fn actor_context_order_preserved_for_fediverse_compat() {
-        let actor = render_actor(
-            "https://pod.example",
-            "bob",
-            "Bob",
-            None,
-            "PEM",
-        );
+        let actor = render_actor("https://pod.example", "bob", "Bob", None, "PEM");
         // Several Mastodon/Pleroma releases positionally assume index 0
         // is activitystreams. Keep this assertion strict.
         assert_eq!(
@@ -331,18 +325,12 @@ mod tests {
 
     #[test]
     fn negotiate_html_is_ldp() {
-        assert_eq!(
-            negotiate_actor_format("text/html"),
-            ActorFormat::LdpProfile,
-        );
+        assert_eq!(negotiate_actor_format("text/html"), ActorFormat::LdpProfile,);
     }
 
     #[test]
     fn negotiate_empty_is_ldp() {
-        assert_eq!(
-            negotiate_actor_format(""),
-            ActorFormat::LdpProfile,
-        );
+        assert_eq!(negotiate_actor_format(""), ActorFormat::LdpProfile,);
     }
 
     #[test]

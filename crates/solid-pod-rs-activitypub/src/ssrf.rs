@@ -66,12 +66,10 @@ pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
     let addr_str = format!("{host}:{port}");
 
     // Resolve hostname to IP addresses.
-    let addrs: Vec<std::net::SocketAddr> = addr_str.to_socket_addrs().map_err(|e| {
-        SigError::SsrfBlocked(format!(
-            "DNS resolution failed for '{}': {}",
-            host, e
-        ))
-    })?.collect();
+    let addrs: Vec<std::net::SocketAddr> = addr_str
+        .to_socket_addrs()
+        .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{}': {}", host, e)))?
+        .collect();
 
     if addrs.is_empty() {
         return Err(SigError::SsrfBlocked(format!(
@@ -138,12 +136,16 @@ mod tests {
 
     #[test]
     fn rejects_ipv6_link_local() {
-        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]
     fn rejects_ipv6_ula() {
-        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfd00, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]

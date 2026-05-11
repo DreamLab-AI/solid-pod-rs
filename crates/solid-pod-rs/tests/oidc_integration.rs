@@ -86,14 +86,7 @@ fn oct_jwk(secret: &[u8]) -> Jwk {
     }
 }
 
-fn build_dpop_proof(
-    secret: &[u8],
-    jwk: &Jwk,
-    htu: &str,
-    htm: &str,
-    iat: u64,
-    jti: &str,
-) -> String {
+fn build_dpop_proof(secret: &[u8], jwk: &Jwk, htu: &str, htm: &str, iat: u64, jti: &str) -> String {
     let header_json = serde_json::json!({
         "typ": "dpop+jwt",
         "alg": "HS256",
@@ -173,7 +166,10 @@ fn oidc_e2e_dynamic_registration_round_trip() {
         .expect("HS256 token verifies against symmetric key");
 
     // The client_id registered in step 1 flowed all the way through.
-    assert_eq!(verified.client_id.as_deref(), Some(client.client_id.as_str()));
+    assert_eq!(
+        verified.client_id.as_deref(),
+        Some(client.client_id.as_str())
+    );
     assert_eq!(verified.webid, webid);
     assert_eq!(verified.jkt, jkt);
     assert_eq!(verified.iss, issuer);
@@ -275,10 +271,20 @@ fn nip98_to_wac_bridge() {
     // Bridge: use did:nostr:<pubkey> as the WAC agent URI.
     let agent = format!("did:nostr:{pubkey}");
     let acl = acl_single(Some(&agent), None, "/note", "acl:Read");
-    assert!(evaluate_access(Some(&acl), Some(&agent), "/note", AccessMode::Read, None));
+    assert!(evaluate_access(
+        Some(&acl),
+        Some(&agent),
+        "/note",
+        AccessMode::Read,
+        None
+    ));
     // A different pubkey must not inherit the grant.
     assert!(!evaluate_access(
-        Some(&acl), Some("did:nostr:deadbeef"), "/note", AccessMode::Read, None,
+        Some(&acl),
+        Some("did:nostr:deadbeef"),
+        "/note",
+        AccessMode::Read,
+        None,
     ));
 }
 
@@ -299,13 +305,24 @@ fn acl_serialise_round_trip_evaluates_identically() {
     let parsed = parse_turtle_acl(&turtle).expect("Turtle re-parses");
 
     // Verdicts must agree across the full access-mode matrix.
-    for mode in [AccessMode::Read, AccessMode::Write, AccessMode::Append, AccessMode::Control] {
+    for mode in [
+        AccessMode::Read,
+        AccessMode::Write,
+        AccessMode::Append,
+        AccessMode::Control,
+    ] {
         let a = evaluate_access(Some(&original), Some(webid), "/r", mode, None);
         let b = evaluate_access(Some(&parsed), Some(webid), "/r", mode, None);
         assert_eq!(a, b, "verdict drift for mode {mode:?}");
     }
     // Positive case survives the round trip.
-    assert!(evaluate_access(Some(&parsed), Some(webid), "/r", AccessMode::Read, None));
+    assert!(evaluate_access(
+        Some(&parsed),
+        Some(webid),
+        "/r",
+        AccessMode::Read,
+        None
+    ));
 }
 
 // 5. verify_dpop_proof with a DpopReplayCache — second call is blocked.

@@ -26,8 +26,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use solid_pod_rs::wac::{
-    evaluate_access, evaluate_access_with_groups, AccessMode, AclDocument,
-    StaticGroupMembership,
+    evaluate_access, evaluate_access_with_groups, AccessMode, AclDocument, StaticGroupMembership,
 };
 
 fn simple_doc() -> AclDocument {
@@ -84,7 +83,8 @@ fn bench_simple(c: &mut Criterion) {
                 black_box(Some("did:nostr:alice")),
                 black_box("/private/doc"),
                 black_box(AccessMode::Read),
-                None,);
+                None,
+            );
             debug_assert!(allowed);
             black_box(allowed);
         });
@@ -93,8 +93,7 @@ fn bench_simple(c: &mut Criterion) {
 
 fn bench_inherited(c: &mut Criterion) {
     let doc = inherited_doc();
-    let deep_path =
-        "/a/b/c/d/e/f/g/h/i/j/leaf";
+    let deep_path = "/a/b/c/d/e/f/g/h/i/j/leaf";
     c.bench_function("wac_inherited_10_deep", |b| {
         b.iter(|| {
             let allowed = evaluate_access(
@@ -102,7 +101,8 @@ fn bench_inherited(c: &mut Criterion) {
                 black_box(None),
                 black_box(deep_path),
                 black_box(AccessMode::Read),
-                None,);
+                None,
+            );
             debug_assert!(allowed);
             black_box(allowed);
         });
@@ -115,10 +115,7 @@ fn bench_group(c: &mut Criterion) {
     let members: Vec<String> = (0..1000)
         .map(|i| format!("did:nostr:member-{i:04}"))
         .collect();
-    membership.add(
-        "https://pod.example/groups/team#members",
-        members.clone(),
-    );
+    membership.add("https://pod.example/groups/team#members", members.clone());
     // A member near the end of the list — worst-case linear scan.
     let agent = "did:nostr:member-0999";
 
@@ -130,7 +127,8 @@ fn bench_group(c: &mut Criterion) {
                 black_box("/team/roadmap"),
                 black_box(AccessMode::Read),
                 None,
-                black_box(&membership),);
+                black_box(&membership),
+            );
             debug_assert!(allowed);
             black_box(allowed);
         });

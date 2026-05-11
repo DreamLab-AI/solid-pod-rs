@@ -14,9 +14,9 @@
 //! 10. Turtle serializer round-trips PaymentCondition.
 
 use solid_pod_rs::wac::{
-    evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl, validate_acl_document,
-    AccessMode, AclAuthorization, AclDocument, ClientConditionBody, Condition, ConditionRegistry,
-    IdOrIds, IdRef, PaymentConditionBody, RequestContext, StaticGroupMembership,
+    evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl, validate_acl_document, AccessMode,
+    AclAuthorization, AclDocument, ClientConditionBody, Condition, ConditionRegistry, IdOrIds,
+    IdRef, PaymentConditionBody, RequestContext, StaticGroupMembership,
 };
 
 fn doc_with(authzs: Vec<AclAuthorization>) -> AclDocument {
@@ -428,10 +428,7 @@ fn parse_payment_condition_full_iri() {
         }]
     }"##;
     let doc: AclDocument = serde_json::from_str(json).expect("parse");
-    let conds = doc.graph.as_ref().unwrap()[0]
-        .condition
-        .as_ref()
-        .unwrap();
+    let conds = doc.graph.as_ref().unwrap()[0].condition.as_ref().unwrap();
     match &conds[0] {
         Condition::Payment(body) => assert_eq!(body.cost_sats, 77),
         other => panic!("expected Payment condition from full IRI, got {other:?}"),

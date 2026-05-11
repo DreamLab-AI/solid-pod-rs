@@ -55,10 +55,7 @@ pub struct IdpState {
 /// Build an axum Router with the always-on routes.
 pub fn router(state: IdpState) -> Router {
     Router::new()
-        .route(
-            "/.well-known/openid-configuration",
-            get(discovery_handler),
-        )
+        .route("/.well-known/openid-configuration", get(discovery_handler))
         .route("/.well-known/jwks.json", get(jwks_handler))
         .route("/idp/reg", post(registration_handler))
         .route(
@@ -69,7 +66,9 @@ pub fn router(state: IdpState) -> Router {
         .with_state(state)
 }
 
-async fn discovery_handler(State(st): State<IdpState>) -> Json<crate::discovery::DiscoveryDocument> {
+async fn discovery_handler(
+    State(st): State<IdpState>,
+) -> Json<crate::discovery::DiscoveryDocument> {
     Json(build_discovery(&st.provider.config().issuer))
 }
 
@@ -163,9 +162,7 @@ struct PasswordChangeBody {
 /// header. The transport layer is responsible for populating this after
 /// validating the access token or session. This decouples the binder
 /// from a particular auth middleware.
-fn extract_user_id_header(
-    headers: &axum::http::HeaderMap,
-) -> Result<String, AxumErr> {
+fn extract_user_id_header(headers: &axum::http::HeaderMap) -> Result<String, AxumErr> {
     headers
         .get("X-Authenticated-User")
         .and_then(|v| v.to_str().ok())
@@ -187,24 +184,30 @@ async fn password_change_handler(
         new_password: body.new_password,
     };
 
-    change_password(&user_id, &req, st.provider.user_store_trait_object(), st.limiter.as_ref(), ip)
-        .await
-        .map(Json)
-        .map_err(|e| match e {
-            PasswordChangeError::RateLimited { retry_after_secs } => AxumErr(
-                StatusCode::TOO_MANY_REQUESTS,
-                format!("retry after {retry_after_secs}s"),
-            ),
-            PasswordChangeError::InvalidCurrentPassword => {
-                AxumErr(StatusCode::UNAUTHORIZED, "invalid current password".into())
-            }
-            PasswordChangeError::PasswordTooShort { min_length } => AxumErr(
-                StatusCode::BAD_REQUEST,
-                format!("new password must be at least {min_length} characters"),
-            ),
-            PasswordChangeError::InvalidRequest(m) => AxumErr(StatusCode::BAD_REQUEST, m),
-            other => AxumErr(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-        })
+    change_password(
+        &user_id,
+        &req,
+        st.provider.user_store_trait_object(),
+        st.limiter.as_ref(),
+        ip,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| match e {
+        PasswordChangeError::RateLimited { retry_after_secs } => AxumErr(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("retry after {retry_after_secs}s"),
+        ),
+        PasswordChangeError::InvalidCurrentPassword => {
+            AxumErr(StatusCode::UNAUTHORIZED, "invalid current password".into())
+        }
+        PasswordChangeError::PasswordTooShort { min_length } => AxumErr(
+            StatusCode::BAD_REQUEST,
+            format!("new password must be at least {min_length} characters"),
+        ),
+        PasswordChangeError::InvalidRequest(m) => AxumErr(StatusCode::BAD_REQUEST, m),
+        other => AxumErr(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -236,9 +239,7 @@ async fn account_delete_handler(
                 StatusCode::BAD_REQUEST,
                 format!("confirmation must be exactly \"{expected}\""),
             ),
-            AccountDeleteError::NotFound => {
-                AxumErr(StatusCode::NOT_FOUND, "user not found".into())
-            }
+            AccountDeleteError::NotFound => AxumErr(StatusCode::NOT_FOUND, "user not found".into()),
             AccountDeleteError::NotImplemented => AxumErr(
                 StatusCode::NOT_IMPLEMENTED,
                 "account deletion not supported".into(),

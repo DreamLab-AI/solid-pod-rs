@@ -212,7 +212,9 @@ async fn wac_issuer_condition_dispatches_to_cid_verifier() {
             origin: None,
             access_to: Some(IdOrIds::Single(IdRef { id: "/r".into() })),
             default: None,
-            mode: Some(IdOrIds::Single(IdRef { id: "acl:Read".into() })),
+            mode: Some(IdOrIds::Single(IdRef {
+                id: "acl:Read".into(),
+            })),
             condition: Some(vec![Condition::Issuer(IssuerConditionBody {
                 issuer: Some(IdOrIds::Single(IdRef {
                     id: "cid:Verifier".into(),

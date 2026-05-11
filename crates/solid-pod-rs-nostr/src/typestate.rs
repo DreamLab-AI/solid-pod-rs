@@ -619,16 +619,8 @@ mod tests {
     #[test]
     fn relay_ingest_verified_parameterised_replaceable() {
         let relay = Relay::in_memory();
-        let a = make_signed_event(
-            30_000,
-            "v1",
-            vec![vec!["d".into(), "slot".into()]],
-        );
-        let b = make_signed_event(
-            30_000,
-            "v2",
-            vec![vec!["d".into(), "slot".into()]],
-        );
+        let a = make_signed_event(30_000, "v1", vec![vec!["d".into(), "slot".into()]]);
+        let b = make_signed_event(30_000, "v2", vec![vec!["d".into(), "slot".into()]]);
         let va = UncheckedEvent::new(a).verify().unwrap();
         let vb = UncheckedEvent::new(b).verify().unwrap();
         relay.ingest_verified(va).unwrap();

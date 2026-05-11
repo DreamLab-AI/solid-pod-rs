@@ -38,7 +38,11 @@ async fn make_state() -> AppState {
             acl:mode acl:Read, acl:Write, acl:Append, acl:Control .
     "#;
     backend
-        .put("/.acl", Bytes::copy_from_slice(ttl.as_bytes()), "text/turtle")
+        .put(
+            "/.acl",
+            Bytes::copy_from_slice(ttl.as_bytes()),
+            "text/turtle",
+        )
         .await
         .unwrap();
 
@@ -89,7 +93,12 @@ async fn server_post_to_container_creates_child_with_slug() {
         .set_payload(Bytes::from_static(b"FAKEJPG"))
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), StatusCode::CREATED, "status = {:?}", resp.status());
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "status = {:?}",
+        resp.status()
+    );
 
     let (body, _meta) = storage.get("/photos/cat.jpg").await.unwrap();
     assert_eq!(&body[..], b"FAKEJPG");
@@ -141,11 +150,7 @@ async fn server_patch_n3_mutates_existing_resource() {
     let storage = state.storage.clone();
     // Seed an existing Turtle resource.
     storage
-        .put(
-            "/notes/a",
-            Bytes::from_static(b"# empty\n"),
-            "text/turtle",
-        )
+        .put("/notes/a", Bytes::from_static(b"# empty\n"), "text/turtle")
         .await
         .unwrap();
 
@@ -316,10 +321,10 @@ async fn server_well_known_nodeinfo_advertises_2_1() {
     let body = test::read_body(resp).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let links = v.get("links").and_then(|l| l.as_array()).unwrap();
-    assert!(links.iter().any(|link| link
-        .get("rel")
-        .and_then(|r| r.as_str())
-        == Some("http://nodeinfo.diaspora.software/ns/schema/2.1")));
+    assert!(links
+        .iter()
+        .any(|link| link.get("rel").and_then(|r| r.as_str())
+            == Some("http://nodeinfo.diaspora.software/ns/schema/2.1")));
 }
 
 #[actix_web::test]

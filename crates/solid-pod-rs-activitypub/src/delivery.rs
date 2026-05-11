@@ -36,7 +36,9 @@ pub enum DeliveryOutcome {
     /// Permanent — no more retries. Either 4xx or max attempts.
     Dropped,
     /// Transient — will retry after `next_retry_secs`.
-    Rescheduled { next_retry_secs: i64 },
+    Rescheduled {
+        next_retry_secs: i64,
+    },
     /// Nothing was due.
     Idle,
 }
@@ -121,15 +123,12 @@ impl DeliveryWorker {
             }
         }
 
-        let body =
-            serde_json::to_vec(&activity).map_err(|e| crate::error::OutboxError::Delivery(e.to_string()))?;
+        let body = serde_json::to_vec(&activity)
+            .map_err(|e| crate::error::OutboxError::Delivery(e.to_string()))?;
         let mut req = OutboundRequest {
             method: "POST".into(),
             url: item.inbox_url.clone(),
-            headers: vec![(
-                "Content-Type".into(),
-                "application/activity+json".into(),
-            )],
+            headers: vec![("Content-Type".into(), "application/activity+json".into())],
             body,
         };
         sign_request(&mut req, &self.config.private_key_pem, &self.config.key_id)?;
@@ -294,10 +293,7 @@ mod tests {
         let worker = DeliveryWorker::new_without_ssrf_check(store.clone(), config);
         let outcome = worker.drain_once().await.unwrap();
         assert_eq!(outcome, DeliveryOutcome::Delivered);
-        assert_eq!(
-            worker.drain_once().await.unwrap(),
-            DeliveryOutcome::Idle
-        );
+        assert_eq!(worker.drain_once().await.unwrap(), DeliveryOutcome::Idle);
     }
 
     #[tokio::test]

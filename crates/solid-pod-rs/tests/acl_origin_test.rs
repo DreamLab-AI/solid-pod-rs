@@ -208,7 +208,13 @@ fn f4k_legacy_acl_without_origin_unchanged_by_feature_flag() {
     let doc = doc_without_origin();
     let some_origin = Origin::parse("https://any.test").unwrap();
 
-    assert!(evaluate_access(Some(&doc), None, "/", AccessMode::Read, None));
+    assert!(evaluate_access(
+        Some(&doc),
+        None,
+        "/",
+        AccessMode::Read,
+        None
+    ));
     assert!(evaluate_access(
         Some(&doc),
         None,

@@ -116,8 +116,7 @@ pub fn issue_access_token(
 
     let key = EncodingKey::from_ec_der(&signing_key.private_der);
 
-    let jwt = encode(&header, &payload, &key)
-        .map_err(|e| TokenError::Encode(e.to_string()))?;
+    let jwt = encode(&header, &payload, &key).map_err(|e| TokenError::Encode(e.to_string()))?;
     Ok(AccessToken { jwt, payload })
 }
 
@@ -183,6 +182,9 @@ mod tests {
     fn ath_hash_matches_known_value() {
         // Cross-check against `echo -n 'foo' | sha256sum` (base64url, no pad)
         // → LCa0a2j_xo_5m0U8HTBBNBNCLXBkg7-g-YpeiGJm564
-        assert_eq!(ath_hash("foo"), "LCa0a2j_xo_5m0U8HTBBNBNCLXBkg7-g-YpeiGJm564");
+        assert_eq!(
+            ath_hash("foo"),
+            "LCa0a2j_xo_5m0U8HTBBNBNCLXBkg7-g-YpeiGJm564"
+        );
     }
 }

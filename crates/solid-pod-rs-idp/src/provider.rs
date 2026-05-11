@@ -221,10 +221,7 @@ impl Provider {
             .dpop_proof
             .ok_or_else(|| ProviderError::InvalidDpop("missing DPoP header".into()))?;
 
-        let expected_htu = format!(
-            "{}/idp/token",
-            self.config.issuer.trim_end_matches('/')
-        );
+        let expected_htu = format!("{}/idp/token", self.config.issuer.trim_end_matches('/'));
         let verified = verify_dpop_proof(
             dpop_proof,
             &expected_htu,
@@ -250,9 +247,7 @@ impl Provider {
             ));
         }
         if code.redirect_uri != req.redirect_uri {
-            return Err(ProviderError::InvalidGrant(
-                "redirect_uri mismatch".into(),
-            ));
+            return Err(ProviderError::InvalidGrant("redirect_uri mismatch".into()));
         }
 
         // PKCE check — the challenge stored at /auth must match
@@ -263,9 +258,7 @@ impl Provider {
             })?;
             let computed = pkce_s256(verifier);
             if &computed != challenge {
-                return Err(ProviderError::InvalidGrant(
-                    "PKCE verifier mismatch".into(),
-                ));
+                return Err(ProviderError::InvalidGrant("PKCE verifier mismatch".into()));
             }
         }
 
@@ -467,7 +460,6 @@ pub struct UserInfo {
     pub scope: Option<String>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,7 +497,13 @@ mod tests {
         .unwrap();
         let sessions = SessionStore::new();
         let cfg = ProviderConfig::new("https://pod.example/");
-        let provider = Provider::new(cfg, clients, sessions, store.clone() as Arc<dyn UserStore>, jwks);
+        let provider = Provider::new(
+            cfg,
+            clients,
+            sessions,
+            store.clone() as Arc<dyn UserStore>,
+            jwks,
+        );
 
         let verifier: String = (0..43)
             .map(|_| {
@@ -744,7 +742,10 @@ mod tests {
         assert_eq!(tok.token_type, "DPoP");
         assert!(tok.access_token.contains('.'));
         assert_eq!(tok.expires_in, 3600);
-        assert_eq!(tok.webid.as_deref(), Some("https://alice.example/profile#me"));
+        assert_eq!(
+            tok.webid.as_deref(),
+            Some("https://alice.example/profile#me")
+        );
 
         // Second redemption must fail — code is single-use.
         let proof2 = test_dpop_proof("https://pod.example/idp/token", "POST", 1_700_000_000);

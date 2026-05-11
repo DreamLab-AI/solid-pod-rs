@@ -334,8 +334,7 @@ fn evaluate_access_ctx_inner(
     {
         match origin::check_origin(doc, request_origin) {
             origin::OriginDecision::NoPolicySet | origin::OriginDecision::Permitted => true,
-            origin::OriginDecision::RejectedMismatch
-            | origin::OriginDecision::RejectedNoOrigin => {
+            origin::OriginDecision::RejectedMismatch | origin::OriginDecision::RejectedNoOrigin => {
                 crate::wac::metrics::ACL_ORIGIN_REJECTED_TOTAL
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 false

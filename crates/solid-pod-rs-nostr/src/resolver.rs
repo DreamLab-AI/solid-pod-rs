@@ -107,14 +107,19 @@ impl NostrWebIdResolver {
         let resp = self
             .http
             .get(url.as_str())
-            .header("accept", "application/ld+json, application/json, text/turtle, text/html")
+            .header(
+                "accept",
+                "application/ld+json, application/json, text/turtle, text/html",
+            )
             .send()
             .await
             .map_err(|e| ResolverError::Http(e.to_string()))?;
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(ResolverError::Http(format!("webid profile status {status}")));
+            return Err(ResolverError::Http(format!(
+                "webid profile status {status}"
+            )));
         }
         let content_type = resp
             .headers()
@@ -143,8 +148,7 @@ impl NostrWebIdResolver {
             origin.trim_end_matches('/'),
             crate::did::well_known_path(pk)
         );
-        let parsed =
-            Url::parse(&doc_url).map_err(|e| ResolverError::InvalidUrl(e.to_string()))?;
+        let parsed = Url::parse(&doc_url).map_err(|e| ResolverError::InvalidUrl(e.to_string()))?;
         let host = parsed
             .host_str()
             .ok_or_else(|| ResolverError::InvalidUrl("missing host".into()))?
@@ -225,7 +229,10 @@ pub(crate) fn extract_nostr_pubkey_from_profile(
     }
 
     // Turtle fallback — plain-text substring scan for the DID IRI.
-    if content_type.contains("text/turtle") || content_type.contains("ld+json") || content_type.is_empty() {
+    if content_type.contains("text/turtle")
+        || content_type.contains("ld+json")
+        || content_type.is_empty()
+    {
         if let Some(found) = scan_text_for_did_nostr(body) {
             return Some(found);
         }

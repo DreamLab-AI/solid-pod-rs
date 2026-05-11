@@ -60,8 +60,8 @@ pub use discovery::{
 };
 pub use error::{InboxError, OutboxError, SigError};
 pub use http_sig::{
-    digest_header, sign_request, verify_request_signature, ActorKeyResolver,
-    HttpActorKeyResolver, OutboundRequest, SignedRequest, VerifiedActor,
+    digest_header, sign_request, verify_request_signature, ActorKeyResolver, HttpActorKeyResolver,
+    OutboundRequest, SignedRequest, VerifiedActor,
 };
 pub use inbox::{build_accept, handle_inbox, InboxOutcome};
 pub use outbox::{handle_outbox, handle_outbox_post, OutboundDelivery};

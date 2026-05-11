@@ -113,11 +113,7 @@ pub trait Notifications: Send + Sync {
     async fn unsubscribe(&self, id: &str) -> Result<(), PodError>;
 
     /// Deliver a notification to all subscribers of `topic`.
-    async fn publish(
-        &self,
-        topic: &str,
-        notification: ChangeNotification,
-    ) -> Result<(), PodError>;
+    async fn publish(&self, topic: &str, notification: ChangeNotification) -> Result<(), PodError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -601,11 +597,7 @@ impl WebhookChannelManager {
 
     /// Deliver a single event to a single webhook URL, with full
     /// Sprint 6 C retry / back-off / circuit-breaker semantics.
-    pub async fn deliver_one(
-        &self,
-        url: &str,
-        note: &ChangeNotification,
-    ) -> WebhookDelivery {
+    pub async fn deliver_one(&self, url: &str, note: &ChangeNotification) -> WebhookDelivery {
         // Circuit breaker — bail before touching the network if open.
         if self.circuit_open() {
             return WebhookDelivery::TransientRetry {
@@ -647,10 +639,7 @@ impl WebhookChannelManager {
                                 reason: format!("429 after {attempt} attempts"),
                             };
                         }
-                        tokio::time::sleep(
-                            retry_after.min(self.max_backoff),
-                        )
-                        .await;
+                        tokio::time::sleep(retry_after.min(self.max_backoff)).await;
                         continue;
                     }
                     // 5xx (incl. 503 with Retry-After) — retry with
@@ -767,7 +756,8 @@ impl WebhookChannelManager {
                 }
             };
             let note = ChangeNotification::from_storage_event(&event, &pod_base);
-            self.deliver_all(&note, |topic| path.starts_with(topic)).await;
+            self.deliver_all(&note, |topic| path.starts_with(topic))
+                .await;
         }
     }
 }
@@ -787,11 +777,7 @@ impl Notifications for WebhookChannelManager {
         Ok(())
     }
 
-    async fn publish(
-        &self,
-        topic: &str,
-        notification: ChangeNotification,
-    ) -> Result<(), PodError> {
+    async fn publish(&self, topic: &str, notification: ChangeNotification) -> Result<(), PodError> {
         let matches_topic = |t: &str| topic.starts_with(t) || t == topic;
         self.deliver_all(&notification, matches_topic).await;
         Ok(())

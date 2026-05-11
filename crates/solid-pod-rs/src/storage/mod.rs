@@ -111,13 +111,12 @@ pub trait Storage: Send + Sync + 'static {
         } else {
             format!("{path}/")
         };
-        let meta_path = format!("{container}.meta", container = container.trim_end_matches('/'));
-        self.put(
-            &meta_path,
-            Bytes::new(),
-            "application/ld+json",
-        )
-        .await
+        let meta_path = format!(
+            "{container}.meta",
+            container = container.trim_end_matches('/')
+        );
+        self.put(&meta_path, Bytes::new(), "application/ld+json")
+            .await
     }
 
     /// Register a watcher for a resource or container.

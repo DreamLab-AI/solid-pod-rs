@@ -11,13 +11,12 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
-use async_trait::async_trait;
 use solid_pod_rs_git::{
-    AuthError, BasicNostrExtractor, GitAuth, GitHttpService, GitRequest,
-    DEFAULT_GIT_HTTP_BACKEND,
+    AuthError, BasicNostrExtractor, GitAuth, GitHttpService, GitRequest, DEFAULT_GIT_HTTP_BACKEND,
 };
 
 /// Test-only auth that accepts every request. Isolates the routing /
@@ -94,10 +93,7 @@ fn basic_nostr_header(url: &str, method: &str, body: Option<&[u8]>) -> String {
     ];
     if let Some(b) = body {
         if !b.is_empty() {
-            tags.push(vec![
-                "payload".to_string(),
-                hex::encode(Sha256::digest(b)),
-            ]);
+            tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
         }
     }
 
@@ -127,8 +123,7 @@ async fn receive_pack_post_rejects_without_auth() {
     std::fs::create_dir(td.path().join("repo")).unwrap();
     std::fs::create_dir(td.path().join("repo/.git")).unwrap();
 
-    let svc = GitHttpService::new(td.path().to_path_buf())
-        .with_auth(BasicNostrExtractor::new());
+    let svc = GitHttpService::new(td.path().to_path_buf()).with_auth(BasicNostrExtractor::new());
 
     let req = GitRequest {
         method: "POST".into(),
@@ -175,16 +170,9 @@ async fn receive_pack_post_accepts_nip98_basic_auth_header() {
     // what we are asserting here.
     let result = svc.handle(req).await;
     match result {
-        Ok(r) => assert_ne!(
-            r.status, 401,
-            "auth must succeed but got 401 response"
-        ),
+        Ok(r) => assert_ne!(r.status, 401, "auth must succeed but got 401 response"),
         Err(e) => {
-            assert_ne!(
-                e.status_code(),
-                401,
-                "auth must succeed but got 401: {e:?}"
-            );
+            assert_ne!(e.status_code(), 401, "auth must succeed but got 401: {e:?}");
         }
     }
 }
