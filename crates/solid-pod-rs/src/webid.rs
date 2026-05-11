@@ -32,6 +32,8 @@ pub fn generate_webid_html_with_issuer(
     // references and for the cid:service fragment id.
     let doc_url = webid.split('#').next().unwrap_or(&webid).to_string();
 
+    let key_id = format!("{doc_url}#nostr-key");
+
     let mut context = json!({
         "foaf": "http://xmlns.com/foaf/0.1/",
         "solid": "http://www.w3.org/ns/solid/terms#",
@@ -41,10 +43,22 @@ pub fn generate_webid_html_with_issuer(
         "isPrimaryTopicOf": { "@id": "foaf:isPrimaryTopicOf", "@type": "@id" },
         "mainEntityOfPage": { "@id": "schema:mainEntityOfPage", "@type": "@id" },
         "service": { "@id": "cid:service", "@container": "@set" },
-        "serviceEndpoint": { "@id": "cid:serviceEndpoint", "@type": "@id" }
+        "serviceEndpoint": { "@id": "cid:serviceEndpoint", "@type": "@id" },
+        "controller": { "@id": "cid:controller", "@type": "@id" },
+        "verificationMethod": { "@id": "cid:verificationMethod", "@container": "@set" },
+        "authentication": { "@id": "cid:authentication", "@container": "@set" },
+        "assertionMethod": { "@id": "cid:assertionMethod", "@container": "@set" },
+        "publicKeyJwk": "cid:publicKeyJwk",
+        "publicKeyMultibase": "cid:publicKeyMultibase",
+        "Multikey": "cid:Multikey",
+        "JsonWebKey": "cid:JsonWebKey"
     });
     // Keep context shape mutable in case future rows add more terms.
     let _ = context.as_object_mut();
+
+    // CID v1 verificationMethod: Nostr x-only BIP-340 pubkey encoded
+    // as hex multibase (`f` prefix + `eb` bip340-pub multicodec + hex).
+    let pubkey_multibase = format!("feb{pubkey}");
 
     let mut body = json!({
         "@context": context,
@@ -56,7 +70,16 @@ pub fn generate_webid_html_with_issuer(
         "solid:account": pod_url,
         "solid:privateTypeIndex": format!("{pod_url}settings/privateTypeIndex"),
         "solid:publicTypeIndex": format!("{pod_url}settings/publicTypeIndex"),
-        "schema:identifier": format!("did:nostr:{pubkey}")
+        "schema:identifier": format!("did:nostr:{pubkey}"),
+        "controller": &webid,
+        "verificationMethod": [{
+            "@id": &key_id,
+            "@type": "Multikey",
+            "controller": &webid,
+            "publicKeyMultibase": &pubkey_multibase
+        }],
+        "authentication": [&key_id],
+        "assertionMethod": [&key_id]
     });
 
     if let Some(iss) = oidc_issuer {

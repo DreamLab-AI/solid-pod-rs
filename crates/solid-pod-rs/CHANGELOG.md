@@ -4,6 +4,24 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.7] - 2026-05-11 (Payments, LWS-CID, WebID CID v1)
+
+### Added
+- `payments` module: Web Ledgers spec (`WebLedger`, `PayConfig`,
+  `PaymentStore` trait, TXO parsing, MRC20 state-chain types, DID:nostr
+  identity helpers). Always-compiled (core surface). 17 tests.
+- `auth::lws_cid` module: LWS 1.0 CID self-signed JWT verifier with
+  `ProfileFetcher` async trait. Feature-gated (`lws-cid`, `lws-cid-p256`,
+  `lws-cid-eddsa`, `lws-cid-full`). 12 tests.
+- WebID profiles emit CID v1 terms: `controller`, `verificationMethod`,
+  `authentication`, `assertionMethod` with Multikey VM.
+- NIP-98 → WebID elevation (behind `lws-cid` feature).
+- `js-sys` optional dep activated by `core` for wasm32 timestamps.
+
+### Changed
+- `PaymentStore` trait: `#[async_trait(?Send)]` for wasm32 compat.
+- Feature table and module overview in `lib.rs` docs updated.
+
 ## [0.4.0-alpha.5] - 2026-05-08 (Mashlib data browser integration)
 
 ### Added

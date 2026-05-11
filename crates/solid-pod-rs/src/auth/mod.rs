@@ -8,3 +8,6 @@
 
 pub mod nip98;
 pub mod self_signed;
+
+#[cfg(feature = "lws-cid")]
+pub mod lws_cid;

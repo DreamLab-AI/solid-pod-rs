@@ -241,58 +241,214 @@ use crate::auth::self_signed::{
 
 /// [`SelfSignedVerifier`] adapter for NIP-98.
 ///
-/// Accepts either `Nostr <b64>` (raw header) or `<b64>` (already-stripped
-/// token). On success the returned subject is `urn:nip98:<pubkey>` with
-/// a `verification_method` of `urn:nip98:<pubkey>#key-0`.
+/// When the `lws-cid` feature is enabled, attempts WebID elevation:
+/// if the Nostr signing pubkey appears in a WebID profile's
+/// `verificationMethod` + `authentication`, authenticates as the WebID
+/// instead of `urn:nip98:<pubkey>`. JSS PR#400 parity.
+///
+/// Without `lws-cid`, returns `urn:nip98:<pubkey>` unconditionally.
+#[cfg(not(feature = "lws-cid"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Nip98Verifier;
 
+#[cfg(feature = "lws-cid")]
+pub struct Nip98Verifier {
+    fetcher: std::sync::Arc<dyn crate::auth::lws_cid::ProfileFetcher>,
+}
+
+#[cfg(feature = "lws-cid")]
+impl Nip98Verifier {
+    pub fn new(fetcher: std::sync::Arc<dyn crate::auth::lws_cid::ProfileFetcher>) -> Self {
+        Self { fetcher }
+    }
+}
+
+fn verify_nip98_proof(
+    proof: &str,
+    uri: &str,
+    method: &str,
+    now: u64,
+) -> Result<Nip98Verified, SelfSignedError> {
+    let looks_like_header = proof.starts_with(NOSTR_PREFIX);
+    let header = if looks_like_header {
+        proof.to_string()
+    } else {
+        format!("{NOSTR_PREFIX}{}", proof)
+    };
+
+    match verify_at(&header, uri, method, None, now) {
+        Ok(v) => Ok(v),
+        Err(crate::error::PodError::Nip98(msg)) if looks_like_header => {
+            if msg.contains("timestamp") {
+                Err(SelfSignedError::OutOfTimeWindow(msg))
+            } else if msg.contains("URL mismatch") || msg.contains("method mismatch") {
+                Err(SelfSignedError::ScopeMismatch(msg))
+            } else if msg.contains("schnorr") || msg.contains("id mismatch") {
+                Err(SelfSignedError::InvalidSignature(msg))
+            } else {
+                Err(SelfSignedError::Malformed(msg))
+            }
+        }
+        Err(_) if !looks_like_header => {
+            Err(SelfSignedError::UnrecognisedFormat)
+        }
+        Err(e) => Err(SelfSignedError::Malformed(e.to_string())),
+    }
+}
+
+#[cfg(not(feature = "lws-cid"))]
 #[async_trait::async_trait]
 impl SelfSignedVerifier for Nip98Verifier {
     async fn verify(
         &self,
         envelope: &ProofEnvelope<'_>,
     ) -> Result<Option<VerifiedSubject>, SelfSignedError> {
-        // Decide whether this looks like NIP-98. We accept either the
-        // full `Nostr <b64>` header OR a bare token that begins with a
-        // base64-ish byte — so the CID dispatcher can hand us either.
-        let looks_like_header = envelope.proof.starts_with(NOSTR_PREFIX);
-        let header = if looks_like_header {
-            envelope.proof.to_string()
-        } else {
-            format!("{NOSTR_PREFIX}{}", envelope.proof)
-        };
-
-        match verify_at(&header, envelope.uri, envelope.method, None, envelope.now_unix) {
+        match verify_nip98_proof(envelope.proof, envelope.uri, envelope.method, envelope.now_unix) {
             Ok(v) => Ok(Some(VerifiedSubject {
                 did: format!("urn:nip98:{}", v.pubkey),
                 verification_method: format!("urn:nip98:{}#key-0", v.pubkey),
             })),
-            // Header-shaped proof (`Nostr …`) that fails to parse — the
-            // client clearly intended a NIP-98 event, so surface the
-            // failure verbatim so the dispatcher stops.
-            Err(crate::error::PodError::Nip98(msg)) if looks_like_header => {
-                if msg.contains("timestamp") {
-                    Err(SelfSignedError::OutOfTimeWindow(msg))
-                } else if msg.contains("URL mismatch") || msg.contains("method mismatch") {
-                    Err(SelfSignedError::ScopeMismatch(msg))
-                } else if msg.contains("schnorr") || msg.contains("id mismatch") {
-                    Err(SelfSignedError::InvalidSignature(msg))
-                } else {
-                    Err(SelfSignedError::Malformed(msg))
-                }
-            }
-            // Bare (non-header) input — treat any structural failure as
-            // "not NIP-98, try the next verifier". Only surface errors
-            // for the well-formed-event-but-bad-signature case.
-            Err(_) if !looks_like_header => Ok(None),
-            Err(e) => Err(SelfSignedError::Malformed(e.to_string())),
+            Err(SelfSignedError::UnrecognisedFormat) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     fn name(&self) -> &'static str {
         "nip98"
     }
+}
+
+#[cfg(feature = "lws-cid")]
+#[async_trait::async_trait]
+impl SelfSignedVerifier for Nip98Verifier {
+    async fn verify(
+        &self,
+        envelope: &ProofEnvelope<'_>,
+    ) -> Result<Option<VerifiedSubject>, SelfSignedError> {
+        let verified = match verify_nip98_proof(
+            envelope.proof,
+            envelope.uri,
+            envelope.method,
+            envelope.now_unix,
+        ) {
+            Ok(v) => v,
+            Err(SelfSignedError::UnrecognisedFormat) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        // Attempt WebID elevation via profile VM lookup.
+        if let Some(hint) = envelope.expected_subject_hint {
+            if hint.starts_with("http") {
+                let profile_url = hint.split('#').next().unwrap_or(hint);
+                if let Ok(Some(webid)) =
+                    try_elevate(&self.fetcher, profile_url, hint, &verified.pubkey).await
+                {
+                    return Ok(Some(VerifiedSubject {
+                        did: webid,
+                        verification_method: format!("{profile_url}#nostr-key"),
+                    }));
+                }
+            }
+        }
+
+        Ok(Some(VerifiedSubject {
+            did: format!("urn:nip98:{}", verified.pubkey),
+            verification_method: format!("urn:nip98:{}#key-0", verified.pubkey),
+        }))
+    }
+
+    fn name(&self) -> &'static str {
+        "nip98"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WebID elevation helpers (lws-cid only)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "lws-cid")]
+async fn try_elevate(
+    fetcher: &std::sync::Arc<dyn crate::auth::lws_cid::ProfileFetcher>,
+    profile_url: &str,
+    webid: &str,
+    pubkey_hex: &str,
+) -> Result<Option<String>, String> {
+    let data = fetcher.fetch(profile_url).await?;
+    let text = std::str::from_utf8(&data).map_err(|e| e.to_string())?;
+
+    let json_value: serde_json::Value = if text.trim_start().starts_with('{') {
+        serde_json::from_str(text).map_err(|e| e.to_string())?
+    } else {
+        extract_json_ld_from_html(text)?
+    };
+
+    let vms = json_value
+        .get("verificationMethod")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.as_slice())
+        .unwrap_or(&[]);
+
+    let matching_vm_ids: Vec<&str> = vms
+        .iter()
+        .filter_map(|vm| {
+            let id = vm.get("id").or_else(|| vm.get("@id"))?.as_str()?;
+            if let Some(mb) = vm.get("publicKeyMultibase").and_then(|v| v.as_str()) {
+                let needle = format!("feb{pubkey_hex}");
+                if mb.eq_ignore_ascii_case(&needle) {
+                    return Some(id);
+                }
+            }
+            if let Some(hex) = vm.get("publicKeyHex").and_then(|v| v.as_str()) {
+                if hex.eq_ignore_ascii_case(pubkey_hex) {
+                    return Some(id);
+                }
+            }
+            None
+        })
+        .collect();
+
+    if matching_vm_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let auth = json_value
+        .get("authentication")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.as_slice())
+        .unwrap_or(&[]);
+
+    let auth_ids: Vec<&str> = auth
+        .iter()
+        .filter_map(|v| match v {
+            serde_json::Value::String(s) => Some(s.as_str()),
+            serde_json::Value::Object(m) => m.get("@id").or_else(|| m.get("id"))?.as_str(),
+            _ => None,
+        })
+        .collect();
+
+    let elevated = matching_vm_ids
+        .iter()
+        .any(|vm_id| auth_ids.iter().any(|a| a == vm_id));
+
+    if elevated {
+        Ok(Some(webid.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "lws-cid")]
+fn extract_json_ld_from_html(html: &str) -> Result<serde_json::Value, String> {
+    let start = html
+        .find("application/ld+json")
+        .ok_or("no JSON-LD data island")?;
+    let tag_end = html[start..].find('>').ok_or("malformed script tag")?;
+    let json_start = start + tag_end + 1;
+    let script_end = html[json_start..]
+        .find("</script>")
+        .ok_or("unclosed script")?;
+    let json_str = html[json_start..json_start + script_end].trim();
+    serde_json::from_str(json_str).map_err(|e| format!("JSON-LD parse: {e}"))
 }
 
 #[cfg(test)]

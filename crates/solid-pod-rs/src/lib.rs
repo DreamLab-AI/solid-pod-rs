@@ -31,6 +31,10 @@
 //! | `did-nostr` | off | did:nostr resolver in `interop`. |
 //! | `rate-limit` | off | Sliding-window LRU rate limiter. |
 //! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
+//! | `lws-cid` | off | LWS 1.0 CID self-signed JWT verifier (ES256K). |
+//! | `lws-cid-p256` | off | LWS-CID + ES256 (P-256) algorithm. |
+//! | `lws-cid-eddsa` | off | LWS-CID + EdDSA (Ed25519) algorithm. |
+//! | `lws-cid-full` | off | LWS-CID with all algorithms. |
 //!
 //! `core` consumers wire the crate via `default-features = false,
 //! features = ["core"]` and get only the pure-logic surfaces (no
@@ -46,7 +50,8 @@
 //! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
 //! | [`mashlib`] | SolidOS data-browser HTML wrapper + data-island embed.    |
-//! | [`auth`] | NIP-98 HTTP authentication. |
+//! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
+//! | [`payments`] | HTTP 402, Web Ledgers, MRC20 tokens, multi-chain TXO. |
 //! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
 //! | [`config`] | Layered configuration schema. |
@@ -107,6 +112,7 @@ pub mod ldp;
 pub mod mashlib;
 pub mod metrics;
 pub mod multitenant;
+pub mod payments;
 pub mod security;
 pub mod wac;
 pub mod webid;

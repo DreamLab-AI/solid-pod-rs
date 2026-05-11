@@ -1,3 +1,32 @@
+## v0.4.0-alpha.7 (2026-05-11)
+
+### Added
+- `payments` module (always-compiled, part of `core` surface): Web Ledgers
+  spec implementation with per-identity satoshi balances, multi-chain TXO
+  deposit parsing, MRC20 state-chain token types, and `PaymentStore` async
+  trait for pluggable storage backends. 17 unit tests.
+- `auth::lws_cid` module: LWS 1.0 Controlled Identifier self-signed JWT
+  verifier with `ProfileFetcher` trait for async profile resolution.
+  Feature-gated: `lws-cid` (ES256K), `lws-cid-p256` (ES256), `lws-cid-eddsa`
+  (Ed25519), `lws-cid-full` (all algorithms). 12 unit tests.
+- `webid` CID v1 profile terms: `controller`, `verificationMethod`,
+  `authentication`, `assertionMethod` with Nostr x-only pubkey as Multikey
+  VM (`publicKeyMultibase` = `feb<hex>` multibase encoding).
+- `auth::nip98` WebID elevation: when `lws-cid` feature is enabled,
+  `Nip98Verifier` attempts to elevate `urn:nip98:` identities to WebID
+  URIs by matching the signing pubkey against the resource owner's profile
+  `verificationMethod`.
+- `js-sys` optional dependency, activated by `core` feature — provides
+  `Date.now()` timestamps for the `payments` module on wasm32.
+
+### Changed
+- `PaymentStore` trait uses `#[async_trait(?Send)]` for CF Workers wasm32
+  compatibility (JS-backed futures are not `Send`).
+- Feature flag table in `lib.rs` docs updated with `lws-cid*` entries.
+- Module overview table updated with `payments` entry.
+
+---
+
 ## v0.4.0-alpha.4 (2026-05-07)
 
 ### Changed

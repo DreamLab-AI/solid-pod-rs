@@ -31,6 +31,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 bytes = "1"
 sha2 = "0.10"
 hex = "0.4"
+js-sys = { version = "0.3", optional = true }
 url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
@@ -56,7 +57,11 @@ openidconnect = { version = "4", optional = true }
 jsonwebtoken = { version = "9", optional = true }
 
 # NIP-98 Schnorr verification (Phase 3 close)
-k256 = { version = "0.13", features = ["schnorr"], optional = true }
+# `ecdsa` added for LWS-CID ES256K verification.
+k256 = { version = "0.13", features = ["schnorr", "ecdsa"], optional = true }
+
+# LWS-CID optional algorithms (ES256, EdDSA).
+p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
 # F5 (Sprint 4): DPoP jti replay cache — Solid-OIDC §5.2 / RFC 9449.
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
@@ -93,7 +98,7 @@ default = ["std", "fs-backend", "memory-backend", "tokio-runtime", "notification
 # interop types, security path/URL primitives) without dragging in tokio
 # or reqwest. `core` is the entry point for those consumers.
 # ---------------------------------------------------------------------------
-core = ["std"]
+core = ["std", "dep:js-sys"]
 std = []
 
 # Activate the tokio runtime + the websocket/futures stack. Pulled in
@@ -106,6 +111,14 @@ memory-backend = ["tokio-runtime"]
 s3-backend = ["dep:aws-sdk-s3", "tokio-runtime"]
 oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]
+
+# LWS 1.0 Controlled Identifier self-signed JWT verifier.
+# ES256K (secp256k1) is the primary algorithm; P-256 and Ed25519
+# are optional sub-features for broader CID method support.
+lws-cid = ["dep:k256"]
+lws-cid-p256 = ["lws-cid", "dep:p256"]
+lws-cid-eddsa = ["lws-cid", "dep:ed25519-dalek"]
+lws-cid-full = ["lws-cid", "lws-cid-p256", "lws-cid-eddsa"]
 notifications = ["tokio-runtime", "dep:reqwest"]
 
 # ---------------------------------------------------------------------------
