@@ -226,7 +226,6 @@ fn oidc_e2e_discovery_to_evaluate() {
 #[cfg(feature = "nip98-schnorr")]
 #[test]
 fn nip98_to_wac_bridge() {
-    use k256::schnorr::signature::Signer;
     use solid_pod_rs::auth::nip98::{compute_event_id, verify_at, Nip98Event};
 
     // Deterministic Schnorr keypair — same seed as the in-module tests.
@@ -251,7 +250,8 @@ fn nip98_to_wac_bridge() {
     };
     let id = compute_event_id(&skeleton);
     let id_bytes: Vec<u8> = hex::decode(&id).unwrap();
-    let sig: k256::schnorr::Signature = sk.sign(&id_bytes);
+    let sig: k256::schnorr::Signature =
+        sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
     let ev = serde_json::json!({
         "id": id,
         "pubkey": pubkey,

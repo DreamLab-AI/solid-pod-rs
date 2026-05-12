@@ -65,8 +65,8 @@ fn build_event(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> serde_j
     let id = compute_event_id(&skeleton);
     let id_bytes: Vec<u8> = hex::decode(&id).expect("id is valid hex");
     let sig = {
-        use k256::schnorr::signature::Signer;
-        let signature: k256::schnorr::Signature = sk.sign(&id_bytes);
+        let signature: k256::schnorr::Signature =
+            sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
         hex::encode(signature.to_bytes())
     };
     serde_json::json!({

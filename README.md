@@ -234,7 +234,7 @@ solid-pod-rs ships two authentication paths. Both produce the same `AuthContext`
 <details>
 <summary><strong>Technical detail — NIP-98</strong></summary>
 
-- Always compiled (structural verifier). `nip98-schnorr` feature enables BIP-340 Schnorr signature verification.
+- Always compiled (structural verifier). `nip98-schnorr` feature enables BIP-340 Schnorr signature verification via `VerifyingKey::verify_raw()` (raw 32-byte event-id message, no pre-hashing). This matches the BIP-340 specification and ensures interoperability with standard Nostr clients and the nostr-bbs ecosystem.
 - Token: base64-encoded Nostr event in `Authorization: Nostr <token>`.
 - Binds: URL (`u` tag), method (`method` tag), body hash (`payload` tag = `SHA-256(body)`).
 - Timestamp tolerance: ±60 s. Max token size: 64 KB.
@@ -415,7 +415,7 @@ Feature flags keep the dependency surface tight. A minimal NIP-98-only build is 
 | `s3-backend` | off | AWS S3 / S3-compatible object stores |
 | `oidc` | off | Solid-OIDC 0.1 + DPoP |
 | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`) |
-| `nip98-schnorr` | off | BIP-340 signature verification for NIP-98 |
+| `nip98-schnorr` | off | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash) |
 | `acl-origin` | off | WAC `acl:origin` enforcement |
 | `security-primitives` | off | SSRF guard + dotfile allowlist |
 | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS) |

@@ -76,7 +76,7 @@ Characteristics:
 |---------------------------------|---------------------------------|---------------------------------|
 | Transport                       | HTTP `Authorization: Nostr …`   | HTTP `Authorization: DPoP …` + `DPoP: …` |
 | Event / token format            | Nostr kind 27235 event, base64  | JWT access token + DPoP proof JWT |
-| Signature algorithm             | Schnorr over secp256k1 (P1: structural only; P2: full) | ES256 / RS256 (access token + DPoP proof) |
+| Signature algorithm             | BIP-340 Schnorr over secp256k1 via `verify_raw` (raw 32-byte message, no tagged pre-hash) | ES256 / RS256 (access token + DPoP proof) |
 | Binds URL                       | `u` tag                         | `htu` claim (DPoP proof)        |
 | Binds method                    | `method` tag                    | `htm` claim                     |
 | Binds body                      | `payload` tag = `SHA-256(body)` | Access-token handling; proof's `ath` if applicable |

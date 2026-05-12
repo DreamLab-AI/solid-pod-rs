@@ -506,10 +506,26 @@ pub fn verify_at(
 ) -> Result<Nip98Verified, PodError>;
 
 pub fn authorization_header(token_b64: &str) -> String;
+
+/// BIP-340 Schnorr signature verification (feature `nip98-schnorr`).
+/// Uses `VerifyingKey::verify_raw()` for raw 32-byte message
+/// verification — no tagged pre-hash. This matches BIP-340 and is
+/// required for interoperability with standard Nostr clients.
+pub fn verify_schnorr_signature(event: &Nip98Event) -> Result<(), PodError>;
+
+/// Computes the canonical NIP-01 event-id hash (SHA-256 of the
+/// serialised event commitment). The resulting 32-byte hash is the
+/// message passed to `verify_raw` / `sign_raw`.
+pub fn compute_event_id(event: &Nip98Event) -> Result<[u8; 32], PodError>;
 ```
 
 `verify` returns the signer pubkey; `verify_at` returns the structured
-`Nip98Verified`.
+`Nip98Verified`. When the `nip98-schnorr` feature is enabled,
+`verify_at` automatically calls `verify_schnorr_signature` which uses
+BIP-340 raw verification (`VerifyingKey::verify_raw`) against the
+32-byte event-id hash. The k256 `signature::Verifier` trait is not
+used -- its `verify()` method applies an additional SHA-256 tagged hash
+that is incompatible with BIP-340.
 
 ---
 

@@ -170,7 +170,7 @@ pub fn compute_event_id(event: &Nip98Event) -> String {
 ///    over the event id bytes.
 #[cfg(feature = "nip98-schnorr")]
 pub fn verify_schnorr_signature(event: &Nip98Event) -> Result<(), PodError> {
-    use k256::schnorr::{signature::Verifier, Signature, VerifyingKey};
+    use k256::schnorr::{Signature, VerifyingKey};
 
     let computed_id = compute_event_id(event);
     if computed_id.to_lowercase() != event.id.to_lowercase() {
@@ -196,7 +196,7 @@ pub fn verify_schnorr_signature(event: &Nip98Event) -> Result<(), PodError> {
         .map_err(|e| PodError::Nip98(format!("pubkey parse: {e}")))?;
     let sig = Signature::try_from(sig_bytes.as_slice())
         .map_err(|e| PodError::Nip98(format!("sig parse: {e}")))?;
-    vk.verify(&id_bytes, &sig)
+    vk.verify_raw(&id_bytes, &sig)
         .map_err(|e| PodError::Nip98(format!("schnorr verify: {e}")))?;
     Ok(())
 }
@@ -520,16 +520,10 @@ mod tests {
         let sig = {
             #[cfg(feature = "nip98-schnorr")]
             {
-                // Match the verifier: `verify_schnorr_signature` calls
-                // `VerifyingKey::verify(id_bytes, sig)`, and k256's
-                // `Verifier` impl hashes the input via
-                // `Sha256::new_with_prefix`. The paired `Signer::try_sign`
-                // does the same, so signing over `id_bytes` with that
-                // trait produces a matching signature.
-                use k256::schnorr::signature::Signer;
                 let (sk, _) = test_signing_key();
                 let id_bytes: Vec<u8> = hex::decode(&id).expect("id is valid hex");
-                let signature: k256::schnorr::Signature = sk.sign(&id_bytes);
+                let signature: k256::schnorr::Signature =
+                    sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
                 hex::encode(signature.to_bytes())
             }
             #[cfg(not(feature = "nip98-schnorr"))]

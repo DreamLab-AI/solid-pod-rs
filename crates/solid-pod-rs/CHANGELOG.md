@@ -4,6 +4,40 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.8] - 2026-05-12 (BIP-340 Schnorr fix)
+
+### Fixed
+
+- **BIP-340 Schnorr pre-hashing mismatch (BREAKING).** The NIP-98
+  Schnorr signature verifier (`auth::nip98::verify_schnorr_signature`)
+  was calling `vk.verify()` via the k256 `signature::Verifier` trait,
+  which applies an additional SHA-256 tagged hash internally before
+  verification. BIP-340 specifies raw 32-byte message verification.
+  The mismatch caused every signature produced by a standards-compliant
+  Nostr client (which signs over the raw event-id bytes) to fail
+  verification, breaking SSO interoperability with the nostr-bbs relay
+  and forum ecosystem.
+
+  **Before (broken):**
+  ```rust
+  use k256::schnorr::{signature::Verifier, Signature, VerifyingKey};
+  vk.verify(&id_bytes, &sig)  // applies extra tagged hash
+  ```
+
+  **After (BIP-340 correct):**
+  ```rust
+  use k256::schnorr::{Signature, VerifyingKey};
+  vk.verify_raw(&id_bytes, &sig)  // raw 32-byte message, no pre-hash
+  ```
+
+  The `signature::Verifier` trait import is removed; only `verify_raw`
+  is used for BIP-340 compliance.
+
+- Test and bench fixtures updated to use `sk.sign_raw(&id_bytes,
+  &[0u8; 32])` instead of `sk.sign()` to match BIP-340 raw signing:
+  `tests/cid_verifier_sprint11.rs`, `tests/nip98_extended.rs`,
+  `tests/oidc_integration.rs`, `benches/nip98_verify_bench.rs`.
+
 ## [0.4.0-alpha.7] - 2026-05-11 (Payments, LWS-CID, WebID CID v1)
 
 ### Added

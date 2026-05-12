@@ -72,10 +72,10 @@ fn build_header(url: &str, method: &str, ts: u64, body: Option<&[u8]>) -> String
     let sig = {
         #[cfg(feature = "nip98-schnorr")]
         {
-            use k256::schnorr::signature::Signer;
             let (sk, _) = bench_keypair();
             let id_bytes = hex::decode(&id).expect("id is valid hex");
-            let signature: k256::schnorr::Signature = sk.sign(&id_bytes);
+            let signature: k256::schnorr::Signature =
+                sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
             hex::encode(signature.to_bytes())
         }
         #[cfg(not(feature = "nip98-schnorr"))]

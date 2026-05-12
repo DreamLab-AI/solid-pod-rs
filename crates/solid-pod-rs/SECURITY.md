@@ -33,6 +33,23 @@ The following properties are enforced by the library core and exercised
 by the workspace test suite. They are load-bearing invariants; a
 regression in any of them should be reported as a vulnerability.
 
+### NIP-98 BIP-340 Schnorr verification
+
+- **Raw 32-byte message verification (BIP-340 compliant).**
+  `auth::nip98::verify_schnorr_signature` uses
+  `VerifyingKey::verify_raw()` which verifies against the raw 32-byte
+  event-id hash directly, with no additional pre-hashing. This matches
+  the BIP-340 specification. The k256 `signature::Verifier` trait's
+  `verify()` method must **not** be used -- it applies an extra SHA-256
+  tagged hash internally, which produces a double-hash mismatch against
+  any standards-compliant Nostr client signature.
+- **Test fixture signing convention.** All test fixtures use
+  `sk.sign_raw(&id_bytes, &[0u8; 32])` (raw signing with zero
+  auxiliary randomness), not `sk.sign()`, to match the BIP-340 raw
+  signing path. Using `sk.sign()` in tests would produce signatures
+  that pass the (incorrect) tagged-hash verification path but fail
+  against real Nostr clients.
+
 ### DPoP proof verification (RFC 9449)
 
 - **Signature verified against the proof's embedded `header.jwk`.**

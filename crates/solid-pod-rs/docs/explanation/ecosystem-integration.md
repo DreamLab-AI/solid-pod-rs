@@ -211,7 +211,9 @@ universal identity primitive (per ADR-074). solid-pod-rs provides:
 - `@context` including `https://w3id.org/security/suites/secp256k1-2019/v1`.
 - WebID profile generation with `alsoKnownAs` cross-linking to
   `did:nostr` identifiers.
-- NIP-98 HTTP authentication binding pubkey to `did:nostr:{pubkey}`.
+- NIP-98 HTTP authentication binding pubkey to `did:nostr:{pubkey}`,
+  with BIP-340 Schnorr signature verification via `verify_raw()` (raw
+  32-byte event-id message, no tagged pre-hash).
 
 NIP-26 delegation is the cross-system trust pivot for inter-substrate
 operations.

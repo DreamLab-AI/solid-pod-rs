@@ -34,7 +34,7 @@ let storage = FsBackend::new(PathBuf::from("./pod-root"));
 | `s3-backend`            | off     | AWS S3 / S3-compatible object stores.         |
 | `oidc`                  | off     | Solid-OIDC 0.1 + DPoP.                        |
 | `dpop-replay-cache`     | off     | DPoP `jti` replay cache (pulls `oidc`).       |
-| `nip98-schnorr`         | off     | BIP-340 signature verification for NIP-98.    |
+| `nip98-schnorr`         | off     | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash). |
 | `acl-origin`            | off     | WAC `acl:origin` enforcement.                 |
 | `security-primitives`   | off     | SSRF guard + dotfile allowlist.               |
 | `legacy-notifications`  | off     | `solid-0.1` WebSocket adapter (SolidOS).      |

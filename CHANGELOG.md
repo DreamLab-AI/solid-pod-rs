@@ -4,6 +4,27 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [BIP-340 Schnorr Fix] - 2026-05-12
+
+### Fixed
+
+- **NIP-98 BIP-340 Schnorr pre-hashing mismatch (BREAKING).** The
+  Schnorr signature verifier in `auth::nip98::verify_schnorr_signature`
+  was calling `vk.verify()` (the k256 `Verifier` trait method, which
+  applies an extra SHA-256 tagged hash per the k256 Verifier trait
+  semantics) instead of `vk.verify_raw()` (BIP-340 correct, raw 32-byte
+  message). This caused signature verification to fail against any
+  standard Nostr client that signs per BIP-340 (raw event-id bytes),
+  breaking SSO interoperability with the nostr-bbs relay and forum.
+  The fix switches to `verify_raw()` for verification and `sign_raw()`
+  for test fixture signing. The k256 `signature::Verifier` trait import
+  is no longer used.
+- Test and bench fixtures updated to use `sk.sign_raw(&id_bytes,
+  &[0u8; 32])` instead of `sk.sign()`, matching the BIP-340 raw
+  signing convention: `tests/cid_verifier_sprint11.rs`,
+  `tests/nip98_extended.rs`, `tests/oidc_integration.rs`,
+  `benches/nip98_verify_bench.rs`.
+
 ## [Security Audit Sprint] - 2026-05-11
 
 DreamLab ecosystem-wide security audit. 8 fixes applied to solid-pod-rs

@@ -40,6 +40,12 @@ Rules the verifier enforces (all in
 - `u` tag matches the canonical URL (trailing slashes ignored).
 - `method` tag matches the HTTP method (case-insensitive).
 - If a body is passed, the `payload` tag must be SHA-256(body).
+- When the `nip98-schnorr` feature is enabled, the event's BIP-340
+  Schnorr signature is verified using `VerifyingKey::verify_raw()` —
+  this operates on the raw 32-byte event-id hash with no additional
+  pre-hashing, matching the BIP-340 specification. This is required
+  for interoperability with standard Nostr clients and the nostr-bbs
+  relay/forum ecosystem.
 
 ## Step 2 — Bind the body hash
 

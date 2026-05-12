@@ -249,7 +249,7 @@ crates/
 | DPoP jti replay cache | `src/oidc/replay.rs` | `JtiReplayCache` (LRU, 5-min TTL, 10 000 cap) | `src/auth/solid-oidc.js` | `tests/dpop_replay_test.rs`, `tests/jti_replay_sprint9.rs` | 64 (Sprint 9, primitive shipped) |
 | SSRF guard on JWKS fetch | `src/oidc/jwks.rs` + `src/security/ssrf.rs` | `fetch_jwks_with_policy`; `SsrfPolicy`, `is_safe_url` | `src/utils/ssrf.js:15-50` | `tests/oidc_jwks_ssrf.rs` | 65, 114 |
 | NIP-98 HTTP auth | `src/auth/nip98.rs` | `verify_at`, `Nip98Event`, `Nip98Verified` | `src/auth/nostr.js:26-267` | `tests/nip98_extended.rs`, `tests/schnorr_nip98.rs` | 66 |
-| NIP-98 Schnorr verify | `src/auth/nip98.rs` | `verify_schnorr_signature` (feature `nip98-schnorr`) | via `nostr-tools` | `tests/schnorr_nip98.rs` | 67 |
+| NIP-98 Schnorr verify | `src/auth/nip98.rs` | `verify_schnorr_signature` (feature `nip98-schnorr`); uses `VerifyingKey::verify_raw()` for BIP-340 raw 32-byte message verification (no tagged pre-hash) | via `nostr-tools` | `tests/schnorr_nip98.rs`, `tests/cid_verifier_sprint11.rs` | 67 |
 | NIP-98 60s skew | `src/auth/nip98.rs` | `verify_at` `now` param | `src/auth/nostr.js` | `tests/nip98_extended.rs` | 68 |
 | `Basic nostr:<token>` for git | n/a | reserved for `solid-pod-rs-git` | `src/auth/nostr.js:39-46,178-200` | — | 69 |
 | WebID-TLS | n/a | deferred | `src/auth/webid-tls.js:187-257` | — | 70 (deferred) |
@@ -606,7 +606,13 @@ quoting coverage — the checklist is the authoritative tracker.
 - **NIP-98 Schnorr verification requires a feature.** The
   default build **does not** include Schnorr verification (no
   `k256` dependency). Consumers that want signature verification
-  must enable `nip98-schnorr`.
+  must enable `nip98-schnorr`. The verifier uses
+  `VerifyingKey::verify_raw()` (BIP-340 raw 32-byte message) -- do
+  **not** use the k256 `signature::Verifier` trait's `verify()`
+  method, which applies an additional SHA-256 tagged hash and
+  produces incorrect results for BIP-340 signatures. Test fixtures
+  must use `sk.sign_raw(&id_bytes, &[0u8; 32])` (not `sk.sign()`)
+  when generating signatures for test events.
 - **Parity percentages drift.** The headline numbers (66% strict /
   85% spec-normative) are **Sprint 9 close**. Re-read
   [`PARITY-CHECKLIST.md`](../../PARITY-CHECKLIST.md) headline

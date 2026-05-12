@@ -1,3 +1,18 @@
+## v0.4.0-alpha.8 (2026-05-12)
+
+### Fixed
+- **BIP-340 Schnorr pre-hashing mismatch (BREAKING).** The NIP-98
+  Schnorr verifier was calling `vk.verify()` (k256 `Verifier` trait,
+  which applies an extra SHA-256 tagged hash) instead of
+  `vk.verify_raw()` (BIP-340 correct, raw 32-byte message). This
+  broke SSO interoperability with the nostr-bbs relay and forum --
+  every signature from a standards-compliant Nostr client was
+  incorrectly rejected. The `signature::Verifier` trait import is
+  removed. Test/bench fixtures switched from `sk.sign()` to
+  `sk.sign_raw(&id_bytes, &[0u8; 32])`.
+
+---
+
 ## v0.4.0-alpha.7 (2026-05-11)
 
 ### Added
