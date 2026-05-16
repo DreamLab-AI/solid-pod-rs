@@ -14,7 +14,7 @@ use the sibling crate [`solid-pod-rs-server`](../solid-pod-rs-server/).
 
 ```toml
 [dependencies]
-solid-pod-rs = "0.4.0-alpha.1"
+solid-pod-rs = "0.4.0-alpha.11"
 ```
 
 ```rust,no_run
@@ -24,6 +24,29 @@ use std::path::PathBuf;
 let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Compose with your framework; see examples/embed_in_actix.rs.
 ```
+
+## What's new in 0.4.0-alpha.11 (2026-05-16, JSS Phase 1 port)
+
+Three default-off feature flags add the JSS Phase 1 surface (issue
+#437) — pod-resident identity, federated NIP-05, and JSON-LD data
+export. ABI shapes scaffolded in alpha.10 are preserved; downstream
+crates (NRF, dreamlab-ai-website) opt in via feature flags without
+source changes.
+
+- `provision-keys` (in `solid-pod-rs-idp`): BIP-340 Schnorr keypair
+  generation, NIP-19 bech32 encoding, owner-only ACL, and WebID
+  patching with `nostr:pubkey`.
+- `nip05-endpoint` (in `solid-pod-rs` + `solid-pod-rs-server`):
+  `GET /.well-known/nostr.json?name=<local>` resolved from the pod's
+  WebID JSON-LD island.
+- `export-jsonld` (in `solid-pod-rs`): pod-tree export bundle with
+  `@context = "https://solid-pod-rs.dev/ns/export/v1"`, ordered
+  ascending by `created`, `/private/*` excluded unless opted in.
+
+CF-Workers portability of these three modules is tracked upstream in
+[NRF ADR-087](https://github.com/DreamLab-AI/nostr-rust-forum/blob/main/docs/adr/ADR-087-cf-workers-portable-cores.md);
+a small WAC Turtle serializer quirk is tracked in
+[NRF ADR-088](https://github.com/DreamLab-AI/nostr-rust-forum/blob/main/docs/adr/ADR-088-wac-turtle-serializer.md).
 
 ## Feature flags
 

@@ -4,6 +4,36 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.11] - 2026-05-16 (JSS Phase 1 port)
+
+Published to crates.io alongside the six sibling crates. Three
+default-off feature flags add the JSS v0.0.190 Phase 1 surface
+(parity rows 196–198). See the workspace
+[`CHANGELOG.md`](../../CHANGELOG.md) for the full per-crate breakdown.
+
+### Added
+
+- **`nip05-endpoint`** — `GET /.well-known/nostr.json?name=<local>`
+  resolved from the pod's WebID JSON-LD `nostr:pubkey` triple. Five
+  actix-test integration tests in `solid-pod-rs-server`.
+- **`export-jsonld`** — `export::export_pod_jsonld` walks the pod
+  tree, excludes `/private/*` by default (opt-in via
+  `ExportOptions::include_private`), base64-encodes resource bodies,
+  sorts ascending by `created`. Bundle envelope carries
+  `@context = "https://solid-pod-rs.dev/ns/export/v1"`. Three
+  integration tests.
+- **`webid::extract_nostr_pubkey`** helper (always available) —
+  mirrors `extract_oidc_issuer` semantics; returns `Ok(None)` when
+  the triple is absent.
+
+### Notes
+
+- Companion `provision-keys` feature lives in `solid-pod-rs-idp` (see
+  that crate's CHANGELOG).
+- CF-Workers portability of the three Phase 1 modules is tracked
+  upstream in NRF ADR-087; a WAC Turtle serializer bare-path IRI
+  quirk in ADR-088. Both are draft as of 2026-05-16.
+
 ## [0.4.0-alpha.8] - 2026-05-12 (BIP-340 Schnorr fix)
 
 ### Fixed
