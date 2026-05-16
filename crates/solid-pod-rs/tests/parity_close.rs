@@ -288,6 +288,8 @@ async fn provision_pod_creates_webid_and_containers() {
         containers: vec!["/media/".into(), "/docs/".into()],
         root_acl: None,
         quota_bytes: Some(10_000),
+        #[cfg(feature = "provision-keys")]
+        provision_keys: false,
     };
     let outcome = provision_pod(&pod, &plan).await.unwrap();
     assert!(outcome.webid.contains("/profile/card#me"));

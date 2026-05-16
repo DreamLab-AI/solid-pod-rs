@@ -250,8 +250,7 @@ fn nip98_to_wac_bridge() {
     };
     let id = compute_event_id(&skeleton);
     let id_bytes: Vec<u8> = hex::decode(&id).unwrap();
-    let sig: k256::schnorr::Signature =
-        sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
+    let sig: k256::schnorr::Signature = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
     let ev = serde_json::json!({
         "id": id,
         "pubkey": pubkey,

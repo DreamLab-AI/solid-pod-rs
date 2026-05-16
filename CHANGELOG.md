@@ -4,6 +4,77 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-alpha.11] — 2026-05-16 — JSS Phase 1 port
+
+Implements the three Phase 1 features shipped by JSS v0.0.190 (May
+2026, issue #437). All three feature flags are default-off so existing
+consumers see no surface change unless they opt in. Type shapes
+declared in the alpha.10 scaffold (`KeyProvisioningOutcome`,
+`KeyProvisioningPlan`, `PodExportBundle`, `PodExportEntry`,
+`ExportOptions`) are preserved as ABI — downstream crates (NRF,
+dreamlab-ai-website) can import unchanged.
+
+### Added
+
+- **`provision-keys` feature** (`solid-pod-rs-idp`, default-off,
+  parity row 196). `key_provisioning::provision_pod_keys` generates a
+  BIP-340 Schnorr secp256k1 keypair, NIP-19 bech32-encodes `npub` and
+  `nsec` (hand-rolled bech32 encoder — no new dependency on `bech32`),
+  writes `/private/privkey.jsonld` and an owner-only JSON-LD ACL
+  sibling, and patches the WebID `/profile/card` JSON-LD island to
+  include the `nostr:pubkey` triple. Accepts deterministic entropy
+  for test reproducibility. Depends on `solid-pod-rs/did-nostr` +
+  core's `nip98-schnorr` + `dep:k256`. 3 integration tests cover
+  deterministic seeding, ACL evaluator round-trip, and WebID patching
+  idempotency.
+- **`nip05-endpoint` feature** (`solid-pod-rs` + `solid-pod-rs-server`,
+  default-off, parity row 197). Wires `GET /.well-known/nostr.json?name=<local>`.
+  Validates the NIP-05 local-part regex, resolves `_` → `/profile/card`
+  and `<name>` → `/<name>/profile/card`, extracts `nostr:pubkey` from
+  the JSON-LD data island via the new `webid::extract_nostr_pubkey`
+  helper, returns `application/json` with `Access-Control-Allow-Origin: *`.
+  5 actix-test integration tests in `solid-pod-rs-server`.
+- **`export-jsonld` feature** (`solid-pod-rs`, default-off, parity row
+  198). `export::export_pod_jsonld` walks the pod tree, excludes
+  `/private/*` by default, opt-in via `ExportOptions::include_private`,
+  base64-encodes each resource body (binary-safe), sorts entries
+  ascending by `created` (mirrored from `modified` on backends that
+  don't track creation separately). Bundle envelope carries
+  `@context = "https://solid-pod-rs.dev/ns/export/v1"`. 3 integration
+  tests cover default exclusion, opt-in inclusion, and time-chain
+  ordering.
+- **`webid::extract_nostr_pubkey`** helper (always available) — locates
+  the `nostr:pubkey` triple inside a WebID's JSON-LD data island.
+  Mirrors `extract_oidc_issuer` semantics; returns `Ok(None)` when
+  absent.
+
+### Changed
+
+- **`PARITY-CHECKLIST.md`**: rows 196–198 promoted from `scheduled` to
+  `present` (Phase 1 port). Tally restored to ~98% strict parity
+  (129/135). Row 128 (NIP-05) updated — builder primitives still ship
+  as `net-new`; the pod-resident server route lands via row 197.
+- **`solid-pod-rs-idp/Cargo.toml`**: added `bytes` to direct
+  dependencies (was transitive through `solid-pod-rs`); the
+  `provision-keys` feature flag inherits `solid-pod-rs/did-nostr` plus
+  `dep:k256`.
+
+### Cross-repo consumer chain
+
+- **NRF (nostr-bbs forum primitive)**: now upgradable to alpha.11 —
+  the `KeyProvisioningOutcome` shape is stable; NRF can opt into the
+  `provision-keys` feature for its registration flow.
+- **dreamlab-ai-website**: can call `export_pod_jsonld` via the
+  `export-jsonld` feature for "download my data" surfaces.
+
+### Upgrade path (alpha.10 → alpha.11)
+
+No breaking changes to default-feature builds. Consumers who pinned
+`solid-pod-rs = "0.4.0-alpha.10"` bump the patch component; struct
+literals constructing `ProvisionPlan` will gain a new optional
+`provision_keys` field gated on the `provision-keys` feature — only
+visible when the consumer enables that flag.
+
 ## [BIP-340 Schnorr Fix] - 2026-05-12
 
 ### Fixed

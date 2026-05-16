@@ -154,6 +154,16 @@ pub mod storage;
 #[cfg(feature = "oidc")]
 pub mod oidc;
 
+// ---------------------------------------------------------------------------
+// JSS v0.0.190 Phase 1 port (issue #437) — scaffolds.
+//
+// Parity row 198. Default-off; function body is `todo!()`. Type
+// surface is stable for downstream consumers (NRF,
+// dreamlab-ai-website).
+// ---------------------------------------------------------------------------
+#[cfg(feature = "export-jsonld")]
+pub mod export;
+
 /// Transport-agnostic HTTP / WebSocket handler drivers. Consumers wire
 /// these into their HTTP framework of choice. Feature-gated; present
 /// only when at least one handler is enabled. Respects the F7
@@ -193,7 +203,8 @@ pub use wac::{
     StaticGroupMembership,
 };
 pub use webid::{
-    extract_oidc_issuer, generate_webid_html, generate_webid_html_with_issuer, validate_webid_html,
+    extract_nostr_pubkey, extract_oidc_issuer, generate_webid_html,
+    generate_webid_html_with_issuer, validate_webid_html,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,3 +223,12 @@ pub use quota::{QuotaExceeded, QuotaPolicy, QuotaUsage};
 pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolicy};
 #[cfg(feature = "tokio-runtime")]
 pub use storage::{ResourceMeta, Storage, StorageEvent};
+
+// ---------------------------------------------------------------------------
+// JSS v0.0.190 Phase 1 port — re-exports (scaffolds).
+// ---------------------------------------------------------------------------
+#[cfg(feature = "export-jsonld")]
+pub use export::{
+    export_pod_jsonld, ExportOptions, PodExportBundle, PodExportEntry, EXPORT_CONTENT_TYPE,
+    EXPORT_JSONLD_CONTEXT,
+};

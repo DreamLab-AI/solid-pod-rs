@@ -44,6 +44,20 @@ pub struct ProvisionPlan {
     /// is strongly encouraged to set one).
     #[serde(default)]
     pub quota_bytes: Option<u64>,
+    /// **JSS v0.0.190 Phase 1 port (issue #437) — scaffolded only.**
+    ///
+    /// When `true`, the multi-user provisioning path is expected to
+    /// generate a BIP-340 Schnorr secp256k1 keypair, NIP-19 bech32
+    /// encode it, write `/private/privkey.jsonld` (owner-only WAC),
+    /// and seed the WebID `nostr:pubkey` triple. Mirrors the JSS
+    /// `POST /.pods {provisionKeys: true}` body field.
+    ///
+    /// **Not wired yet.** Setting this flag today is a no-op: the
+    /// invoking code path lives in `solid_pod_rs_idp::key_provisioning`
+    /// and its body is `todo!()`. Parity row 196.
+    #[cfg(feature = "provision-keys")]
+    #[serde(default)]
+    pub provision_keys: bool,
 }
 
 /// Result of provisioning a pod.
@@ -423,6 +437,8 @@ mod tests {
                 containers: vec!["/media/".into()],
                 root_acl: None,
                 quota_bytes: Some(10_000),
+                #[cfg(feature = "provision-keys")]
+                provision_keys: false,
             };
             let outcome = provision_pod(&pod, &plan).await.unwrap();
             (pod, outcome)

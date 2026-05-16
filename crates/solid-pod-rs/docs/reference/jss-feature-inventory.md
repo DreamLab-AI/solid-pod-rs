@@ -300,8 +300,35 @@ non-prefixed `TOKEN_SECRET` (mandatory in production — `auth/token.js:17–34`
 - **Service discovery**: `.well-known/openid-configuration`,
   `.well-known/jwks.json`, `.well-known/webfinger`, `.well-known/nodeinfo`,
   `.well-known/nodeinfo/2.1`, `.well-known/did/nostr/<pubkey>.json`,
-  `.well-known/solid/notifications` (status). **No** NIP-05 `/.well-known/nostr.json`
-  endpoint; **no** Solid `/.well-known/solid` TypeRegistration document.
+  `.well-known/solid/notifications` (status), `.well-known/nostr.json`
+  (NIP-05, **JSS Phase 1 v0.0.190 — JSS side**, pod-resident, queryable
+  by `?name=<local>` against per-pod WebID `nostr:pubkey` triple). **No**
+  Solid `/.well-known/solid` TypeRegistration document.
+  → **solid-pod-rs status:** ✅ *implemented* in alpha.11 — builder
+  primitives + pod-resident server route under feature `nip05-endpoint`
+  (default-off; parity rows 128 + 197).
+- **Key provisioning** (**JSS Phase 1 v0.0.190 — JSS side**, issue #437):
+  single-user `--provision-keys` CLI flag, multi-user
+  `POST /.pods {provisionKeys: true}` body field. Generates Schnorr
+  secp256k1 keypair (`@noble/curves`), encodes NIP-19 bech32 (npub/nsec),
+  writes `pods/<webid>/private/privkey.jsonld`, seeds `nostr:pubkey`
+  triple in WebID `profile/card`. WAC-locks the private resource to the
+  pod owner.
+  → **solid-pod-rs status:** ✅ *implemented* in alpha.11 —
+  `solid_pod_rs_idp::key_provisioning::provision_pod_keys` +
+  `ProvisionPlan::provision_keys` field under feature `provision-keys`
+  (default-off; parity row 196).
+- **Pod data export** (**JSS Phase 1 v0.0.190 — JSS side**, agent-friendly):
+  `GET /api/exports/all` returns a JSON-LD bundle of pod contents,
+  time-chain ordered by `dct:created` ascending. `/private/*` excluded by
+  default; opt-in `?include_private=true` requires owner WAC credential.
+  Intended as the basis for a future archive / time-chain attestation
+  surface.
+  → **solid-pod-rs status:** ✅ *implemented* in alpha.11 —
+  `solid_pod_rs::export::PodExportBundle` + `export_pod_jsonld` under
+  feature `export-jsonld` (default-off; parity row 198). Library
+  surface ships now; server route for `GET /api/exports/all` deferred
+  to a future sprint.
 
 ## 7. Architecture
 

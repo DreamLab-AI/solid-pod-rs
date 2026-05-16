@@ -120,8 +120,7 @@ async fn cid_verifier_accepts_nip98_proof() {
         serde_json::to_string(&canonical).unwrap().as_bytes(),
     ));
     let id_bytes: Vec<u8> = hex::decode(&id).unwrap();
-    let signature: k256::schnorr::Signature =
-        sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
+    let signature: k256::schnorr::Signature = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("sign_raw");
     let sig_hex = hex::encode(signature.to_bytes());
 
     let event = serde_json::json!({

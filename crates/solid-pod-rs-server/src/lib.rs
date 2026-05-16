@@ -827,6 +827,88 @@ async fn handle_well_known_did_nostr(
 }
 
 // ---------------------------------------------------------------------------
+// JSS v0.0.190 Phase 1 port (issue #437) — pod-resident NIP-05 endpoint.
+//
+// Parity row 197. Feature `nip05-endpoint`. Resolves `?name=<local>`
+// against the per-pod WebID `nostr:pubkey` triple.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nip05-endpoint")]
+#[derive(Debug, Deserialize)]
+struct Nip05Query {
+    /// Optional `name=<local>` query parameter per NIP-05. When
+    /// absent, defaults to `_` (the pod owner / single-user mode).
+    name: Option<String>,
+}
+
+#[cfg(feature = "nip05-endpoint")]
+fn nip05_name_is_valid(name: &str) -> bool {
+    // NIP-05 §"Local part": ^[a-z0-9._-]+$ (case-insensitive in practice).
+    // Also allow the singleton `_` which means "the pod owner".
+    if name.is_empty() {
+        return false;
+    }
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+#[cfg(feature = "nip05-endpoint")]
+async fn handle_well_known_nip05(
+    state: web::Data<AppState>,
+    query: web::Query<Nip05Query>,
+) -> HttpResponse {
+    use solid_pod_rs::webid::extract_nostr_pubkey;
+
+    // JSS Phase 1 (issue #437) parity row 197.
+    let name = query.name.clone().unwrap_or_else(|| "_".to_string());
+    if !nip05_name_is_valid(&name) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid NIP-05 local part",
+        }));
+    }
+
+    // Single-pod-per-host: profile lives at `/profile/card`. Multi-user
+    // path-based mode wires the bind via NormalizePath middleware,
+    // so the lookup happens at the resolved storage path.
+    // For `_` (default) we look up `/profile/card`. For a non-special
+    // name we try `/<name>/profile/card` (multi-user path layout).
+    let profile_path = if name == "_" {
+        "/profile/card".to_string()
+    } else {
+        format!("/{name}/profile/card")
+    };
+
+    let (body, _meta) = match state.storage.get(&profile_path).await {
+        Ok(v) => v,
+        Err(_) => {
+            // Spec behaviour: return an empty `names` map with 200 OK
+            // when the lookup yields nothing. Damus / nos.lol use this
+            // shape to mean "no such user".
+            return nip05_empty_response();
+        }
+    };
+
+    let pubkey_hex = match extract_nostr_pubkey(&body) {
+        Ok(Some(p)) => p,
+        _ => return nip05_empty_response(),
+    };
+
+    let doc = interop::nip05_document([(name, pubkey_hex)]);
+    HttpResponse::Ok()
+        .insert_header(("Access-Control-Allow-Origin", "*"))
+        .content_type("application/json")
+        .json(doc)
+}
+
+#[cfg(feature = "nip05-endpoint")]
+fn nip05_empty_response() -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header(("Access-Control-Allow-Origin", "*"))
+        .content_type("application/json")
+        .json(serde_json::json!({ "names": {} }))
+}
+
+// ---------------------------------------------------------------------------
 // Pod management API (JSS parity: /api/accounts/*)
 // ---------------------------------------------------------------------------
 
@@ -875,6 +957,8 @@ async fn handle_create_account(
         ],
         root_acl: None,
         quota_bytes: None,
+        #[cfg(feature = "provision-keys")]
+        provision_keys: false,
     };
 
     match provision::provision_pod(state.storage.as_ref(), &plan).await {
@@ -1602,6 +1686,17 @@ pub fn build_app(
         app = app.route(
             "/.well-known/did/nostr/{pubkey}.json",
             web::get().to(handle_well_known_did_nostr),
+        );
+    }
+
+    // JSS v0.0.190 Phase 1 port (issue #437), parity row 197.
+    // Pod-resident NIP-05 endpoint. Scaffold only — handler body
+    // is `todo!()`. Feature `nip05-endpoint` (default-off).
+    #[cfg(feature = "nip05-endpoint")]
+    {
+        app = app.route(
+            "/.well-known/nostr.json",
+            web::get().to(handle_well_known_nip05),
         );
     }
 

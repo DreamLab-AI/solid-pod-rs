@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # jsonwebtoken + openidconnect already. `rate-limit` gives us the
 # reference LruRateLimiter. `security-primitives` is implied by
 # `rate-limit`.
-solid-pod-rs = { version = "0.4.0-alpha.10", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
+solid-pod-rs = { version = "0.4.0-alpha.11", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +41,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 base64 = "0.22"
 parking_lot = "0.12"
+bytes = "1"
 p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 # Optional: k256 Schnorr for `schnorr-sso`. Core `solid-pod-rs` also
 # pulls k256 when `nip98-schnorr` is enabled; declaring it here gives
@@ -76,6 +77,20 @@ passkey = ["dep:webauthn-rs", "dep:dashmap"]
 # The core crate's `nip98-schnorr` feature powers the actual Schnorr
 # verification; we wrap it with per-user challenge state.
 schnorr-sso = ["dep:dashmap", "dep:k256"]
+
+# Row 196 (JSS v0.0.190 Phase 1, issue #437) — pod key provisioning.
+# Default-off. Scaffold only: enabling this feature wires the
+# `key_provisioning` module into the crate's public surface, but the
+# function bodies are `todo!()`. Pulls `did-nostr` from the core crate
+# (NIP-19 bech32 encoder + WebID `nostr:pubkey` triple seeding) and
+# `dep:k256` (BIP-340 Schnorr secp256k1 keypair). Core's
+# `nip98-schnorr` is already enabled unconditionally via the
+# dependency clause above, so we re-use that Schnorr surface.
+provision-keys = [
+    "dep:k256",
+    "solid-pod-rs/did-nostr",
+    "solid-pod-rs/provision-keys",
+]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

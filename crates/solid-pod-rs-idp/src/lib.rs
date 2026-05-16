@@ -84,6 +84,16 @@ pub mod schnorr;
 #[cfg(feature = "axum-binder")]
 pub mod axum_binder;
 
+// JSS v0.0.190 Phase 1 port (issue #437) — pod key provisioning
+// scaffold. Default-off; function bodies are `todo!()`. Parity row 196.
+#[cfg(feature = "provision-keys")]
+pub mod key_provisioning;
+
+#[cfg(feature = "provision-keys")]
+pub use key_provisioning::{
+    provision_pod_keys, KeyProvisioningOutcome, KeyProvisioningPlan, POD_PRIVKEY_PATH,
+};
+
 pub use account_delete::{
     delete_account, AccountDeleteError, AccountDeleteRequest, AccountDeleteResponse,
     CONFIRMATION_PHRASE,

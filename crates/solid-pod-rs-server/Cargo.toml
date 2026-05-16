@@ -23,11 +23,11 @@ path = "src/main.rs"
 
 [dependencies]
 # Library core — the binary's sole non-transport dependency.
-solid-pod-rs = { version = "0.4.0-alpha.10", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
+solid-pod-rs = { version = "0.4.0-alpha.11", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
-solid-pod-rs-idp = { version = "0.4.0-alpha.10", path = "../solid-pod-rs-idp" }
+solid-pod-rs-idp = { version = "0.4.0-alpha.11", path = "../solid-pod-rs-idp" }
 
 # Sprint-11 CLI: `invite create` surfaces invite records with
 # absolute expiry timestamps. Kept here rather than transitively
@@ -89,6 +89,15 @@ rate-limit = ["solid-pod-rs/rate-limit"]
 quota = ["solid-pod-rs/quota"]
 did-nostr = ["solid-pod-rs/did-nostr"]
 security-primitives = ["solid-pod-rs/security-primitives"]
+
+# JSS v0.0.190 Phase 1 port (issue #437) — scaffolds. Pass-through.
+# Default-off; handlers are `todo!()` stubs. Parity rows 196, 197, 198.
+provision-keys = [
+    "solid-pod-rs/provision-keys",
+    "solid-pod-rs-idp/provision-keys",
+]
+nip05-endpoint = ["solid-pod-rs/nip05-endpoint"]
+export-jsonld = ["solid-pod-rs/export-jsonld"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

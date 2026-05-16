@@ -11,15 +11,15 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 12 close, 2026-05-06)
+## Current state (Sprint 13, JSS Phase 1 absorption, 2026-05-16, alpha.11)
 
-**132 rows tracked** across 17 functional sections.
+**135 rows tracked** across 19 functional sections.
 
 ### Parity percentages
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new) | **~98%** (127/132) |
+| Strict (present + net-new) | **~98%** (129/135) — Phase 1 bodies (rows 196-198) implemented in alpha.11 |
 | Half-credit (partial-parity counted 0.5) | **~98%** |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
@@ -27,25 +27,26 @@ and our status against it.
 
 ### By status
 
-| Status | Count | Delta vs Sprint 11 |
+| Status | Count | Delta vs Sprint 12 |
 |---|---|---|
-| present | 118 | +10 (Sprint 12: security hardening + AP federation + IdP password) |
-| partial-parity | 1 | — (row 83 admin-override shape) |
+| present | 121 | +3 (Sprint 13 alpha.11: rows 196 key_provisioning, 197 nip05_endpoint, 198 export_jsonld bodies landed and tested) |
+| partial-parity | 1 | — |
 | semantic-difference | 10 | — |
 | missing | 0 | — |
-| net-new (ours; not in JSS) | 8 | — |
-| explicitly-deferred | 5 | +1 (row 177 cf-visitor deferred to Sprint 13) |
-| wontfix-in-crate | 4 | +1 (row 179 HTML error pages) |
+| net-new (ours; not in JSS) | 8 | — (row 128 NIP-05 builders ship as net-new; server-route wiring is row 197, now `present`) |
+| explicitly-deferred | 5 | — |
+| wontfix-in-crate | 4 | — |
 | shared-gap (neither side) | 2 | — |
 | present-by-absence | 1 | — |
 | test / conformance meta | 5 | — |
-| **Total** | **132** | +11 new rows from JSS v0.0.60–v0.0.71 delta |
+| **Total** | **135** | +3 new Phase 1 rows from JSS v0.0.190 (rows 196, 197, 198) |
 
-Row-total note: the 132 headline is the number of unique feature rows
-across sections 1–17. Sections 14–16 add 16 test/conformance meta rows
-that are counted separately for sprint-pace arithmetic but excluded
-from the parity denominator (they track the test suites themselves,
-not JSS features).
+Row-total note: the 132-rows headline (Sprint 12 close) counted the
+unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
+rows (196–198, §19) tracking the JSS v0.0.190 Phase 1 port. Sections
+14–16 add 16 test/conformance meta rows that are counted separately
+for sprint-pace arithmetic but excluded from the parity denominator
+(they track the test suites themselves, not JSS features).
 
 ---
 
@@ -273,7 +274,7 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
 | 127 | `.well-known/solid` Solid Protocol discovery doc | **not implemented** | `interop::well_known_solid` → `SolidWellKnown` | net-new | `src/interop.rs:27,42` | We ship it per Solid Protocol §4.1.2. |
-| 128 | NIP-05 verification (`/.well-known/nostr.json`) | **not implemented** | `interop::verify_nip05`, `nip05_document` → `Nip05Document` | net-new | `src/interop.rs:128,149,120` | |
+| 128 | NIP-05 verification (`/.well-known/nostr.json`) — builder primitives | JSS Phase 1 (v0.0.190): pod-resident `/.well-known/nostr.json?name=<local>` backed by `profile/card` `nostr:pubkey` triple | `interop::verify_nip05`, `nip05_document` → `Nip05Document` (builders); server route ships in alpha.11 via row 197 | net-new | `src/interop.rs:139,147,165`; route handler in `solid-pod-rs-server` under feature `nip05-endpoint` | Builder primitives ship as net-new; server-route wiring landed in alpha.11 under feature `nip05-endpoint` — see row 197. |
 | 129 | `.well-known/openid-configuration` | `src/idp/index.js:171` (JSS as IdP) | `oidc::discovery_for` (as RP or standalone) | present | `src/oidc/mod.rs` | |
 | 130 | `.well-known/jwks.json` | `src/idp/index.js:208` | `Jwks` with rotation, re-exported through `solid-pod-rs-idp` | present | `crates/solid-pod-rs-idp/src/jwks.rs` | Sprint 10. |
 | 131 | `.well-known/nodeinfo` + `/2.1` | `src/ap/index.js:116,130` | `nodeinfo_wellknown`, `nodeinfo_2_1` | present | `crates/solid-pod-rs-activitypub/src/discovery.rs` | Sprint 10. |
@@ -290,6 +291,11 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | 137 | Dev-mode session (admin flag, test helper) | not provided | `interop::dev_session` → `DevSession` | net-new | `src/interop.rs:167,176` | Typed constructor only; never from headers. |
 | 138 | Quota reconcile (disk scan → DB update) | `bin/jss.js quota reconcile` | `QuotaPolicy::reconcile` re-walks the pod's tree | present | `src/quota/mod.rs:247-259, 308` | CLI subcommand still absent; primitive ships. |
 | 139 | CLI binary (`bin/jss.js` with `start`/`init`/`invite`/`quota`) | — | `solid-pod-rs-server` binary crate (ADR-056 §D3) | present | `crates/solid-pod-rs-server/src/main.rs` | Drop-in binary with config loader. `invite`/`quota` subcommands remain P3. |
+
+> **JSS v0.0.190 Phase 1 port (issue #437, alpha.11):** rows 196, 197,
+> 198 in §19 below cover key provisioning, the NIP-05 pod endpoint,
+> and the JSON-LD time-chain export. Bodies landed and tested in
+> 0.4.0-alpha.11; all three feature flags remain default-off.
 
 ## 13. Framework / architectural
 
@@ -444,6 +450,20 @@ Reference: [Melvin Carvalho's "A Practical Guide to Solid"](https://melvin.me/pu
 | 193 | /pay/.offers sell order listing | `src/handlers/pay.js` | `trading::OrderBook::list_offers` (all or filtered by pair) | present | `src/trading.rs` | Melvin guide part 8. |
 | 194 | AMM constant-product pool (/pay/.pool) | `src/handlers/pay.js` (50 lines) | `trading::AmmPool` (x*y=k, add/remove liquidity, swap, 0.3% fee) | present | `src/trading.rs` | Melvin guide part 9. |
 | 195 | Programmable state anchoring (NFTs, contracts, git) | `blocktrails` conceptual | `mrc20::Mrc20Trail` (token-specific) | partial-parity (P3) | `src/mrc20.rs:110` | Melvin guide part 10. |
+
+## 19. JSS v0.0.190 Phase 1 port (alpha.11)
+
+Tracks the three Phase 1 features shipped by JSS v0.0.190 (May 2026,
+issue #437). All three landed in **solid-pod-rs 0.4.0-alpha.11**:
+type signatures, module bodies, feature flags, `pub use` lines, and
+integration tests are in place. Default-off feature flags so downstream
+consumers opt in explicitly.
+
+| # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 196 | `--provision-keys` flag (single-user) + `POST /.pods {provisionKeys: true}` (multi-user) — generates Schnorr secp256k1 keypair, writes NIP-19 bech32-encoded `privkey.jsonld` to `/private/`, WAC-locks to WebID owner, seeds `nostr:pubkey` triple in WebID profile | JSS v0.0.190 (issue #437): single-user CLI flag + multi-user endpoint body field; keys stored at `pods/<webid>/private/privkey.jsonld`; npub seeded into WebID `profile/card` | `idp::key_provisioning::provision_pod_keys` → `KeyProvisioningOutcome` + `ProvisionPlan::provision_keys` field | present (Phase 1 port) | `crates/solid-pod-rs-idp/src/key_provisioning.rs`; `crates/solid-pod-rs/src/provision.rs` (`provision_keys` field, cfg-gated) | Feature `provision-keys` (default-off; in `solid-pod-rs-idp`, depends on `solid-pod-rs/did-nostr` + core's `nip98-schnorr` + `dep:k256`). BIP-340 Schnorr keypair generation; hand-rolled NIP-19 bech32 (no new deps). 3 integration tests in `tests/key_provisioning_smoke.rs`. |
+| 197 | Pod-resident NIP-05 endpoint (`/.well-known/nostr.json?name=<local>`) — server route backed by WebID `nostr:pubkey` triple | JSS v0.0.190: pod-resident NIP-05 lookup endpoint backed by `profile/card` triple | `handle_well_known_nip05` route in `solid-pod-rs-server`; assembles response via existing `interop::nip05_document` builder + `webid::extract_nostr_pubkey` | present (Phase 1 port) | `crates/solid-pod-rs-server/src/lib.rs::handle_well_known_nip05`; `crates/solid-pod-rs/src/webid.rs::extract_nostr_pubkey` | Feature `nip05-endpoint` (default-off; depends on `did-nostr`). Emits `Access-Control-Allow-Origin: *`. 5 integration tests in `tests/nip05_endpoint_integration.rs`. |
+| 198 | Pod data export — `GET /api/exports/all` JSON-LD time-chain bundle, `dct:created` ascending, excludes `/private/*` by default, opt-in `?include_private=true` requires owner WAC credential | JSS v0.0.190: agent-friendly pod export endpoint | `export::export_pod_jsonld` → `PodExportBundle` | present (Phase 1 port) | `crates/solid-pod-rs/src/export.rs::export_pod_jsonld` | Feature `export-jsonld` (default-off; depends on `tokio-runtime`). Picks up whichever storage backend the consumer enabled (`fs-backend` or `s3-backend`). Backends without separate creation timestamps mirror `modified` into `created`. 3 integration tests in `tests/export_jsonld_smoke.rs`. Server-route wiring of `GET /api/exports/all` deferred to a future sprint — the library surface ships now. |
 
 ---
 

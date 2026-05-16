@@ -944,6 +944,8 @@ async fn jss_provision_pod_seeds_profile_and_containers() {
         containers: vec!["/photos/".into()],
         root_acl: None,
         quota_bytes: None,
+        #[cfg(feature = "provision-keys")]
+        provision_keys: false,
     };
     let out = provision_pod(&pod, &plan).await.unwrap();
     assert!(pod.exists("/profile/card").await.unwrap());

@@ -186,6 +186,38 @@ rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot", "tokio-runtime"]
 quota = ["jss-v04", "config-loader", "tokio-runtime"]
 
 # ---------------------------------------------------------------------------
+# Sprint 13 / JSS v0.0.190 Phase 1 port (issue #437) — scaffolds.
+#
+# All three flags are default-off. Enabling them today exposes type
+# signatures + module skeletons + `pub use` lines, but the function
+# bodies are `todo!()`. They do NOT make the runtime behave like the
+# JSS v0.0.190 features — they only let downstream consumers compile
+# against stable type names while the port lands.
+#
+# Parity rows: 196 (provision-keys lives in solid-pod-rs-idp; this
+# flag here gates the `ProvisionPlan::provision_keys` field), 197
+# (nip05-endpoint; backed by the existing `interop::nip05_document`
+# builder), 198 (export-jsonld).
+# ---------------------------------------------------------------------------
+
+# Row 196 — marker flag that gates the optional `provision_keys` field
+# on `ProvisionPlan` (extension point for the IdP-side key provisioner
+# in `solid-pod-rs-idp`'s own `provision-keys` feature).
+provision-keys = ["tokio-runtime"]
+
+# Row 197 — pod-resident NIP-05 endpoint
+# (`/.well-known/nostr.json?name=<local>`). Implies `did-nostr` so the
+# resolver primitives are present; the actual server route is wired in
+# `solid-pod-rs-server` under the same feature name. Body is `todo!()`.
+nip05-endpoint = ["did-nostr"]
+
+# Row 198 — JSON-LD time-chain pod export
+# (`GET /api/exports/all`). Pulls the tokio runtime; consumers choose
+# their storage backend independently (`fs-backend` or `s3-backend`).
+# Body is `todo!()`.
+export-jsonld = ["tokio-runtime"]
+
+# ---------------------------------------------------------------------------
 # wasm32 target overrides:
 #
 # - `getrandom` 0.2 (transitively via rand → rand_core through spargebra
