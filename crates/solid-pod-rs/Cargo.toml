@@ -217,6 +217,13 @@ nip05-endpoint = ["did-nostr"]
 # Body is `todo!()`.
 export-jsonld = ["tokio-runtime"]
 
+# Row 199 — git auto-init hook (JSS #466/#469/#471).
+# Defines the `GitInitHook` async trait + `provision_pod_ext` in core.
+# No subprocess dependency here — this is wasm32-safe. The actual
+# `git init` implementation lives in `solid-pod-rs-git::init::GitAutoInit`
+# which is gated by this feature name on the git crate side.
+git-auto-init = ["tokio-runtime"]
+
 # ---------------------------------------------------------------------------
 # wasm32 target overrides:
 #

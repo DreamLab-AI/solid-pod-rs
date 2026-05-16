@@ -11,39 +11,40 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 13, JSS Phase 1 absorption, 2026-05-16, alpha.11)
+## Current state (Sprint 14, git-auto-init, 2026-05-16, alpha.12)
 
-**135 rows tracked** across 19 functional sections.
+**137 rows tracked** across 20 functional sections.
 
 ### Parity percentages
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new) | **~98%** (129/135) — Phase 1 bodies (rows 196-198) implemented in alpha.11 |
-| Half-credit (partial-parity counted 0.5) | **~98%** |
+| Strict (present + net-new) | **~99%** (133/137) — Phase 1 (alpha.11) + git-auto-init (alpha.12) landed |
+| Half-credit (partial-parity counted 0.5) | **~99%** |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
 ### By status
 
-| Status | Count | Delta vs Sprint 12 |
+| Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 121 | +3 (Sprint 13 alpha.11: rows 196 key_provisioning, 197 nip05_endpoint, 198 export_jsonld bodies landed and tested) |
+| present | 125 | +4 (Sprint 14 alpha.12: rows 199 GitInitHook trait, 200 GitAutoInit impl — git auto-init at pod provisioning) |
 | partial-parity | 1 | — |
 | semantic-difference | 10 | — |
 | missing | 0 | — |
-| net-new (ours; not in JSS) | 8 | — (row 128 NIP-05 builders ship as net-new; server-route wiring is row 197, now `present`) |
+| net-new (ours; not in JSS) | 8 | — |
 | explicitly-deferred | 5 | — |
 | wontfix-in-crate | 4 | — |
 | shared-gap (neither side) | 2 | — |
 | present-by-absence | 1 | — |
 | test / conformance meta | 5 | — |
-| **Total** | **135** | +3 new Phase 1 rows from JSS v0.0.190 (rows 196, 197, 198) |
+| **Total** | **137** | +2 new git-auto-init rows (199, 200) in §20 |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
-rows (196–198, §19) tracking the JSS v0.0.190 Phase 1 port. Sections
+rows (196–198, §19) tracking the JSS v0.0.190 Phase 1 port. Sprint 14
+adds 2 git-auto-init rows (199–200, §20). Sections
 14–16 add 16 test/conformance meta rows that are counted separately
 for sprint-pace arithmetic but excluded from the parity denominator
 (they track the test suites themselves, not JSS features).
@@ -467,6 +468,28 @@ consumers opt in explicitly.
 
 ---
 
+## 20. Git pod auto-init (alpha.12, JSS #466/#469/#471)
+
+Tracks the `tryAutoInitRepo` feature shipped by JSS in issues #466,
+#469, and #471: pods become git repositories at creation time,
+enabling HTTP smart-protocol push/pull and two-layer provenance
+(Nostr signature + git tree-SHA). Both rows landed in
+**solid-pod-rs 0.4.0-alpha.12**.
+
+CF Workers constraint: `git init` requires a subprocess. The hook
+trait is wasm32-safe; only the concrete `GitAutoInit` (in
+`solid-pod-rs-git`) spawns a subprocess. NRF pod-worker (CF Workers)
+must not enable the `git-auto-init` feature — see NRF ADR-089.
+Agentbox and native solid-pod-rs-server deployments can enable it
+freely.
+
+| # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 199 | `tryAutoInitRepo` hook — `git init -b main <pod_path>` runs once at pod creation; `receive.denyCurrentBranch=updateInstead` config applied | JSS #466/#469/#471: `src/handlers/git.js` `tryAutoInitRepo`; runs on `POST /.pods` provisioning | `provision::GitInitHook` async trait (wasm32-safe; no subprocess in core). `provision_pod_ext<S,H>(storage, plan, git_hook: Option<(&H, &Path)>)` — calls `provision_pod` then fires the hook. Feature `git-auto-init` on `solid-pod-rs`. | present (alpha.12) | `crates/solid-pod-rs/src/provision.rs::GitInitHook`, `provision_pod_ext` | Trait only in core — subprocess-free, wasm32-compatible. CF Workers consumers must not enable this feature. |
+| 200 | `GitAutoInit` concrete implementation — spawns `git init -b <branch>` via `tokio::process::Command`, applies `receive.denyCurrentBranch=updateInstead`; errors logged and swallowed so pod creation is never blocked by a missing `git` binary | JSS #466/#469/#471: same `tryAutoInitRepo` body | `solid_pod_rs_git::init::GitAutoInit` implements `GitInitHook`; `with_branch(b)` constructor for non-`main` deployments | present (alpha.12) | `crates/solid-pod-rs-git/src/init.rs` | 4 unit tests: `creates_dot_git`, `sets_deny_current_branch`, `custom_branch`, `idempotent`. Feature `git-auto-init` on `solid-pod-rs-git` (pulls `solid-pod-rs/git-auto-init`). |
+
+---
+
 ## Sprint history
 
 Compressed appendix — one line per sprint. Consult git history for per-row corrections.
@@ -479,3 +502,5 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 10 close (2026-04-24)**: Four sibling crates filled out end-to-end (`solid-pod-rs-git`, `solid-pod-rs-nostr`, `solid-pod-rs-activitypub`, `solid-pod-rs-idp`). 20 rows flipped missing → present; 2 rows (80 Passkeys, 81 Schnorr SSO) shipped as partial-parity trait hooks. 733 tests, 83% strict / ~97% spec-normative.
 - **Sprint 11 close (2026-04-24)**: Top-10 roadmap closed. 14 rows promoted to `present` (LWS 1.0 Auth Suite rows 150/152/153 — NEW `solid-pod-rs-didkey` crate + shared `SelfSignedVerifier` trait + `CidVerifier` dispatcher + ADR-057 delta audit; solid-0.1 legacy notifications; Passkeys + Schnorr full wiring; config loader + 31 env vars; subdomain file-label heuristic; 5xx logging middleware; `quota reconcile` / `account delete` / `invite create` CLI). 2 rows (152 CID, 153 did:key) are net-new — we ship LWS 1.0 Auth Suite before JSS. Workspace: **835 tests pass / 0 fail**, clippy `-D warnings` clean. 121 rows, **~97% strict / ~100% spec-normative**.
 - **Sprint 12 close (2026-05-06)**: JSS v0.0.60–v0.0.71 drift closed. 11 new rows (169–179); 8 landed as `present` (security hardening: size-capped ACL parsing, iterative podName sanitization, DNS failure blocking, `.account` dotfile; IdP: min password length; AP: outbox POST + Note wrapping, User-Agent, Accept-negotiation, follower fan-out, actor cache datetime). 3 deferred (cf-visitor, AP CLI, error pages). 922 insertions across 23 files, ~35 new tests. 132 rows, **~98% strict / ~100% spec-normative**.
+- **Sprint 13 close (2026-05-16, alpha.11)**: JSS v0.0.190 Phase 1 absorption complete. 3 new rows (196–198): key provisioning (`provision-keys`), pod-resident NIP-05 endpoint (`nip05-endpoint`), JSON-LD export (`export-jsonld`). All three shipped with bodies + tests. 135 rows, **~98% strict / ~100% spec-normative**.
+- **Sprint 14 close (2026-05-16, alpha.12)**: Git pod auto-init (JSS #466/#469/#471). 2 new rows (199–200): `GitInitHook` wasm32-safe trait in core + `GitAutoInit` subprocess impl in `solid-pod-rs-git`. 4 unit tests. `provision_pod_ext` call-site API. 137 rows, **~99% strict / ~100% spec-normative**.

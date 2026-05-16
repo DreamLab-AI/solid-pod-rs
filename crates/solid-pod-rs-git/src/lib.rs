@@ -50,10 +50,12 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod guard;
+pub mod init;
 pub mod service;
 
 pub use auth::{AuthError, BasicNostrExtractor, GitAuth};
 pub use config::{find_git_dir, GitDir};
 pub use error::GitError;
 pub use guard::{extract_repo_slug, path_safe};
+pub use init::GitAutoInit;
 pub use service::{GitHttpService, GitRequest, GitResponse, DEFAULT_GIT_HTTP_BACKEND};

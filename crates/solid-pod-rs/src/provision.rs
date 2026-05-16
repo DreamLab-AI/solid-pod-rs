@@ -14,6 +14,16 @@
 //! carve-out `settings/publicTypeIndex.jsonld.acl` so Solid clients
 //! can discover a freshly bootstrapped pod's public profile without
 //! fighting the default-private `/settings/.acl`.
+//!
+//! ## Git auto-init (alpha.12, rows 199-200, JSS #466/#469/#471)
+//!
+//! [`GitInitHook`] is a wasm32-safe async trait. Callers that want
+//! `git init -b main` to run after the pod files are written pass an
+//! implementor (e.g. `solid_pod_rs_git::init::GitAutoInit`) to
+//! [`provision_pod_ext`]. The trait itself lives in this crate so the
+//! type is stable; the subprocess implementation lives in
+//! `solid-pod-rs-git`, which requires `tokio::process` and is never
+//! compiled for `wasm32-unknown-unknown`.
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -280,6 +290,68 @@ pub async fn provision_pod<S: Storage + ?Sized>(
         private_type_index: PRIVATE_TYPE_INDEX_PATH.to_string(),
         public_type_index_acl: PUBLIC_TYPE_INDEX_ACL_PATH.to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Git auto-init hook (alpha.12, rows 199-200, JSS #466/#469/#471)
+// ---------------------------------------------------------------------------
+
+/// Async hook called once after pod files are written to initialise the pod
+/// directory as a git repository.
+///
+/// The trait is **wasm32-safe** — it carries no subprocess dependency.
+/// The concrete implementation (`solid_pod_rs_git::init::GitAutoInit`)
+/// spawns `git init -b main` via `tokio::process::Command` and lives in
+/// a separate crate that is never compiled for `wasm32-unknown-unknown`.
+///
+/// Pass an implementor to [`provision_pod_ext`] to opt in.
+/// Feature-gated: only present when the `git-auto-init` Cargo feature
+/// is enabled on `solid-pod-rs`.
+#[cfg(feature = "git-auto-init")]
+#[async_trait::async_trait]
+pub trait GitInitHook: Send + Sync {
+    /// Called with the absolute filesystem path of the freshly provisioned
+    /// pod directory. Errors are **logged and swallowed** — a git-init
+    /// failure must not roll back or prevent pod creation.
+    async fn try_init_repo(&self, fs_pod_root: &std::path::Path) -> Result<(), PodError>;
+}
+
+/// Like [`provision_pod`], but accepts an optional git-init hook that runs
+/// after all pod files are written.
+///
+/// `git_hook` is `Option<(&H, &Path)>` where the `Path` is the absolute
+/// filesystem root of the pod directory (e.g.
+/// `/var/lib/pods/<pubkey>/`). Required because `provision_pod` writes
+/// through an abstract `Storage` and does not itself know the on-disk
+/// path. Callers using `fs-backend` construct this path from the same
+/// root they passed to `FsBackend::new`.
+///
+/// When `git_hook` is `None` this is identical to `provision_pod`.
+#[cfg(feature = "git-auto-init")]
+pub async fn provision_pod_ext<S, H>(
+    storage: &S,
+    plan: &ProvisionPlan,
+    git_hook: Option<(&H, &std::path::Path)>,
+) -> Result<ProvisionOutcome, PodError>
+where
+    S: Storage + ?Sized,
+    H: GitInitHook,
+{
+    let outcome = provision_pod(storage, plan).await?;
+
+    if let Some((hook, fs_pod_root)) = git_hook {
+        if let Err(e) = hook.try_init_repo(fs_pod_root).await {
+            tracing::warn!(
+                target: "solid_pod_rs::provision",
+                pubkey = %plan.pubkey,
+                path = %fs_pod_root.display(),
+                error = %e,
+                "git auto-init failed (pod created, git skipped)",
+            );
+        }
+    }
+
+    Ok(outcome)
 }
 
 // ---------------------------------------------------------------------------

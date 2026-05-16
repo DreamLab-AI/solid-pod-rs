@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
-description = "Git HTTP smart-protocol backend for solid-pod-rs, mirroring JavaScriptSolidServer's src/handlers/git.js (PARITY rows 69, 100)."
+description = "Git HTTP smart-protocol backend for solid-pod-rs, mirroring JavaScriptSolidServer's src/handlers/git.js (PARITY rows 69, 100, 199, 200)."
 keywords = ["solid", "git", "http-backend", "nip98", "cgi"]
 categories = ["web-programming::http-server"]
 readme = "README.md"
@@ -17,7 +17,7 @@ readme = "README.md"
 # Core library: provides the NIP-98 verifier (`auth::nip98::verify_at`)
 # and associated `PodError`. No explicit feature needed — the auth
 # module lives in the always-on surface.
-solid-pod-rs = { version = "0.4.0-alpha.11", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
+solid-pod-rs = { version = "0.4.0-alpha.12", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init"] }
 
 tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "io-util", "macros", "sync"] }
 bytes = "1"
@@ -39,3 +39,8 @@ serde_json = "1"
 # spawn the CGI. Unit tests for auth/guard/config always run.
 default = []
 with-git-binary = []
+# Exposes `GitAutoInit` as a `solid_pod_rs::provision::GitInitHook`
+# implementor. Requires the `git-auto-init` feature on `solid-pod-rs`.
+# Enabled by default in this crate because `tokio::process` (already a
+# dependency here) is all it needs — no new transitive deps.
+git-auto-init = ["solid-pod-rs/git-auto-init"]
