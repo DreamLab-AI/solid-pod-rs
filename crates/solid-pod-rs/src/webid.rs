@@ -8,6 +8,41 @@
 
 use serde_json::{json, Value};
 
+// ─── URL builders ──────────────────────────────────────────────────────────
+//
+// Tiny pure-string helpers that mirror the URL layout used throughout the
+// crate (and in JSS upstream). Exposed because downstream clients
+// (nostr-bbs-forum-client, nostr-bbs-pod-worker) were duplicating these
+// `format!` lines verbatim and drifting whenever the layout evolved.
+
+/// Root URL of a per-user pod: `{pod_base}/pods/{pubkey}/`.
+///
+/// `pod_base` is taken verbatim — callers should pass the value of
+/// `[pod].base_url` (e.g. `https://pods.example.com`). The pubkey is the
+/// hex-encoded BIP-340 x-only key.
+pub fn pod_root_url(pod_base: &str, pubkey: &str) -> String {
+    format!("{}/pods/{}/", pod_base.trim_end_matches('/'), pubkey)
+}
+
+/// Document URL of a user's WebID profile card:
+/// `{pod_base}/pods/{pubkey}/profile/card`.
+pub fn webid_document_url(pod_base: &str, pubkey: &str) -> String {
+    format!("{}/pods/{}/profile/card", pod_base.trim_end_matches('/'), pubkey)
+}
+
+/// WebID URI (the `#me` fragment): `{pod_base}/pods/{pubkey}/profile/card#me`.
+pub fn webid_url(pod_base: &str, pubkey: &str) -> String {
+    format!("{}#me", webid_document_url(pod_base, pubkey))
+}
+
+/// Git clone URL of the per-user pod (matches `pod_root_url`).
+/// solid-pod-rs-git enables clone/push at this URL when `git-auto-init`
+/// is wired by the operator. CF Workers tier cannot serve git — see
+/// nostr-rust-forum ADR-089.
+pub fn pod_git_clone_url(pod_base: &str, pubkey: &str) -> String {
+    pod_root_url(pod_base, pubkey)
+}
+
 /// Render a WebID profile as an HTML document with embedded JSON-LD.
 ///
 /// Omits `solid:oidcIssuer`. Prefer [`generate_webid_html_with_issuer`]
