@@ -78,6 +78,20 @@ struct Cli {
     #[arg(long, env = "JSS_SSL_CERT")]
     ssl_cert: Option<String>,
 
+    /// Comma-separated list of allowed CORS origins. When set, only
+    /// requests from these origins receive `Access-Control-Allow-Origin`.
+    /// When unset or empty, any origin is reflected (local dev default).
+    ///
+    /// Example: `--allowed-origins https://dreamlab-ai.com,https://staging.dreamlab-ai.com`
+    #[arg(long, env = "SOLID_ALLOWED_ORIGINS", value_delimiter = ',')]
+    allowed_origins: Vec<String>,
+
+    /// Pre-shared key that protects `POST /_admin/provision/{pubkey}`.
+    /// Must be supplied via `X-Pod-Admin-Key` header. When unset, the
+    /// endpoint unconditionally returns 403.
+    #[arg(long, env = "SOLID_ADMIN_KEY")]
+    admin_key: Option<String>,
+
     /// Operator subcommands (Sprint 11): `quota reconcile`,
     /// `account delete`, `invite create`. When absent the binary runs
     /// the HTTP server (default / existing behaviour).
@@ -197,6 +211,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::new(storage);
     state.data_root = data_root;
+    state.allowed_origins = cli.allowed_origins.clone();
+    state.admin_key = cli.admin_key.clone();
     state.nodeinfo = NodeInfoMeta {
         software_name: "solid-pod-rs-server".into(),
         software_version: env!("CARGO_PKG_VERSION").into(),

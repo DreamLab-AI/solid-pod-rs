@@ -111,6 +111,18 @@ pub struct AppState {
     pub data_root: Option<PathBuf>,
     /// JSS-compatible pod creation limiter: one `POST /.pods` per IP per day.
     pub pod_create_limiter: Arc<PodCreateLimiter>,
+    /// When non-empty, CORS responses are only reflected for origins in this
+    /// list. Origins not in the list receive no `Access-Control-Allow-Origin`
+    /// header. When empty (the default), the request `Origin` is echoed back
+    /// (wildcard-equivalent behaviour, suitable for local dev).
+    ///
+    /// Configured via `--allowed-origins` / `SOLID_ALLOWED_ORIGINS` (comma-separated).
+    pub allowed_origins: Vec<String>,
+    /// Pre-shared key for the `POST /_admin/provision/{pubkey}` endpoint.
+    /// When `None`, the endpoint returns 403 unconditionally.
+    ///
+    /// Configured via `--admin-key` / `SOLID_ADMIN_KEY`.
+    pub admin_key: Option<String>,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -164,6 +176,8 @@ impl AppState {
             pay_config: solid_pod_rs::payments::PayConfig::default(),
             data_root: None,
             pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+            allowed_origins: Vec::new(),
+            admin_key: None,
         }
     }
 }
@@ -1598,7 +1612,14 @@ fn path_is_traversal(path: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Adds the same CORS envelope JSS emits from its global `onRequest` hook.
-pub struct CorsHeaders;
+///
+/// When `allowed_origins` is non-empty, the `Access-Control-Allow-Origin`
+/// header is only reflected for origins in the list; requests from other
+/// origins receive no ACAO header. When the list is empty (default), the
+/// request `Origin` is echoed back (wildcard-equivalent, suitable for local dev).
+pub struct CorsHeaders {
+    pub allowed_origins: Arc<Vec<String>>,
+}
 
 impl<S, B> Transform<S, ServiceRequest> for CorsHeaders
 where
@@ -1612,13 +1633,17 @@ where
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(CorsHeadersMiddleware { service }))
+        ready(Ok(CorsHeadersMiddleware {
+            service,
+            allowed_origins: self.allowed_origins.clone(),
+        }))
     }
 }
 
 /// Per-request service instance produced by [`CorsHeaders`].
 pub struct CorsHeadersMiddleware<S> {
     service: S,
+    allowed_origins: Arc<Vec<String>>,
 }
 
 impl<S, B> Service<ServiceRequest> for CorsHeadersMiddleware<S>
@@ -1638,19 +1663,37 @@ where
             .get(header::ORIGIN)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
+        let allowed = self.allowed_origins.clone();
         let fut = self.service.call(req);
         Box::pin(async move {
             let mut resp = fut.await?;
-            add_cors_headers(resp.headers_mut(), origin.as_deref());
+            add_cors_headers(resp.headers_mut(), origin.as_deref(), &allowed);
             Ok(resp)
         })
     }
 }
 
-fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>) {
-    let origin = origin.unwrap_or("*");
+fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allowed: &[String]) {
+    // Determine the effective ACAO value, respecting the allowlist.
+    let effective_origin: Option<String> = if allowed.is_empty() {
+        // No allowlist — echo back the request origin or fall back to "*".
+        Some(origin.unwrap_or("*").to_string())
+    } else {
+        // Allowlist set — only reflect recognised origins.
+        origin
+            .filter(|o| allowed.iter().any(|a| a == *o))
+            .map(str::to_string)
+    };
+
+    // If the origin is blocked (allowlist non-empty and origin not in list),
+    // skip setting any CORS headers so the browser's CORS preflight fails.
+    let origin_value = match effective_origin {
+        Some(ref v) => v.as_str(),
+        None => return,
+    };
+
     let pairs = [
-        ("access-control-allow-origin", origin),
+        ("access-control-allow-origin", origin_value),
         (
             "access-control-allow-methods",
             "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS",
@@ -2158,6 +2201,161 @@ async fn handle_git_discard(
 }
 
 // ---------------------------------------------------------------------------
+// OPTIONS preflight for /_git/{pubkey}/{tail:.*} — alpha.15
+// ---------------------------------------------------------------------------
+
+/// Handles CORS preflight (OPTIONS) requests for the `/_git/` REST API
+/// namespace. Returns 204 with full CORS headers, respecting the
+/// `allowed_origins` allowlist from `AppState`.
+async fn handle_git_panel_options(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let mut rsp = HttpResponse::NoContent().finish();
+    add_cors_headers(rsp.headers_mut(), origin.as_deref(), &state.allowed_origins);
+    rsp
+}
+
+// ---------------------------------------------------------------------------
+// POST /_admin/provision/{pubkey} — alpha.15
+// ---------------------------------------------------------------------------
+
+/// PSK-gated endpoint that provisions a bare pod directory for a given
+/// Nostr pubkey. Used by the forum auth-worker to create native pods on
+/// behalf of users when the "native pods" admin panel action is triggered.
+///
+/// Protection: `X-Pod-Admin-Key` header must match `state.admin_key`.
+/// When `state.admin_key` is `None` the endpoint always returns 403.
+async fn handle_admin_provision(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> HttpResponse {
+    // --- PSK check -------------------------------------------------------
+    let expected = match &state.admin_key {
+        Some(k) => k.clone(),
+        None => {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "error": "admin key not configured on this server"
+            }));
+        }
+    };
+    let provided = req
+        .headers()
+        .get("x-pod-admin-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if provided != expected {
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "invalid admin key"}));
+    }
+
+    // --- Pubkey validation -----------------------------------------------
+    let pubkey = path.into_inner();
+    if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "pubkey must be 64 lowercase hex characters"}));
+    }
+
+    // --- Locate FS root --------------------------------------------------
+    let data_root = match &state.data_root {
+        Some(r) => r.clone(),
+        None => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "server has no fs-backend storage configured"
+            }));
+        }
+    };
+
+    let pod_dir = data_root.join(&pubkey);
+
+    // --- Create directory (idempotent) -----------------------------------
+    if let Err(e) = tokio::fs::create_dir_all(&pod_dir).await {
+        tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: create_dir_all failed");
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": format!("failed to create pod directory: {e}")}));
+    }
+
+    // --- Write owner-only WAC ACL ----------------------------------------
+    let acl_content = format!(
+        "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         <#owner> a acl:Authorization ;\n\
+             acl:agent <did:nostr:{pubkey}> ;\n\
+             acl:accessTo <./> ;\n\
+             acl:default <./> ;\n\
+             acl:mode acl:Read, acl:Write, acl:Control .\n"
+    );
+    let acl_path = pod_dir.join(".acl");
+    if !acl_path.exists() {
+        if let Err(e) = tokio::fs::write(&acl_path, acl_content.as_bytes()).await {
+            tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: write .acl failed");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("failed to write .acl: {e}")}));
+        }
+    }
+
+    // --- Git init (feature-gated) ----------------------------------------
+    #[cfg(feature = "git")]
+    {
+        use tokio::process::Command;
+
+        // Only init if .git does not yet exist (idempotent).
+        if !pod_dir.join(".git").exists() {
+            let init_out = Command::new("git")
+                .args([
+                    "init",
+                    "-b",
+                    "main",
+                    pod_dir.to_str().unwrap_or("."),
+                ])
+                .output()
+                .await;
+
+            match init_out {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    tracing::warn!(pubkey = %pubkey, stderr = %stderr, "git init returned non-zero");
+                }
+                Err(e) => {
+                    tracing::warn!(pubkey = %pubkey, error = %e, "git init failed (git not in PATH?)");
+                }
+            }
+
+            // Configure receive.denyCurrentBranch=updateInstead so the forum
+            // client can push directly into the working tree.
+            let cfg_out = Command::new("git")
+                .args([
+                    "-C",
+                    pod_dir.to_str().unwrap_or("."),
+                    "config",
+                    "receive.denyCurrentBranch",
+                    "updateInstead",
+                ])
+                .output()
+                .await;
+
+            if let Err(e) = cfg_out {
+                tracing::warn!(pubkey = %pubkey, error = %e, "git config receive.denyCurrentBranch failed");
+            }
+        }
+    }
+
+    // --- Build response --------------------------------------------------
+    let base_url = state.nodeinfo.base_url.trim_end_matches('/');
+    HttpResponse::Ok().json(serde_json::json!({
+        "podUrl": format!("{base_url}/pods/{pubkey}/"),
+        "ok": true,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // /.well-known/apps  (JSS #464 Phase 2 — public app discovery)
 // ---------------------------------------------------------------------------
 
@@ -2348,6 +2546,7 @@ pub fn build_app(
 > {
     let body_cap = state.body_cap;
     let dotfiles = state.dotfiles.clone();
+    let allowed_origins = Arc::new(state.allowed_origins.clone());
 
     let mut app = App::new()
         .app_data(web::Data::new(state.clone()))
@@ -2357,7 +2556,7 @@ pub fn build_app(
         // guards. Wrapping first means `wrap()` applies it last in
         // actix's stack order.
         .wrap(ErrorLoggingMiddleware)
-        .wrap(CorsHeaders)
+        .wrap(CorsHeaders { allowed_origins })
         // `MergeOnly` collapses duplicate slashes (//a → /a) without
         // stripping the trailing slash, which is the container/resource
         // discriminator in LDP.
@@ -2413,6 +2612,13 @@ pub fn build_app(
     // WAC-gated CORS proxy endpoint.
     app = app.route("/proxy", web::get().to(handle_proxy));
 
+    // Admin provisioning endpoint (alpha.15). Must be before the LDP
+    // catch-all so `_admin` is never treated as a pod name.
+    app = app.route(
+        "/_admin/provision/{pubkey}",
+        web::post().to(handle_admin_provision),
+    );
+
     // Pod management API (JSS parity: /api/accounts/*)
     app = app
         .route("/.pods", web::post().to(handle_create_pod))
@@ -2448,6 +2654,14 @@ pub fn build_app(
                     .json(serde_json::json!({"error": "direct .git access is forbidden"}))
             }),
         );
+
+    // OPTIONS preflight for /_git panel REST API (alpha.15). Registered
+    // unconditionally (before the feature block) so browsers get a valid
+    // CORS response regardless of whether the git feature is compiled in.
+    app = app.route(
+        "/pods/{pk}/_git/{tail:.*}",
+        web::method(actix_web::http::Method::OPTIONS).to(handle_git_panel_options),
+    );
 
     #[cfg(feature = "git")]
     {
