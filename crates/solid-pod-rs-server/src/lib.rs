@@ -101,6 +101,11 @@ pub struct AppState {
     /// Payment configuration — drives `/pay/.info` and the `X-Balance` /
     /// `X-Cost` / `X-Pay-Currency` response headers on paid resources.
     pub pay_config: solid_pod_rs::payments::PayConfig,
+    /// Absolute filesystem root of the pod storage tree. `Some` when the
+    /// backend is `FsBackend`; `None` for in-memory or cloud-backed
+    /// storage. Required by the `git` feature to locate pod directories
+    /// for `GitAutoInit` (provisioning) and `GitHttpService` (serving).
+    pub data_root: Option<PathBuf>,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -152,6 +157,7 @@ impl AppState {
             mashlib: MashlibConfig::default(),
             mashlib_cdn: None,
             pay_config: solid_pod_rs::payments::PayConfig::default(),
+            data_root: None,
         }
     }
 }
@@ -961,7 +967,28 @@ async fn handle_create_account(
         provision_keys: false,
     };
 
-    match provision::provision_pod(state.storage.as_ref(), &plan).await {
+    // Provision the pod. When the `git` feature is enabled and a FS root
+    // is configured, run git init on the new pod directory immediately
+    // after the storage containers are created (JSS #466/#469/#471).
+    #[cfg(feature = "git")]
+    let outcome = {
+        use solid_pod_rs_git::init::GitAutoInit;
+        let git_hook = state.data_root.as_ref().map(|root| {
+            let fs_path = root.join(&body.username);
+            (GitAutoInit::new(), fs_path)
+        });
+        match git_hook {
+            Some((hook, ref fs_path)) => {
+                provision::provision_pod_ext(state.storage.as_ref(), &plan, Some((&hook, fs_path)))
+                    .await
+            }
+            None => provision::provision_pod(state.storage.as_ref(), &plan).await,
+        }
+    };
+    #[cfg(not(feature = "git"))]
+    let outcome = provision::provision_pod(state.storage.as_ref(), &plan).await;
+
+    match outcome {
         Ok(outcome) => Ok(HttpResponse::Created().json(serde_json::json!({
             "webid": outcome.webid,
             "pod_root": outcome.pod_root,
@@ -1622,6 +1649,99 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Git HTTP backend handler (JSS #466/#469/#471, feature = "git")
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `path` is a git smart-HTTP protocol request.
+///
+/// Mirrors JSS `src/handlers/git.js` `isGitRequest`:
+/// ```text
+/// return urlPath.includes('/info/refs') ||
+///   urlPath.includes('/git-upload-pack') ||
+///   urlPath.includes('/git-receive-pack');
+/// ```
+#[allow(dead_code)]
+fn is_git_request(path: &str) -> bool {
+    path.contains("/info/refs")
+        || path.contains("/git-upload-pack")
+        || path.contains("/git-receive-pack")
+}
+
+/// Returns `true` if `path` targets `.git/` internals directly — always
+/// blocked (security, matches JSS lines 52-68).
+#[allow(dead_code)]
+fn is_dot_git_path(path: &str) -> bool {
+    path.contains("/.git/") || path.ends_with("/.git")
+}
+
+#[cfg(feature = "git")]
+async fn handle_git(
+    req: HttpRequest,
+    body: web::Bytes,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    use solid_pod_rs_git::service::{GitHttpService, GitRequest};
+
+    let path = req.uri().path().to_string();
+
+    // Locate the pod's FS root: the first path segment after "/" is the
+    // pod name (username/pubkey). The FS root is data_root/{pod_name}/.
+    let pod_name = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    let Some(ref data_root) = state.data_root else {
+        return HttpResponse::NotImplemented().json(serde_json::json!({
+            "error": "git requires fs-backend storage",
+            "reason": "data_root_not_configured"
+        }));
+    };
+    let repo_root = data_root.join(pod_name);
+    if !repo_root.exists() {
+        return HttpResponse::NotFound().json(serde_json::json!({"error": "pod not found"}));
+    }
+
+    let query = req.uri().query().unwrap_or("").to_string();
+    let host_url = {
+        let conn = req.connection_info();
+        Some(format!("{}://{}", conn.scheme(), conn.host()))
+    };
+    let headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let git_req = GitRequest {
+        method: req.method().as_str().to_string(),
+        path,
+        query,
+        headers,
+        body: body.into(),
+        host_url,
+    };
+
+    let service = GitHttpService::new(repo_root);
+    match service.handle(git_req).await {
+        Ok(git_resp) => {
+            let mut builder = HttpResponse::build(
+                actix_web::http::StatusCode::from_u16(git_resp.status)
+                    .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
+            );
+            for (k, v) in &git_resp.headers {
+                builder.insert_header((k.as_str(), v.as_str()));
+            }
+            builder.body(git_resp.body)
+        }
+        Err(e) => {
+            let status = e.status_code();
+            HttpResponse::build(
+                actix_web::http::StatusCode::from_u16(status)
+                    .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
+            )
+            .json(serde_json::json!({"error": e.to_string()}))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public app builder
 // ---------------------------------------------------------------------------
 
@@ -1719,6 +1839,50 @@ pub fn build_app(
             "/account/password/change",
             web::post().to(handle_password_change),
         );
+
+    // Git smart-HTTP protocol routes (JSS #466/#469/#471).
+    // Must be registered before the LDP catch-all. Direct .git/ access is
+    // always blocked (security). Smart-HTTP paths are served by
+    // GitHttpService when the `git` feature is enabled; otherwise 501.
+    app = app
+        .route(
+            // Block direct .git/ access (JSS: "BLOCK: Direct access to .git contents")
+            "/{tail:.*}/.git",
+            web::route().to(|| async {
+                HttpResponse::Forbidden()
+                    .json(serde_json::json!({"error": "direct .git access is forbidden"}))
+            }),
+        )
+        .route(
+            "/{tail:.*}/.git/{rest:.*}",
+            web::route().to(|| async {
+                HttpResponse::Forbidden()
+                    .json(serde_json::json!({"error": "direct .git access is forbidden"}))
+            }),
+        );
+
+    #[cfg(feature = "git")]
+    {
+        // Git smart-HTTP: info/refs discovery + upload/receive pack.
+        app = app
+            .route("/{tail:.*}/info/refs", web::get().to(handle_git))
+            .route("/{tail:.*}/git-upload-pack", web::post().to(handle_git))
+            .route("/{tail:.*}/git-receive-pack", web::post().to(handle_git));
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        // Without the git feature: return 501 for git protocol paths so
+        // callers get a clear "not compiled in" signal rather than falling
+        // through to LDP.
+        let git_501 = || async {
+            HttpResponse::NotImplemented()
+                .json(serde_json::json!({"error": "git feature not enabled in this build"}))
+        };
+        app = app
+            .route("/{tail:.*}/info/refs", web::get().to(git_501))
+            .route("/{tail:.*}/git-upload-pack", web::post().to(git_501))
+            .route("/{tail:.*}/git-receive-pack", web::post().to(git_501));
+    }
 
     // Container POST and PUT (trailing slash) must register before the
     // catch-all so the trailing-slash variant wins.

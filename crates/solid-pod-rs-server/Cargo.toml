@@ -77,6 +77,11 @@ url = "2"
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "ring"] }
 rustls-pemfile = { version = "2", optional = true }
 
+# Optional git HTTP backend + auto-init (JSS #466/#469/#471).
+# Gated by `git` feature; not compiled for wasm32. Requires the
+# `git` binary + `git-http-backend` CGI on the server host.
+solid-pod-rs-git = { version = "0.4.0-alpha.12", path = "../solid-pod-rs-git", optional = true }
+
 [features]
 # Feature umbrella toggles for the server binary.
 default = []
@@ -98,6 +103,11 @@ provision-keys = [
 ]
 nip05-endpoint = ["solid-pod-rs/nip05-endpoint"]
 export-jsonld = ["solid-pod-rs/export-jsonld"]
+
+# Git HTTP smart-protocol backend + per-pod auto-init (JSS #466/#469/#471).
+# Activates solid-pod-rs/git-auto-init (the trait + provision_pod_ext) and
+# links solid-pod-rs-git for the CGI handler and GitAutoInit implementor.
+git = ["dep:solid-pod-rs-git", "solid-pod-rs/git-auto-init"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

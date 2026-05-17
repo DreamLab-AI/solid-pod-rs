@@ -181,6 +181,13 @@ async fn main() -> anyhow::Result<()> {
     let port = cfg.server.port;
     let bind_addr = format!("{host}:{port}");
 
+    // Capture the FS root before moving cfg into storage construction.
+    // Used by the `git` feature to locate pod directories on disk.
+    let data_root = match &cfg.storage {
+        StorageBackendConfig::Fs { root } => Some(std::path::PathBuf::from(root.as_str())),
+        _ => None,
+    };
+
     let storage = build_storage(&cfg.storage).await?;
     let base_url = cfg
         .server
@@ -189,6 +196,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| format!("http://{bind_addr}"));
 
     let mut state = AppState::new(storage);
+    state.data_root = data_root;
     state.nodeinfo = NodeInfoMeta {
         software_name: "solid-pod-rs-server".into(),
         software_version: env!("CARGO_PKG_VERSION").into(),
