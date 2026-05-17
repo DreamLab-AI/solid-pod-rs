@@ -1867,6 +1867,371 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Git control panel API helpers (feature = "git")
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "git")]
+fn pod_repo_path(state: &AppState, pubkey: &str) -> Option<PathBuf> {
+    if pubkey.len() != 64 || !pubkey.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    state.data_root.as_ref().map(|root| root.join(pubkey))
+}
+
+#[cfg(feature = "git")]
+async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {
+    let caller = extract_pubkey(req).await?;
+    if caller != pod_pubkey {
+        return None;
+    }
+    Some(caller)
+}
+
+#[cfg(feature = "git")]
+fn git_json_err(msg: &str, status: u16) -> HttpResponse {
+    HttpResponse::build(
+        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+    )
+    .content_type("application/json")
+    .body(format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\"")))
+}
+
+// Request body types for git control panel endpoints.
+#[cfg(feature = "git")]
+#[derive(serde::Deserialize)]
+struct GitStageBody {
+    paths: Option<Vec<String>>,
+    all: Option<bool>,
+}
+
+#[cfg(feature = "git")]
+#[derive(serde::Deserialize)]
+struct GitCommitBody {
+    message: String,
+    author_name: Option<String>,
+    author_email: Option<String>,
+}
+
+#[cfg(feature = "git")]
+#[derive(serde::Deserialize)]
+struct GitBranchBody {
+    name: String,
+}
+
+// ── Control panel handlers ──────────────────────────────────────────────────
+
+#[cfg(feature = "git")]
+async fn handle_git_status(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    match solid_pod_rs_git::api::git_status(&repo).await {
+        Ok(s) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(serde_json::to_string(&s).unwrap_or_default()),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_log(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let limit: u32 = query
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    match solid_pod_rs_git::api::git_log(&repo, limit).await {
+        Ok(entries) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(serde_json::to_string(&entries).unwrap_or_default()),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_diff(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let file_path = query.get("path").map(String::as_str);
+    let staged = query
+        .get("staged")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    match solid_pod_rs_git::api::git_diff(&repo, file_path, staged).await {
+        Ok(diff) => HttpResponse::Ok()
+            .content_type("text/plain")
+            .body(diff),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_stage(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Bytes,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let parsed: GitStageBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return git_json_err(&format!("bad request: {e}"), 400),
+    };
+    let paths = parsed.paths.unwrap_or_default();
+    let all = parsed.all.unwrap_or(false);
+    match solid_pod_rs_git::api::git_add(&repo, &paths, all).await {
+        Ok(()) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(r#"{"ok":true}"#),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_unstage(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Bytes,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let parsed: GitStageBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return git_json_err(&format!("bad request: {e}"), 400),
+    };
+    let paths = parsed.paths.unwrap_or_default();
+    let all = parsed.all.unwrap_or(false);
+    match solid_pod_rs_git::api::git_unstage(&repo, &paths, all).await {
+        Ok(()) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(r#"{"ok":true}"#),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_commit(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Bytes,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let parsed: GitCommitBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return git_json_err(&format!("bad request: {e}"), 400),
+    };
+    let author_name = parsed.author_name.as_deref().unwrap_or("Pod Owner");
+    let author_email = parsed
+        .author_email
+        .as_deref()
+        .unwrap_or("pod@dreamlab-ai.com");
+    match solid_pod_rs_git::api::git_commit(&repo, &parsed.message, author_name, author_email)
+        .await
+    {
+        Ok(result) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(serde_json::to_string(&result).unwrap_or_default()),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_branches(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    match solid_pod_rs_git::api::git_branches(&repo).await {
+        Ok(info) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(serde_json::to_string(&info).unwrap_or_default()),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_create_branch(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Bytes,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let parsed: GitBranchBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return git_json_err(&format!("bad request: {e}"), 400),
+    };
+    match solid_pod_rs_git::api::git_create_branch(&repo, &parsed.name).await {
+        Ok(()) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(r#"{"ok":true}"#),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+#[cfg(feature = "git")]
+async fn handle_git_discard(
+    path: web::Path<String>,
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Bytes,
+) -> HttpResponse {
+    let pubkey = path.into_inner();
+    if require_pod_owner(&req, &pubkey).await.is_none() {
+        return git_json_err("Authentication required", 401);
+    }
+    let Some(repo) = pod_repo_path(&state, &pubkey) else {
+        return git_json_err("Git not available (no FS backend)", 501);
+    };
+    let parsed: GitStageBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return git_json_err(&format!("bad request: {e}"), 400),
+    };
+    let paths = parsed.paths.unwrap_or_default();
+    match solid_pod_rs_git::api::git_discard(&repo, &paths).await {
+        Ok(()) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(r#"{"ok":true}"#),
+        Err(e) => git_json_err(&e.to_string(), e.status_code()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /.well-known/apps  (JSS #464 Phase 2 — public app discovery)
+// ---------------------------------------------------------------------------
+
+async fn handle_well_known_apps(state: web::Data<AppState>) -> HttpResponse {
+    let Some(ref data_root) = state.data_root else {
+        return HttpResponse::Ok()
+            .content_type("application/json")
+            .json(serde_json::json!({"apps": [], "count": 0}));
+    };
+
+    let server_url = state.nodeinfo.base_url.clone();
+
+    // Collect pod directories (up to 1000).
+    let mut read_dir = match tokio::fs::read_dir(data_root).await {
+        Ok(rd) => rd,
+        Err(_) => {
+            return HttpResponse::Ok()
+                .content_type("application/json")
+                .json(serde_json::json!({"apps": [], "serverUrl": server_url, "count": 0}));
+        }
+    };
+
+    let mut apps: Vec<serde_json::Value> = Vec::new();
+    let mut scanned = 0usize;
+
+    while scanned < 1000 {
+        let entry = match read_dir.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(_) => break,
+        };
+
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        scanned += 1;
+
+        let manifest_path = entry.path().join("apps").join("manifest.json");
+        let contents = match tokio::fs::read(&manifest_path).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let mut manifest: serde_json::Value = match serde_json::from_slice(&contents) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Inject podOwner from the directory name (pubkey).
+        if let Some(pod_name) = entry.file_name().to_str() {
+            if manifest.get("podOwner").is_none() {
+                manifest["podOwner"] = serde_json::Value::String(pod_name.to_string());
+            }
+        }
+
+        apps.push(manifest);
+    }
+
+    let count = apps.len();
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "apps": apps,
+            "serverUrl": server_url,
+            "count": count,
+        }))
+}
+
+// ---------------------------------------------------------------------------
 // Git HTTP backend handler (JSS #466/#469/#471, feature = "git")
 // ---------------------------------------------------------------------------
 
@@ -2039,6 +2404,9 @@ pub fn build_app(
         );
     }
 
+    // App discovery endpoint (JSS #464 Phase 2 — public, no auth required).
+    app = app.route("/.well-known/apps", web::get().to(handle_well_known_apps));
+
     // Payment endpoint (JSS parity: GET /pay/.info).
     app = app.route("/pay/.info", web::get().to(handle_pay_info));
 
@@ -2088,6 +2456,46 @@ pub fn build_app(
             .route("/{tail:.*}/info/refs", web::get().to(handle_git))
             .route("/{tail:.*}/git-upload-pack", web::post().to(handle_git))
             .route("/{tail:.*}/git-receive-pack", web::post().to(handle_git));
+
+        // Git control panel REST API. Routes registered before the LDP
+        // catch-all so `_git` segments are never treated as LDP resources.
+        app = app
+            .route(
+                "/pods/{pubkey}/_git/status",
+                web::get().to(handle_git_status),
+            )
+            .route(
+                "/pods/{pubkey}/_git/log",
+                web::get().to(handle_git_log),
+            )
+            .route(
+                "/pods/{pubkey}/_git/diff",
+                web::get().to(handle_git_diff),
+            )
+            .route(
+                "/pods/{pubkey}/_git/stage",
+                web::post().to(handle_git_stage),
+            )
+            .route(
+                "/pods/{pubkey}/_git/unstage",
+                web::post().to(handle_git_unstage),
+            )
+            .route(
+                "/pods/{pubkey}/_git/commit",
+                web::post().to(handle_git_commit),
+            )
+            .route(
+                "/pods/{pubkey}/_git/branches",
+                web::get().to(handle_git_branches),
+            )
+            .route(
+                "/pods/{pubkey}/_git/branch",
+                web::post().to(handle_git_create_branch),
+            )
+            .route(
+                "/pods/{pubkey}/_git/discard",
+                web::post().to(handle_git_discard),
+            );
     }
     #[cfg(not(feature = "git"))]
     {

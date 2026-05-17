@@ -17,7 +17,7 @@ readme = "README.md"
 # Core library: provides the NIP-98 verifier (`auth::nip98::verify_at`)
 # and associated `PodError`. No explicit feature needed — the auth
 # module lives in the always-on surface.
-solid-pod-rs = { version = "0.4.0-alpha.13", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init"] }
+solid-pod-rs = { version = "0.4.0-alpha.14", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init"] }
 
 tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "io-util", "macros", "sync"] }
 bytes = "1"
@@ -25,6 +25,7 @@ base64 = "0.22"
 thiserror = "1"
 tracing = "0.1"
 async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"

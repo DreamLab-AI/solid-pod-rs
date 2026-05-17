@@ -46,6 +46,7 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
+pub mod api;
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -53,6 +54,11 @@ pub mod guard;
 pub mod init;
 pub mod service;
 
+pub use api::{
+    git_add, git_branches, git_commit, git_create_branch, git_diff, git_discard, git_log,
+    git_status, git_unstage, BranchInfo, ChangeType, CommitEntry, CommitResult, FileStatus,
+    StatusReport,
+};
 pub use auth::{AuthError, BasicNostrExtractor, GitAuth};
 pub use config::{find_git_dir, GitDir};
 pub use error::GitError;

@@ -4,6 +4,46 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.14] - 2026-05-17 (Git control panel API + JSS #464 app discovery)
+
+### Added
+
+- **`solid-pod-rs-git/src/api.rs`** — high-level git operations module exposing
+  `git_status`, `git_log`, `git_diff`, `git_add`, `git_unstage`, `git_commit`,
+  `git_branches`, `git_create_branch`, `git_discard`. All functions shell out to
+  the `git` binary via `tokio::process::Command` and return typed, Serde-derived
+  structs (`StatusReport`, `FileStatus`, `CommitEntry`, `BranchInfo`,
+  `CommitResult`). Includes `parse_status_output` pure function with 13 unit tests
+  covering modified/added/deleted/renamed/untracked/ahead-behind/clean states.
+- **Git control panel REST endpoints** (`#[cfg(feature = "git")]` in
+  `solid-pod-rs-server`): nine NIP-98-authenticated routes under `/_git/{pubkey}/`:
+  - `GET  /_git/{pk}/status`
+  - `GET  /_git/{pk}/log?limit=N`
+  - `GET  /_git/{pk}/diff?path=FILE&staged=bool`
+  - `POST /_git/{pk}/stage`      — `{ paths, all }`
+  - `POST /_git/{pk}/unstage`    — `{ paths, all }`
+  - `POST /_git/{pk}/commit`     — `{ message, author_name, author_email }`
+  - `GET  /_git/{pk}/branches`
+  - `POST /_git/{pk}/branch`     — `{ name }`
+  - `POST /_git/{pk}/discard`    — `{ paths }`
+  All routes verify NIP-98 auth and that the caller pubkey matches the pod pubkey
+  (`require_pod_owner`).
+- **`GET /.well-known/apps`** (JSS issue #464 — Apps in pods): scans
+  `data_root/{pubkey}/apps/manifest.json` across all pods, returns aggregated JSON
+  `{ apps: [...], serverUrl, count }`. Enables decentralized app discovery where
+  pods are used as first-class app-distribution repositories. Unconditional (no
+  feature flag required).
+
+### Notes
+
+- These endpoints are only available on the native server binary
+  (`solid-pod-rs-server --features git`). Cloudflare Workers deployments return 501
+  (`tokio::process` unavailable in wasm32 — ADR-089). The forum client
+  `GitProbeState` guards against showing git UI when 501 is returned.
+- Manifests stored at `{pod}/apps/manifest.json` follow the shape:
+  `{ name, description, gitSource, version }`. The `gitSource` field is the
+  clone URL for the pod's own git repository.
+
 ## [0.4.0-alpha.11] - 2026-05-16 (JSS Phase 1 port)
 
 Published to crates.io alongside the six sibling crates. Three

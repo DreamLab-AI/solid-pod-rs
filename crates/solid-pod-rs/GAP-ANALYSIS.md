@@ -252,7 +252,7 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 
 | Feature | JSS path | Status | Priority |
 |---|---|---|---|
-| Git HTTP backend (`handleGit` via `git http-backend` CGI) | `src/handlers/git.js:11-268`, `src/server.js:286-314` | **missing** | **P2** (niche; Git-backed pods are a known but small audience) |
+| Git HTTP backend (`handleGit` via `git http-backend` CGI) | `src/handlers/git.js:11-268`, `src/server.js:286-314` | **present** — `solid-pod-rs-git` crate: CGI passthrough (`GitHttpService`) + per-pod auto-init (`GitAutoInit`) + control-panel REST API (`/_git/{pk}/*`, nine operations) + `/.well-known/apps` discovery (JSS #464). Native server only; CF Workers return 501. | P2 → closed |
 | ActivityPub federation (Actor on `/profile/card`, inbox HTTP-sig verify, outbox delivery, WebFinger, NodeInfo 2.1) | `src/ap/index.js`, `src/ap/routes/{actor,inbox,outbox,collections}.js` (200+ LOC) | **missing** | **P1** (large scope; Solid-AP bridges are ecosystem-valuable) |
 | Nostr relay (NIP-01/11/16) | `src/nostr/relay.js:95-286` | **missing** | **P2** (embedded relay; we should ship as a separate crate) |
 | WebID-TLS | `src/auth/webid-tls.js:187-257` | **missing** | **P3** (legacy — see F.5) |
@@ -815,7 +815,7 @@ type indexes + public-read ACL (rows 14/164/166), atomic quota writes
 | 4 | `solid-0.1` legacy notifications adapter (E.8) | **P1** | 300 | 10 unit + 3 integration | v0.4.0 |
 | 5 | LWS 1.0 SSI-did:key auth (row 153) | **P2** | 350 | 12 unit | v0.5.0 (new `solid-pod-rs-didkey` crate) |
 | 6 | did:nostr DID Document publication + normaliser (E.4) | **P2** | 150 | 6 unit | v0.5.0 (`solid-pod-rs-nostr` stub today) |
-| 7 | Git HTTP backend (E.1) | **P2** | 450 | 12 integration | v0.5.0 (`solid-pod-rs-git` stub today) |
+| 7 | Git HTTP backend (E.1) | **SHIPPED** alpha.14 | — | ✓ 13 unit (api.rs) + 8 integration | — |
 | 8 | Config loader + env var map (E.6) | **P2** | 250 | 12 unit | v0.5.0 |
 | 9 | Subdomain multi-tenancy heuristic polish (E.10, row 162) | **P2** | 150 | 10 unit | v0.5.0 |
 | 10 | NodeInfo 2.1 + top-level 5xx middleware (rows 106, 158) | **P2** | 200 | 8 unit | v0.5.0 |
