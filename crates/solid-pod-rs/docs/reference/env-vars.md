@@ -53,6 +53,16 @@ vars are consumed by the config loader when the `config-loader` feature
 is enabled. This table is a suggested vocabulary so multi-pod
 deployments can share config conventions.
 
+## solid-pod-rs-server (alpha.15+)
+
+These variables are consumed by the `solid-pod-rs-server` binary directly
+(not by the library). They were added in alpha.15.
+
+| Variable | CLI flag | Type / default | Purpose |
+|---|---|---|---|
+| `SOLID_ALLOWED_ORIGINS` | `--allowed-origins` | Comma-separated URL list, default empty | CORS origin allowlist for git and pod routes. When non-empty, only listed origins receive `Access-Control-Allow-Origin` in responses. Empty = wildcard (`*`) — suitable for local dev only. Example: `https://dreamlab-ai.com,https://staging.dreamlab-ai.com`. |
+| `SOLID_ADMIN_KEY` | `--admin-key` | String (opaque secret), default unset | Pre-shared key (PSK) for the `POST /_admin/provision/{pubkey}` endpoint. The endpoint returns `403` on every request when this variable is unset. Generate with `openssl rand -hex 32`. Treat as a credential — do not log, do not commit. |
+
 ## Tracing / logging
 
 solid-pod-rs uses the `tracing` crate.

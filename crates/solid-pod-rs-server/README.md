@@ -70,6 +70,61 @@ requests (`Sec-Fetch-Dest: empty`) still receive raw RDF.
 | `JSS_MASHLIB_CDN` | `--mashlib-cdn` | `2.0.0` |
 | `JSS_MASHLIB_MODULE` | `--mashlib-module` | — |
 
+## Admin API and Native Pod Mesh (alpha.15+)
+
+### Provision endpoint
+
+`POST /_admin/provision/{pubkey}` creates a new pod for a Nostr pubkey in one
+atomic step: pod directory, owner-only `.acl`, and a `git init` that sets
+`receive.denyCurrentBranch=updateInstead` so the pod is immediately pushable
+over HTTP via `/_git/{pubkey}/`.
+
+```bash
+curl -X POST https://pods.example.com/_admin/provision/<hex-pubkey> \
+     -H "X-Pod-Admin-Key: $SOLID_ADMIN_KEY"
+# → { "podUrl": "https://pods.example.com/<hex-pubkey>/", "ok": true }
+```
+
+This endpoint is the CF Workers ↔ agentbox handshake: `auth-worker` calls it
+during WebAuthn registration to atomically provision a Solid pod alongside the
+Nostr identity. The PSK (`SOLID_ADMIN_KEY` / `--admin-key`) must be set for the
+endpoint to be active; it returns `403` unconditionally when unset.
+
+Generate a key with:
+
+```bash
+openssl rand -hex 32
+```
+
+### CORS allowlist for the forum git client
+
+The forum's Source Control panel (`components/git_panel.rs`) drives
+`/_git/{pubkey}/` over HTTP from a cross-origin browser context.
+`SOLID_ALLOWED_ORIGINS` / `--allowed-origins` is a comma-separated list of
+origins that will receive `Access-Control-Allow-Origin` headers.
+
+```bash
+# Production — lock to known origins
+SOLID_ALLOWED_ORIGINS=https://dreamlab-ai.com,https://pods.dreamlab-ai.com
+
+# Development default — empty = wildcard (*)
+```
+
+OPTIONS preflights for `/_git/{pubkey}/**` are handled automatically
+(feature `git` required, which is on by default in this binary).
+
+### Deployment
+
+For the full agentbox mesh deployment (solid-pod-rs-server alongside
+`auth-worker`, R2, and the forum client) see:
+
+```
+docker-compose.solid-pods.yml   # in the dreamlab-ai-website agentbox repo
+```
+
+That compose file wires `SOLID_ADMIN_KEY`, `SOLID_ALLOWED_ORIGINS`,
+`JSS_STORAGE_ROOT`, and the CF Worker `PROVISION_URL` binding together.
+
 ## Feature flags
 
 This binary enables the following `solid-pod-rs` features by default:
