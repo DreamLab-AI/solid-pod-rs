@@ -70,6 +70,26 @@ pub struct ProvisionPlan {
     pub provision_keys: bool,
 }
 
+impl ProvisionPlan {
+    /// Create a pod-provisioning plan with JSS-compatible defaults.
+    ///
+    /// This constructor initializes cfg-gated fields inside the crate
+    /// that owns them, so downstream crates do not need to mirror this
+    /// crate's feature flags when building a plan.
+    pub fn new(pubkey: impl Into<String>, pod_base: impl Into<String>) -> Self {
+        Self {
+            pubkey: pubkey.into(),
+            display_name: None,
+            pod_base: pod_base.into(),
+            containers: Vec::new(),
+            root_acl: None,
+            quota_bytes: None,
+            #[cfg(feature = "provision-keys")]
+            provision_keys: false,
+        }
+    }
+}
+
 /// Result of provisioning a pod.
 #[derive(Debug, Clone)]
 pub struct ProvisionOutcome {

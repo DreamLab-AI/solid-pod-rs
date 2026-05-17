@@ -2,9 +2,11 @@
 
 > Authoritative comparison against the **real** JSS. The row-per-feature
 > table lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md); this
-> document is the categorical reasoning narrative. Current as of Sprint 12
-> close (2026-05-06): **~98% strict parity, ~100% on the spec-normative
-> surface, ~100% protocol-visible**. Five sibling crates
+> document is the categorical reasoning narrative. Current as of Sprint 15
+> sync (2026-05-17): local JSS is fast-forwarded to upstream `gh-pages`
+> commit `10bd60f` (package `0.0.197`), and the raw checklist gate reports
+> **~93% strict parity, ~100% on the spec-normative surface, ~100%
+> protocol-visible**. Five sibling crates
 > (`solid-pod-rs-{activitypub,git,idp,nostr,didkey}`) are all functional
 > and shipping. Sprint 12 closed the JSS v0.0.60–v0.0.71 delta (ADR-058):
 > size-capped ACL parsing, `.account` dotfile, password-length validation,
@@ -14,20 +16,16 @@
 
 ### Comparator
 
-- **solid-pod-rs**: `crates/solid-pod-rs/` at `HEAD` of `main`
-  (Sprint 9 close, 2026-04-24). Library crate (`src/lib.rs`),
-  framework-agnostic; wired into actix-web by `examples/standalone.rs`
-  for conformance testing. `solid-pod-rs-server` sibling binary crate
-  is the canonical server consumer. Four reserved sibling crates
-  (`-activitypub`, `-git`, `-idp`, `-nostr`) ship as ~25-line stubs
-  until v0.5.0. 567-test suite.
+- **solid-pod-rs**: workspace at `HEAD` of the local checkout. Library
+  crate (`crates/solid-pod-rs/src/lib.rs`), framework-agnostic; the
+  `solid-pod-rs-server` sibling binary crate is the canonical actix-web
+  server consumer. Five sibling crates (`-activitypub`, `-git`, `-idp`,
+  `-nostr`, `-didkey`) are functional and covered by the workspace test
+  suite.
 - **JavaScriptSolidServer**: local clone at
-  `/home/devuser/workspace/project/JavaScriptSolidServer/` tracking the
-  `jss-upstream` remote. `package.json` reports version `0.0.86`; README
-  self-describes as `v0.0.79`. Published tags run `v0.0.26 … v0.0.46`, so the
-  local checkout is ahead of any upstream release. Licence `AGPL-3.0-only`
-  (`package.json:53`). Node.js ≥ 18 ESM, Fastify 4.29.x, 10 runtime
-  dependencies (confirmed in `package.json:26-40`).
+  `/home/devuser/workspace/JavaScriptSolidServer/`, fast-forwarded to
+  `upstream/gh-pages` commit `10bd60f` (`Bump version to 0.0.197 (#473)`).
+  Licence `AGPL-3.0-only`. Node.js ≥ 18 ESM, Fastify-based server.
 
 ### Source paths
 
@@ -36,9 +34,9 @@
 | solid-pod-rs source | `crates/solid-pod-rs/src/` |
 | solid-pod-rs tests | `crates/solid-pod-rs/tests/` (7 integration test files, ~150 tests) |
 | solid-pod-rs examples | `crates/solid-pod-rs/examples/` (9 runnable examples) |
-| JSS source | `/home/devuser/workspace/project/JavaScriptSolidServer/src/` |
-| JSS tests | `/home/devuser/workspace/project/JavaScriptSolidServer/test/` (21 top-level `*.test.js`, 6,527 lines) |
-| JSS CLI | `/home/devuser/workspace/project/JavaScriptSolidServer/bin/jss.js` |
+| JSS source | `/home/devuser/workspace/JavaScriptSolidServer/src/` |
+| JSS tests | `/home/devuser/workspace/JavaScriptSolidServer/test/` |
+| JSS CLI | `/home/devuser/workspace/JavaScriptSolidServer/bin/jss.js` |
 
 ### Criteria (status vocabulary)
 
@@ -267,7 +265,7 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 | HTML login/register/consent pages | `src/idp/index.js:239-315` | **missing** | **wontfix-in-crate** (F.6) |
 | SSRF guard on outbound fetches | `src/utils/ssrf.js:15-157` | **not provided** — consumer binder's responsibility | **missing-as-primitive** (P1 convenience) |
 | Dotfile allowlist | `src/server.js:265-281` | **not provided** — consumer's responsibility | **missing-as-primitive** (P2) |
-| Rate limits on pod create (1/day/IP) + write + login | `src/server.js:209-219, 356-364, 436-446`; `src/idp/index.js:223-232` | **not provided** — consumer's responsibility | **missing-as-primitive** (P2) |
+| Rate limits on pod create (1/day/IP) + write + login | `src/server.js:209-219, 692-703`; `src/idp/index.js:223-232` | `solid-pod-rs-server` enforces `POST /.pods` 1/day/IP; core `RateLimiter` primitive covers other binders | **present for pod-create; partial for write/login binder policy** |
 | Live-reload script injection | `src/handlers/resource.js:23-35` | **not implemented** | **P3** (dev-mode nicety) |
 | Filesystem storage backend | provided (`storage::fs::FileSystemStorage`) | `src/storage/filesystem.js` | **present** |
 | Subdomain multi-tenancy | **not provided** | `src/server.js:159-170` + `src/utils/url.js` | **missing** (P2; path-based multi-tenancy works today) |
@@ -279,7 +277,7 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 | CLI binary | `examples/standalone.rs` (~200 LOC actix example) | `bin/jss.js` (400+ LOC, 40+ flags, subcommands `start`/`init`/`invite`/`quota`) | **partial-parity** (C.7a) |
 | Config file (JSON) | **not provided** — consumer's responsibility | `config.json` via `src/config.js:211-239` (CLI > env > file > default precedence) | **missing** (E.6) |
 | Env var map | **not provided** — consumer's responsibility | 30+ `JSS_*` vars + `TOKEN_SECRET`, `CORS_ALLOWED_ORIGINS`, `NODE_ENV`, `DATA_ROOT` (`config.js:96-132`) | **missing** (E.6) |
-| Pod-create HTTP endpoint | `provision::provision_pod` + `ProvisionPlan` | `POST /.pods` with 1/day/IP rate-limit (`src/server.js:356-364`) | **partial-parity** — rate-limit absent |
+| Pod-create HTTP endpoint | `solid-pod-rs-server::handle_create_pod` + `PodCreateLimiter` | `POST /.pods` with 1/day/IP rate-limit (`src/server.js:692-703`) | **present** |
 | Admin override | `provision::check_admin_override` (constant-time secret compare) | no direct equivalent (operators edit `config.json`) | **net-new** |
 
 **C.7a CLI**: Scope call — JSS is a full server; we are a library. The
@@ -928,7 +926,7 @@ Accept-negotiation, and actor caching. 702 workspace tests, 0 failing.
 
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
-- JSS source: `/home/devuser/workspace/project/JavaScriptSolidServer/` (local clone).
+- JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `10bd60f` / `0.0.197`).
 - ADR-053 — backend boundary + extraction scope.
 - ADR-054 (pending) — library-vs-server separation.
 - Solid Protocol 0.11: <https://solidproject.org/TR/protocol>

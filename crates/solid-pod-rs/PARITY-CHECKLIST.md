@@ -2,7 +2,7 @@
 
 Exhaustive row-per-feature tracker against the **real**
 JavaScriptSolidServer (JSS), local clone at
-`/home/devuser/workspace/project/JavaScriptSolidServer/`. Canonical JSS
+`/home/devuser/workspace/JavaScriptSolidServer/`. Canonical JSS
 surface: [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md).
 Prose companion (categorical summary, port tickets, architecture
 discussion): [`GAP-ANALYSIS.md`](./GAP-ANALYSIS.md). This document is the
@@ -11,16 +11,16 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 14, git-auto-init, 2026-05-16, alpha.12)
+## Current state (Sprint 15, JSS v0.0.197 sync, 2026-05-17, alpha.12)
 
-**137 rows tracked** across 20 functional sections.
+**201 rows tracked** across 20 functional sections.
 
 ### Parity percentages
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new) | **~99%** (133/137) — Phase 1 (alpha.11) + git-auto-init (alpha.12) landed |
-| Half-credit (partial-parity counted 0.5) | **~99%** |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/other) | **~96%** raw checklist gate — Phase 1, git-auto-init, CORS, auth challenge, and `POST /.pods` landed |
+| Half-credit (partial-parity counted 0.5) | **~97%** raw checklist gate |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
@@ -29,17 +29,15 @@ and our status against it.
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 125 | +4 (Sprint 14 alpha.12: rows 199 GitInitHook trait, 200 GitAutoInit impl — git auto-init at pod provisioning) |
-| partial-parity | 1 | — |
-| semantic-difference | 10 | — |
-| missing | 0 | — |
-| net-new (ours; not in JSS) | 8 | — |
-| explicitly-deferred | 5 | — |
-| wontfix-in-crate | 4 | — |
-| shared-gap (neither side) | 2 | — |
-| present-by-absence | 1 | — |
-| test / conformance meta | 5 | — |
-| **Total** | **137** | +2 new git-auto-init rows (199, 200) in §20 |
+| present | 158 | +5 (Sprint 15: rows 27-29, 73, 111 now emitted by `solid-pod-rs-server`) |
+| partial-parity | 5 | -5 |
+| semantic-difference | 5 | — |
+| missing | 3 | — |
+| net-new (ours; not in JSS) | 20 | — |
+| explicitly-deferred | 6 | — |
+| wontfix-in-crate | 3 | — |
+| other/unclassified | 1 | — |
+| **Total** | **201** | JSS local comparator fast-forwarded to upstream `10bd60f` / package `0.0.197` |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -118,9 +116,9 @@ All **five** sibling crates are now **functional**:
 | 24 | `Allow: GET, HEAD, PUT, DELETE, PATCH, OPTIONS` (+POST on containers) | `src/ldp/headers.js:60` | `options_for` → `OptionsResponse` | present | `src/ldp.rs:1336` | |
 | 25 | `Vary: Authorization, Origin` (adds `Accept` when conneg on) | `src/ldp/headers.js:61` | `ldp::vary_header(conneg_enabled)` centralised | present | `src/ldp.rs:1516` | Single source of truth, matches JSS `getVaryHeader` post-#315. |
 | 26 | `WAC-Allow: user="…", public="…"` | `src/wac/checker.js:279-282` | `wac::wac_allow_header` | present (semantic-difference on token order) | `src/wac/mod.rs` | JSS = source order; ours = alphabetical. Both spec-legal. |
-| 27 | `Updates-Via: ws(s)://host/.notifications` | `src/server.js:229-231` | consumer-binder responsibility | partial-parity | — | Helper landing in 0.3.1. |
-| 28 | CORS: `Access-Control-Allow-Origin` echoed/`*` | `src/ldp/headers.js:112,135` | consumer-binder responsibility | partial-parity | example server | Library exposes list; binder sets. No primitive shipped yet. |
-| 29 | CORS `Access-Control-Expose-Headers` (full list) | `src/ldp/headers.js:112,135` | exposed in standalone example | partial-parity | `examples/standalone.rs` | |
+| 27 | `Updates-Via: ws(s)://host/.notifications` | `src/server.js:344-347` | `solid-pod-rs-server::set_updates_via` emits `ws://` / `wss://` discovery on GET and OPTIONS responses | present | `crates/solid-pod-rs-server/src/lib.rs::set_updates_via`, `handle_get`, `handle_options`; `crates/solid-pod-rs/tests/server_routes_jss.rs` | Fixed to append `/.notifications`; regression asserts `wss://pod.example/.notifications`. |
+| 28 | CORS: `Access-Control-Allow-Origin` echoed/`*` | `src/ldp/headers.js:96` | `solid-pod-rs-server::CorsHeaders` echoes request Origin or emits `*` | present | `crates/solid-pod-rs-server/src/lib.rs::CorsHeaders`; `crates/solid-pod-rs-server/tests/middleware_guards.rs` | Mirrors JSS global CORS envelope. |
+| 29 | CORS `Access-Control-Expose-Headers` (full list) | `src/ldp/headers.js:99` | `solid-pod-rs-server::CorsHeaders` emits JSS expose list including `Updates-Via`, `WAC-Allow`, payment headers | present | `crates/solid-pod-rs-server/src/lib.rs::add_cors_headers`; `crates/solid-pod-rs-server/tests/middleware_guards.rs` | |
 | 30 | ETag header on read/write | `src/storage/filesystem.js:32` = md5(mtime+size) | `ResourceMeta::etag` = hex SHA-256 | semantic-difference | `src/storage/mod.rs:45` | Both spec-legal. See GAP §D.6. |
 | 31 | If-Match / If-None-Match (conditional) | `src/utils/conditional.js` + `src/handlers/resource.js:124-130` | `ldp::evaluate_preconditions` → `ConditionalOutcome` | present | `src/ldp.rs:1143` | 304/412 outcomes. |
 | 32 | Range requests (start-end, start-, -suffix) | `src/handlers/resource.js:56-106` | `ldp::parse_range_header`, `slice_range`, `ByteRange::content_range` | present | `src/ldp.rs:1240,1308,1226` | Multi-range rejected on both sides (correct). |
@@ -180,7 +178,7 @@ All **five** sibling crates are now **functional**:
 | 70 | WebID-TLS | `src/auth/webid-tls.js:187-257` | not implemented | explicitly-deferred | — | Legacy. ADR-053 §"WebID-TLS deprecation". |
 | 71 | IdP-issued JWT verification | `src/auth/token.js:126-161` | `oidc::verify_access_token` | present | `src/oidc/mod.rs` | |
 | 72 | Auth dispatch precedence (DPoP → Nostr → Bearer → WebID-TLS) | `src/auth/token.js:215-269` | consumer-binder responsibility | semantic-difference | example server | Library exposes primitives; binder composes. |
-| 73 | `WWW-Authenticate: DPoP realm=…, Bearer realm=…` on 401 | `src/auth/middleware.js:117` | consumer-binder responsibility | partial-parity | example server | Helper landing in 0.3.1. |
+| 73 | `WWW-Authenticate: DPoP realm=…, Bearer realm=…` on 401 | `src/auth/middleware.js:173` | `solid-pod-rs-server::enforce_write` emits `DPoP realm="Solid", Bearer realm="Solid"` on unauthenticated WAC denials | present | `crates/solid-pod-rs-server/src/lib.rs::enforce_write`; `crates/solid-pod-rs/tests/server_security.rs` | |
 
 ## 6. IdP (identity provider — JSS runs its own; solid-pod-rs is a relying party)
 
@@ -248,7 +246,7 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | 108 | SAND stack (AP Actor + did:nostr via `alsoKnownAs`) | `README.md:494-502` | `Actor::with_also_known_as` binds did:nostr into the Actor doc | present | `crates/solid-pod-rs-activitypub/src/actor.rs` | Sprint 10. |
 | 109 | Mashlib (SolidOS data-browser) HTML wrapper | `src/mashlib/index.js` | `mashlib::should_serve` + `mashlib::generate_html` — CDN/Local/Module modes, data-island embed, round-trip opt | present | `src/mashlib.rs` | Sprint 13. Static asset serving (Local mode) remains consumer concern. |
 | 110 | SolidOS UI static serving | `src/server.js:411` | not implemented | wontfix-in-crate (E.9) | — | Consumer crate. |
-| 111 | Pod-create endpoint `POST /.pods` with 1/day/IP rate limit | `src/server.js:356-364` | `provision::provision_pod` (no rate limit) | partial-parity | `src/provision.rs:55` | Rate-limit primitive available separately. |
+| 111 | Pod-create endpoint `POST /.pods` with 1/day/IP rate limit | `src/server.js:692-703`, `src/handlers/container.js:322-454` | `solid-pod-rs-server::handle_create_pod` validates pod name, seeds path-mode pod containers/profile, returns JSS response shape, and enforces one create per IP per day | present | `crates/solid-pod-rs-server/src/lib.rs::handle_create_pod`, `PodCreateLimiter`; `crates/solid-pod-rs/tests/server_routes_jss.rs` | Server-local limiter avoids changing core feature defaults. |
 | 112 | Per-write rate limit | `src/server.js:455-458` | `security::rate_limit::RateLimiter` + `RateLimitKey` / `RateLimitSubject` canonical forms | present (library primitive) | `src/security/rate_limit.rs` | Binder wires to rate-limit backend. |
 | 113 | Per-pod byte quota with reconcile | `src/storage/quota.js` + `bin/jss.js quota reconcile` | `provision::QuotaTracker` (reserve/release atomic primitive) + `FsQuotaStore::write_sidecar` atomic tempfile+rename + `sweep_quota_orphans` | present | `src/quota/mod.rs:136-172, 174-225, 308`; `tests/quota_race.rs` | CLI absent; core primitive solid. |
 | 114 | SSRF guard (blocks RFC1918, link-local, AWS metadata, etc.) | `src/utils/ssrf.js:15-157` | `security::is_safe_url` + `security::resolve_and_check` + `SsrfPolicy::classify` cover RFC 1918 / RFC 4193 ULA / loopback / link-local / cloud-metadata literals (incl. `169.254.169.254`, `fd00:ec2::254`) + `metadata.google.internal` short-circuit | present (P0 cleared) | `src/security/ssrf.rs` | |

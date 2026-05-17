@@ -17,7 +17,7 @@ use bytes::Bytes;
 use solid_pod_rs::security::DotfileAllowlist;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta};
+use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta, PodCreateLimiter};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -55,6 +55,8 @@ async fn public_read_state() -> AppState {
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
         pay_config: solid_pod_rs::payments::PayConfig::default(),
+        data_root: None,
+        pod_create_limiter: Arc::new(PodCreateLimiter::default()),
     }
 }
 
@@ -89,6 +91,8 @@ async fn public_write_state(body_cap: usize) -> AppState {
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
         pay_config: solid_pod_rs::payments::PayConfig::default(),
+        data_root: None,
+        pod_create_limiter: Arc::new(PodCreateLimiter::default()),
     }
 }
 
@@ -196,6 +200,12 @@ async fn server_anonymous_put_to_protected_resource_returns_401() {
         resp.status()
     );
     assert!(resp.headers().contains_key("wac-allow"));
+    let challenge = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(challenge, "DPoP realm=\"Solid\", Bearer realm=\"Solid\"");
 }
 
 #[actix_web::test]
@@ -235,6 +245,8 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
         pay_config: solid_pod_rs::payments::PayConfig::default(),
+        data_root: None,
+        pod_create_limiter: Arc::new(PodCreateLimiter::default()),
     };
     let app = test::init_service(build_app(state)).await;
 

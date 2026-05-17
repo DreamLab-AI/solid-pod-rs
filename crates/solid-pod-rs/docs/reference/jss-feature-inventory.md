@@ -4,8 +4,9 @@
 > earlier Community-Solid-Server-flavoured inventory. Sprint 3 discovered the
 > previous parity corpus was mis-attributed to CSS; this file is the corrected
 > baseline, built against the real JSS local clone at
-> `/home/devuser/workspace/project/JavaScriptSolidServer/` (tracked upstream as
-> `jss-upstream`). Citations use `path:line` references into that tree.
+> `/home/devuser/workspace/JavaScriptSolidServer/` (fast-forwarded to
+> `upstream/gh-pages` commit `10bd60f`, package `0.0.197`). Citations use
+> `path:line` references into that tree.
 
 ## 1. Identification
 
@@ -15,7 +16,7 @@
 | Upstream | `https://github.com/JavaScriptSolidServer/JavaScriptSolidServer` |
 | Licence | `AGPL-3.0-only` (`package.json:53`) |
 | Language | Node.js ≥ 18, ESM (`package.json:6, 42`) |
-| Local tree | `package.json` version `0.0.86`; README self-describes as `v0.0.79` (`README.md:9`). Upstream published tags run `v0.0.26 … v0.0.46`; the local checkout is ahead of the remote at `backup-main-before-huge-refactor-1264-g25b8fae13`. |
+| Local tree | `package.json` version `0.0.197` at upstream `gh-pages` commit `10bd60f` (`Bump version to 0.0.197 (#473)`). |
 | Declared perf | README Performance table: GET resource 5,400+ req/s, GET container 4,700+, PUT 5,700+, POST 5,200+, OPTIONS 10,000+ (`README.md:925–931`). |
 | Declared footprint | Comparison table: JSS 432 KB / 10 deps, vs NSS 777 KB / 58 deps, CSS 5.8 MB / 70 deps (`README.md:869–874`). Note: README line ~870 uses "432 KB / 10 deps", not "~1 MB". |
 | Solid spec | LDP + Solid Protocol (N3 Patch, SPARQL Update, WAC, Solid-OIDC) with explicit JSS extensions: Nostr relay, NIP-98, ActivityPub, Git HTTP backend, WebID-TLS, Schnorr SSO, Passkeys, did:nostr (`README.md:9–42`). |
@@ -409,14 +410,13 @@ non-prefixed `TOKEN_SECRET` (mandatory in production — `auth/token.js:17–34`
 - **Tags** (local `git tag`): `v0.0.26, v0.0.27, v0.0.31, v0.0.32, v0.0.33,
   v0.0.34, v0.0.35, v0.0.46` — semver-esque but clearly pre-1.0 alpha,
   patch-level only.
-- **Current local version**: `package.json` `0.0.86`; README body references
-  `v0.0.79`, `v0.0.77`, `v0.0.15`, `v0.0.12` as feature introductions. Tag
-  coverage lags the code.
-- **Commit cadence**: local mirror is the VisionClaw fork, so raw commit counts
-  include our own work. Verification of upstream cadence requires
-  `git fetch jss-upstream main` + `git log jss-upstream/main --since='6 months
-  ago'`, which was not executed (repo is read-only from this agent's side and
-  the task requires a local clone).
+- **Current local version**: `package.json` `0.0.197` at upstream
+  `gh-pages` commit `10bd60f`. Tag coverage lags the code.
+- **Commit cadence**: local mirror is fast-forwarded to upstream, so raw
+  commit counts can be taken from `upstream/gh-pages`. Verification of
+  upstream cadence requires `git fetch upstream` + `git log
+  upstream/gh-pages --since='6 months
+  ago'`; the comparator was fetched on 2026-05-17.
 - **Open issues / PRs**: no offline snapshot in the working tree. README
   references Issue #32 for root-ACL semantics (`README.md:919`).
 - **Security advisories**: two in-tree audits, `SECURITY-AUDIT-2026-01-03.md`
@@ -425,7 +425,7 @@ non-prefixed `TOKEN_SECRET` (mandatory in production — `auth/token.js:17–34`
 
 ## 11. As-built citation index
 
-All paths relative to `/home/devuser/workspace/project/JavaScriptSolidServer/`.
+All paths relative to `/home/devuser/workspace/JavaScriptSolidServer/`.
 
 | Feature | File:line |
 |---|---|

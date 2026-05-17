@@ -18,7 +18,7 @@ use bytes::Bytes;
 use solid_pod_rs::security::DotfileAllowlist;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta};
+use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta, PodCreateLimiter};
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -70,6 +70,8 @@ async fn make_state() -> AppState {
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
         pay_config: solid_pod_rs::payments::PayConfig::default(),
+        data_root: None,
+        pod_create_limiter: Arc::new(PodCreateLimiter::default()),
     }
 }
 

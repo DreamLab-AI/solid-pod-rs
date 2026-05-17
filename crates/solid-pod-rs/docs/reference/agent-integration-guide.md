@@ -191,8 +191,8 @@ crates/
 | `Allow:` | `src/ldp.rs` | `options_for` → `OptionsResponse` | `src/ldp/headers.js` | `tests/ldp_headers_jss.rs` | 24 |
 | `Vary: Authorization, Origin[, Accept]` | `src/ldp.rs` | `vary_header` | `src/ldp/headers.js` (#315) | `tests/ldp_headers_jss.rs` | 25, 156 |
 | `WAC-Allow` | `src/wac/mod.rs` | `wac_allow_header`, `wac_allow_header_with_dispatcher` | `src/wac/checker.js:279-282` | `tests/wac_basic.rs` | 26 |
-| `Updates-Via` | (consumer binder) | — | `src/server.js:229-231` | — | 27 |
-| CORS | `src/security/cors.rs` | `CorsPolicy`, `preflight_headers`, `response_headers` | `src/ldp/headers.js:112,135` | `tests/cors_preflight.rs` | 28, 29 |
+| `Updates-Via` | `solid-pod-rs-server/src/lib.rs` | `set_updates_via` on GET / OPTIONS responses | `src/server.js:344-347` | `tests/server_routes_jss.rs` | 27 |
+| CORS | `src/security/cors.rs` + `solid-pod-rs-server/src/lib.rs` | `CorsPolicy` primitive; server `CorsHeaders` global envelope | `src/ldp/headers.js:96-101` | `tests/cors_preflight.rs`, `solid-pod-rs-server/tests/middleware_guards.rs` | 28, 29 |
 | ETag (SHA-256) | `src/storage/mod.rs` | `ResourceMeta::etag` | `src/storage/filesystem.js:32` (md5) — semantic-diff | `tests/storage_trait.rs` | 30 |
 | If-Match / If-None-Match | `src/ldp.rs` | `evaluate_preconditions` → `ConditionalOutcome` | `src/utils/conditional.js` | `tests/ldp_headers_jss.rs` | 31 |
 | Range requests | `src/ldp.rs` | `parse_range_header`, `parse_range_header_v2`, `slice_range`, `ByteRange::content_range` | `src/handlers/resource.js:56-106` | `tests/ldp_range_jss.rs` | 32 |
@@ -255,7 +255,7 @@ crates/
 | WebID-TLS | n/a | deferred | `src/auth/webid-tls.js:187-257` | — | 70 (deferred) |
 | IdP-issued JWT verify | `src/oidc/mod.rs` | `verify_access_token`, `verify_access_token_hs256` | `src/auth/token.js:126-161` | `tests/oidc_integration.rs` | 71 |
 | Auth dispatch precedence | (consumer binder) | primitives only | `src/auth/token.js:215-269` | — | 72 |
-| `WWW-Authenticate` | (consumer binder) | — | `src/auth/middleware.js:117` | — | 73 |
+| `WWW-Authenticate` | `solid-pod-rs-server/src/lib.rs` | `enforce_write` emits DPoP + Bearer challenge on 401 | `src/auth/middleware.js:173` | `tests/server_security.rs` | 73 |
 
 ### 6. WebID
 
@@ -312,7 +312,7 @@ crates/
 | Subdomain multi-tenancy | `src/multitenant.rs` | `SubdomainResolver`, `PathResolver`, `PodResolver`, `ResolvedPath` | `src/server.js:159-170` + `src/utils/url.js` | `tests/tenancy_subdomain.rs` | 125 |
 | Path-based multi-tenancy | `src/multitenant.rs` | `PathResolver` | path dispatch in `src/server.js` | `tests/tenancy_subdomain.rs` | 126 |
 | Filesystem quota + reconcile | `src/quota/mod.rs` (feature `quota`) | `QuotaPolicy`, `FsQuotaStore`, `QuotaUsage`, `QuotaExceeded` | `src/storage/quota.js` + `bin/jss.js quota reconcile` | `tests/quota_fs.rs`, `tests/quota_race.rs` | 113, 159, 160, 161 |
-| Pod-create rate limit | `src/security/rate_limit.rs` (feature `rate-limit`) | `RateLimiter`, `LruRateLimiter`, `RateLimitKey`, `RateLimitSubject`, `RateLimitDecision` | `src/server.js:356-364` | `tests/rate_limit_lru.rs` | 111, 112 |
+| Pod-create rate limit | `solid-pod-rs-server/src/lib.rs` + `src/security/rate_limit.rs` | Server `PodCreateLimiter` for `POST /.pods`; core `RateLimiter` primitive for other binders | `src/server.js:692-703` | `tests/server_routes_jss.rs`, `tests/rate_limit_lru.rs` | 111, 112 |
 | SSRF guard | `src/security/ssrf.rs` | `is_safe_url`, `resolve_and_check`, `SsrfPolicy`, `IpClass`, `SsrfError` | `src/utils/ssrf.js:15-157` | `tests/oidc_jwks_ssrf.rs`, `src/security/ssrf.rs::tests` | 114 (Sprint 9 P0) |
 | Dotfile allowlist | `src/security/dotfile.rs` | `is_path_allowed`, `DotfileAllowlist`, `DotfileError`, `DotfilePathError` | `src/server.js:265-281` | `tests/security_primitives_test.rs` | 115 (Sprint 9 P0) |
 

@@ -56,8 +56,11 @@
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use actix_web::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -106,6 +109,8 @@ pub struct AppState {
     /// storage. Required by the `git` feature to locate pod directories
     /// for `GitAutoInit` (provisioning) and `GitHttpService` (serving).
     pub data_root: Option<PathBuf>,
+    /// JSS-compatible pod creation limiter: one `POST /.pods` per IP per day.
+    pub pod_create_limiter: Arc<PodCreateLimiter>,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -158,7 +163,39 @@ impl AppState {
             mashlib_cdn: None,
             pay_config: solid_pod_rs::payments::PayConfig::default(),
             data_root: None,
+            pod_create_limiter: Arc::new(PodCreateLimiter::default()),
         }
+    }
+}
+
+/// In-process sliding-window limiter for JSS-compatible `POST /.pods`.
+#[derive(Debug)]
+pub struct PodCreateLimiter {
+    hits: Mutex<HashMap<IpAddr, Instant>>,
+    window: Duration,
+}
+
+impl Default for PodCreateLimiter {
+    fn default() -> Self {
+        Self {
+            hits: Mutex::new(HashMap::new()),
+            window: Duration::from_secs(24 * 60 * 60),
+        }
+    }
+}
+
+impl PodCreateLimiter {
+    fn check(&self, ip: IpAddr) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut hits = self.hits.lock().unwrap();
+        if let Some(last) = hits.get(&ip).copied() {
+            let elapsed = now.saturating_duration_since(last);
+            if elapsed < self.window {
+                return Err(self.window.saturating_sub(elapsed).as_secs().max(1));
+            }
+        }
+        hits.insert(ip, now);
+        Ok(())
     }
 }
 
@@ -264,10 +301,10 @@ async fn enforce_write(
     }
 
     let allow_header = wac::wac_allow_header(acl_doc.as_ref(), agent_uri, path);
-    let (status, body) = if agent_uri.is_none() {
-        (StatusCode::UNAUTHORIZED, "authentication required")
+    let (status, body, unauthenticated) = if agent_uri.is_none() {
+        (StatusCode::UNAUTHORIZED, "authentication required", true)
     } else {
-        (StatusCode::FORBIDDEN, "access forbidden")
+        (StatusCode::FORBIDDEN, "access forbidden", false)
     };
     let mut rsp = HttpResponse::new(status);
     rsp.headers_mut().insert(
@@ -275,6 +312,12 @@ async fn enforce_write(
         header::HeaderValue::from_str(&allow_header)
             .unwrap_or(header::HeaderValue::from_static("")),
     );
+    if unauthenticated {
+        rsp.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            header::HeaderValue::from_static("DPoP realm=\"Solid\", Bearer realm=\"Solid\""),
+        );
+    }
     Err(actix_web::error::InternalError::from_response(body, rsp).into())
 }
 
@@ -298,9 +341,10 @@ fn set_wac_allow(rsp: &mut HttpResponse, header_value: &str) {
 }
 
 fn set_updates_via(rsp: &mut HttpResponse, base_url: &str) {
-    let ws_url = base_url
+    let ws_base = base_url
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
+    let ws_url = format!("{}/.notifications", ws_base.trim_end_matches('/'));
     if let Ok(v) = header::HeaderValue::from_str(&ws_url) {
         rsp.headers_mut()
             .insert(header::HeaderName::from_static("updates-via"), v);
@@ -730,7 +774,10 @@ async fn handle_delete(
     }
 }
 
-async fn handle_options(req: HttpRequest) -> Result<HttpResponse, ActixError> {
+async fn handle_options(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<HttpResponse, ActixError> {
     let path = req.uri().path().to_string();
     let o = ldp::options_for(&path);
     let mut rsp = HttpResponse::NoContent().finish();
@@ -752,6 +799,7 @@ async fn handle_options(req: HttpRequest) -> Result<HttpResponse, ActixError> {
         rsp.headers_mut()
             .insert(header::HeaderName::from_static("accept-ranges"), v);
     }
+    set_updates_via(&mut rsp, &state.nodeinfo.base_url);
     Ok(rsp)
 }
 
@@ -925,6 +973,11 @@ struct CreateAccountRequest {
     name: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreatePodRequest {
+    name: String,
+}
+
 async fn handle_pod_check(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let pod_name = path.into_inner();
     let pod_root = format!("/{pod_name}/");
@@ -932,6 +985,19 @@ async fn handle_pod_check(state: web::Data<AppState>, path: web::Path<String>) -
         Ok(true) => HttpResponse::Ok().json(serde_json::json!({"exists": true})),
         _ => HttpResponse::NotFound().json(serde_json::json!({"exists": false})),
     }
+}
+
+fn valid_pod_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+fn request_ip(req: &HttpRequest) -> IpAddr {
+    req.peer_addr()
+        .map(|addr| addr.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
 async fn handle_create_account(
@@ -945,27 +1011,23 @@ async fn handle_create_account(
         );
     }
 
-    let plan = provision::ProvisionPlan {
-        pubkey: body.username.clone(),
-        display_name: body.name.clone(),
-        pod_base: format!(
+    let mut plan = provision::ProvisionPlan::new(
+        body.username.clone(),
+        format!(
             "{}/{}",
             state.nodeinfo.base_url.trim_end_matches('/'),
             body.username,
         ),
-        containers: vec![
-            format!("/{}/", body.username),
-            format!("/{}/profile/", body.username),
-            format!("/{}/inbox/", body.username),
-            format!("/{}/public/", body.username),
-            format!("/{}/private/", body.username),
-            format!("/{}/settings/", body.username),
-        ],
-        root_acl: None,
-        quota_bytes: None,
-        #[cfg(feature = "provision-keys")]
-        provision_keys: false,
-    };
+    );
+    plan.display_name = body.name.clone();
+    plan.containers = vec![
+        format!("/{}/", body.username),
+        format!("/{}/profile/", body.username),
+        format!("/{}/inbox/", body.username),
+        format!("/{}/public/", body.username),
+        format!("/{}/private/", body.username),
+        format!("/{}/settings/", body.username),
+    ];
 
     // Provision the pod. When the `git` feature is enabled and a FS root
     // is configured, run git init on the new pod directory immediately
@@ -996,6 +1058,78 @@ async fn handle_create_account(
         }))),
         Err(e) => Err(to_actix(e)),
     }
+}
+
+async fn handle_create_pod(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Json<CreatePodRequest>,
+) -> Result<HttpResponse, ActixError> {
+    let ip = request_ip(&req);
+    if let Err(retry_after) = state.pod_create_limiter.check(ip) {
+        return Ok(HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", retry_after.to_string()))
+            .json(serde_json::json!({
+                "error": "Too Many Requests",
+                "message": "Pod creation rate limit exceeded",
+                "retryAfter": retry_after
+            })));
+    }
+
+    if !valid_pod_name(&body.name) {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Invalid pod name. Use alphanumeric, dash, or underscore only."
+        })));
+    }
+
+    let pod_root = format!("/{}/", body.name);
+    if state.storage.exists(&pod_root).await.unwrap_or(false) {
+        return Ok(
+            HttpResponse::Conflict().json(serde_json::json!({"error": "Pod already exists"}))
+        );
+    }
+
+    let conn = req.connection_info();
+    let base_uri = format!("{}://{}", conn.scheme(), conn.host());
+    let pod_uri = format!("{}/{}/", base_uri.trim_end_matches('/'), body.name);
+
+    for container in [
+        format!("/{}/", body.name),
+        format!("/{}/profile/", body.name),
+        format!("/{}/inbox/", body.name),
+        format!("/{}/public/", body.name),
+        format!("/{}/private/", body.name),
+        format!("/{}/settings/", body.name),
+    ] {
+        let meta_key = format!("{}.meta", container.trim_end_matches('/'));
+        state
+            .storage
+            .put(&meta_key, Bytes::from_static(b"{}"), "application/ld+json")
+            .await
+            .map_err(to_actix)?;
+    }
+
+    let canonical_pods_prefix = format!("{}/pods/{}/", base_uri.trim_end_matches('/'), body.name);
+    let webid = format!("{pod_uri}profile/card#me");
+    let profile = solid_pod_rs::webid::generate_webid_html(&body.name, None, &base_uri)
+        .replace(&canonical_pods_prefix, &pod_uri);
+    state
+        .storage
+        .put(
+            &format!("/{}/profile/card", body.name),
+            Bytes::from(profile.into_bytes()),
+            "text/html",
+        )
+        .await
+        .map_err(to_actix)?;
+
+    Ok(HttpResponse::Created()
+        .insert_header(("Location", pod_uri.clone()))
+        .json(serde_json::json!({
+            "name": body.name,
+            "webId": webid,
+            "podUri": pod_uri,
+        })))
 }
 
 // ---------------------------------------------------------------------------
@@ -1460,6 +1594,90 @@ fn path_is_traversal(path: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// JSS-compatible CORS response headers
+// ---------------------------------------------------------------------------
+
+/// Adds the same CORS envelope JSS emits from its global `onRequest` hook.
+pub struct CorsHeaders;
+
+impl<S, B> Transform<S, ServiceRequest> for CorsHeaders
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type InitError = ();
+    type Transform = CorsHeadersMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(CorsHeadersMiddleware { service }))
+    }
+}
+
+/// Per-request service instance produced by [`CorsHeaders`].
+pub struct CorsHeadersMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for CorsHeadersMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let origin = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let fut = self.service.call(req);
+        Box::pin(async move {
+            let mut resp = fut.await?;
+            add_cors_headers(resp.headers_mut(), origin.as_deref());
+            Ok(resp)
+        })
+    }
+}
+
+fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>) {
+    let origin = origin.unwrap_or("*");
+    let pairs = [
+        ("access-control-allow-origin", origin),
+        (
+            "access-control-allow-methods",
+            "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS",
+        ),
+        (
+            "access-control-allow-headers",
+            "Accept, Authorization, Content-Type, DPoP, If-Match, If-None-Match, Link, Range, Slug, Origin",
+        ),
+        (
+            "access-control-expose-headers",
+            "Accept-Patch, Accept-Post, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Link, Location, Updates-Via, WAC-Allow, X-Cost, X-Balance, X-Pay-Currency",
+        ),
+        ("access-control-allow-credentials", "true"),
+        ("access-control-max-age", "86400"),
+    ];
+
+    for (name, value) in pairs {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_lowercase(name.as_bytes()),
+            header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(name, value);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sprint 11 (row 158): top-level 5xx logging middleware.
 //
 // JSS ref: commit 5b34d72 (#312) — "Top-level Fastify error handler,
@@ -1631,8 +1849,8 @@ where
         // Whitelist the well-known discovery paths even though they
         // contain a dotfile component — they are part of Solid's stable
         // interop surface.
-        let allow_wellknown = path.starts_with("/.well-known/");
-        if !allow_wellknown {
+        let allow_system_route = path.starts_with("/.well-known/") || path == "/.pods";
+        if !allow_system_route {
             let pb = PathBuf::from(&path);
             if !self.allow.is_allowed(Path::new(&pb)) {
                 let rsp = HttpResponse::Forbidden().body("dotfile path denied by allowlist");
@@ -1774,6 +1992,7 @@ pub fn build_app(
         // guards. Wrapping first means `wrap()` applies it last in
         // actix's stack order.
         .wrap(ErrorLoggingMiddleware)
+        .wrap(CorsHeaders)
         // `MergeOnly` collapses duplicate slashes (//a → /a) without
         // stripping the trailing slash, which is the container/resource
         // discriminator in LDP.
@@ -1828,6 +2047,7 @@ pub fn build_app(
 
     // Pod management API (JSS parity: /api/accounts/*)
     app = app
+        .route("/.pods", web::post().to(handle_create_pod))
         .route("/api/accounts/new", web::post().to(handle_create_account))
         .route("/pods/check/{name}", web::get().to(handle_pod_check))
         .route("/login/password", web::post().to(handle_login_password))

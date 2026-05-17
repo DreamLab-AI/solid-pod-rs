@@ -8,6 +8,7 @@
 //! dialect dispatch, OPTIONS envelope, and the four `.well-known/*`
 //! discovery endpoints.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use actix_web::http::StatusCode;
@@ -16,7 +17,7 @@ use bytes::Bytes;
 use solid_pod_rs::security::DotfileAllowlist;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta};
+use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta, PodCreateLimiter};
 
 // ---------------------------------------------------------------------------
 // Test harness — in-memory storage, permissive ACL, deterministic base URL.
@@ -71,6 +72,8 @@ async fn make_state() -> AppState {
         mashlib: solid_pod_rs::MashlibConfig::default(),
         mashlib_cdn: None,
         pay_config: solid_pod_rs::payments::PayConfig::default(),
+        data_root: None,
+        pod_create_limiter: Arc::new(PodCreateLimiter::default()),
     };
     state.nodeinfo.base_url = "https://pod.example".into();
     state
@@ -138,6 +141,68 @@ async fn server_post_with_invalid_slug_returns_400() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn server_post_pods_creates_pod_and_returns_jss_shape() {
+    let state = make_state().await;
+    let storage = state.storage.clone();
+    let app = test::init_service(build_app(state)).await;
+
+    let req = test::TestRequest::post()
+        .uri("/.pods")
+        .peer_addr(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+            42000,
+        ))
+        .insert_header(("host", "pod.example"))
+        .set_json(serde_json::json!({ "name": "alice" }))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        resp.headers().get("location").and_then(|v| v.to_str().ok()),
+        Some("http://pod.example/alice/")
+    );
+    assert!(storage.exists("/alice.meta").await.unwrap());
+    assert!(storage.exists("/alice/profile.meta").await.unwrap());
+
+    let body = test::read_body(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("alice"));
+    assert_eq!(
+        json.get("podUri").and_then(|v| v.as_str()),
+        Some("http://pod.example/alice/")
+    );
+    assert!(json
+        .get("webId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .ends_with("/alice/profile/card#me"));
+}
+
+#[actix_web::test]
+async fn server_post_pods_is_limited_to_one_per_ip_per_day() {
+    let state = make_state().await;
+    let app = test::init_service(build_app(state)).await;
+    let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11)), 42000);
+
+    let first = test::TestRequest::post()
+        .uri("/.pods")
+        .peer_addr(peer)
+        .set_json(serde_json::json!({ "name": "first" }))
+        .to_request();
+    let first = test::call_service(&app, first).await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    let second = test::TestRequest::post()
+        .uri("/.pods")
+        .peer_addr(peer)
+        .set_json(serde_json::json!({ "name": "second" }))
+        .to_request();
+    let second = test::call_service(&app, second).await;
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(second.headers().contains_key("retry-after"));
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +303,12 @@ async fn server_options_container_advertises_accept_post_and_accept_patch() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(allow.contains("POST"));
+    let updates_via = resp
+        .headers()
+        .get("updates-via")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(updates_via, "wss://pod.example/.notifications");
 }
 
 #[actix_web::test]

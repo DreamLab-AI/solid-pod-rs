@@ -5,7 +5,7 @@
 //! so the full middleware chain (NormalizePath -> PathTraversalGuard ->
 //! DotfileGuard) is exercised end-to-end.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs_server::{body_cap_from_env, build_app, AppState, NodeInfoMeta, DEFAULT_BODY_CAP};
@@ -14,6 +14,11 @@ use solid_pod_rs_server::{body_cap_from_env, build_app, AppState, NodeInfoMeta, 
 fn make_state() -> AppState {
     let storage = Arc::new(MemoryBackend::new());
     AppState::new(storage)
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +100,35 @@ async fn traversal_guard_allows_root() {
         400,
         "root path must not be rejected by traversal guard"
     );
+}
+
+#[actix_web::test]
+async fn cors_headers_match_jss_global_envelope() {
+    let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
+        .uri("/")
+        .insert_header(("origin", "https://app.example"))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    let headers = rsp.headers();
+    assert_eq!(
+        headers
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("https://app.example")
+    );
+    assert_eq!(
+        headers
+            .get("access-control-allow-credentials")
+            .and_then(|v| v.to_str().ok()),
+        Some("true")
+    );
+    let expose = headers
+        .get("access-control-expose-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(expose.contains("Updates-Via"), "Expose-Headers = {expose}");
+    assert!(expose.contains("WAC-Allow"), "Expose-Headers = {expose}");
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +253,7 @@ fn body_cap_default_is_50mb() {
 
 #[test]
 fn body_cap_from_env_returns_default_on_missing_var() {
+    let _guard = env_lock();
     std::env::remove_var("JSS_MAX_REQUEST_BODY");
     let cap = body_cap_from_env();
     assert_eq!(
@@ -229,6 +264,7 @@ fn body_cap_from_env_returns_default_on_missing_var() {
 
 #[test]
 fn body_cap_from_env_parses_valid_value() {
+    let _guard = env_lock();
     std::env::set_var("JSS_MAX_REQUEST_BODY", "10MB");
     let cap = body_cap_from_env();
     // body_cap_from_env uses SI (decimal) MB: 10 * 1_000_000.
@@ -238,12 +274,13 @@ fn body_cap_from_env_parses_valid_value() {
 
 #[test]
 fn body_cap_from_env_falls_back_on_invalid_value() {
+    let _guard = env_lock();
     std::env::set_var("JSS_MAX_REQUEST_BODY", "not-a-size");
     let cap = body_cap_from_env();
     std::env::remove_var("JSS_MAX_REQUEST_BODY");
-    assert!(
-        cap == DEFAULT_BODY_CAP || cap == 10_000_000,
-        "must fall back to default or inherit from parallel test env"
+    assert_eq!(
+        cap, DEFAULT_BODY_CAP,
+        "invalid env var must fall back to default"
     );
 }
 
@@ -273,6 +310,7 @@ fn nodeinfo_meta_default_values() {
 
 #[test]
 fn app_state_new_sets_defaults() {
+    let _guard = env_lock();
     std::env::remove_var("JSS_MAX_REQUEST_BODY");
     let storage = Arc::new(MemoryBackend::new());
     let state = AppState::new(storage);
