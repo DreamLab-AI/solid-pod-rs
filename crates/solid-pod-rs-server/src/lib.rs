@@ -239,11 +239,15 @@ async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())?;
-    let url = format!(
-        "http://{}{}",
-        req.connection_info().host(),
-        req.uri().path()
-    );
+    // Reconstruct the request URL the NIP-98 event was signed over. The
+    // scheme must reflect the externally-visible scheme (honouring
+    // `X-Forwarded-Proto` via actix `connection_info`) — a pod behind TLS
+    // or a federation reverse proxy is reached at `https://`, and the agent
+    // signs that URL. Hardcoding `http://` would break URL matching for
+    // every TLS-fronted deployment. Mirrors the base-URI construction used
+    // elsewhere in this file (see `conn.scheme()` call sites).
+    let conn = req.connection_info();
+    let url = format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path());
     nip98::verify(header_val, &url, req.method().as_str(), None)
         .await
         .ok()
@@ -327,9 +331,17 @@ async fn enforce_write(
             .unwrap_or(header::HeaderValue::from_static("")),
     );
     if unauthenticated {
+        // Advertise every auth scheme the write path actually accepts so an
+        // unauthenticated agent knows how to retry. `extract_pubkey` verifies
+        // NIP-98 (`Authorization: Nostr <base64(kind-27235 event)>`), which is
+        // how a `did:nostr` agent authenticates against the pod — without the
+        // `Nostr` challenge an agent has no protocol signal that NIP-98 is
+        // accepted. DPoP/Bearer remain advertised for OIDC/DPoP clients.
         rsp.headers_mut().insert(
             header::WWW_AUTHENTICATE,
-            header::HeaderValue::from_static("DPoP realm=\"Solid\", Bearer realm=\"Solid\""),
+            header::HeaderValue::from_static(
+                "Nostr realm=\"Solid\", DPoP realm=\"Solid\", Bearer realm=\"Solid\"",
+            ),
         );
     }
     Err(actix_web::error::InternalError::from_response(body, rsp).into())
