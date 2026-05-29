@@ -70,6 +70,47 @@ requests (`Sec-Fetch-Dest: empty`) still receive raw RDF.
 | `JSS_MASHLIB_CDN` | `--mashlib-cdn` | `2.0.0` |
 | `JSS_MASHLIB_MODULE` | `--mashlib-module` | — |
 
+## RDF content negotiation on GET
+
+`GET` transcodes a stored RDF resource into the syntax the client names in
+`Accept`. KG resources persist as N-Triples; agents and the elevation
+extractor can read the same graph as Turtle or JSON-LD without a separate
+conversion step. Recognised concrete media types:
+
+| `Accept` value | Served as |
+|---|---|
+| `text/turtle` | Turtle (N-Triples is a syntactic subset, emitted verbatim) |
+| `application/n-triples` | N-Triples |
+| `application/ld+json` | JSON-LD (expanded form) |
+
+Transcoded responses carry `Content-Type` of the negotiated format plus
+`Vary: Accept`. The body is served verbatim when:
+
+- the client names no concrete RDF type (`*/*`, `application/*`, empty);
+- the requested format already equals the stored format;
+- the stored body does not parse as N-Triples (fails soft, never destroys);
+- the target is `application/rdf+xml` (no serialiser — declined, served as-is).
+
+Non-RDF resources are always served verbatim. PATCH likewise seeds its
+working graph from the existing N-Triples body, so an N3/SPARQL-Update
+mutation is applied on top of pre-existing triples rather than replacing
+them; a body that is neither empty nor parseable N-Triples is refused with
+`409` rather than silently overwritten.
+
+## Agent write path (NIP-98)
+
+Write verbs (`PUT` / `POST` / `PATCH` / `DELETE` / `COPY`) authenticate the
+caller via NIP-98: `extract_pubkey` reconstructs the signed request URL from
+actix `connection_info`, honouring `X-Forwarded-Proto` so a `did:nostr` agent
+signing `https://` behind TLS or a reverse proxy is not rejected with a
+spurious `401` URL mismatch. The authenticated pubkey resolves to a
+`did:nostr:{pubkey}` WebID that WAC evaluates against the effective ACL.
+
+On an unauthenticated write the `WWW-Authenticate` challenge advertises
+`Nostr realm="Solid", DPoP realm="Solid", Bearer realm="Solid"`, so an agent
+discovers the NIP-98 scheme the write path actually accepts. WAC denial of an
+authenticated caller returns `403`; a missing credential returns `401`.
+
 ## Admin API and Native Pod Mesh (alpha.15+)
 
 ### Provision endpoint
