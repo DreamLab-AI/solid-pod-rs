@@ -640,18 +640,23 @@ async fn handle_patch(
     let existing = state.storage.get(&path).await;
     match existing {
         Ok((current_body, meta)) => {
-            // Parse the current body into a graph. For the Sprint 7 D
-            // slice, the PATCH paths operate on an empty seed graph when
-            // a textual RDF representation cannot be parsed — the
-            // dialect patchers already cover the semantics. This keeps
-            // the handler thin; richer mutation semantics live in
-            // the library crate.
+            // Seed the working graph from the EXISTING resource body so the
+            // mutation lands on top of the triples already stored, rather
+            // than on an empty graph (which silently discarded everything
+            // on every incremental write — the data-loss bug fixed here;
+            // PRD-014 Seam C / DDD-012 A2 non-destructive-write invariant).
+            // RDF resources are persisted as N-Triples by `graph_to_turtle`,
+            // so the current body round-trips through `parse_ntriples`. A
+            // body that is not parseable N-Triples is refused, not
+            // overwritten — fail closed rather than destroy.
             let out = match dialect {
                 ldp::PatchDialect::N3 => {
-                    ldp::apply_n3_patch(ldp::Graph::new(), &body_str).map_err(patch_parse_err)
+                    let seed = seed_graph_from_patch_target(&current_body)?;
+                    ldp::apply_n3_patch(seed, &body_str).map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::SparqlUpdate => {
-                    ldp::apply_sparql_patch(ldp::Graph::new(), &body_str).map_err(patch_parse_err)
+                    let seed = seed_graph_from_patch_target(&current_body)?;
+                    ldp::apply_sparql_patch(seed, &body_str).map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::JsonPatch => {
                     let mut json: serde_json::Value = match serde_json::from_slice(&current_body) {
@@ -722,6 +727,31 @@ fn patch_parse_err(e: PodError) -> ActixError {
 /// — the handler does not add its own formatting.
 fn graph_to_turtle(g: &ldp::Graph) -> String {
     g.to_ntriples()
+}
+
+/// Seed the PATCH working graph from the existing resource body so an
+/// N3/SPARQL-Update mutation is applied on top of the triples already
+/// stored. RDF resources are persisted as N-Triples (see `graph_to_turtle`),
+/// so the current body round-trips through `Graph::parse_ntriples`. An
+/// empty body yields an empty graph. A body that is neither empty nor
+/// parseable N-Triples is REFUSED (409) rather than silently overwritten:
+/// destroying a resource the patch engine cannot read back would violate
+/// the non-destructive-write invariant (PRD-014 Seam C, DDD-012 A2).
+fn seed_graph_from_patch_target(current_body: &[u8]) -> Result<ldp::Graph, ActixError> {
+    let text = std::str::from_utf8(current_body).map_err(|_| {
+        actix_web::error::ErrorConflict(
+            "existing resource is not UTF-8 RDF; refusing destructive RDF PATCH",
+        )
+    })?;
+    if text.trim().is_empty() {
+        return Ok(ldp::Graph::new());
+    }
+    ldp::Graph::parse_ntriples(text).map_err(|_| {
+        actix_web::error::ErrorConflict(
+            "existing resource is not N-Triples RDF and cannot be non-destructively \
+             patched; PUT an N-Triples representation or use a JSON Patch",
+        )
+    })
 }
 
 /// Walk the storage tree from `path` upward, returning the first
