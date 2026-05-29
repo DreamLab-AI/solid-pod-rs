@@ -66,7 +66,7 @@ Repository: [DreamLab-AI/agentbox](https://github.com/DreamLab-AI/agentbox)
 
 ### nostr-rust-forum (nostr-bbs-pod-worker)
 
-nostr-rust-forum is a configurable forum kit published as 11
+nostr-rust-forum is a configurable forum kit published as 12
 `nostr-bbs-*` Rust crates. The `nostr-bbs-pod-worker` crate runs on
 Cloudflare Workers (wasm32 target) and consumes solid-pod-rs for
 pod-backed thread storage.
@@ -194,12 +194,13 @@ on you.
 
 - solid-pod-rs uses semantic versioning. Breaking changes to public
   APIs cause a major-version bump.
-- VisionClaw and agentbox pin `solid-pod-rs = "0.4"` in Cargo.toml.
-  Minor / patch updates are automatic.
+- VisionClaw consumes `solid-pod-rs` at the current alpha line with the
+  feature set it needs for embedded pods. agentbox builds a pinned
+  `solid-pod-rs-server` binary through Nix for the native pod tier.
 - nostr-bbs-pod-worker pins
-  `solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }`.
-- The current published version is **0.4.0-alpha.4** across all 7
-  workspace crates on crates.io.
+  `solid-pod-rs = { version = "0.4.0-alpha.15", default-features = false, features = ["core"] }`.
+- The current workspace version is **0.4.0-alpha.15** across all 7
+  workspace crates.
 
 ## Cross-system identity
 

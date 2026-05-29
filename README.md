@@ -385,6 +385,77 @@ Full list: [`docs/reference/env-vars.md`](crates/solid-pod-rs/docs/reference/env
 
 ---
 
+## Federation Transports
+
+solid-pod-rs participates in all three DreamLab federation transport strata as the sovereign data layer — pods are the canonical store, and all three transports provide different paths to reach them.
+
+### Stratum 1 — Tailscale (Private Mesh)
+
+solid-pod-rs can be reached by agentbox containers over a [Tailscale](https://tailscale.com/) tailnet for private federation. This is an alternative to Cloudflare tunnels when the pod mesh does not need public exposure.
+
+When solid-pod-rs runs standalone (not inside agentbox), Tailscale runs at the host level. The server binds to `0.0.0.0` and Tailscale ACLs control which nodes on the tailnet can reach it.
+
+```bash
+# On the host running solid-pod-rs:
+tailscale up --hostname=solid-pods
+
+# Server binds to all interfaces; Tailscale routes traffic:
+solid-pod-rs-server --config config.json
+# config.json contains:
+#   "server": { "host": "0.0.0.0", "port": 8484 }
+#   "server": { "base_url": "https://solid-pods.tailnet-name.ts.net:8484" }
+```
+
+Agentbox containers on the same tailnet discover the pod server via MagicDNS:
+
+```
+http://solid-pods.tailnet-name.ts.net:8484
+```
+
+<details>
+<summary><strong>Security model and comparison with Cloudflare tunnels</strong></summary>
+
+**Transport encryption.** Tailscale encrypts all traffic between nodes using WireGuard. NIP-98 bearer tokens still authenticate individual HTTP requests — the tailnet provides the encrypted channel, not the identity layer.
+
+**ACL restriction.** Tailscale ACLs should restrict port 8484 to agentbox nodes only:
+
+```json
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:agentbox"],
+      "dst": ["tag:solid-pods:8484"]
+    }
+  ]
+}
+```
+
+**Comparison with Cloudflare tunnel.** A Cloudflare tunnel exposes solid-pod-rs at a public HTTPS URL (e.g. `pods-native.dreamlab-ai.com`) with Cloudflare-managed TLS and DDoS protection. Tailscale provides private access restricted to tailnet members — no public endpoint. Both can coexist: Cloudflare for external clients, Tailscale for agentbox-to-pod traffic within the operator's infrastructure.
+
+</details>
+
+### Stratum 2 — Nostr Relays (All Components)
+
+solid-pod-rs bridges Nostr events into pod storage via the pod-inbox bridge. The embedded NIP-01 relay accepts events authenticated with NIP-98 `did:nostr` signatures. Peer relays (agentbox instances, public Nostr relays) connect via standard WebSocket.
+
+Pod owners receive governance events (kinds 31400-31405), direct messages, and federation notifications through the relay mesh. Events are persisted as Linked Data resources in the pod, making the Nostr relay mesh a durable delivery transport rather than an ephemeral bus.
+
+For censorship resistance, operators can configure public relay fallbacks alongside private infrastructure relays. All events are Schnorr-signed — authentication is independent of transport.
+
+### Stratum 3 — Cloudflare Tunnels (Edge to Local)
+
+A Cloudflare tunnel exposes the pod server to CF Workers services (nostr-rust-forum, dreamlab-ai-website) without opening ports to the public internet. The tunnel terminates at the pod server's HTTP listener; NIP-98 signatures provide request-level authentication on top of the tunnel's transport security.
+
+```toml
+# Tunnel exposes solid-pod-rs at a public hostname
+# CF Workers reach pods via: https://pods-native.dreamlab-ai.com/pods/{pubkey}/
+```
+
+Both Cloudflare tunnels (public HTTPS) and Tailscale (private WireGuard) can coexist — the pod server binds to `0.0.0.0` and accepts connections from either transport.
+
+---
+
 ## Account Management
 
 The server exposes the same account management endpoints as JSS, so existing Solid clients and deployment tooling work without modification. Pods are provisioned with a full directory structure: WebID profile, inbox, public/private containers, type indexes, and root ACL.
