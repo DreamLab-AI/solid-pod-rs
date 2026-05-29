@@ -482,6 +482,33 @@ async fn handle_get(
                 return Ok(rsp);
             }
 
+            // RDF content negotiation: when the client explicitly asks for
+            // a concrete RDF serialisation that differs from how the
+            // resource is stored, transcode it. KG resources persist as
+            // N-Triples (see the PATCH handler), so an agent or extractor
+            // can GET the same graph as Turtle, N-Triples, or JSON-LD on
+            // demand (PRD-014 Seam C / C4). Non-RDF resources, unparseable
+            // bodies, and wildcard/`*/*` Accepts fall through to verbatim.
+            if let Some((negotiated_body, negotiated_ct)) =
+                rdf_content_negotiate(&body, &meta.content_type, accept)
+            {
+                let mut rsp = HttpResponse::Ok().body(negotiated_body);
+                rsp.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_str(negotiated_ct)
+                        .unwrap_or_else(|_| header::HeaderValue::from_static("text/turtle")),
+                );
+                rsp.headers_mut()
+                    .insert(header::VARY, header::HeaderValue::from_static("Accept"));
+                if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
+                    rsp.headers_mut().insert(header::ETAG, etag);
+                }
+                set_wac_allow(&mut rsp, &wac_allow);
+                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_link_headers(&mut rsp, &path);
+                return Ok(rsp);
+            }
+
             let mut rsp = HttpResponse::Ok().body(body.to_vec());
             rsp.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -727,6 +754,94 @@ fn patch_parse_err(e: PodError) -> ActixError {
 /// — the handler does not add its own formatting.
 fn graph_to_turtle(g: &ldp::Graph) -> String {
     g.to_ntriples()
+}
+
+/// Parse an `Accept` header and return the highest-q *explicit* RDF
+/// format named by the client. Unlike `ldp::negotiate_format`, wildcard
+/// media ranges (`*/*`, `text/*`, `application/*`) are NOT mapped to a
+/// default: a request that names no concrete RDF type yields `None`, so
+/// the GET handler serves the stored representation verbatim instead of
+/// surprising a browser (which sends `*/*`) with a transcode.
+fn best_explicit_rdf_format(accept: &str) -> Option<ldp::RdfFormat> {
+    let mut best: Option<(f32, ldp::RdfFormat)> = None;
+    for entry in accept.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let mut parts = entry.split(';').map(|s| s.trim());
+        let mime = match parts.next() {
+            Some(m) => m,
+            None => continue,
+        };
+        let mut q: f32 = 1.0;
+        for token in parts {
+            if let Some(v) = token.strip_prefix("q=") {
+                if let Ok(parsed) = v.parse::<f32>() {
+                    q = parsed;
+                }
+            }
+        }
+        // `from_mime` rejects wildcards, so only concrete RDF media types
+        // ever enter the running.
+        if let Some(format) = ldp::RdfFormat::from_mime(mime) {
+            match best {
+                None => best = Some((q, format)),
+                Some((bq, _)) if q > bq => best = Some((q, format)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, f)| f)
+}
+
+/// RDF content negotiation for GET. When a client explicitly asks (via
+/// `Accept`) for a concrete RDF serialisation different from how the
+/// resource is stored, transcode the body and return the negotiated
+/// `(bytes, content-type)`. KG resources persist as N-Triples (see the
+/// PATCH handler), so an agent or extractor can GET the same graph as
+/// Turtle, N-Triples, or JSON-LD on demand (PRD-014 Seam C / C4).
+///
+/// Returns `None` — meaning "serve the stored body verbatim" — when:
+///   * the `Accept` header is empty,
+///   * the stored content-type is not an RDF media type,
+///   * the client named no concrete RDF type (only wildcards),
+///   * the requested format equals the stored format (no transcode),
+///   * the stored body does not parse as N-Triples (GET fails soft to
+///     verbatim — it never destroys or misrepresents), or
+///   * the requested target has no serialiser (RDF/XML).
+fn rdf_content_negotiate(
+    body: &[u8],
+    stored_ct: &str,
+    accept: &str,
+) -> Option<(Vec<u8>, &'static str)> {
+    if accept.trim().is_empty() {
+        return None;
+    }
+    let stored_format = ldp::RdfFormat::from_mime(stored_ct)?;
+    let target = best_explicit_rdf_format(accept)?;
+    if target == stored_format {
+        return None;
+    }
+    let text = std::str::from_utf8(body).ok()?;
+    let graph = ldp::Graph::parse_ntriples(text).ok()?;
+    match target {
+        // N-Triples is a syntactic subset of Turtle; the canonical
+        // serialiser emits N-Triples, which is valid Turtle.
+        ldp::RdfFormat::Turtle => {
+            Some((graph.to_ntriples().into_bytes(), ldp::RdfFormat::Turtle.mime()))
+        }
+        ldp::RdfFormat::NTriples => Some((
+            graph.to_ntriples().into_bytes(),
+            ldp::RdfFormat::NTriples.mime(),
+        )),
+        ldp::RdfFormat::JsonLd => {
+            let json = serde_json::to_vec(&graph.to_jsonld()).ok()?;
+            Some((json, ldp::RdfFormat::JsonLd.mime()))
+        }
+        // The hand-rolled graph has no RDF/XML serialiser; decline.
+        ldp::RdfFormat::RdfXml => None,
+    }
 }
 
 /// Seed the PATCH working graph from the existing resource body so an

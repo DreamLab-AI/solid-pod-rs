@@ -615,6 +615,93 @@ impl Graph {
         out
     }
 
+    /// Serialise to JSON-LD expanded form: a JSON array of node objects,
+    /// one per subject. IRIs and blank nodes become `{"@id": ...}`
+    /// references; literals become `{"@value": ...}` with `@language` or
+    /// `@type` as applicable. `rdf:type` is collapsed into the JSON-LD
+    /// `@type` keyword per the expansion algorithm. This is the inverse of
+    /// the N-Triples the store persists, used by RDF content negotiation
+    /// so a KG resource can be served as `application/ld+json` on demand.
+    pub fn to_jsonld(&self) -> serde_json::Value {
+        const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+
+        fn node_ref(term: &Term) -> Option<serde_json::Value> {
+            match term {
+                Term::Iri(i) => Some(serde_json::json!({ "@id": i })),
+                Term::BlankNode(b) => Some(serde_json::json!({ "@id": format!("_:{b}") })),
+                Term::Literal { .. } => None,
+            }
+        }
+
+        fn object_value(term: &Term) -> serde_json::Value {
+            match term {
+                Term::Iri(i) => serde_json::json!({ "@id": i }),
+                Term::BlankNode(b) => serde_json::json!({ "@id": format!("_:{b}") }),
+                Term::Literal {
+                    value,
+                    datatype,
+                    language,
+                } => {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("@value".into(), serde_json::Value::String(value.clone()));
+                    if let Some(lang) = language {
+                        obj.insert("@language".into(), serde_json::Value::String(lang.clone()));
+                    } else if let Some(dt) = datatype {
+                        obj.insert("@type".into(), serde_json::Value::String(dt.clone()));
+                    }
+                    serde_json::Value::Object(obj)
+                }
+            }
+        }
+
+        fn subject_id(term: &Term) -> String {
+            match term {
+                Term::Iri(i) => i.clone(),
+                Term::BlankNode(b) => format!("_:{b}"),
+                Term::Literal { value, .. } => value.clone(),
+            }
+        }
+
+        // BTreeSet iteration is sorted by (subject, predicate, object), so
+        // triples for a subject arrive contiguously — accumulate per node.
+        let mut nodes: Vec<serde_json::Map<String, serde_json::Value>> = Vec::new();
+        let mut current_id: Option<String> = None;
+        for t in &self.triples {
+            let sid = subject_id(&t.subject);
+            if current_id.as_deref() != Some(sid.as_str()) {
+                let mut node = serde_json::Map::new();
+                node.insert("@id".into(), serde_json::Value::String(sid.clone()));
+                nodes.push(node);
+                current_id = Some(sid);
+            }
+            let node = nodes.last_mut().expect("node pushed above");
+
+            if let Term::Iri(p) = &t.predicate {
+                if p == RDF_TYPE {
+                    if let Some(type_ref) = node_ref(&t.object) {
+                        if let Some(serde_json::Value::String(id)) =
+                            type_ref.get("@id").cloned()
+                        {
+                            node.entry("@type")
+                                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                                .as_array_mut()
+                                .expect("@type is an array")
+                                .push(serde_json::Value::String(id));
+                            continue;
+                        }
+                    }
+                }
+                node.entry(p.clone())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                    .as_array_mut()
+                    .expect("predicate value is an array")
+                    .push(object_value(&t.object));
+            }
+        }
+
+        serde_json::Value::Array(nodes.into_iter().map(serde_json::Value::Object).collect())
+    }
+
     /// Parse N-Triples — supports the full EBNF subset used by PATCH.
     pub fn parse_ntriples(input: &str) -> Result<Self, PodError> {
         let mut g = Graph::new();
