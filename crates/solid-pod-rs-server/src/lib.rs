@@ -257,6 +257,46 @@ fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     pubkey.map(|pk| format!("did:nostr:{pk}"))
 }
 
+/// Canonical pod-relative path of the Web Ledger document. The
+/// `acl:PaymentCondition` evaluator is fed the requesting principal's
+/// satoshi balance read from this resource.
+const WEBLEDGER_PATH: &str = "/.well-known/webledgers/webledgers.json";
+
+/// Resolve the requesting principal's satoshi balance from the pod's
+/// Web Ledger so the WAC `acl:PaymentCondition` evaluator receives a
+/// concrete value instead of `None`.
+///
+/// Returns:
+/// * `None` when there is no authenticated principal (anonymous request)
+///   — a `PaymentCondition` then fails closed (402/403);
+/// * `Some(0)` when the principal is authenticated but has no ledger
+///   entry (or no ledger exists yet) — sufficient to satisfy only a
+///   zero-cost condition;
+/// * `Some(balance)` resolved from the ledger entry keyed by the
+///   principal's `did:nostr` URI otherwise.
+///
+/// The lookup is keyed by the authenticated principal's WebID, which for
+/// a NIP-98 caller is `did:nostr:<hex-pubkey>` — the same key the
+/// `/pay/.deposit` credit path writes into the ledger.
+async fn resolve_balance_sats(storage: &dyn Storage, agent_uri: Option<&str>) -> Option<u64> {
+    let did = agent_uri?;
+    let balance = match storage.get(WEBLEDGER_PATH).await {
+        Ok((bytes, _meta)) => {
+            match serde_json::from_slice::<solid_pod_rs::payments::WebLedger>(&bytes) {
+                Ok(ledger) => ledger.get_balance(did),
+                // A malformed ledger document must not crash the auth
+                // path; treat it as an empty balance (fail-closed for
+                // any non-zero PaymentCondition).
+                Err(_) => 0,
+            }
+        }
+        // No ledger provisioned yet: authenticated principal with zero
+        // balance.
+        Err(_) => 0,
+    };
+    Some(balance)
+}
+
 /// Return `true` when the `Accept` header includes `text/html`.
 ///
 /// Used for container `index.html` content negotiation: if a browser
@@ -297,11 +337,17 @@ async fn enforce_write(
         Err(e) => return Err(to_actix(e)),
     };
 
+    // Resolve the principal's satoshi balance from the Web Ledger so a
+    // sat-priced resource (`acl:PaymentCondition`) is actually gated.
+    // `None` only for anonymous callers (no `did:nostr` principal), in
+    // which case any PaymentCondition fails closed.
+    let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
+
     let ctx = RequestContext {
         web_id: agent_uri,
         client_id: None,
         issuer: None,
-        payment_balance_sats: None,
+        payment_balance_sats,
     };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
@@ -2900,4 +2946,144 @@ pub fn build_app(
             "/{tail:.*}",
             web::method(actix_web::http::Method::OPTIONS).to(handle_options),
         )
+}
+
+// ---------------------------------------------------------------------------
+// Tests — sat-gating loop closure (PaymentCondition wired to real ledger)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod payment_gating_tests {
+    use super::*;
+    use solid_pod_rs::payments::WebLedger;
+    use solid_pod_rs::storage::memory::MemoryBackend;
+
+    const PRINCIPAL: &str = "did:nostr:alice";
+
+    /// Turtle ACL granting `did:nostr:alice` Write on `/premium/inbox`
+    /// only when a `PaymentCondition` of 100 sats is satisfied.
+    const PAID_WRITE_ACL: &str = r#"
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#paid-write> a acl:Authorization ;
+    acl:agent <did:nostr:alice> ;
+    acl:accessTo </premium/inbox> ;
+    acl:mode acl:Write ;
+    acl:condition [
+        a acl:PaymentCondition ;
+        acl:costSats 100
+    ] .
+"#;
+
+    async fn seed_ledger(storage: &dyn Storage, did: &str, sats: u64) {
+        let mut ledger = WebLedger::new("Test Pod Credits");
+        if sats > 0 {
+            ledger.credit(did, sats);
+        }
+        let body = serde_json::to_vec(&ledger).unwrap();
+        storage
+            .put(WEBLEDGER_PATH, Bytes::from(body), "application/json")
+            .await
+            .unwrap();
+    }
+
+    async fn seed_acl(storage: &dyn Storage) {
+        storage
+            .put(
+                "/premium/inbox.acl",
+                Bytes::from(PAID_WRITE_ACL),
+                "text/turtle",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The resolver reads the principal's balance from the seeded ledger.
+    #[actix_web::test]
+    async fn resolve_balance_reads_ledger_entry() {
+        let storage = MemoryBackend::new();
+        seed_ledger(&storage, PRINCIPAL, 250).await;
+        assert_eq!(
+            resolve_balance_sats(&storage, Some(PRINCIPAL)).await,
+            Some(250)
+        );
+    }
+
+    /// No ledger entry → authenticated principal resolves to zero balance.
+    #[actix_web::test]
+    async fn resolve_balance_zero_when_no_entry() {
+        let storage = MemoryBackend::new();
+        seed_ledger(&storage, "did:nostr:bob", 500).await;
+        assert_eq!(resolve_balance_sats(&storage, Some(PRINCIPAL)).await, Some(0));
+    }
+
+    /// Anonymous (no principal) → `None`, so a PaymentCondition fails closed.
+    #[actix_web::test]
+    async fn resolve_balance_none_when_anonymous() {
+        let storage = MemoryBackend::new();
+        seed_ledger(&storage, PRINCIPAL, 1_000).await;
+        assert_eq!(resolve_balance_sats(&storage, None).await, None);
+    }
+
+    /// End-to-end: a sat-priced resource is DENIED below balance.
+    #[actix_web::test]
+    async fn paid_write_denied_below_balance() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 50).await; // < 100 cost
+        let state = AppState::new(storage);
+
+        let result =
+            enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(
+            result.is_err(),
+            "balance 50 < cost 100 must be denied — sat-gating loop closed"
+        );
+    }
+
+    /// End-to-end: a sat-priced resource is ALLOWED at the balance threshold.
+    #[actix_web::test]
+    async fn paid_write_allowed_at_balance() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 100).await; // == 100 cost
+        let state = AppState::new(storage);
+
+        let result =
+            enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(
+            result.is_ok(),
+            "balance 100 >= cost 100 must be granted — sat-gating loop closed"
+        );
+    }
+
+    /// End-to-end: a sat-priced resource is ALLOWED above the threshold.
+    #[actix_web::test]
+    async fn paid_write_allowed_above_balance() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 5_000).await;
+        let state = AppState::new(storage);
+
+        let result =
+            enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(result.is_ok(), "balance 5000 >= cost 100 must be granted");
+    }
+
+    /// Regression guard: before this fix `payment_balance_sats` was
+    /// hardcoded `None`, so even an over-funded principal was denied.
+    /// An anonymous caller (no principal) must still be denied.
+    #[actix_web::test]
+    async fn paid_write_anonymous_denied() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 5_000).await;
+        let state = AppState::new(storage);
+
+        let result = enforce_write(&state, "/premium/inbox", AccessMode::Write, None).await;
+        assert!(
+            result.is_err(),
+            "anonymous caller has no ledger principal — PaymentCondition fails closed"
+        );
+    }
 }
