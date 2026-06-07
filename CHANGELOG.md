@@ -4,6 +4,58 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-alpha.15] — 2026-05-30 — JSS v0.0.204 sync (MCP server, `install` CLI, NIP-98 minting)
+
+Integrates the upstream JSS changes from `0.0.197` (`10bd60f`) through
+`0.0.204` (`9d29167`): the Model Context Protocol agent surface (#490),
+the `install` app-distribution CLI, and two content-type/listing fixes
+(#531, #533). The JSS comparator pin advances accordingly across
+`PARITY-CHECKLIST.md`, `GAP-ANALYSIS.md`, and the feature inventory.
+alpha.12–alpha.14 are documented in `crates/solid-pod-rs/CHANGELOG.md`.
+
+### Added
+
+- **MCP server subsystem** (`solid-pod-rs-server/src/mcp/`, JSS #490) —
+  `POST /mcp` exposes the pod as a Model Context Protocol 2025-03-26 tool
+  surface over the Streamable HTTP transport (JSON-RPC 2.0, single-shot
+  JSON with an SSE upgrade for the streaming `subscribe` tool). Sixteen
+  tools spanning resource CRUD, ACL read/write, skills, docs, pod info,
+  subscribe, and `call_remote_pod`. Identity reuses the pod's NIP-98
+  verifier, so every tool call gets the same WAC treatment as a REST
+  request. Off by default — enabled with `--mcp` / `JSS_MCP`, overridable
+  by `--no-mcp`. `call_remote_pod` is gated to `/private/federation/` for
+  `did:nostr` identities with a depth-3 recursion cap.
+- **`install` operator subcommand** (`solid-pod-rs-server/src/cli/install.rs`,
+  JSS `src/cli/install.js`) — clones a Solid app and pushes it into a pod
+  over the git smart protocol. App-spec grammar mirrors JSS (bare name →
+  `github.com/solid-apps/<name>`, `org/repo`, full git URLs, with `#<ref>`
+  pin and `=<dest>` rename). Dual `HEAD:main` + `HEAD:gh-pages` push.
+  Authenticates with a single NIP-98 token minted over the destination
+  repo URL (method `*`) via git `http.extraHeader`, or a bearer `--token`
+  fallback. NIP-98 signing requires the new `install` cargo feature.
+- **NIP-98 token minting** (`auth::nip98::mint` / `mint_with_payload`,
+  feature `nip98-schnorr`) — constructs a kind-27235 event, computes the
+  canonical NIP-01 id, and signs it with a deterministic BIP-340 Schnorr
+  signature matching the `verify_raw` path. `Nip98Event` now derives
+  `Serialize`.
+- **`auth::nip98::MatchPolicy`** — `Strict` (every REST/MCP endpoint) and
+  `GitLenient` (the git push bridge: `*`-method wildcard + repo-URL-prefix
+  binding, so one static `http.extraHeader` token covers the multi-request
+  smart protocol). Schnorr is fully verified under both.
+- **`ldp::guess_content_type`** (JSS #533 `getContentType`) — resolves a
+  MIME type for sidecar-absent resources (dotfile rule → Solid RDF /
+  playlist overrides → the `mime_guess` database → `application/octet-stream`),
+  so git-extracted app files render inline instead of downloading.
+
+### Fixed
+
+- **Symlinked-directory container listing** (JSS #531) — `FsBackend`
+  container listings now reclassify symlinks from their dereferenced stat,
+  so a symlinked directory lists as a container, matching a direct GET.
+- **Mashlib audio rendering** (JSS #533) — `mashlib::should_serve` now
+  matches the whole `audio/*` family rather than enumerating exact
+  spellings.
+
 ## [0.4.0-alpha.11] — 2026-05-16 — JSS Phase 1 port
 
 Implements the three Phase 1 features shipped by JSS v0.0.190 (May

@@ -392,7 +392,7 @@ impl crate::relay::Relay {
 mod tests {
     use super::*;
     use crate::relay::{Event, Relay};
-    use k256::schnorr::{signature::Signer, SigningKey};
+    use k256::schnorr::SigningKey;
 
     fn test_sk() -> SigningKey {
         SigningKey::from_bytes(&[0x42u8; 32]).expect("valid schnorr key")
@@ -412,7 +412,7 @@ mod tests {
         };
         let id = skeleton.canonical_id();
         let id_bytes = hex::decode(&id).unwrap();
-        let sig: k256::schnorr::Signature = sk.sign(&id_bytes);
+        let sig = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("schnorr sign_raw");
         Event {
             id,
             pubkey: pubkey_hex,

@@ -4,6 +4,87 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-alpha.15] - 2026-05-30 (JSS v0.0.204 sync — MCP server, `install` CLI, NIP-98 minting)
+
+Integrates the upstream JSS changes from `0.0.197` (`10bd60f`) through
+`0.0.204` (`9d29167`): the Model Context Protocol agent surface (#490),
+the `install` app-distribution CLI, and two content-type/listing fixes
+(#531, #533). The JSS comparator pin advances accordingly across
+`PARITY-CHECKLIST.md`, `GAP-ANALYSIS.md`, and the feature inventory.
+
+**Re-sync audit 2026-06-07:** re-checked against upstream `gh-pages`,
+which had advanced one commit to `0b73d49` (#518, still `0.0.204`) — the
+`install` CLI now uses `os.tmpdir()` + `fs.rmSync` for Termux/Windows
+portability. The Rust port already satisfied this via
+`std::env::temp_dir()` and `std::fs::remove_dir_all`, so no source change
+was required. A primitive-level parity audit (content-type guessing,
+audio mashlib, symlinked-container listing, the 16-tool MCP surface, and
+NIP-98 minting with `MatchPolicy::GitLenient`) confirmed byte-level
+agreement with the JSS sources, and the full workspace suite (1,480
+tests, 95 binaries) passes green. Four test-only `AppState` struct
+literals and one stale `WWW-Authenticate` assertion (it predated the
+`Nostr`-scheme advertisement on the write path) were updated to the
+current behaviour.
+
+### Added
+
+- **MCP server subsystem** (`solid-pod-rs-server/src/mcp/`, JSS #490) —
+  `POST /mcp` exposes the pod as a Model Context Protocol 2025-03-26
+  tool surface over the Streamable HTTP transport (JSON-RPC 2.0,
+  single-shot JSON with an SSE upgrade for the streaming `subscribe`
+  tool). Sixteen tools: `list_resources`, `read_resource`,
+  `write_resource`, `create_resource`, `delete_resource`,
+  `head_resource`, `read_acl`, `write_acl`, `list_skills`, `get_skill`,
+  `get_pod_skill`, `list_docs`, `read_docs`, `pod_info`, `subscribe`,
+  `call_remote_pod`. Identity reuses the pod's NIP-98 verifier so every
+  tool call gets the same WAC treatment as a REST request (anonymous
+  `/mcp` runs as the anonymous principal). Off by default — enabled with
+  `--mcp` / `JSS_MCP`, overridable by `--no-mcp`. Built-in docs are
+  embedded at compile time via `include_dir`. `call_remote_pod` is gated
+  to `/private/federation/` for `did:nostr` identities with a depth-3
+  recursion cap.
+- **`install` operator subcommand** (`solid-pod-rs-server/src/cli/install.rs`,
+  JSS `src/cli/install.js`) — clones a Solid app and pushes it into a
+  pod over the git smart protocol. App-spec grammar mirrors JSS: bare
+  name → `github.com/solid-apps/<name>`, `org/repo` → `github.com/...`,
+  full git URLs verbatim, with `#<ref>` pin and `=<dest>` rename
+  suffixes. Dual `HEAD:main` + `HEAD:gh-pages` push. Authenticates with
+  a single NIP-98 token minted over the destination repo URL (method
+  `*`) injected via git `http.extraHeader`, or a bearer `--token`
+  fallback. NIP-98 signing requires the new `install` cargo feature.
+- **NIP-98 token minting** (`auth::nip98::mint` / `mint_with_payload`,
+  feature `nip98-schnorr`) — constructs a kind-27235 event, computes the
+  canonical NIP-01 id, and signs it with a deterministic BIP-340 Schnorr
+  signature matching the `verify_raw` path. `Nip98Event` now derives
+  `Serialize`. Round-trip and body-binding tests included.
+- **`auth::nip98::MatchPolicy`** — `Strict` (every REST/MCP endpoint,
+  exact URL + method) and `GitLenient` (the git push bridge: `*`-method
+  wildcard + repo-URL-prefix binding, so one static `http.extraHeader`
+  token covers the multi-request smart protocol). Schnorr is fully
+  verified under both. `verify_at_with_policy` is the new entry point;
+  `verify_at` delegates with `Strict`. The git auth bridge
+  (`solid-pod-rs-git`) now opts into `GitLenient`.
+- **`ldp::guess_content_type`** (JSS #533 `getContentType`) — resolves a
+  MIME type for sidecar-absent resources: dotfile rule → Solid RDF /
+  playlist overrides → the `mime_guess` database → `application/octet-stream`.
+  Adds the `mime_guess` dependency. The FS backend's `read_meta`
+  fallback now routes through it so git-extracted app files under
+  `/public/apps/` (audio, video, HTML, CSS, …) render inline instead of
+  downloading.
+
+### Fixed
+
+- **Symlinked-directory container listing** (JSS #531) — `FsBackend`
+  container listings used `file_type()` (lstat), which reports any
+  symlink as a non-directory. Symlinks are now reclassified from their
+  dereferenced stat, so a symlinked directory lists as a container
+  (trailing `/` + `ldp:BasicContainer`), matching a direct GET. Dangling
+  symlinks fail the deref and remain non-containers.
+- **Mashlib audio rendering** (JSS #533) — `mashlib::should_serve` now
+  matches the whole `audio/*` family (mpeg, ogg, wave, flac, and the
+  `audio/mpegurl` / `audio/x-scpls` playlists) rather than enumerating
+  exact spellings, so audio resources get the mashlib audio pane.
+
 ## [0.4.0-alpha.14] - 2026-05-17 (Git control panel API + JSS #464 app discovery)
 
 ### Added

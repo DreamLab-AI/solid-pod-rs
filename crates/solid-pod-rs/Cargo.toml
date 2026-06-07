@@ -37,6 +37,12 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 notify = { version = "6", optional = true }
 
+# Extension → MIME resolution for sidecar-absent resources (e.g. files
+# extracted from a git push to /public/apps/). Pure-logic, wasm-safe,
+# phf-backed. Mirrors JSS #533: Solid overrides first, then the
+# comprehensive mime-types database, then octet-stream.
+mime_guess = "2"
+
 # SPARQL-Update parsing for PATCH bodies (pure-logic; always compiled).
 spargebra = "0.3"
 

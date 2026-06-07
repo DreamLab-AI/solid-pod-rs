@@ -74,6 +74,9 @@ async fn make_state() -> AppState {
         pay_config: solid_pod_rs::payments::PayConfig::default(),
         data_root: None,
         pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+        allowed_origins: Vec::new(),
+        admin_key: None,
+        mcp_enabled: false,
     };
     state.nodeinfo.base_url = "https://pod.example".into();
     state

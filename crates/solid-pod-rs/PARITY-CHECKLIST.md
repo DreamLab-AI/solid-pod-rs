@@ -11,9 +11,12 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 15, JSS v0.0.197 sync, 2026-05-17, alpha.12)
+## Current state (Sprint 16, JSS v0.0.204 sync, 2026-05-30, alpha.15)
 
-**201 rows tracked** across 20 functional sections.
+**207 rows tracked** across 21 functional sections. §21 adds the JSS
+v0.0.197 → v0.0.204 delta: MCP server (#490), `install` CLI, NIP-98
+minting + git push leniency, `getContentType` (#533), symlinked-dir
+listing (#531), and the mashlib audio pane.
 
 ### Parity percentages
 
@@ -29,7 +32,7 @@ and our status against it.
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 158 | +5 (Sprint 15: rows 27-29, 73, 111 now emitted by `solid-pod-rs-server`) |
+| present | 164 | +6 (Sprint 16 §21: rows 202-207 — MCP, install, NIP-98 minting, getContentType, symlink listing, audio pane) |
 | partial-parity | 5 | -5 |
 | semantic-difference | 5 | — |
 | missing | 3 | — |
@@ -37,7 +40,7 @@ and our status against it.
 | explicitly-deferred | 6 | — |
 | wontfix-in-crate | 3 | — |
 | other/unclassified | 1 | — |
-| **Total** | **201** | JSS local comparator fast-forwarded to upstream `10bd60f` / package `0.0.197` |
+| **Total** | **207** | JSS local comparator fast-forwarded to upstream `9d29167` / package `0.0.204` (+6 rows: §21 MCP/install/NIP-98-mint/getContentType/symlink-listing/audio-pane) |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -485,6 +488,17 @@ freely.
 |---|---|---|---|---|---|---|
 | 199 | `tryAutoInitRepo` hook — `git init -b main <pod_path>` runs once at pod creation; `receive.denyCurrentBranch=updateInstead` config applied | JSS #466/#469/#471: `src/handlers/git.js` `tryAutoInitRepo`; runs on `POST /.pods` provisioning | `provision::GitInitHook` async trait (wasm32-safe; no subprocess in core). `provision_pod_ext<S,H>(storage, plan, git_hook: Option<(&H, &Path)>)` — calls `provision_pod` then fires the hook. Feature `git-auto-init` on `solid-pod-rs`. | present (alpha.12) | `crates/solid-pod-rs/src/provision.rs::GitInitHook`, `provision_pod_ext` | Trait only in core — subprocess-free, wasm32-compatible. CF Workers consumers must not enable this feature. |
 | 200 | `GitAutoInit` concrete implementation — spawns `git init -b <branch>` via `tokio::process::Command`, applies `receive.denyCurrentBranch=updateInstead`; errors logged and swallowed so pod creation is never blocked by a missing `git` binary | JSS #466/#469/#471: same `tryAutoInitRepo` body | `solid_pod_rs_git::init::GitAutoInit` implements `GitInitHook`; `with_branch(b)` constructor for non-`main` deployments | present (alpha.12) | `crates/solid-pod-rs-git/src/init.rs` | 4 unit tests: `creates_dot_git`, `sets_deny_current_branch`, `custom_branch`, `idempotent`. Feature `git-auto-init` on `solid-pod-rs-git` (pulls `solid-pod-rs/git-auto-init`). |
+
+## 21. JSS v0.0.197 → v0.0.204 delta (alpha.15)
+
+| # | JSS feature | JSS commit | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 202 | MCP server — `POST /mcp` Streamable HTTP transport (MCP 2025-03-26), JSON-RPC 2.0, 16 tools (resource CRUD, ACL read/write, skills, docs, `pod_info`, streaming `subscribe`, `call_remote_pod` federation) | JSS #490 — `src/mcp/{index,protocol,tools,skills}.js` | `mcp::handle_mcp` + `mcp::tools` (16 handlers, SSE `subscribe`) | present (alpha.15) | `crates/solid-pod-rs-server/src/mcp/{mod,tools,skills}.rs` | Off by default; `--mcp` / `JSS_MCP`, `--no-mcp` wins. Identity reuses NIP-98 → same WAC as REST. Docs embedded via `include_dir`. `call_remote_pod` gated to `/private/federation/` for `did:nostr`, depth-3 cap. |
+| 203 | `install` CLI — clone a Solid app + dual-push (`HEAD:main`, `HEAD:gh-pages`) into a pod over git, NIP-98-authenticated via `http.extraHeader` | JSS `src/cli/install.js` (`nip98Token(dest,'*',privkey)`) | `cli::install::run_install` + `parse_app_spec` | present (alpha.15) | `crates/solid-pod-rs-server/src/cli/install.rs` | App-spec grammar parity (bare/org-repo/URL, `#ref`, `=rename`). NIP-98 minting via `auth::nip98::mint` under server feature `install`; `--token` bearer fallback. 6 spec-parse unit tests. |
+| 204 | NIP-98 token minting + git push leniency — single static token covers the multi-request git smart protocol (method `*`, repo-URL prefix) | JSS git.js lenient verify + `nip98Token` | `auth::nip98::mint` / `mint_with_payload`; `MatchPolicy::{Strict,GitLenient}` + `verify_at_with_policy`; git bridge opts into `GitLenient` | present (alpha.15) | `crates/solid-pod-rs/src/auth/nip98.rs`; `crates/solid-pod-rs-git/src/auth.rs` | `Nip98Event` now `Serialize`. Deterministic BIP-340 signature (zero aux-rand) matching `verify_raw`. Schnorr fully verified under both policies. Feature `nip98-schnorr`. 4 new unit tests (mint round-trip, body-binding, lenient accept, foreign-repo reject). |
+| 205 | `getContentType` — extension→MIME for sidecar-absent resources (git-extracted app files render inline) | JSS #533 `src/utils/url.js` | `ldp::guess_content_type`; `FsBackend::read_meta` fallback routes through it | present (alpha.15) | `crates/solid-pod-rs/src/ldp.rs`; `crates/solid-pod-rs/src/storage/fs.rs` | Dotfile rule → Solid RDF/playlist overrides → `mime_guess` DB → `application/octet-stream`. New `mime_guess` dep. 4 unit tests. |
+| 206 | Symlinked-directory container listing — symlink-to-dir lists as `ldp:BasicContainer` | JSS #531 | `FsBackend` list reclassifies symlinks from dereferenced stat | present (alpha.15) | `crates/solid-pod-rs/src/storage/fs.rs` | `file_type()` lstat reports symlinks as non-dirs; deref restores container semantics. Dangling symlinks remain non-containers. |
+| 207 | Mashlib audio pane — serve mashlib for `audio/*` resources | JSS #533 `shouldServeMashlib` | `mashlib::should_serve` matches the `audio/*` family | present (alpha.15) | `crates/solid-pod-rs/src/mashlib.rs` | Whole-family match (mpeg/ogg/wave/flac + `audio/mpegurl`/`audio/x-scpls` playlists) instead of enumerated spellings. Video/image deliberately excluded (no panes). |
 
 ---
 

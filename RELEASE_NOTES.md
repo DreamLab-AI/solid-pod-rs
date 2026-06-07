@@ -1,3 +1,36 @@
+## v0.4.0-alpha.15 (2026-05-30)
+
+JSS v0.0.204 sync — integrates the upstream delta `0.0.197` (`10bd60f`)
+→ `0.0.204` (`9d29167`). See `CHANGELOG.md` for the full manifest;
+alpha.9–alpha.14 are recorded in `crates/solid-pod-rs/CHANGELOG.md`.
+
+### Added
+- **MCP server** (`solid-pod-rs-server`, JSS #490): `POST /mcp` exposes
+  the pod as a Model Context Protocol 2025-03-26 tool surface (sixteen
+  tools, JSON-RPC 2.0, SSE upgrade for `subscribe`). Identity reuses the
+  pod's NIP-98 verifier, so every tool call gets the same WAC treatment
+  as the equivalent REST request. Off by default (`--mcp` / `JSS_MCP`).
+- **`install` operator subcommand** (`solid-pod-rs-server`): clones a
+  Solid app and pushes it into a pod over git smart HTTP, authenticating
+  with a single NIP-98 `http.extraHeader` token minted over the
+  destination repo URL. App-spec grammar mirrors JSS; dual `main` +
+  `gh-pages` push. NIP-98 signing requires the `install` cargo feature.
+- **NIP-98 token minting** (`auth::nip98::mint` / `mint_with_payload`,
+  feature `nip98-schnorr`): deterministic BIP-340 Schnorr signature
+  matching the `verify_raw` path. New `MatchPolicy` (`Strict` for
+  REST/MCP, `GitLenient` for the git push bridge).
+- **`ldp::guess_content_type`** (JSS #533): MIME fallback for
+  sidecar-absent resources, so git-extracted app files render inline.
+
+### Fixed
+- **Symlinked-directory container listing** (JSS #531): symlinks are
+  reclassified from their dereferenced stat, so a symlinked directory
+  lists as a container.
+- **Mashlib audio rendering** (JSS #533): `should_serve` now matches the
+  whole `audio/*` family.
+
+---
+
 ## v0.4.0-alpha.8 (2026-05-12)
 
 ### Fixed

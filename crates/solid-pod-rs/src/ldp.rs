@@ -387,6 +387,92 @@ pub fn infer_dotfile_content_type(path: &str) -> Option<&'static str> {
     }
 }
 
+/// Resolve a content-type for a resource that carries no sidecar metadata
+/// (e.g. files extracted from a `git push` to `/public/apps/`, or any
+/// backend that stores bytes without an explicit MIME).
+///
+/// Resolution order, mirroring JSS #533 (`getContentType`):
+///   1. Solid `.acl` / `.meta` dotfile rule (`application/ld+json`).
+///   2. Solid-specific overrides — RDF serialisations and playlist types
+///      the generic MIME database doesn't know, or where Solid semantics
+///      differ. Checked before the database so `.ttl` never resolves to
+///      a non-Solid type.
+///   3. The comprehensive `mime_guess` database (covers the long tail:
+///      audio/video/fonts/archives/office/etc.) so media renders inline
+///      instead of forcing a download.
+///   4. `application/octet-stream`.
+pub fn guess_content_type(path: &str) -> String {
+    if let Some(ct) = infer_dotfile_content_type(path) {
+        return ct.to_string();
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    let ext = basename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // Solid overrides — RDF serialisations + playlists. Mirrors the
+    // `overrides` table in JSS src/utils/url.js.
+    let override_ct = match ext.as_str() {
+        "jsonld" => Some("application/ld+json"),
+        "ttl" => Some("text/turtle"),
+        "n3" => Some("text/n3"),
+        "nt" => Some("application/n-triples"),
+        "rdf" => Some("application/rdf+xml"),
+        "nq" => Some("application/n-quads"),
+        "trig" => Some("application/trig"),
+        "m3u" => Some("audio/mpegurl"),
+        "pls" => Some("audio/x-scpls"),
+        _ => None,
+    };
+    if let Some(ct) = override_ct {
+        return ct.to_string();
+    }
+
+    mime_guess::from_path(trimmed)
+        .first_raw()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
+#[cfg(test)]
+mod guess_content_type_tests {
+    use super::guess_content_type;
+
+    #[test]
+    fn solid_overrides_take_priority() {
+        assert_eq!(guess_content_type("/data.ttl"), "text/turtle");
+        assert_eq!(guess_content_type("/card.jsonld"), "application/ld+json");
+        assert_eq!(guess_content_type("/g.nq"), "application/n-quads");
+        assert_eq!(guess_content_type("/list.m3u"), "audio/mpegurl");
+    }
+
+    #[test]
+    fn dotfiles_resolve_to_jsonld() {
+        assert_eq!(guess_content_type("/.acl"), "application/ld+json");
+        assert_eq!(
+            guess_content_type("/publicTypeIndex.jsonld.acl"),
+            "application/ld+json"
+        );
+    }
+
+    #[test]
+    fn mime_db_covers_media_and_web() {
+        assert_eq!(guess_content_type("/app/index.html"), "text/html");
+        assert_eq!(guess_content_type("/song.mp3"), "audio/mpeg");
+        assert_eq!(guess_content_type("/clip.mp4"), "video/mp4");
+        assert_eq!(guess_content_type("/img.png"), "image/png");
+    }
+
+    #[test]
+    fn unknown_extension_falls_back_to_octet_stream() {
+        assert_eq!(guess_content_type("/blob.xyzzy"), "application/octet-stream");
+        assert_eq!(guess_content_type("/noext"), "application/octet-stream");
+    }
+}
+
 #[cfg(test)]
 mod infer_dotfile_tests {
     use super::infer_dotfile_content_type;

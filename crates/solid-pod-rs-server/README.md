@@ -159,12 +159,106 @@ OPTIONS preflights for `/_git/{pubkey}/**` are handled automatically
 For the full agentbox mesh deployment (solid-pod-rs-server alongside
 `auth-worker`, R2, and the forum client) see:
 
-```
+```text
 docker-compose.solid-pods.yml   # in the dreamlab-ai-website agentbox repo
 ```
 
 That compose file wires `SOLID_ADMIN_KEY`, `SOLID_ALLOWED_ORIGINS`,
 `JSS_STORAGE_ROOT`, and the CF Worker `PROVISION_URL` binding together.
+
+## MCP server (Model Context Protocol)
+
+`POST /mcp` exposes the pod as a Model Context Protocol 2025-03-26 tool
+surface over the Streamable HTTP transport. Requests are JSON-RPC 2.0;
+responses are single-shot JSON, with an SSE upgrade for the streaming
+`subscribe` tool. The endpoint is **off by default**:
+
+```bash
+solid-pod-rs-server --mcp          # enable
+solid-pod-rs-server --no-mcp       # force off (overrides JSS_MCP)
+JSS_MCP=1 solid-pod-rs-server      # enable via env
+```
+
+Identity reuses the pod's NIP-98 verifier, so every tool call receives
+the same WAC treatment as the equivalent REST request; an unauthenticated
+`/mcp` call runs as the anonymous principal. Sixteen tools are exposed:
+
+| Group | Tools |
+|---|---|
+| Resources | `list_resources`, `read_resource`, `write_resource`, `create_resource`, `delete_resource`, `head_resource` |
+| Access control | `read_acl`, `write_acl` |
+| Skills & docs | `list_skills`, `get_skill`, `get_pod_skill`, `list_docs`, `read_docs` |
+| Pod & federation | `pod_info`, `subscribe`, `call_remote_pod` |
+
+`call_remote_pod` is gated to `/private/federation/` for `did:nostr`
+identities with a depth-3 recursion cap, so an agent cannot fan out an
+unbounded pod-to-pod call graph. Built-in docs and skills are embedded at
+compile time via `include_dir`.
+
+| Env var | CLI flag | Default |
+|---|---|---|
+| `JSS_MCP` | `--mcp` / `--no-mcp` | off |
+
+## `install` subcommand — push a Solid app into a pod
+
+`solid-pod-rs-server install <app-spec>...` clones one or more Solid apps
+and pushes them into a pod over the git smart protocol (the same
+`/_git/{pubkey}/` path the forum git client uses). The app-spec grammar
+mirrors JSS `src/cli/install.js`:
+
+```text
+<name>                 → https://github.com/solid-apps/<name>
+<org>/<repo>           → https://github.com/<org>/<repo>
+<full-git-url>         → used verbatim (https / git@ / ssh://)
+<spec>#<ref>           → clone a specific branch/tag/commit
+<spec>=<dest>          → rename the destination directory
+```
+
+```bash
+# Install the bundled mashlib browser into the default pod
+NOSTR_PRIVKEY=<hex> solid-pod-rs-server install mashlib
+
+# Pin a ref, rename the destination, target an explicit pod
+solid-pod-rs-server install \
+    solid/contacts#v2=address-book \
+    --pod https://pods.example.com/<hex-pubkey>/ \
+    --nostr-privkey <hex>
+
+# Preview without pushing
+solid-pod-rs-server install mashlib --dry-run
+```
+
+Each app is pushed to **both** `HEAD:main` and `HEAD:gh-pages` so apps
+that publish from either branch land correctly. Authentication uses a
+single NIP-98 token minted over the destination repo URL with a `*`
+method wildcard, injected via git `http.extraHeader` so it covers the
+multi-request smart protocol with one static header. A `--token` bearer
+fallback is accepted when NIP-98 signing is unavailable.
+
+The scratch clone is created under the platform temp directory
+(`std::env::temp_dir()`, which honours `$TMPDIR`) and removed on both
+success and failure, so `install` works on Linux/macOS/Windows and
+sandboxed environments such as Termux without a hardcoded `/tmp` — the
+Rust equivalent of JSS #518.
+
+| Flag | Env var | Default |
+|---|---|---|
+| `--pod` | `JSS_POD` | `http://localhost:4443` |
+| `--nostr-privkey` | `NOSTR_PRIVKEY` | — |
+| `--token` | `JSS_BEARER_TOKEN` | — |
+| `--branches` | — | `main,gh-pages` |
+| `--dry-run` | — | off |
+
+NIP-98 minting requires the `install` cargo feature (which pulls in
+`solid-pod-rs/nip98-schnorr`):
+
+```bash
+cargo build --release -p solid-pod-rs-server --features install
+```
+
+Without that feature the subcommand still compiles, but only the
+`--token` bearer path can authenticate; the NIP-98 path returns a clear
+runtime error telling the operator to rebuild with `--features install`.
 
 ## Feature flags
 

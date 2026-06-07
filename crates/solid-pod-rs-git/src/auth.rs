@@ -141,7 +141,7 @@ impl GitAuth for BasicNostrExtractor {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let verified = solid_pod_rs::auth::nip98::verify_at(
+        let verified = solid_pod_rs::auth::nip98::verify_at_with_policy(
             &nostr_header,
             &req.auth_url(),
             &req.method,
@@ -151,6 +151,10 @@ impl GitAuth for BasicNostrExtractor {
             // the body (they have no Nostr keypair during push).
             None,
             now,
+            // Git push signs method `*` + repo base URL across the
+            // multi-request smart protocol; accept that leniency here
+            // (JSS git.js parity). Schnorr is still fully verified.
+            solid_pod_rs::auth::nip98::MatchPolicy::GitLenient,
         )
         .map_err(|e| AuthError::Verification(format!("{e:?}")))?;
 

@@ -90,22 +90,24 @@ impl FsBackend {
     ) -> Result<ResourceMeta, PodError> {
         let data_path = self.resolve(path)?;
         let meta_path = Self::meta_path(&data_path);
-        // JSS #294 parity: `.acl` / `.meta` (and `*.acl` / `*.meta`)
-        // have no Node-style extension, so sidecar-absent resources
-        // must fall back to `application/ld+json` before conneg rejects
-        // `application/octet-stream`.
-        let fallback_ct: &str =
-            crate::ldp::infer_dotfile_content_type(path).unwrap_or("application/octet-stream");
+        // JSS #294 + #533 parity: sidecar-absent resources resolve their
+        // content-type by extension. `.acl` / `.meta` (and `*.acl` /
+        // `*.meta`) have no Node-style extension and fall back to
+        // `application/ld+json`; everything else (including git-extracted
+        // app files under `/public/apps/`) resolves via Solid overrides →
+        // the mime-types database → `application/octet-stream`, so audio,
+        // video, HTML, CSS, etc. render inline instead of downloading.
+        let fallback_ct: String = crate::ldp::guess_content_type(path);
         let (content_type, links) = match fs::read(&meta_path).await {
             Ok(bytes) => {
                 let sidecar: MetaSidecar =
                     serde_json::from_slice(&bytes).unwrap_or_else(|_| MetaSidecar {
-                        content_type: fallback_ct.to_string(),
+                        content_type: fallback_ct.clone(),
                         links: Vec::new(),
                     });
                 (sidecar.content_type, sidecar.links)
             }
-            Err(_) => (fallback_ct.to_string(), Vec::new()),
+            Err(_) => (fallback_ct, Vec::new()),
         };
         Ok(ResourceMeta {
             etag,
@@ -200,8 +202,23 @@ impl Storage for FsBackend {
             if name.ends_with(META_SUFFIX) {
                 continue;
             }
+            // `file_type()` uses lstat semantics, so `is_dir()` is false
+            // for *any* symlink — even one targeting a directory. Mirror
+            // JSS #531: reclassify a symlink from its dereferenced stat so
+            // symlinked directories list as containers (trailing `/` +
+            // ldp:BasicContainer), matching how they behave on a direct
+            // GET. A dangling symlink fails the deref and stays a
+            // non-container.
             let ft = entry.file_type().await?;
-            if ft.is_dir() {
+            let is_dir = if ft.is_symlink() {
+                fs::metadata(entry.path())
+                    .await
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+            } else {
+                ft.is_dir()
+            };
+            if is_dir {
                 out.push(format!("{name}/"));
             } else {
                 out.push(name);

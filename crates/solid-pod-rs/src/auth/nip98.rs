@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::PodError;
@@ -24,7 +24,7 @@ const TIMESTAMP_TOLERANCE: u64 = 60;
 const MAX_EVENT_SIZE: usize = 64 * 1024;
 const NOSTR_PREFIX: &str = "Nostr ";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Nip98Event {
     pub id: String,
     pub pubkey: String,
@@ -61,6 +61,24 @@ pub async fn verify(
     verify_at(header, url, method, body_hash, now).map(|v| v.pubkey)
 }
 
+/// URL/method matching leniency for NIP-98 verification.
+///
+/// `Strict` (the default for every HTTP endpoint) demands an exact URL
+/// and method match. `GitLenient` mirrors JSS git: a single static
+/// `http.extraHeader` token has to cover the multi-request git smart
+/// protocol (`GET …/info/refs` then `POST …/git-receive-pack`), so the
+/// client signs method `*` and the repo base URL — the verifier accepts
+/// a `*` method against any request and treats the token URL as a prefix
+/// of the request URL. The signing pubkey is still cryptographically
+/// verified; only the request-binding is relaxed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchPolicy {
+    /// Exact URL + method binding. Default for all REST/MCP endpoints.
+    Strict,
+    /// `*`-method wildcard + URL-prefix binding for the git push path.
+    GitLenient,
+}
+
 /// `verify` with an explicit timestamp (for deterministic testing).
 pub fn verify_at(
     header: &str,
@@ -68,6 +86,26 @@ pub fn verify_at(
     expected_method: &str,
     body: Option<&[u8]>,
     now: u64,
+) -> Result<Nip98Verified, PodError> {
+    verify_at_with_policy(
+        header,
+        expected_url,
+        expected_method,
+        body,
+        now,
+        MatchPolicy::Strict,
+    )
+}
+
+/// `verify_at` with an explicit [`MatchPolicy`]. The git push bridge
+/// passes [`MatchPolicy::GitLenient`]; everything else uses `verify_at`.
+pub fn verify_at_with_policy(
+    header: &str,
+    expected_url: &str,
+    expected_method: &str,
+    body: Option<&[u8]>,
+    now: u64,
+    policy: MatchPolicy,
 ) -> Result<Nip98Verified, PodError> {
     let token = header
         .strip_prefix(NOSTR_PREFIX)
@@ -101,7 +139,18 @@ pub fn verify_at(
 
     let token_url =
         get_tag(&event, "u").ok_or_else(|| PodError::Nip98("missing 'u' tag".into()))?;
-    if normalize_url(&token_url) != normalize_url(expected_url) {
+    let url_ok = {
+        let t = normalize_url(&token_url);
+        let e = normalize_url(expected_url);
+        match policy {
+            MatchPolicy::Strict => t == e,
+            // Token URL is the repo base; accept it as a prefix of the
+            // request URL so one token covers every git smart-protocol
+            // sub-path under that repo.
+            MatchPolicy::GitLenient => t == e || e.starts_with(t),
+        }
+    };
+    if !url_ok {
         return Err(PodError::Nip98(format!(
             "URL mismatch: token={token_url}, expected={expected_url}"
         )));
@@ -109,7 +158,11 @@ pub fn verify_at(
 
     let token_method =
         get_tag(&event, "method").ok_or_else(|| PodError::Nip98("missing 'method' tag".into()))?;
-    if token_method.to_uppercase() != expected_method.to_uppercase() {
+    let method_ok = match policy {
+        MatchPolicy::GitLenient if token_method == "*" => true,
+        _ => token_method.to_uppercase() == expected_method.to_uppercase(),
+    };
+    if !method_ok {
         return Err(PodError::Nip98(format!(
             "method mismatch: token={token_method}, expected={expected_method}"
         )));
@@ -160,6 +213,97 @@ pub fn compute_event_id(event: &Nip98Event) -> String {
     ]);
     let serialized = serde_json::to_string(&canonical).unwrap_or_default();
     hex::encode(Sha256::digest(serialized.as_bytes()))
+}
+
+/// Mint a NIP-98 `Authorization` header value for a request.
+///
+/// Constructs a kind-27235 event with `u` (url) and `method` tags,
+/// computes the canonical NIP-01 id, signs the 32 id bytes with a
+/// deterministic BIP-340 Schnorr signature (zero aux-rand, matching the
+/// `verify_raw` path), and returns `base64(json(event))` — ready to wrap
+/// with [`authorization_header`]. Mirrors JSS `nip98Token`.
+///
+/// `privkey_hex` is the 32-byte secret key as 64 hex chars.
+#[cfg(feature = "nip98-schnorr")]
+pub fn mint(
+    url: &str,
+    method: &str,
+    privkey_hex: &str,
+    now: u64,
+) -> Result<String, PodError> {
+    mint_with_payload(url, method, None, privkey_hex, now)
+}
+
+/// [`mint`] with an optional request body whose SHA-256 is recorded in a
+/// `payload` tag (NIP-98 body binding).
+#[cfg(feature = "nip98-schnorr")]
+pub fn mint_with_payload(
+    url: &str,
+    method: &str,
+    body: Option<&[u8]>,
+    privkey_hex: &str,
+    now: u64,
+) -> Result<String, PodError> {
+    use k256::schnorr::SigningKey;
+
+    let sk_bytes = hex::decode(privkey_hex)
+        .map_err(|e| PodError::Nip98(format!("privkey hex decode: {e}")))?;
+    if sk_bytes.len() != 32 {
+        return Err(PodError::Nip98(format!(
+            "privkey wrong length: {} (want 32 bytes / 64 hex)",
+            sk_bytes.len()
+        )));
+    }
+    let sk = SigningKey::from_bytes(&sk_bytes)
+        .map_err(|e| PodError::Nip98(format!("privkey parse: {e}")))?;
+    let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+
+    let mut tags = vec![
+        vec!["u".to_string(), url.to_string()],
+        vec!["method".to_string(), method.to_uppercase()],
+    ];
+    if let Some(b) = body {
+        if !b.is_empty() {
+            tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
+        }
+    }
+
+    let mut event = Nip98Event {
+        id: String::new(),
+        pubkey: pubkey_hex,
+        created_at: now,
+        kind: HTTP_AUTH_KIND,
+        tags,
+        content: String::new(),
+        sig: String::new(),
+    };
+    event.id = compute_event_id(&event);
+
+    let id_bytes =
+        hex::decode(&event.id).map_err(|e| PodError::Nip98(format!("id hex decode: {e}")))?;
+    // Deterministic signature (zero aux-rand) over the 32 id bytes —
+    // exactly the message `verify_raw` checks.
+    let sig: k256::schnorr::Signature = sk
+        .sign_raw(&id_bytes, &[0u8; 32])
+        .map_err(|e| PodError::Nip98(format!("schnorr sign: {e}")))?;
+    event.sig = hex::encode(sig.to_bytes());
+
+    let json = serde_json::to_string(&event)
+        .map_err(|e| PodError::Nip98(format!("event serialize: {e}")))?;
+    Ok(BASE64.encode(json.as_bytes()))
+}
+
+/// No-op stub when `nip98-schnorr` is disabled — minting needs the signer.
+#[cfg(not(feature = "nip98-schnorr"))]
+pub fn mint(
+    _url: &str,
+    _method: &str,
+    _privkey_hex: &str,
+    _now: u64,
+) -> Result<String, PodError> {
+    Err(PodError::Unsupported(
+        "nip98-schnorr feature not enabled (required to mint tokens)".into(),
+    ))
 }
 
 /// Schnorr signature verification (feature-gated).
@@ -610,6 +754,90 @@ mod tests {
         ev["kind"] = serde_json::json!(1);
         let hdr = authorization_header(&encode_event(&ev));
         let err = verify_at(&hdr, "https://a/b", "GET", None, ts).unwrap_err();
+        assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn mint_roundtrips_through_verify() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        let (_, expected_pub) = test_signing_key();
+
+        let token = mint("https://pod.example/x", "PUT", &privkey_hex, ts).unwrap();
+        let hdr = authorization_header(&token);
+        let v = verify_at(&hdr, "https://pod.example/x", "PUT", None, ts).unwrap();
+        assert_eq!(v.pubkey, expected_pub);
+        assert_eq!(v.method, "PUT");
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn mint_with_payload_binds_body() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        let body = b"hello world";
+
+        let token =
+            mint_with_payload("https://pod.example/x", "POST", Some(body), &privkey_hex, ts)
+                .unwrap();
+        let hdr = authorization_header(&token);
+        verify_at(&hdr, "https://pod.example/x", "POST", Some(body), ts).unwrap();
+        // Tampered body must fail.
+        let err =
+            verify_at(&hdr, "https://pod.example/x", "POST", Some(b"tampered"), ts).unwrap_err();
+        assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn git_lenient_accepts_wildcard_method_and_prefix_url() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        // Client signs the repo base URL with method `*`.
+        let token = mint("https://pod.example/alice/repo", "*", &privkey_hex, ts).unwrap();
+        let hdr = authorization_header(&token);
+
+        // GET …/info/refs and POST …/git-receive-pack both pass under
+        // GitLenient against the one token.
+        for (url, method) in [
+            ("https://pod.example/alice/repo/info/refs", "GET"),
+            ("https://pod.example/alice/repo/git-receive-pack", "POST"),
+        ] {
+            verify_at_with_policy(&hdr, url, method, None, ts, MatchPolicy::GitLenient)
+                .unwrap_or_else(|e| panic!("lenient verify {url} {method}: {e:?}"));
+        }
+
+        // Strict policy rejects the same token (method `*` ≠ GET).
+        let err = verify_at_with_policy(
+            &hdr,
+            "https://pod.example/alice/repo/info/refs",
+            "GET",
+            None,
+            ts,
+            MatchPolicy::Strict,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn git_lenient_rejects_foreign_repo_prefix() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        let token = mint("https://pod.example/alice/repo", "*", &privkey_hex, ts).unwrap();
+        let hdr = authorization_header(&token);
+        // A sibling repo is not a prefix extension of the signed base.
+        let err = verify_at_with_policy(
+            &hdr,
+            "https://pod.example/bob/repo/info/refs",
+            "GET",
+            None,
+            ts,
+            MatchPolicy::GitLenient,
+        )
+        .unwrap_err();
         assert!(matches!(err, PodError::Nip98(_)));
     }
 

@@ -92,6 +92,19 @@ struct Cli {
     #[arg(long, env = "SOLID_ADMIN_KEY")]
     admin_key: Option<String>,
 
+    /// Enable the MCP (Model Context Protocol) server at `POST /mcp`,
+    /// exposing the pod as a tool surface for agents (JSS #490). OFF by
+    /// default: agent-driven writes plus on-disk keys are an opt-in
+    /// security tradeoff. A `JSS_MCP=1` environment value can be
+    /// overridden on the command line with `--no-mcp`.
+    #[arg(long, env = "JSS_MCP")]
+    mcp: bool,
+
+    /// Disable the MCP server even when `--mcp` or `JSS_MCP` is set.
+    /// `--no-mcp` always wins.
+    #[arg(long)]
+    no_mcp: bool,
+
     /// Operator subcommands (Sprint 11): `quota reconcile`,
     /// `account delete`, `invite create`. When absent the binary runs
     /// the HTTP server (default / existing behaviour).
@@ -213,6 +226,12 @@ async fn main() -> anyhow::Result<()> {
     state.data_root = data_root;
     state.allowed_origins = cli.allowed_origins.clone();
     state.admin_key = cli.admin_key.clone();
+    // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
+    // baked-in env value can be overridden at the command line.
+    state.mcp_enabled = cli.mcp && !cli.no_mcp;
+    if state.mcp_enabled {
+        info!("MCP server enabled — POST /mcp is live (agent tool surface, #490)");
+    }
     state.nodeinfo = NodeInfoMeta {
         software_name: "solid-pod-rs-server".into(),
         software_version: env!("CARGO_PKG_VERSION").into(),

@@ -5,8 +5,15 @@
 > previous parity corpus was mis-attributed to CSS; this file is the corrected
 > baseline, built against the real JSS local clone at
 > `/home/devuser/workspace/JavaScriptSolidServer/` (fast-forwarded to
-> `upstream/gh-pages` commit `10bd60f`, package `0.0.197`). Citations use
+> `upstream/gh-pages` commit `9d29167`, package `0.0.204`). Citations use
 > `path:line` references into that tree.
+>
+> **Re-sync audit 2026-06-07:** upstream `gh-pages` advanced one commit to
+> `0b73d49` (#518, still `0.0.204`) — `install` now uses `os.tmpdir()` and
+> `fs.rmSync` for Termux/Windows portability. Our Rust port already
+> satisfies this (`std::env::temp_dir()` + `std::fs::remove_dir_all`), so
+> no porting was required; the long-tail citations below remain captured at
+> `9d29167` (only `install.js` differs between the two commits).
 
 ## 1. Identification
 
@@ -16,7 +23,7 @@
 | Upstream | `https://github.com/JavaScriptSolidServer/JavaScriptSolidServer` |
 | Licence | `AGPL-3.0-only` (`package.json:53`) |
 | Language | Node.js ≥ 18, ESM (`package.json:6, 42`) |
-| Local tree | `package.json` version `0.0.197` at upstream `gh-pages` commit `10bd60f` (`Bump version to 0.0.197 (#473)`). |
+| Local tree | `package.json` version `0.0.204` at upstream `gh-pages` commit `9d29167` (`Bump version to 0.0.204`). |
 | Declared perf | README Performance table: GET resource 5,400+ req/s, GET container 4,700+, PUT 5,700+, POST 5,200+, OPTIONS 10,000+ (`README.md:925–931`). |
 | Declared footprint | Comparison table: JSS 432 KB / 10 deps, vs NSS 777 KB / 58 deps, CSS 5.8 MB / 70 deps (`README.md:869–874`). Note: README line ~870 uses "432 KB / 10 deps", not "~1 MB". |
 | Solid spec | LDP + Solid Protocol (N3 Patch, SPARQL Update, WAC, Solid-OIDC) with explicit JSS extensions: Nostr relay, NIP-98, ActivityPub, Git HTTP backend, WebID-TLS, Schnorr SSO, Passkeys, did:nostr (`README.md:9–42`). |
@@ -410,8 +417,10 @@ non-prefixed `TOKEN_SECRET` (mandatory in production — `auth/token.js:17–34`
 - **Tags** (local `git tag`): `v0.0.26, v0.0.27, v0.0.31, v0.0.32, v0.0.33,
   v0.0.34, v0.0.35, v0.0.46` — semver-esque but clearly pre-1.0 alpha,
   patch-level only.
-- **Current local version**: `package.json` `0.0.197` at upstream
-  `gh-pages` commit `10bd60f`. Tag coverage lags the code.
+- **Current local version**: `package.json` `0.0.204` at upstream
+  `gh-pages` commit `0b73d49` (#518 install portability; `9d29167` is the
+  immediately-prior commit the code citations are captured at). Tag
+  coverage lags the code.
 - **Commit cadence**: local mirror is fast-forwarded to upstream, so raw
   commit counts can be taken from `upstream/gh-pages`. Verification of
   upstream cadence requires `git fetch upstream` + `git log

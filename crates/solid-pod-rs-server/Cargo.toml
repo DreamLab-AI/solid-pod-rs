@@ -72,6 +72,12 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # URL parsing for proxy SSRF validation.
 url = "2"
 
+# Compile-time embedding of the built-in docs tree (crates/solid-pod-rs/docs)
+# so the MCP `list_docs` / `read_docs` tools serve documentation from a
+# self-contained binary, with no runtime install-dir dependency. Mirrors JSS
+# `src/mcp/tools.js` reading its shipped `docs/` directory.
+include_dir = "0.7"
+
 # Optional TLS (rustls). Gated by the `tls` feature so default builds
 # keep the dependency surface minimal.
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "ring"] }
@@ -108,6 +114,12 @@ export-jsonld = ["solid-pod-rs/export-jsonld"]
 # Activates solid-pod-rs/git-auto-init (the trait + provision_pod_ext) and
 # links solid-pod-rs-git for the CGI handler and GitAutoInit implementor.
 git = ["dep:solid-pod-rs-git", "solid-pod-rs/git-auto-init"]
+
+# `install` subcommand NIP-98 signing (JSS `src/cli/install.js`). Pulls
+# the schnorr signer so `--nostr-privkey` can mint push tokens. The
+# subcommand always compiles; without this feature only `--token`
+# (bearer) auth works and `--nostr-privkey` returns an actionable error.
+install = ["solid-pod-rs/nip98-schnorr"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

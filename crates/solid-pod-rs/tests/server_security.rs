@@ -57,6 +57,9 @@ async fn public_read_state() -> AppState {
         pay_config: solid_pod_rs::payments::PayConfig::default(),
         data_root: None,
         pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+        allowed_origins: Vec::new(),
+        admin_key: None,
+        mcp_enabled: false,
     }
 }
 
@@ -93,6 +96,9 @@ async fn public_write_state(body_cap: usize) -> AppState {
         pay_config: solid_pod_rs::payments::PayConfig::default(),
         data_root: None,
         pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+        allowed_origins: Vec::new(),
+        admin_key: None,
+        mcp_enabled: false,
     }
 }
 
@@ -205,7 +211,10 @@ async fn server_anonymous_put_to_protected_resource_returns_401() {
         .get("www-authenticate")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(challenge, "DPoP realm=\"Solid\", Bearer realm=\"Solid\"");
+    assert_eq!(
+        challenge,
+        "Nostr realm=\"Solid\", DPoP realm=\"Solid\", Bearer realm=\"Solid\""
+    );
 }
 
 #[actix_web::test]
@@ -247,6 +256,9 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         pay_config: solid_pod_rs::payments::PayConfig::default(),
         data_root: None,
         pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+        allowed_origins: Vec::new(),
+        admin_key: None,
+        mcp_enabled: false,
     };
     let app = test::init_service(build_app(state)).await;
 

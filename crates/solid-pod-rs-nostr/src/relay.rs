@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use std::sync::Mutex;
 
-use k256::schnorr::{signature::Verifier, Signature, VerifyingKey};
+use k256::schnorr::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
@@ -82,7 +82,10 @@ impl Event {
             .map_err(|e| RelayError::BadSignature(e.to_string()))?;
         let sig = Signature::try_from(sig_bytes.as_slice())
             .map_err(|e| RelayError::BadSignature(e.to_string()))?;
-        vk.verify(&id_bytes, &sig)
+        // NIP-01 / BIP-340: the signature is over the 32-byte event id directly.
+        // `verify_raw` does no extra hashing; the `Verifier` trait would prefix a
+        // second SHA-256 and reject every standard Nostr (Amethyst/Amber) event.
+        vk.verify_raw(&id_bytes, &sig)
             .map_err(|e| RelayError::BadSignature(e.to_string()))
     }
 
@@ -485,7 +488,7 @@ impl Relay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::schnorr::{signature::Signer, SigningKey};
+    use k256::schnorr::SigningKey;
 
     /// Deterministic signing key (seed = 0x42*32).
     fn test_sk() -> SigningKey {
@@ -506,7 +509,8 @@ mod tests {
         };
         let id = skeleton.canonical_id();
         let id_bytes = hex::decode(&id).unwrap();
-        let sig: k256::schnorr::Signature = sk.sign(&id_bytes);
+        // Sign over the raw 32-byte id, exactly as a NIP-01 client does.
+        let sig = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("schnorr sign_raw");
         Event {
             id,
             pubkey: pubkey_hex,

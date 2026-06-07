@@ -14,6 +14,9 @@
 
 use clap::{Args, Subcommand};
 
+mod install;
+pub use install::{parse_app_spec, run_install, AppSpec, InstallArgs};
+
 // ---------------------------------------------------------------------------
 // Public CLI surface
 // ---------------------------------------------------------------------------
@@ -34,6 +37,9 @@ pub enum OperatorCommand {
     /// Invite-token operations — currently only `create`.
     #[command(subcommand)]
     Invite(InviteCommand),
+
+    /// Clone Solid apps and push them into a pod over git (JSS `install`).
+    Install(InstallArgs),
 }
 
 // ---------------------------------------------------------------------------
@@ -363,5 +369,6 @@ pub async fn dispatch(cmd: OperatorCommand) -> anyhow::Result<()> {
             println!("url: {url}");
             Ok(())
         }
+        OperatorCommand::Install(args) => run_install(&args).await,
     }
 }

@@ -2,11 +2,14 @@
 
 > Authoritative comparison against the **real** JSS. The row-per-feature
 > table lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md); this
-> document is the categorical reasoning narrative. Current as of Sprint 15
-> sync (2026-05-17): local JSS is fast-forwarded to upstream `gh-pages`
-> commit `10bd60f` (package `0.0.197`), and the raw checklist gate reports
+> document is the categorical reasoning narrative. Current as of Sprint 16
+> sync (2026-05-30): local JSS is fast-forwarded to upstream `gh-pages`
+> commit `9d29167` (package `0.0.204`), and the raw checklist gate reports
 > **~93% strict parity, ~100% on the spec-normative surface, ~100%
-> protocol-visible**. Five sibling crates
+> protocol-visible**. The v0.0.197 → v0.0.204 delta (§21 of the checklist)
+> is fully ported: MCP server (#490), `install` CLI, NIP-98 minting + git
+> push leniency, `getContentType` (#533), symlinked-dir listing (#531),
+> and the mashlib audio pane. Five sibling crates
 > (`solid-pod-rs-{activitypub,git,idp,nostr,didkey}`) are all functional
 > and shipping. Sprint 12 closed the JSS v0.0.60–v0.0.71 delta (ADR-058):
 > size-capped ACL parsing, `.account` dotfile, password-length validation,
@@ -24,7 +27,7 @@
   suite.
 - **JavaScriptSolidServer**: local clone at
   `/home/devuser/workspace/JavaScriptSolidServer/`, fast-forwarded to
-  `upstream/gh-pages` commit `10bd60f` (`Bump version to 0.0.197 (#473)`).
+  `upstream/gh-pages` commit `9d29167` (`Bump version to 0.0.204`).
   Licence `AGPL-3.0-only`. Node.js ≥ 18 ESM, Fastify-based server.
 
 ### Source paths
@@ -926,7 +929,7 @@ Accept-negotiation, and actor caching. 702 workspace tests, 0 failing.
 
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
-- JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `10bd60f` / `0.0.197`).
+- JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `9d29167` / `0.0.204`).
 - ADR-053 — backend boundary + extraction scope.
 - ADR-054 (pending) — library-vs-server separation.
 - Solid Protocol 0.11: <https://solidproject.org/TR/protocol>

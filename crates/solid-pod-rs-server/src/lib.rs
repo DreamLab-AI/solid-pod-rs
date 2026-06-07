@@ -56,6 +56,10 @@
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 
+/// MCP (Model Context Protocol) server subsystem — `POST /mcp`, mounted
+/// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
+mod mcp;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -123,6 +127,11 @@ pub struct AppState {
     ///
     /// Configured via `--admin-key` / `SOLID_ADMIN_KEY`.
     pub admin_key: Option<String>,
+    /// When true, the MCP (Model Context Protocol) server is mounted at
+    /// `POST /mcp`, exposing the pod as a tool surface for agents. OFF by
+    /// default — keys-on-disk and agent write access are an opt-in
+    /// security tradeoff. Configured via `--mcp` / `JSS_MCP` (JSS #490).
+    pub mcp_enabled: bool,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -178,6 +187,7 @@ impl AppState {
             pod_create_limiter: Arc::new(PodCreateLimiter::default()),
             allowed_origins: Vec::new(),
             admin_key: None,
+            mcp_enabled: false,
         }
     }
 }
@@ -2814,6 +2824,15 @@ pub fn build_app(
 
     // WAC-gated CORS proxy endpoint.
     app = app.route("/proxy", web::get().to(handle_proxy));
+
+    // MCP (Model Context Protocol) endpoint — opt-in tool surface for
+    // agents (JSS #490). Registered before the LDP catch-all so `/mcp` is
+    // never treated as a pod resource. OFF unless `--mcp` / `JSS_MCP`.
+    if state.mcp_enabled {
+        app = app
+            .route("/mcp", web::post().to(mcp::handle_mcp))
+            .route("/mcp", web::method(actix_web::http::Method::OPTIONS).to(mcp::handle_mcp_options));
+    }
 
     // Admin provisioning endpoint (alpha.15). Must be before the LDP
     // catch-all so `_admin` is never treated as a pod name.

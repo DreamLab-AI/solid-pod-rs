@@ -80,7 +80,13 @@ impl Default for MashlibConfig {
 // Decision: should we serve mashlib for this request?
 // -------------------------------------------------------------------------
 
-/// RDF content types that mashlib can render.
+/// Content types that have a mashlib pane to render them: RDF, markdown,
+/// and the Apple HLS playlist type. Any `audio/*` type (mpeg, ogg, wave,
+/// flac, the `audio/mpegurl` / `audio/x-scpls` playlists, …) is matched
+/// by family in [`should_serve`] rather than enumerated here. Do NOT add
+/// video/image types until panes exist for them — wrapping them would
+/// show "No data found" instead of the browser's native inline render.
+/// Mirrors JSS #533 `shouldServeMashlib`.
 const MASHLIB_RENDERABLE: &[&str] = &[
     "text/turtle",
     "application/ld+json",
@@ -89,9 +95,7 @@ const MASHLIB_RENDERABLE: &[&str] = &[
     "application/n-triples",
     "application/rdf+xml",
     "text/markdown",
-    "audio/mpegurl",
     "application/vnd.apple.mpegurl",
-    "audio/x-scpls",
 ];
 
 /// RDF types whose presence *before* `text/html` in the Accept header
@@ -153,6 +157,11 @@ pub fn should_serve(
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
+    // Any audio/* type has a pane (audio or playlist), so match the whole
+    // family rather than enumerate the exact spellings the mime db uses.
+    if base_type.starts_with("audio/") {
+        return true;
+    }
     MASHLIB_RENDERABLE.contains(&base_type.as_str())
 }
 

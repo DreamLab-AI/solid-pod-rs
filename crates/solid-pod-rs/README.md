@@ -25,6 +25,29 @@ let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Compose with your framework; see examples/embed_in_actix.rs.
 ```
 
+## What's new in 0.4.0-alpha.15 (2026-05-30, JSS v0.0.204 sync)
+
+Integrates the upstream JSS delta `0.0.197` (`10bd60f`) → `0.0.204`
+(`9d29167`): an agent-facing Model Context Protocol surface, an app
+distribution CLI, and two content-type / listing fixes.
+
+- **MCP server** (`solid-pod-rs-server`, JSS #490): `POST /mcp` exposes
+  the pod as a Model Context Protocol 2025-03-26 tool surface (sixteen
+  tools, JSON-RPC 2.0, SSE upgrade for `subscribe`). Identity reuses the
+  NIP-98 verifier, so tool calls get the same WAC treatment as REST. Off
+  by default (`--mcp` / `JSS_MCP`).
+- **`install` subcommand** (`solid-pod-rs-server`): clones a Solid app and
+  pushes it into a pod over git smart HTTP, authenticating with a single
+  NIP-98 `http.extraHeader` token. Requires the `install` cargo feature
+  for NIP-98 signing.
+- **NIP-98 token minting** (`auth::nip98::mint`, feature `nip98-schnorr`)
+  and **`MatchPolicy`** (`Strict` for REST/MCP, `GitLenient` for the git
+  push bridge — `*`-method wildcard + repo-URL-prefix binding).
+- **`ldp::guess_content_type`** (JSS #533): MIME fallback for
+  sidecar-absent resources, so git-extracted app files render inline.
+- **Fixes**: symlinked-directory container listing (JSS #531) and the
+  mashlib `audio/*` rendering family (JSS #533).
+
 ## What's new in 0.4.0-alpha.11 (2026-05-16, JSS Phase 1 port)
 
 Three default-off feature flags add the JSS Phase 1 surface (issue
