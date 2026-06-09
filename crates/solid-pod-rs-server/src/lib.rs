@@ -500,10 +500,52 @@ async fn enforce_write(
         &registry,
     );
     if granted {
+        // Sat-gating consumption for the write path: identical to the
+        // read path (see `enforce_read`). A granted write whose
+        // authorising rule carried an `acl:PaymentCondition` debits the
+        // caller's Web Ledger by the matched rule's cost. The WAC gate
+        // above already proved `balance >= cost`, so a debit failure can
+        // only mean a concurrent spend raced the balance below cost —
+        // fail closed, never serve an unpaid write.
+        if let Err(e) =
+            charge_granted_payment(state, acl_doc.as_ref(), &ctx, path, mode, &groups, &registry)
+                .await
+        {
+            return Err(e);
+        }
         return Ok(());
     }
 
     Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+}
+
+/// Apply the `acl:PaymentCondition` debit for a request the WAC gate has
+/// already granted. Computes the cost of the single granting rule via
+/// [`wac::granted_payment_cost`] and, when that cost is non-zero and the
+/// caller is an authenticated principal, debits their Web Ledger exactly
+/// once. A zero cost (no PaymentCondition on the granting rule) is a
+/// no-op. A debit failure (insufficient balance after a concurrent
+/// spend, or ledger I/O error) is surfaced as the same WAC denial the
+/// caller would have received, so the request is never served unpaid.
+async fn charge_granted_payment(
+    state: &AppState,
+    acl_doc: Option<&wac::AclDocument>,
+    ctx: &RequestContext<'_>,
+    path: &str,
+    mode: AccessMode,
+    groups: &wac::StaticGroupMembership,
+    registry: &wac::conditions::ConditionRegistry,
+) -> Result<(), ActixError> {
+    let cost = wac::granted_payment_cost(acl_doc, ctx, path, mode, groups, registry);
+    if cost == 0 {
+        return Ok(());
+    }
+    if let Some(did) = ctx.web_id {
+        if debit_ledger(&*state.storage, did, cost).await.is_err() {
+            return Err(acl_denial(acl_doc, ctx.web_id, path));
+        }
+    }
+    Ok(())
 }
 
 /// Build the WAC denial `actix_web::Error` shared by the read and write
@@ -580,9 +622,54 @@ async fn enforce_read(
         &registry,
     );
     if granted {
+        // Sat-gating consumption: a granted read whose authorising rule
+        // carried an `acl:PaymentCondition` debits the caller's Web
+        // Ledger by the matched rule's cost (fail-closed on a raced
+        // balance). See `charge_granted_payment`.
+        charge_granted_payment(
+            state,
+            acl_doc.as_ref(),
+            &ctx,
+            path,
+            AccessMode::Read,
+            &groups,
+            &registry,
+        )
+        .await?;
         return Ok(());
     }
     Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+}
+
+/// Debit `cost` satoshis from `did`'s Web Ledger entry and persist the
+/// updated ledger document, deducting exactly once for a granted
+/// payment-gated request.
+///
+/// Reads [`WEBLEDGER_PATH`], applies [`WebLedger::debit`] (which fails
+/// closed on an insufficient or missing balance), and writes the ledger
+/// back. A read, debit, or write failure returns `Err` so the caller can
+/// deny the request rather than serve it unpaid.
+async fn debit_ledger(
+    storage: &dyn Storage,
+    did: &str,
+    cost: u64,
+) -> Result<(), solid_pod_rs::payments::PaymentError> {
+    use solid_pod_rs::payments::{PaymentError, WebLedger};
+
+    let (bytes, _meta) = storage
+        .get(WEBLEDGER_PATH)
+        .await
+        .map_err(|e| PaymentError::Store(e.to_string()))?;
+    let mut ledger: WebLedger = serde_json::from_slice(&bytes)
+        .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}")))?;
+    ledger.debit(did, cost)?;
+    let body = serde_json::to_vec(&ledger)
+        .map_err(|e| PaymentError::Store(format!("serialise ledger: {e}")))?;
+    storage
+        .put(WEBLEDGER_PATH, Bytes::from(body), "application/json")
+        .await
+        .map_err(|e| PaymentError::Store(e.to_string()))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3330,6 +3417,119 @@ mod payment_gating_tests {
         assert!(
             result.is_err(),
             "anonymous caller has no ledger principal — PaymentCondition fails closed"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // R-04: sat-gating is a DEBIT, not just a balance check. A granted
+    // payment-gated request must consume the matched rule's cost from the
+    // caller's Web Ledger exactly once.
+    // -----------------------------------------------------------------
+
+    async fn read_balance(storage: &dyn Storage, did: &str) -> u64 {
+        let (bytes, _) = storage.get(WEBLEDGER_PATH).await.unwrap();
+        let ledger: WebLedger = serde_json::from_slice(&bytes).unwrap();
+        ledger.get_balance(did)
+    }
+
+    /// A granted paid WRITE debits the cost from the ledger.
+    #[actix_web::test]
+    async fn paid_write_debits_ledger() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 250).await; // cost 100
+        let state = AppState::new(storage.clone());
+
+        let result =
+            enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(result.is_ok(), "balance 250 >= cost 100 must be granted");
+        assert_eq!(
+            read_balance(storage.as_ref(), PRINCIPAL).await,
+            150,
+            "250 - 100 cost: the grant must debit exactly the matched rule's cost"
+        );
+    }
+
+    /// A second granted paid WRITE debits again (no free re-read of the
+    /// same resource once the balance is consumed).
+    #[actix_web::test]
+    async fn paid_write_debits_each_grant() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_acl(storage.as_ref()).await;
+        seed_ledger(storage.as_ref(), PRINCIPAL, 250).await; // cost 100
+        let state = AppState::new(storage.clone());
+
+        enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL))
+            .await
+            .unwrap();
+        enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_balance(storage.as_ref(), PRINCIPAL).await,
+            50,
+            "250 - 2*100: each granted request debits, no unmetered re-use"
+        );
+
+        // Third request: 50 < 100 — gate denies, balance unchanged.
+        let third =
+            enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(third.is_err(), "balance 50 < cost 100 must now be denied");
+        assert_eq!(
+            read_balance(storage.as_ref(), PRINCIPAL).await,
+            50,
+            "a denied request must not debit"
+        );
+    }
+
+    /// A granted paid READ debits the cost from the ledger.
+    #[actix_web::test]
+    async fn paid_read_debits_ledger() {
+        const PAID_READ_ACL: &str = r#"
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#paid-read> a acl:Authorization ;
+    acl:agent <did:nostr:alice> ;
+    acl:accessTo </premium/feed> ;
+    acl:mode acl:Read ;
+    acl:condition [
+        a acl:PaymentCondition ;
+        acl:costSats 30
+    ] .
+"#;
+        let storage = Arc::new(MemoryBackend::new());
+        storage
+            .put("/premium/feed.acl", Bytes::from(PAID_READ_ACL), "text/turtle")
+            .await
+            .unwrap();
+        seed_ledger(storage.as_ref(), PRINCIPAL, 100).await;
+        let state = AppState::new(storage.clone());
+
+        let result = enforce_read(&state, "/premium/feed", Some(PRINCIPAL)).await;
+        assert!(result.is_ok(), "balance 100 >= cost 30 must be granted");
+        assert_eq!(
+            read_balance(storage.as_ref(), PRINCIPAL).await,
+            70,
+            "100 - 30 cost: a granted paid read must debit"
+        );
+    }
+
+    /// A granted FREE read (no PaymentCondition) leaves the ledger
+    /// untouched.
+    #[actix_web::test]
+    async fn free_read_does_not_debit() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_private_read_acl(storage.as_ref()).await; // no PaymentCondition
+        seed_ledger(storage.as_ref(), PRINCIPAL, 100).await;
+        let state = AppState::new(storage.clone());
+
+        enforce_read(&state, "/private/secret", Some(PRINCIPAL))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_balance(storage.as_ref(), PRINCIPAL).await,
+            100,
+            "a grant with no PaymentCondition must not debit"
         );
     }
 

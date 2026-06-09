@@ -133,7 +133,7 @@ pub use conditions::{
 pub use document::{AclAuthorization, AclDocument, IdOrIds, IdRef};
 pub use evaluator::{
     evaluate_access, evaluate_access_ctx, evaluate_access_ctx_with_registry,
-    evaluate_access_with_groups, GroupMembership, StaticGroupMembership,
+    evaluate_access_with_groups, granted_payment_cost, GroupMembership, StaticGroupMembership,
 };
 pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};

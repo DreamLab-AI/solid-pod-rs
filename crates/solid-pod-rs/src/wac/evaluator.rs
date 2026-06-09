@@ -355,3 +355,93 @@ fn evaluate_access_ctx_inner(
         true
     }
 }
+
+/// Total `acl:PaymentCondition` cost (in satoshis) carried by the single
+/// authorisation that grants `(ctx.web_id, required_mode)` on
+/// `resource_path`.
+///
+/// This re-runs the exact predicate-matching performed by
+/// [`evaluate_access_ctx`] — agent/mode/path match, ancestor-inheritance
+/// `accessTo` gating, and the conjunctive condition gate — and, for the
+/// first authorisation that grants, sums the `cost_sats` of every
+/// `acl:PaymentCondition` attached to that one rule. Returns `0` when no
+/// rule grants, or when the granting rule carries no PaymentCondition.
+///
+/// The handler layer calls this after a successful grant to learn how
+/// many sats to debit from the caller's Web Ledger. Debiting the cost of
+/// only the matched rule (rather than every PaymentCondition in the
+/// document) means a caller is charged once, for the rule they actually
+/// used.
+pub fn granted_payment_cost(
+    acl_doc: Option<&AclDocument>,
+    ctx: &RequestContext<'_>,
+    resource_path: &str,
+    required_mode: AccessMode,
+    groups: &dyn GroupMembership,
+    dispatcher: &dyn ConditionDispatcher,
+) -> u64 {
+    let Some(doc) = acl_doc else {
+        return 0;
+    };
+    let Some(graph) = doc.graph.as_ref() else {
+        return 0;
+    };
+    let honour_access_to = !doc.inherited;
+    for auth in graph {
+        let granted = get_modes(auth);
+        if !granted.contains(&required_mode) {
+            continue;
+        }
+        if !agent_matches_with_groups(auth, ctx.web_id, groups) {
+            continue;
+        }
+        let mut path_ok = false;
+        if honour_access_to {
+            for target in get_ids(&auth.access_to) {
+                if path_matches(target, resource_path, false) {
+                    path_ok = true;
+                    break;
+                }
+            }
+        }
+        if !path_ok {
+            for target in get_ids(&auth.default) {
+                if path_matches(target, resource_path, true) {
+                    path_ok = true;
+                    break;
+                }
+            }
+        }
+        if !path_ok {
+            continue;
+        }
+
+        // Conjunctive condition gate — same fail-closed semantics as the
+        // evaluator. A rule only grants (and only incurs its cost) when
+        // every attached condition is `Satisfied`.
+        let mut conditions_ok = true;
+        if let Some(conds) = &auth.condition {
+            for cond in conds {
+                match dispatcher.dispatch(cond, ctx, groups) {
+                    ConditionOutcome::Satisfied => continue,
+                    ConditionOutcome::NotApplicable | ConditionOutcome::Denied => {
+                        conditions_ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !conditions_ok {
+            continue;
+        }
+
+        // First granting authorisation wins — mirror the evaluator's
+        // `break`. Charge only the PaymentConditions on this one rule.
+        return auth
+            .condition
+            .as_deref()
+            .map(crate::wac::payment::total_payment_cost)
+            .unwrap_or(0);
+    }
+    0
+}
