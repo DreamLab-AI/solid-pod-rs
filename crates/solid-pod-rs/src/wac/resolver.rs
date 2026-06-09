@@ -57,6 +57,12 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
         resource_path: &str,
     ) -> Result<Option<AclDocument>, PodError> {
         let mut path = resource_path.to_string();
+        // The first iteration probes the resource's OWN `.acl` sidecar
+        // (a direct ACL); every later iteration walks up to an ANCESTOR
+        // container, whose ACL is INHERITED. The evaluator must treat the
+        // two differently — inherited ACLs honour only `acl:default`
+        // (WAC §4.2), so tag the document accordingly (P2).
+        let mut inherited = false;
         loop {
             let acl_key = if path == "/" {
                 "/.acl".to_string()
@@ -69,7 +75,10 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
                 // PayloadTooLarge and bubbles up so the caller can
                 // reject with 400/413.
                 match parse_jsonld_acl(&body) {
-                    Ok(doc) => return Ok(Some(doc)),
+                    Ok(mut doc) => {
+                        doc.inherited = inherited;
+                        return Ok(Some(doc));
+                    }
                     Err(PodError::BadRequest(_)) => {
                         return Err(PodError::BadRequest("ACL document exceeds bounds".into()));
                     }
@@ -84,7 +93,8 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
                     || ct.starts_with("application/x-turtle");
                 let text = std::str::from_utf8(&body).unwrap_or("");
                 if looks_turtle || text.contains("@prefix") || text.contains("acl:Authorization") {
-                    if let Ok(doc) = parse_turtle_acl(text) {
+                    if let Ok(mut doc) = parse_turtle_acl(text) {
+                        doc.inherited = inherited;
                         return Ok(Some(doc));
                     }
                 }
@@ -92,6 +102,8 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
             if path == "/" || path.is_empty() {
                 break;
             }
+            // Every subsequent ACL is resolved from an ancestor.
+            inherited = true;
             let trimmed = path.trim_end_matches('/');
             path = match trimmed.rfind('/') {
                 Some(0) => "/".to_string(),

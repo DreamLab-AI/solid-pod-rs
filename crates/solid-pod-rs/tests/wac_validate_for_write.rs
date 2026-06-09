@@ -42,6 +42,7 @@ fn wac_validate_for_write_accepts_known_conditions() {
     let doc = AclDocument {
         context: None,
         graph: Some(vec![auth_with_condition(Some(vec![client_cond]))]),
+        inherited: false,
     };
     let registry = ConditionRegistry::default_with_client_and_issuer();
     assert!(validate_for_write(&doc, &registry).is_ok());
@@ -77,6 +78,7 @@ fn wac_validate_for_write_accepts_no_conditions() {
     let doc = AclDocument {
         context: None,
         graph: Some(vec![auth_with_condition(None)]),
+        inherited: false,
     };
     let registry = ConditionRegistry::default_with_client_and_issuer();
     assert!(validate_for_write(&doc, &registry).is_ok());
@@ -85,6 +87,7 @@ fn wac_validate_for_write_accepts_no_conditions() {
     let empty = AclDocument {
         context: None,
         graph: None,
+        inherited: false,
     };
     assert!(validate_for_write(&empty, &registry).is_ok());
 }

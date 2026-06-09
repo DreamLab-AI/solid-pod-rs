@@ -41,6 +41,7 @@ fn doc_with(authzs: Vec<AclAuthorization>) -> AclDocument {
     AclDocument {
         context: None,
         graph: Some(authzs),
+        inherited: false,
     }
 }
 

@@ -244,6 +244,7 @@ async fn wac_issuer_condition_dispatches_to_cid_verifier() {
                 issuer_class: None,
             })]),
         }]),
+        inherited: false,
     };
 
     let ctx = RequestContext {

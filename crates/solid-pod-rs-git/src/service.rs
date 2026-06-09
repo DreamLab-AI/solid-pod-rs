@@ -82,6 +82,27 @@ impl GitRequest {
     pub fn is_write(&self) -> bool {
         self.path.contains("/git-receive-pack") || self.query.contains("service=git-receive-pack")
     }
+
+    /// `true` if this request fetches repository data (clone/fetch/ls).
+    ///
+    /// Smart-HTTP read traffic is the `git-upload-pack` service plus the
+    /// `info/refs` capability advertisement that precedes it, and the
+    /// dumb-HTTP object/pack paths under `objects/`. These previously
+    /// bypassed every auth check while `GIT_HTTP_EXPORT_ALL` exported
+    /// each repo verbatim, so a private pod's git history was world-
+    /// clonable (P1-3). The service now gates reads through the same
+    /// auth provider as writes.
+    #[must_use]
+    pub fn is_read(&self) -> bool {
+        if self.is_write() {
+            return false;
+        }
+        self.path.contains("/git-upload-pack")
+            || self.query.contains("service=git-upload-pack")
+            || self.path.contains("/info/refs")
+            || self.path.contains("/objects/")
+            || self.path.ends_with("/HEAD")
+    }
 }
 
 /// CGI response to return to the HTTP layer.
@@ -208,9 +229,15 @@ impl GitHttpService {
 
         // 3. Auth for writes (JSS: the route-level `preValidation`
         //    hook on `/git-receive-pack` calls `handleAuth`; we fold
-        //    that into a single check here).
+        //    that into a single check here). P1-3: reads (clone/fetch)
+        //    are gated through the SAME provider when one is configured,
+        //    closing the world-readable git hole. When no provider is
+        //    plugged in the service stays anonymous (the documented
+        //    no-auth setup), matching JSS's behaviour with no
+        //    `handleAuth` pre-hook.
         let mut remote_user = String::new();
-        if req.is_write() {
+        let needs_auth = req.is_write() || (req.is_read() && self.auth.is_some());
+        if needs_auth {
             let auth = self
                 .auth
                 .as_ref()
@@ -490,6 +517,58 @@ mod tests {
             host_url: None,
         };
         assert!(!req.is_write());
+    }
+
+    #[test]
+    fn git_request_is_read_detects_upload_pack_and_info_refs() {
+        // info/refs advertisement for a clone.
+        let advert = GitRequest {
+            method: "GET".into(),
+            path: "/repo/info/refs".into(),
+            query: "service=git-upload-pack".into(),
+            headers: vec![],
+            body: Bytes::new(),
+            host_url: None,
+        };
+        assert!(advert.is_read());
+        assert!(!advert.is_write());
+
+        // The upload-pack POST itself.
+        let pack = GitRequest {
+            method: "POST".into(),
+            path: "/repo/git-upload-pack".into(),
+            query: String::new(),
+            headers: vec![],
+            body: Bytes::new(),
+            host_url: None,
+        };
+        assert!(pack.is_read());
+
+        // Dumb-HTTP object fetch.
+        let object = GitRequest {
+            method: "GET".into(),
+            path: "/repo/objects/info/packs".into(),
+            query: String::new(),
+            headers: vec![],
+            body: Bytes::new(),
+            host_url: None,
+        };
+        assert!(object.is_read());
+    }
+
+    #[test]
+    fn git_request_is_read_false_for_write() {
+        // A receive-pack advertisement is a write, never a read.
+        let req = GitRequest {
+            method: "GET".into(),
+            path: "/repo/info/refs".into(),
+            query: "service=git-receive-pack".into(),
+            headers: vec![],
+            body: Bytes::new(),
+            host_url: None,
+        };
+        assert!(req.is_write());
+        assert!(!req.is_read());
     }
 
     #[test]

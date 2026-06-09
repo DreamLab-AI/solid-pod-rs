@@ -71,6 +71,21 @@ fn parse_acl(body: &[u8]) -> AclDocument {
     parse_jsonld_acl(body).expect("ACL body should parse as valid JSON-LD")
 }
 
+/// Build an ACL body granting `agent` `mode` on `path` via `acl:default`
+/// (inherits to descendants) rather than `acl:accessTo`.
+fn acl_default_body(agent: &str, path: &str, mode: &str) -> Bytes {
+    Bytes::from(format!(
+        r#"{{
+            "@context": {{"acl": "http://www.w3.org/ns/auth/acl#"}},
+            "@graph": [{{
+                "acl:agent": {{"@id": "{agent}"}},
+                "acl:default": {{"@id": "{path}"}},
+                "acl:mode": {{"@id": "acl:{mode}"}}
+            }}]
+        }}"#
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Test: Two writers simultaneously updating the same .acl.json
 // ---------------------------------------------------------------------------
@@ -530,5 +545,114 @@ async fn watch_events_fire_for_acl_mutations() {
         mutations,
         "must receive exactly {mutations} events, got {}",
         events.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P2: `acl:accessTo` must NOT over-inherit on walk-up.
+//
+// An ancestor container's `.acl` that grants access via `acl:accessTo`
+// (which names an EXACT resource, WAC §4.2) must NOT leak that grant to
+// descendant resources. Only `acl:default` inherits down the tree. The
+// resolver tags ancestor-resolved docs as `inherited`, and the evaluator
+// ignores `accessTo` for inherited docs.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ancestor_access_to_does_not_inherit_to_child() {
+    let store = Arc::new(MemoryBackend::new());
+    let resolver = StorageAclResolver::new(store.clone());
+
+    // Seed an ancestor container ACL granting alice Read via `accessTo`
+    // on `/parent` ONLY (no `acl:default`). There is no `.acl` sidecar
+    // on `/parent/child` itself, so the resolver walks up to the
+    // `/parent.acl` sidecar (the container's own ACL).
+    store
+        .put(
+            "/parent.acl",
+            acl_body("did:nostr:alice", "/parent", "Read"),
+            "application/ld+json",
+        )
+        .await
+        .unwrap();
+
+    // Resolve the effective ACL for the child resource. The doc comes
+    // from the ancestor, so `inherited` is set.
+    let doc = resolver
+        .find_effective_acl("/parent/child")
+        .await
+        .unwrap()
+        .expect("ancestor ACL is found by walk-up");
+    assert!(
+        doc.inherited,
+        "ACL resolved from an ancestor container must be tagged inherited"
+    );
+
+    // The `accessTo`-only grant on `/parent` MUST NOT apply to the child.
+    assert!(
+        !evaluate_access(
+            Some(&doc),
+            Some("did:nostr:alice"),
+            "/parent/child",
+            AccessMode::Read,
+            None,
+        ),
+        "ancestor accessTo grant must NOT leak to a descendant resource"
+    );
+
+    // Sanity: the same grant DOES apply to the exact resource it names.
+    let direct = resolver
+        .find_effective_acl("/parent")
+        .await
+        .unwrap()
+        .expect("direct ACL is found for /parent");
+    assert!(
+        !direct.inherited,
+        "ACL on the resource's own sidecar is a direct (non-inherited) ACL"
+    );
+    assert!(
+        evaluate_access(
+            Some(&direct),
+            Some("did:nostr:alice"),
+            "/parent",
+            AccessMode::Read,
+            None,
+        ),
+        "accessTo grant applies to the exact resource it names"
+    );
+}
+
+#[tokio::test]
+async fn ancestor_default_does_inherit_to_child() {
+    let store = Arc::new(MemoryBackend::new());
+    let resolver = StorageAclResolver::new(store.clone());
+
+    // Control case: an ancestor ACL using `acl:default` MUST inherit to
+    // descendants — this is the mechanism that survives the P2 fix.
+    store
+        .put(
+            "/parent.acl",
+            acl_default_body("did:nostr:alice", "/parent/", "Read"),
+            "application/ld+json",
+        )
+        .await
+        .unwrap();
+
+    let doc = resolver
+        .find_effective_acl("/parent/child")
+        .await
+        .unwrap()
+        .expect("ancestor ACL is found by walk-up");
+    assert!(doc.inherited, "resolved from ancestor → inherited");
+
+    assert!(
+        evaluate_access(
+            Some(&doc),
+            Some("did:nostr:alice"),
+            "/parent/child",
+            AccessMode::Read,
+            None,
+        ),
+        "acl:default grant MUST inherit to descendant resources"
     );
 }

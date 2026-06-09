@@ -86,6 +86,7 @@ pub fn parse_turtle_acl_with_limit(input: &str, max_bytes: usize) -> Result<AclD
     Ok(AclDocument {
         context: None,
         graph: if graph.is_empty() { None } else { Some(graph) },
+        inherited: false,
     })
 }
 

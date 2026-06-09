@@ -23,7 +23,11 @@ path = "src/main.rs"
 
 [dependencies]
 # Library core — the binary's sole non-transport dependency.
-solid-pod-rs = { version = "0.4.0-alpha.15", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications"] }
+# `dpop-replay-cache` is enabled unconditionally so the deployed server
+# always has DPoP `jti` replay protection wired into `verify_dpop_proof`
+# (Solid-OIDC §5.2 / RFC 9449 §4.3; mirrors JSS 2026-01-05 #2). Without
+# it `verify_dpop_proof` compiles to its replay-unaware form.
+solid-pod-rs = { version = "0.4.0-alpha.15", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
@@ -46,6 +50,10 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Request/response helpers.
 bytes = "1"
+
+# Constant-time byte comparison for the native-pod provisioning PSK
+# (`/_admin/provision`). Prevents a timing side-channel on the admin key.
+subtle = "2.6"
 
 # Percent-decoding for the defence-in-depth path-traversal middleware.
 percent-encoding = "2"

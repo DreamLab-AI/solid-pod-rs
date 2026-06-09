@@ -332,12 +332,141 @@ fn accept_includes_html(accept: &str) -> bool {
 /// * `401` when the request had no authenticated agent (so the client
 ///   knows retrying with credentials might work);
 /// * `403` when authenticated but the ACL does not grant the mode.
+/// Strip a `.acl` / `.meta` suffix from `path`, returning the protected
+/// resource the sidecar governs. `/victim/.acl` → `/victim/`,
+/// `/a/b.acl` → `/a/b`, `/.acl` → `/`. Returns `None` when `path` is not
+/// an ACL/meta sidecar.
+fn protected_resource_for_acl(path: &str) -> Option<String> {
+    for suffix in [".acl", ".meta"] {
+        if let Some(stripped) = path.strip_suffix(suffix) {
+            // `/.acl` and `/dir/.acl` strip to `/` and `/dir/`
+            // respectively (container ACLs); `/a/b.acl` strips to the
+            // resource `/a/b`.
+            if stripped.is_empty() {
+                return Some("/".to_string());
+            }
+            return Some(stripped.to_string());
+        }
+    }
+    None
+}
+
+/// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
+/// `.acl` document body and confirm at least one authorization still
+/// grants `acl:Control` to `caller` (by exact WebID, `foaf:Agent`, or —
+/// for an authenticated caller — `acl:AuthenticatedAgent`). Returns
+/// `true` when the proposed ACL is unparseable (the storage layer will
+/// reject malformed bodies; the guard only fires on a parseable ACL that
+/// would strip the caller's Control) or when Control is preserved.
+fn proposed_acl_keeps_caller_control(body: &[u8], content_type: &str, caller: Option<&str>) -> bool {
+    let doc = match parse_jsonld_acl(body) {
+        Ok(d) => Some(d),
+        Err(_) => {
+            let ct = content_type.to_ascii_lowercase();
+            let text = std::str::from_utf8(body).unwrap_or("");
+            let looks_turtle = ct.starts_with("text/turtle")
+                || ct.starts_with("application/turtle")
+                || ct.starts_with("application/x-turtle")
+                || text.contains("@prefix")
+                || text.contains("acl:Authorization");
+            if looks_turtle {
+                parse_turtle_acl(text).ok()
+            } else {
+                None
+            }
+        }
+    };
+    let Some(doc) = doc else {
+        // Unparseable as an ACL — not our concern; let storage reject it.
+        return true;
+    };
+    let Some(graph) = doc.graph.as_ref() else {
+        return false;
+    };
+    graph.iter().any(|auth| {
+        let grants_control = ids_of_acl_field(&auth.mode)
+            .iter()
+            .any(|m| *m == "acl:Control" || *m == "http://www.w3.org/ns/auth/acl#Control");
+        if !grants_control {
+            return false;
+        }
+        let agents = ids_of_acl_field(&auth.agent);
+        if let Some(web_id) = caller {
+            if agents.iter().any(|a| *a == web_id) {
+                return true;
+            }
+        }
+        let classes = ids_of_acl_field(&auth.agent_class);
+        if classes
+            .iter()
+            .any(|c| *c == "http://xmlns.com/foaf/0.1/Agent" || *c == "foaf:Agent")
+        {
+            return true;
+        }
+        if caller.is_some()
+            && classes.iter().any(|c| {
+                *c == "http://www.w3.org/ns/auth/acl#AuthenticatedAgent"
+                    || *c == "acl:AuthenticatedAgent"
+            })
+        {
+            return true;
+        }
+        false
+    })
+}
+
+/// Flatten an optional `IdOrIds` ACL field into a `Vec<&str>` of IRIs.
+fn ids_of_acl_field(field: &Option<wac::IdOrIds>) -> Vec<&str> {
+    match field {
+        None => Vec::new(),
+        Some(wac::IdOrIds::Single(r)) => vec![r.id.as_str()],
+        Some(wac::IdOrIds::Multiple(v)) => v.iter().map(|r| r.id.as_str()).collect(),
+    }
+}
+
 async fn enforce_write(
     state: &AppState,
     path: &str,
     mode: AccessMode,
     agent_uri: Option<&str>,
 ) -> Result<(), ActixError> {
+    // P0-2: an `.acl`/`.meta` sidecar governs *another* resource's
+    // permissions. Authorising its mutation as plain `Write` on the
+    // sidecar path lets any writer rewrite the ACL and self-escalate
+    // (privilege escalation). WAC §4.3.5 requires `acl:Control` on the
+    // PROTECTED resource. Elevate the check accordingly, mirroring the
+    // MCP `write_acl` path (mcp/tools.rs:505), and apply the same
+    // lockout guard so a Control holder cannot strip every other
+    // principal's Control in a single write.
+    if let Some(protected) = protected_resource_for_acl(path) {
+        let control_acl = match find_effective_acl_dyn(&*state.storage, &protected).await {
+            Ok(doc) => doc,
+            Err(e) => return Err(to_actix(e)),
+        };
+        let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
+        let ctx = RequestContext {
+            web_id: agent_uri,
+            client_id: None,
+            issuer: None,
+            payment_balance_sats,
+        };
+        let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
+        let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
+        let has_control = wac::evaluate_access_ctx_with_registry(
+            control_acl.as_ref(),
+            &ctx,
+            &protected,
+            AccessMode::Control,
+            None,
+            &groups,
+            &registry,
+        );
+        if !has_control {
+            return Err(acl_denial(control_acl.as_ref(), agent_uri, &protected));
+        }
+        return Ok(());
+    }
+
     // `StorageAclResolver` is generic over a concrete backend. `state`
     // holds an `Arc<dyn Storage>`; wrap it in a trait-object-friendly
     // adapter (`DynStorage`) that forwards each trait method so the
@@ -374,7 +503,20 @@ async fn enforce_write(
         return Ok(());
     }
 
-    let allow_header = wac::wac_allow_header(acl_doc.as_ref(), agent_uri, path);
+    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+}
+
+/// Build the WAC denial `actix_web::Error` shared by the read and write
+/// enforcement paths: `401` (with a `WWW-Authenticate` challenge) for an
+/// unauthenticated caller so a retry with credentials is signalled, or
+/// `403` for an authenticated caller the ACL does not grant. Both carry
+/// the advisory `WAC-Allow` header describing the effective permissions.
+fn acl_denial(
+    acl_doc: Option<&wac::AclDocument>,
+    agent_uri: Option<&str>,
+    path: &str,
+) -> ActixError {
+    let allow_header = wac::wac_allow_header(acl_doc, agent_uri, path);
     let (status, body, unauthenticated) = if agent_uri.is_none() {
         (StatusCode::UNAUTHORIZED, "authentication required", true)
     } else {
@@ -387,7 +529,7 @@ async fn enforce_write(
             .unwrap_or(header::HeaderValue::from_static("")),
     );
     if unauthenticated {
-        // Advertise every auth scheme the write path actually accepts so an
+        // Advertise every auth scheme the pod accepts so an
         // unauthenticated agent knows how to retry. `extract_pubkey` verifies
         // NIP-98 (`Authorization: Nostr <base64(kind-27235 event)>`), which is
         // how a `did:nostr` agent authenticates against the pod — without the
@@ -400,7 +542,47 @@ async fn enforce_write(
             ),
         );
     }
-    Err(actix_web::error::InternalError::from_response(body, rsp).into())
+    actix_web::error::InternalError::from_response(body, rsp).into()
+}
+
+/// P0-1: WAC `acl:Read` enforcement for GET / HEAD / container listing.
+///
+/// Mirror of [`enforce_write`] for the `Read` mode. Before this guard the
+/// GET path resolved an advisory `WAC-Allow` header but returned the
+/// resource body verbatim with no read-authz check, so every private
+/// resource was world-readable. Returns `Ok(())` on grant; on deny a
+/// `401`/`403` matching the write path's denial shape.
+async fn enforce_read(
+    state: &AppState,
+    path: &str,
+    agent_uri: Option<&str>,
+) -> Result<(), ActixError> {
+    let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
+        Ok(doc) => doc,
+        Err(e) => return Err(to_actix(e)),
+    };
+    let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
+    let ctx = RequestContext {
+        web_id: agent_uri,
+        client_id: None,
+        issuer: None,
+        payment_balance_sats,
+    };
+    let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
+    let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
+    let granted = wac::evaluate_access_ctx_with_registry(
+        acl_doc.as_ref(),
+        &ctx,
+        path,
+        AccessMode::Read,
+        None,
+        &groups,
+        &registry,
+    );
+    if granted {
+        return Ok(());
+    }
+    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +627,13 @@ async fn handle_get(
 
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
+
+    // P0-1: enforce WAC `acl:Read` before serving any bytes. This guards
+    // both resource GETs and the RDF container listing below, and — since
+    // HEAD is routed to this same handler — HEAD requests too. Without it
+    // a private resource is world-readable.
+    enforce_read(&state, &path, agent.as_deref()).await?;
+
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
     if ldp::is_container(&path) {
@@ -642,6 +831,20 @@ async fn handle_put(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
+
+    // P0-2 lockout guard: when writing an `.acl`/`.meta` sidecar, refuse a
+    // proposed ACL that would strip the caller's own Control — the same
+    // footgun the MCP `write_acl` path blocks (mcp/tools.rs:511). Without
+    // this a Control holder could lock themselves (and everyone) out.
+    if protected_resource_for_acl(&path).is_some()
+        && !proposed_acl_keeps_caller_control(&body, ct, agent.as_deref())
+    {
+        return Ok(HttpResponse::Conflict().body(
+            "refused: the proposed ACL would not grant Control to the caller \
+             (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+        ));
+    }
+
     let meta = state
         .storage
         .put(&path, Bytes::from(body.to_vec()), ct)
@@ -947,6 +1150,11 @@ async fn find_effective_acl_dyn(
     resource_path: &str,
 ) -> Result<Option<wac::AclDocument>, PodError> {
     let mut path = resource_path.to_string();
+    // P2: the first probe is the resource's OWN `.acl` (direct); later
+    // iterations walk up to ANCESTOR containers, whose ACLs are inherited
+    // and must honour only `acl:default` rules. Tag the resolved doc so
+    // the evaluator can distinguish the two.
+    let mut inherited = false;
     loop {
         let acl_key = if path == "/" {
             "/.acl".to_string()
@@ -955,7 +1163,10 @@ async fn find_effective_acl_dyn(
         };
         if let Ok((body, meta)) = storage.get(&acl_key).await {
             match parse_jsonld_acl(&body) {
-                Ok(doc) => return Ok(Some(doc)),
+                Ok(mut doc) => {
+                    doc.inherited = inherited;
+                    return Ok(Some(doc));
+                }
                 Err(PodError::BadRequest(_)) => {
                     return Err(PodError::BadRequest("ACL document exceeds bounds".into()))
                 }
@@ -967,7 +1178,8 @@ async fn find_effective_acl_dyn(
                 || ct.starts_with("application/x-turtle");
             let text = std::str::from_utf8(&body).unwrap_or("");
             if looks_turtle || text.contains("@prefix") || text.contains("acl:Authorization") {
-                if let Ok(doc) = parse_turtle_acl(text) {
+                if let Ok(mut doc) = parse_turtle_acl(text) {
+                    doc.inherited = inherited;
                     return Ok(Some(doc));
                 }
             }
@@ -975,6 +1187,8 @@ async fn find_effective_acl_dyn(
         if path == "/" || path.is_empty() {
             break;
         }
+        // Every subsequent ACL is resolved from an ancestor.
+        inherited = true;
         let trimmed = path.trim_end_matches('/');
         path = match trimmed.rfind('/') {
             Some(0) => "/".to_string(),
@@ -1432,6 +1646,13 @@ async fn handle_glob_get(
     } else {
         format!("{folder}/")
     };
+
+    // P0-1: the glob handler merges every RDF child in `folder` — gate it
+    // on `acl:Read` of the folder so `GET /private/*` cannot bypass the
+    // read-authz check applied to plain container GETs.
+    let auth_pk = extract_pubkey(&req).await;
+    let agent = agent_uri(auth_pk.as_ref());
+    enforce_read(&state, &folder, agent.as_deref()).await?;
 
     let children = state.storage.list(&folder).await.map_err(to_actix)?;
     let mut merged = String::new();
@@ -2464,7 +2685,13 @@ async fn handle_admin_provision(
         .get("x-pod-admin-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if provided != expected {
+    // Constant-time comparison so the provisioning PSK cannot be
+    // recovered via a response-timing side-channel. `ct_eq` returns a
+    // `subtle::Choice`; differing lengths short-circuit to a `false`
+    // choice without leaking the length via early return.
+    use subtle::ConstantTimeEq;
+    let key_match = provided.as_bytes().ct_eq(expected.as_bytes());
+    if !bool::from(key_match) {
         return HttpResponse::Forbidden()
             .json(serde_json::json!({"error": "invalid admin key"}));
     }
@@ -3104,5 +3331,172 @@ mod payment_gating_tests {
             result.is_err(),
             "anonymous caller has no ledger principal — PaymentCondition fails closed"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // P0-1: WAC read enforcement (enforce_read)
+    // -----------------------------------------------------------------
+
+    /// ACL granting `alice` Read on `/private/` but NO public/`bob` read.
+    const ALICE_ONLY_READ_ACL: &str = r#"
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#alice> a acl:Authorization ;
+    acl:agent <did:nostr:alice> ;
+    acl:accessTo </private/secret> ;
+    acl:default </private/> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+"#;
+
+    async fn seed_private_read_acl(storage: &dyn Storage) {
+        // The resolver walks up from `/private/secret` and probes the
+        // container sidecar at `/private.acl` (it trims the trailing
+        // slash before appending `.acl`). The grant inherits down via
+        // `acl:default </private/>`.
+        storage
+            .put(
+                "/private.acl",
+                Bytes::from(ALICE_ONLY_READ_ACL),
+                "text/turtle",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Before the P0-1 fix `handle_get` served `storage.get()` verbatim
+    /// with no read-authz, so any resource was world-readable. The owner
+    /// must be granted Read…
+    #[actix_web::test]
+    async fn enforce_read_grants_owner() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_private_read_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        let result = enforce_read(&state, "/private/secret", Some(PRINCIPAL)).await;
+        assert!(result.is_ok(), "owner alice must be granted Read");
+    }
+
+    /// …and an unrelated authenticated principal must be DENIED Read on a
+    /// private resource (no world-readable leak).
+    #[actix_web::test]
+    async fn enforce_read_denies_other_principal() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_private_read_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        let result = enforce_read(&state, "/private/secret", Some("did:nostr:bob")).await;
+        assert!(
+            result.is_err(),
+            "bob has no Read grant — private resource must not be world-readable"
+        );
+    }
+
+    /// An anonymous reader is also denied (deny-by-default; no ACL grants
+    /// public/foaf:Agent Read).
+    #[actix_web::test]
+    async fn enforce_read_denies_anonymous() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_private_read_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        let result = enforce_read(&state, "/private/secret", None).await;
+        assert!(result.is_err(), "anonymous Read must be denied");
+    }
+
+    // -----------------------------------------------------------------
+    // P0-2: `.acl` write requires acl:Control on the protected resource
+    // -----------------------------------------------------------------
+
+    /// ACL granting `writer` Write (but NOT Control) on `/shared/`, and
+    /// the owner `alice` full Control. A Write-only principal must not be
+    /// able to rewrite the ACL (privilege escalation).
+    const WRITE_NOT_CONTROL_ACL: &str = r#"
+@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+
+<#owner> a acl:Authorization ;
+    acl:agent <did:nostr:alice> ;
+    acl:accessTo </shared/doc> ;
+    acl:default </shared/> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+
+<#writer> a acl:Authorization ;
+    acl:agent <did:nostr:writer> ;
+    acl:accessTo </shared/doc> ;
+    acl:default </shared/> ;
+    acl:mode acl:Read, acl:Write .
+"#;
+
+    async fn seed_shared_acl(storage: &dyn Storage) {
+        // P0-2 resolves the protected resource `/shared/` and the
+        // resolver probes its sidecar at `/shared.acl` (trailing slash
+        // trimmed before `.acl`). Seed there so the Control evaluation
+        // finds the grant.
+        storage
+            .put(
+                "/shared.acl",
+                Bytes::from(WRITE_NOT_CONTROL_ACL),
+                "text/turtle",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A principal with Write but NOT Control on a container is denied PUT
+    /// on its `.acl` — the check is elevated to acl:Control on the
+    /// protected resource, closing the privilege-escalation path.
+    #[actix_web::test]
+    async fn acl_put_denied_for_writer_without_control() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_shared_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        // The request path is the `.acl` sidecar; before the fix this was
+        // checked as Write on the sidecar (granted). Now it requires
+        // Control on `/shared/`.
+        let result =
+            enforce_write(&state, "/shared/.acl", AccessMode::Write, Some("did:nostr:writer")).await;
+        assert!(
+            result.is_err(),
+            "writer lacks Control — must not be able to PUT /shared/.acl"
+        );
+    }
+
+    /// The Control holder (owner) is still allowed to PUT the `.acl`.
+    #[actix_web::test]
+    async fn acl_put_allowed_for_control_holder() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_shared_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        let result =
+            enforce_write(&state, "/shared/.acl", AccessMode::Write, Some(PRINCIPAL)).await;
+        assert!(
+            result.is_ok(),
+            "alice holds Control — must be allowed to PUT /shared/.acl"
+        );
+    }
+
+    /// The same elevation applies to `.meta` sidecars.
+    #[actix_web::test]
+    async fn meta_put_denied_for_writer_without_control() {
+        let storage = Arc::new(MemoryBackend::new());
+        seed_shared_acl(storage.as_ref()).await;
+        let state = AppState::new(storage);
+        let result = enforce_write(
+            &state,
+            "/shared/doc.meta",
+            AccessMode::Write,
+            Some("did:nostr:writer"),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "writer lacks Control — must not be able to PUT a .meta sidecar"
+        );
+    }
+
+    /// Unit cover for the suffix-stripping helper.
+    #[test]
+    fn protected_resource_for_acl_strips_suffixes() {
+        assert_eq!(protected_resource_for_acl("/victim/.acl").as_deref(), Some("/victim/"));
+        assert_eq!(protected_resource_for_acl("/a/b.acl").as_deref(), Some("/a/b"));
+        assert_eq!(protected_resource_for_acl("/.acl").as_deref(), Some("/"));
+        assert_eq!(protected_resource_for_acl("/a/b.meta").as_deref(), Some("/a/b"));
+        assert_eq!(protected_resource_for_acl("/a/b").as_deref(), None);
     }
 }

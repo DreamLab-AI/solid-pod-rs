@@ -49,6 +49,7 @@ fn doc_with_conditions(conds: Vec<Condition>) -> AclDocument {
             })),
             condition: Some(conds),
         }]),
+        inherited: false,
     }
 }
 

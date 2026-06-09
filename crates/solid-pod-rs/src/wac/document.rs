@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::wac::conditions::Condition;
 
 /// Parsed ACL document containing zero or more authorization rules.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AclDocument {
     /// JSON-LD `@context` value, if the document was parsed from JSON-LD.
     #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
@@ -18,6 +18,16 @@ pub struct AclDocument {
     /// The list of authorization rules in this document.
     #[serde(rename = "@graph", skip_serializing_if = "Option::is_none")]
     pub graph: Option<Vec<AclAuthorization>>,
+
+    /// `true` when this ACL was resolved from an ANCESTOR container's
+    /// `.acl` sidecar rather than the resource's own sidecar (the WAC
+    /// walk-up found it one or more levels up). An inherited document
+    /// must honour ONLY `acl:default` rules — `acl:accessTo` rules apply
+    /// to the exact resource they name and MUST NOT leak to descendants
+    /// (WAC §4.2). Defaults to `false`; never serialised (it is a
+    /// resolution-context flag, not part of the ACL on the wire).
+    #[serde(skip, default)]
+    pub inherited: bool,
 }
 
 /// A single WAC authorization rule describing who may access what, and how.

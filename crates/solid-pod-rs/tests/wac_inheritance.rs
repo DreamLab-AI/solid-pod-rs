@@ -801,6 +801,7 @@ fn struct_literal_authorization_works() {
     let doc = AclDocument {
         context: None,
         graph: Some(vec![auth]),
+        inherited: false,
     };
     assert!(evaluate_access(
         Some(&doc),

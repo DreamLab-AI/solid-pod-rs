@@ -285,6 +285,7 @@ mod tests {
         AclDocument {
             context: None,
             graph: Some(graph),
+            inherited: false,
         }
     }
 

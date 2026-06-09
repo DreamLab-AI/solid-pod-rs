@@ -191,6 +191,7 @@ fn build_public_type_index_acl(webid: &str, resource_path: &str) -> AclDocument 
     AclDocument {
         context: None,
         graph: Some(vec![owner, public]),
+        inherited: false,
     }
 }
 

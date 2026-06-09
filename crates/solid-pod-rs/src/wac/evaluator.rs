@@ -267,6 +267,12 @@ fn evaluate_access_ctx_inner(
     let Some(graph) = doc.graph.as_ref() else {
         return false;
     };
+    // P2: an ACL resolved from an ANCESTOR container's `.acl` (the WAC
+    // walk-up found it one or more levels up) must honour ONLY
+    // `acl:default` rules. `acl:accessTo` names an EXACT resource and
+    // MUST NOT inherit to descendants (WAC §4.2). Without this gate an
+    // ancestor `accessTo`-only grant leaks to arbitrary children.
+    let honour_access_to = !doc.inherited;
     let mut base_grant = false;
     for auth in graph {
         let granted = get_modes(auth);
@@ -277,10 +283,12 @@ fn evaluate_access_ctx_inner(
             continue;
         }
         let mut path_ok = false;
-        for target in get_ids(&auth.access_to) {
-            if path_matches(target, resource_path, false) {
-                path_ok = true;
-                break;
+        if honour_access_to {
+            for target in get_ids(&auth.access_to) {
+                if path_matches(target, resource_path, false) {
+                    path_ok = true;
+                    break;
+                }
             }
         }
         if !path_ok {

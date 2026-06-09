@@ -177,6 +177,92 @@ async fn receive_pack_post_accepts_nip98_basic_auth_header() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// P1-3: unauthenticated git read (clone/fetch) must be gated through the
+// configured auth provider — previously `git-upload-pack` / `info/refs`
+// bypassed auth entirely while `GIT_HTTP_EXPORT_ALL` exported every repo.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn upload_pack_advert_rejects_without_auth_when_provider_configured() {
+    let td = tempfile::TempDir::new().unwrap();
+    // Make it look like a repo so we reach the auth gate, not a 404.
+    std::fs::create_dir(td.path().join("repo")).unwrap();
+    std::fs::create_dir(td.path().join("repo/.git")).unwrap();
+
+    let svc = GitHttpService::new(td.path().to_path_buf()).with_auth(BasicNostrExtractor::new());
+
+    // info/refs advertisement for a clone — a READ.
+    let req = GitRequest {
+        method: "GET".into(),
+        path: "/repo/info/refs".into(),
+        query: "service=git-upload-pack".into(),
+        headers: vec![],
+        body: Bytes::new(),
+        host_url: Some("http://localhost".into()),
+    };
+
+    let err = svc.handle(req).await.unwrap_err();
+    assert_eq!(
+        err.status_code(),
+        401,
+        "unauthenticated read must be rejected (P1-3)"
+    );
+}
+
+#[tokio::test]
+async fn upload_pack_post_rejects_without_auth_when_provider_configured() {
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(td.path().join("repo")).unwrap();
+    std::fs::create_dir(td.path().join("repo/.git")).unwrap();
+
+    let svc = GitHttpService::new(td.path().to_path_buf()).with_auth(BasicNostrExtractor::new());
+
+    // The upload-pack POST itself — also a READ.
+    let req = GitRequest {
+        method: "POST".into(),
+        path: "/repo/git-upload-pack".into(),
+        query: String::new(),
+        headers: vec![],
+        body: Bytes::new(),
+        host_url: Some("http://localhost".into()),
+    };
+
+    let err = svc.handle(req).await.unwrap_err();
+    assert_eq!(err.status_code(), 401);
+}
+
+#[tokio::test]
+async fn upload_pack_read_stays_anonymous_without_provider() {
+    // No auth provider configured → anonymous-readable setup is
+    // preserved (the documented no-`handleAuth` behaviour). The read
+    // must NOT 401; it proceeds past the auth gate (the CGI spawn may
+    // then fail, but with a non-401 status).
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(td.path().join("repo")).unwrap();
+    std::fs::create_dir(td.path().join("repo/.git")).unwrap();
+
+    let svc = GitHttpService::new(td.path().to_path_buf());
+
+    let req = GitRequest {
+        method: "GET".into(),
+        path: "/repo/info/refs".into(),
+        query: "service=git-upload-pack".into(),
+        headers: vec![],
+        body: Bytes::new(),
+        host_url: Some("http://localhost".into()),
+    };
+
+    match svc.handle(req).await {
+        Ok(r) => assert_ne!(r.status, 401, "anonymous read must not 401"),
+        Err(e) => assert_ne!(
+            e.status_code(),
+            401,
+            "anonymous read must not be rejected as 401: {e:?}"
+        ),
+    }
+}
+
 #[tokio::test]
 async fn path_traversal_denied_via_parent_dir() {
     let td = tempfile::TempDir::new().unwrap();
