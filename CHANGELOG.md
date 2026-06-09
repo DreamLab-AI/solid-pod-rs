@@ -4,6 +4,30 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-alpha.16] — 2026-06-09 — version-bump to disambiguate the alpha.15 alias
+
+Version-only release. `0.4.0-alpha.15` had come to alias two distinct code
+states: the crates.io publish (checksum `a53804d0…`, consumed by
+nostr-rust-forum) and git HEAD, which had advanced past the publish without a
+version bump or tag (the highest real git tag was `alpha.11`). Downstream
+consumers pinned to the same version string were building different auth code.
+This release cuts a real version and the first tag since `alpha.11` so every
+consumer can pin a single, unambiguous code state.
+
+### Changed
+
+- Workspace version `0.4.0-alpha.15` → `0.4.0-alpha.16`; all seven member
+  crates and their internal cross-crate `path` dependency pins advance with it.
+
+### Included (post-publish commits now under a real version/tag)
+
+- **WAC ancestor `accessTo` over-inheritance + git HTTP read-auth bypass fix**
+  (`75946cf`).
+- **`payments::debit` wired into the WAC grant path** (`f7785d7`, R-04) — the
+  resource-cost-accounting fix. The published `alpha.15` crate predates this, so
+  it served cost-gated reads without consuming the cost; consumers pinned to the
+  git state get the corrected behaviour.
+
 ## [0.4.0-alpha.15] — 2026-05-30 — JSS v0.0.204 sync (MCP server, `install` CLI, NIP-98 minting)
 
 Integrates the upstream JSS changes from `0.0.197` (`10bd60f`) through

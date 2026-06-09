@@ -1,6 +1,6 @@
 # solid-pod-rs-idp
 
-**Status: 0.4.0-alpha.15 — Sprint 10–12 Solid-OIDC provider.**
+**Status: 0.4.0-alpha.16 — Sprint 10–12 Solid-OIDC provider.**
 
 Rust port of the JSS identity provider (`JavaScriptSolidServer/src/idp/*`).
 This crate owns the **protocol** surface; transport framing is the

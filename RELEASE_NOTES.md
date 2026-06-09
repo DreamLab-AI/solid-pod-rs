@@ -1,3 +1,14 @@
+## v0.4.0-alpha.16 (2026-06-09)
+
+Version-bump release to disambiguate the `0.4.0-alpha.15` alias. That string had
+come to denote two different code states — the crates.io publish and an advanced
+git HEAD — with no tag past `alpha.11`. This is the first real tag since
+`alpha.11`; it pins the post-publish commits (`75946cf` WAC/git read-auth fix,
+`f7785d7` `payments::debit` wired into the WAC grant path / R-04) under a single
+version so all consumers build identical auth and cost-accounting code. See
+`CHANGELOG.md` for the manifest. No new feature code in this release — version
+metadata only.
+
 ## v0.4.0-alpha.15 (2026-05-30)
 
 JSS v0.0.204 sync — integrates the upstream delta `0.0.197` (`10bd60f`)

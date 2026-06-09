@@ -198,8 +198,8 @@ on you.
   feature set it needs for embedded pods. agentbox builds a pinned
   `solid-pod-rs-server` binary through Nix for the native pod tier.
 - nostr-bbs-pod-worker pins
-  `solid-pod-rs = { version = "0.4.0-alpha.15", default-features = false, features = ["core"] }`.
-- The current workspace version is **0.4.0-alpha.15** across all 7
+  `solid-pod-rs = { version = "0.4.0-alpha.16", default-features = false, features = ["core"] }`.
+- The current workspace version is **0.4.0-alpha.16** across all 7
   workspace crates.
 
 ## Cross-system identity
