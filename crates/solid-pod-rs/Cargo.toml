@@ -22,6 +22,8 @@ path = "src/lib.rs"
 # `default-features = false, features = ["core"]`. Default builds still
 # pull it in transitively through `tokio-runtime`.
 tokio = { version = "1", features = ["fs", "io-util", "sync", "macros", "rt", "time"], optional = true }
+# Compile-time embedding of the crate's own docs/ tree (feature = "embedded-docs").
+include_dir = { version = "0.7", optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -106,6 +108,11 @@ default = ["std", "fs-backend", "memory-backend", "tokio-runtime", "notification
 # ---------------------------------------------------------------------------
 core = ["std", "dep:js-sys", "did-nostr-types"]
 std = []
+
+# Embed the crate's Diataxis docs/ tree as a `pub static DOCS_DIR`. Used by
+# solid-pod-rs-server's MCP docs tools; lives here (inside the owning
+# package root) so registry builds of dependants stay self-contained.
+embedded-docs = ["dep:include_dir"]
 
 # Activate the tokio runtime + the websocket/futures stack. Pulled in
 # transitively by every async-IO feature below. Pure-logic consumers

@@ -1,6 +1,6 @@
 # solid-pod-rs-activitypub
 
-**Status: 0.4.0-alpha.16 — functional ActivityPub federation crate.**
+**Status: 0.4.0-alpha.17 — functional ActivityPub federation crate.**
 
 Rust port of the JSS ActivityPub surface (`JavaScriptSolidServer/src/ap/*`).
 4,453 LOC across 9 modules; 53 tests. Integrators may take a dependency

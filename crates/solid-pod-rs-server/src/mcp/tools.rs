@@ -12,7 +12,7 @@ use std::time::Duration;
 use actix_web::HttpResponse;
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
-use include_dir::{include_dir, Dir};
+use solid_pod_rs::include_dir::Dir;
 use serde_json::{json, Value};
 
 use super::skills;
@@ -31,8 +31,10 @@ const MAX_READ_BYTES: usize = 200_000;
 const MAX_FEDERATION_DEPTH: u32 = 3;
 
 /// Built-in docs tree, embedded at compile time so `list_docs` / `read_docs`
-/// work from a self-contained binary (JSS ships a `docs/` directory).
-static DOCS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../solid-pod-rs/docs");
+/// work from a self-contained binary (JSS ships a `docs/` directory). The
+/// embedding lives in the owning crate (`solid_pod_rs::DOCS_DIR`, feature
+/// `embedded-docs`) so registry builds of this crate stay self-contained.
+use solid_pod_rs::DOCS_DIR;
 
 // ---------------------------------------------------------------------------
 // WAC + path helpers

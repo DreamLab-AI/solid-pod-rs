@@ -14,7 +14,7 @@ use the sibling crate [`solid-pod-rs-server`](../solid-pod-rs-server/).
 
 ```toml
 [dependencies]
-solid-pod-rs = "0.4.0-alpha.16"
+solid-pod-rs = "0.4.0-alpha.17"
 ```
 
 ```rust,no_run

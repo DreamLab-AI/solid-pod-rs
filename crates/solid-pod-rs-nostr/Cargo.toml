@@ -20,7 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 # Core library: reuse NIP-98 Schnorr primitives (SigningKey/VerifyingKey
 # plumbing ship under `nip98-schnorr`) and SSRF policy for outbound fetch.
-solid-pod-rs = { version = "0.4.0-alpha.16", path = "../solid-pod-rs", default-features = false, features = ["nip98-schnorr", "did-nostr", "security-primitives"] }
+solid-pod-rs = { version = "0.4.0-alpha.17", path = "../solid-pod-rs", default-features = false, features = ["nip98-schnorr", "did-nostr", "security-primitives"] }
 
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "io-util"] }
 tokio-tungstenite = "0.24"

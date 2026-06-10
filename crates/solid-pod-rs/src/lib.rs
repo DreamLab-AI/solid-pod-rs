@@ -232,3 +232,21 @@ pub use export::{
     export_pod_jsonld, ExportOptions, PodExportBundle, PodExportEntry, EXPORT_CONTENT_TYPE,
     EXPORT_JSONLD_CONTEXT,
 };
+
+// ---------------------------------------------------------------------------
+// Embedded documentation tree (feature = "embedded-docs")
+// ---------------------------------------------------------------------------
+
+/// Re-exported so dependants can name `include_dir::Dir` without taking a
+/// direct dependency on the embedding crate.
+#[cfg(feature = "embedded-docs")]
+pub use include_dir;
+
+/// The crate's Diataxis `docs/` tree, embedded at compile time. It lives
+/// here — inside the owning crate's package root — so dependants (notably
+/// `solid-pod-rs-server`'s MCP `list_docs`/`read_docs` tools) serve it from
+/// a self-contained binary even when built from the registry tarball, where
+/// a `../solid-pod-rs/docs` path escape does not exist.
+#[cfg(feature = "embedded-docs")]
+pub static DOCS_DIR: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/docs");

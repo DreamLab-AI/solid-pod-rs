@@ -4,6 +4,23 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-alpha.17] - 2026-06-10
+
+### Fixed
+- `solid-pod-rs-server` could not be published to crates.io: its MCP docs
+  tools embedded the documentation tree via
+  `include_dir!("$CARGO_MANIFEST_DIR/../solid-pod-rs/docs")`, a path escape
+  that does not exist in a packaged tarball, so `cargo publish` verification
+  failed. The embedding now lives in the owning crate as
+  `solid_pod_rs::DOCS_DIR` behind the new `embedded-docs` feature
+  (re-exporting `include_dir`), and the server consumes that. Registry builds
+  of every crate in the workspace are now self-contained.
+
+### Added
+- `solid-pod-rs`: `embedded-docs` feature — embeds the crate's Diataxis
+  `docs/` tree as `pub static DOCS_DIR` (the tree already ships in the
+  published package).
+
 ## [0.4.0-alpha.16] — 2026-06-09 — version-bump to disambiguate the alpha.15 alias
 
 Version-only release. `0.4.0-alpha.15` had come to alias two distinct code

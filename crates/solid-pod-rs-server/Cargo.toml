@@ -27,11 +27,11 @@ path = "src/main.rs"
 # always has DPoP `jti` replay protection wired into `verify_dpop_proof`
 # (Solid-OIDC §5.2 / RFC 9449 §4.3; mirrors JSS 2026-01-05 #2). Without
 # it `verify_dpop_proof` compiles to its replay-unaware form.
-solid-pod-rs = { version = "0.4.0-alpha.16", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache"] }
+solid-pod-rs = { version = "0.4.0-alpha.17", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
-solid-pod-rs-idp = { version = "0.4.0-alpha.16", path = "../solid-pod-rs-idp" }
+solid-pod-rs-idp = { version = "0.4.0-alpha.17", path = "../solid-pod-rs-idp" }
 
 # Sprint-11 CLI: `invite create` surfaces invite records with
 # absolute expiry timestamps. Kept here rather than transitively
@@ -80,11 +80,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # URL parsing for proxy SSRF validation.
 url = "2"
 
-# Compile-time embedding of the built-in docs tree (crates/solid-pod-rs/docs)
-# so the MCP `list_docs` / `read_docs` tools serve documentation from a
-# self-contained binary, with no runtime install-dir dependency. Mirrors JSS
-# `src/mcp/tools.js` reading its shipped `docs/` directory.
-include_dir = "0.7"
+# The embedded docs tree now comes from the owning crate via the
+# `embedded-docs` feature on solid-pod-rs (re-exporting include_dir), so
+# registry builds of this crate stay self-contained — the previous direct
+# include_dir!("../solid-pod-rs/docs") escaped the package root and broke
+# `cargo publish` verification.
 
 # Optional TLS (rustls). Gated by the `tls` feature so default builds
 # keep the dependency surface minimal.
@@ -94,7 +94,7 @@ rustls-pemfile = { version = "2", optional = true }
 # Optional git HTTP backend + auto-init (JSS #466/#469/#471).
 # Gated by `git` feature; not compiled for wasm32. Requires the
 # `git` binary + `git-http-backend` CGI on the server host.
-solid-pod-rs-git = { version = "0.4.0-alpha.16", path = "../solid-pod-rs-git", optional = true }
+solid-pod-rs-git = { version = "0.4.0-alpha.17", path = "../solid-pod-rs-git", optional = true }
 
 [features]
 # Feature umbrella toggles for the server binary.

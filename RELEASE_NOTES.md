@@ -1,3 +1,12 @@
+## v0.4.0-alpha.17 (2026-06-10)
+
+First registry release that includes `solid-pod-rs-server`. The server's MCP
+docs tools previously embedded the documentation tree via a
+`../solid-pod-rs/docs` path escape, which broke `cargo publish` verification;
+the embedding now lives in the owning crate as `solid_pod_rs::DOCS_DIR`
+behind the new `embedded-docs` feature. No behavioural change for git/Nix
+consumers.
+
 ## v0.4.0-alpha.16 (2026-06-09)
 
 Version-bump release to disambiguate the `0.4.0-alpha.15` alias. That string had
