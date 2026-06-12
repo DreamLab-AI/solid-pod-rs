@@ -62,7 +62,7 @@ sequenceDiagram
 
     Note over App: Dynamic Client Registration
     App->>IDP: POST /idp/reg {redirect_uris}
-    IDP-->>App: {client_id, client_secret}
+    IDP-->>App: {client_id} (client_secret only when<br/>token_endpoint_auth_method ≠ "none";<br/>"none" is the default)
 
     Note over App: Authorization
     App->>IDP: GET /idp/auth?code_challenge=S256(verifier)
@@ -73,22 +73,21 @@ sequenceDiagram
     IDP-->>App: 302 → redirect_uri?code=…
 
     Note over App: Token Exchange
-    App->>IDP: POST /idp/token {code, code_verifier, DPoP proof}
+    App->>IDP: POST /idp/token {code, code_verifier, DPoP proof (REQUIRED)}
     IDP->>SS: consume auth_code (single-use)
     IDP->>JWKS: sign access token (ES256)
     Note over IDP: cnf.jkt = DPoP thumbprint
-    Note over IDP: ath = SHA-256(access_token)
     IDP-->>App: {access_token, token_type: "DPoP"}
 
     Note over App: Resource Access
-    App->>App: Attach DPoP proof per request
+    App->>App: Attach a fresh DPoP proof per request<br/>(ath = SHA-256(access_token) — helper: tokens::ath_hash)
 ```
 
 ```mermaid
 flowchart LR
     subgraph cred ["Credentials endpoint (/idp/credentials)"]
         direction TB
-        RL["Rate limiter<br/>10/min per IP"] --> VAL["Validate email +<br/>password (≥ 8 chars)"]
+        RL["Rate limiter (pluggable;<br/>recommended policy 10/min per IP)"] --> VAL["Validate email +<br/>password (≥ 8 chars)"]
         VAL --> AUTH["UserStore lookup<br/>+ argon2id verify"]
         AUTH --> TOK["Issue access token<br/>ES256-signed JWT"]
         TOK --> BIND{"DPoP proof<br/>supplied?"}

@@ -54,13 +54,15 @@ sequenceDiagram
         DQ->>DQ: SHA-256 Digest header
         DQ->>Remote: POST /inbox (signed)
         alt 2xx
-            DQ->>Store: mark delivered
-        else 5xx
-            DQ->>DQ: Exponential backoff retry
-        else 4xx
-            DQ->>Store: mark failed (no retry)
+            DQ->>Store: mark delivered (drop queue item)
+        else 5xx / 408 / 429 / network error
+            DQ->>DQ: Backoff schedule 30s → 2m → 10m → 1h → 6h → 24h,<br/>then permanent failure
+        else other 4xx
+            DQ->>Store: permanent failure — drop, no retry
         end
     end
+
+    Note over DQ,Remote: SSRF guard — deliveries to private-IP /<br/>metadata-endpoint inboxes are dropped
 ```
 
 ```mermaid

@@ -9,38 +9,39 @@ flowchart TB
   PICK{{"Authorization scheme?"}}:::gate
 
   %% ─── NIP-98 lane ───
-  subgraph NIP["NIP-98 (Nostr) lane — auth::nip98"]
+  subgraph NIP["NIP-98 (Nostr) lane — auth::nip98 (wired in solid-pod-rs-server)"]
     direction TB
     N1["Header: Authorization: Nostr &lt;b64(Nip98Event)&gt;"]:::gov
-    N2["Decode Nip98Event:\n  kind=27235\n  tags: [u, method, payload]\n  pubkey, sig"]:::svc
-    N3["Verify schnorr sig over serialised event"]:::gate
-    N4["Body-hash binding (B3):\n  sha256(body) == tag 'payload'"]:::gate
-    N5["Freshness window: |now − created_at| ≤ 60 s"]:::gate
-    N6["pubkey → WebID via webid::from_nostr_pubkey"]:::gov
+    N2["Decode Nip98Event (64 KB cap):\n  kind MUST be 27235\n  tags: [u, method, payload]\n  pubkey, sig"]:::svc
+    N3["Freshness window: |now − created_at| ≤ 60 s"]:::gate
+    N4["URL + method match:\n  MatchPolicy::Strict (default, exact)\n  MatchPolicy::GitLenient (git lane:\n  prefix URL, method '*')"]:::gate
+    N5["Body-hash binding (when body supplied):\n  sha256(body) == tag 'payload'"]:::gate
+    N6["Schnorr sig verify over serialised event\n(feature-gated: nip98-schnorr;\nstructural checks only without it)"]:::gate
+    N7["agent_uri = did:nostr:&lt;pubkey&gt;"]:::gov
   end
 
   %% ─── OIDC lane ───
-  subgraph OID["Solid-OIDC + DPoP lane — oidc.rs"]
+  subgraph OID["Solid-OIDC + DPoP lane — oidc feature (library lane for embedders;\nNOT wired into the bundled solid-pod-rs-server as of 2026-06-12)"]
     direction TB
     O1["Header: Authorization: DPoP &lt;access_token&gt;\n          DPoP: &lt;proof&gt;"]:::gov
-    O2["verify_dpop_proof(proof, htm, htu)"]:::gate
+    O2["verify_dpop_proof_with_ath(proof, htu, htm, …)"]:::gate
     O3["verify_access_token(token) → SolidOidcClaims"]:::svc
     O4["claims.cnf.jkt == thumbprint(proof.jwk)"]:::gate
-    O5["ath claim == SHA-256(access_token)"]:::gate
+    O5["ath claim == SHA-256(access_token)\n(when expected_ath supplied)"]:::gate
     O6["extract_webid(claims) → WebID IRI"]:::gov
   end
 
-  MERGE(["WebID established"]):::entry
-  WAC["WAC evaluation\n(wac::evaluate_access)"]:::gate
-  ALLOW(["→ LdpService"]):::allow
-  DENY(["401 / 403"]):::deny
+  MERGE(["Agent URI established"]):::entry
+  WAC["WAC evaluation\n(wac::evaluate_access_ctx)"]:::gate
+  ALLOW(["→ LDP / storage"]):::allow
+  DENY(["401 / 403 + WAC-Allow"]):::deny
 
   REQ --> PICK
   PICK -->|Nostr …| NIP
   PICK -->|DPoP …| OID
-  PICK -.->|neither| DENY
+  PICK -.->|"neither → anonymous, foaf:Agent rules only"| WAC
 
-  N2 --> N3 --> N4 --> N5 --> N6 --> MERGE
+  N2 --> N3 --> N4 --> N5 --> N6 --> N7 --> MERGE
   O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> MERGE
 
   MERGE --> WAC

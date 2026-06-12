@@ -31,17 +31,18 @@ sequenceDiagram
   rect rgba(245,158,11,0.15)
     Note over App,IDP: 3. DPoP-bound token request
     App->>App: Generate JWK keypair → compute jkt = thumbprint(pk)
-    App->>App: Build DPoP proof JWT { htm:"POST", htu:"/token", jti, iat, jwk:pk }
-    App->>IDP: POST /token (code, DPoP: <proof>)
+    App->>App: Build DPoP proof JWT { htm:"POST", htu:"<issuer>/idp/token", jti, iat, jwk:pk }
+    App->>IDP: POST /idp/token (code, DPoP: <proof> — REQUIRED, else invalid_dpop)
     IDP->>IDP: Bind access_token.cnf.jkt = jkt
     IDP-->>App: access_token (JWT, cnf.jkt=<thumbprint>)
   end
 
   rect rgba(16,185,129,0.15)
     Note over App,Pod: 4. Resource request + DPoP verification
+    Note over Pod: Library lane — verify_dpop_proof_with_ath /<br/>verify_access_token / extract_webid ship in the core<br/>crate's `oidc` feature for embedders. The bundled<br/>solid-pod-rs-server wires NIP-98 auth only (it advertises<br/>DPoP in WWW-Authenticate) as of 2026-06-12.
     App->>App: Build NEW DPoP proof { htm:"PUT", htu:"<pod>/alice/notes/foo.ttl", ath:hash(access_token) }
     App->>Pod: PUT /alice/notes/foo.ttl<br/>Authorization: DPoP <access_token><br/>DPoP: <proof>
-    Pod->>Pod: verify_dpop_proof(proof, method, url)
+    Pod->>Pod: verify_dpop_proof_with_ath(proof, htu, htm, …, ath)
     Pod->>Pod: verify_access_token(token) → claims.cnf.jkt
     alt jkt mismatch
       Pod-->>App: 401 invalid_dpop_proof

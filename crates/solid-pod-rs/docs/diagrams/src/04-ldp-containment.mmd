@@ -8,7 +8,7 @@ flowchart LR
   subgraph C["&lt;/alice/notes/&gt; — ldp:BasicContainer"]
     direction TB
     CTYPE["rdf:type\n  ldp:Resource\n  ldp:Container\n  ldp:BasicContainer"]:::gov
-    CSMT["Server-managed triples:\n  dc:modified  2026-04-20T10:12Z\n  stat:size    3\n  posix:mtime  1714...\n  &nbsp;&nbsp;(added by ldp::server_managed_triples)"]:::svc
+    CSMT["Server-managed triples:\n  dc:modified  2026-04-20T10:12Z\n  stat:size    3\n  stat:mtime   1714... (ns: posix/stat#)\n  &nbsp;&nbsp;(added by ldp::server_managed_triples)"]:::svc
     CMEM["ldp:contains\n  &lt;foo.ttl&gt;\n  &lt;bar.ttl&gt;\n  &lt;pics/&gt;"]:::gate
   end
 
@@ -23,12 +23,12 @@ flowchart LR
   CMEM -- ldp:contains --> M3
 
   %% ─── Link headers emitted on GET ───
-  LH["HTTP Link headers:\n  &lt;http://www.w3.org/ns/ldp#Resource&gt;; rel=type\n  &lt;http://www.w3.org/ns/ldp#Container&gt;; rel=type\n  &lt;http://www.w3.org/ns/ldp#BasicContainer&gt;; rel=type\n  &lt;foo.ttl.acl&gt;; rel=acl"]:::gov
+  LH["HTTP Link headers (ldp::link_headers):\n  &lt;http://www.w3.org/ns/ldp#Resource&gt;; rel=&quot;type&quot;\n  &lt;http://www.w3.org/ns/ldp#Container&gt;; rel=&quot;type&quot;\n  &lt;http://www.w3.org/ns/ldp#BasicContainer&gt;; rel=&quot;type&quot;\n  &lt;…/foo.ttl.acl&gt;; rel=&quot;acl&quot;\n  &lt;…/foo.ttl.meta&gt;; rel=&quot;describedby&quot;"]:::gov
 
   C -. emitted on GET .-> LH
 
   %% ─── Representation negotiation ───
-  REPR["ContainerRepresentation\n(serialised via ldp::negotiate_format)\n\n• text/turtle\n• application/ld+json\n• application/n-triples"]:::svc
+  REPR["ContainerRepresentation\n(serialised via ldp::negotiate_format)\n\n• text/turtle (default)\n• application/ld+json\n• application/n-triples\n• application/rdf+xml"]:::svc
   C --> REPR
 
   classDef gov fill:#8B5CF6,stroke:#E8F4FC,stroke-width:1px,color:#E8F4FC

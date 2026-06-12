@@ -32,12 +32,12 @@ flowchart TD
     REQ["Inbound HTTP Request"] --> DOTFILE{"Dotfile<br/>allowlist?"}
     DOTFILE -->|blocked| R403A["403 Forbidden"]
     DOTFILE -->|pass| TRAV{"Path traversal<br/>guard?"}
-    TRAV -->|"contains .. or null"| R403B["403 Forbidden"]
-    TRAV -->|clean| SIZECAP{"ACL size<br/>cap?"}
-    SIZECAP -->|"> 1 MiB"| R413["413 Payload Too Large"]
+    TRAV -->|"contains .. or null"| R400["400 Bad Request<br/>(PodError::InvalidPath)"]
+    TRAV -->|clean| SIZECAP{"ACL parse size cap<br/>(1 MiB, JSS_MAX_ACL_BYTES)?"}
+    SIZECAP -->|"> 1 MiB"| R413["PodError::PayloadTooLarge<br/>(413 equivalent)"]
     SIZECAP -->|ok| AUTHTYPE{"Auth header<br/>present?"}
 
-    AUTHTYPE -->|"Authorization: Nostr"| NIP98["NIP-98 verify<br/>kind 27235 + Schnorr"]
+    AUTHTYPE -->|"Authorization: Nostr"| NIP98["NIP-98 verify<br/>kind 27235 + Schnorr<br/>(feature: nip98-schnorr)"]
     AUTHTYPE -->|"Authorization: DPoP"| DPOP["DPoP proof verify<br/>+ access token"]
     AUTHTYPE -->|none| ANON["Anonymous<br/>(foaf:Agent only)"]
 
@@ -48,13 +48,13 @@ flowchart TD
     ANON --> IDENTITY
 
     IDENTITY --> WAC{"WAC evaluator<br/>deny-by-default"}
-    WAC -->|"no matching ACL"| R403C["403 + WAC-Allow"]
+    WAC -->|"no matching ACL"| R403C["403 + WAC-Allow<br/>(401 if anonymous)"]
     WAC -->|"mode granted"| LDP["LDP engine<br/>→ Storage"]
 
     style REQ fill:#4a90d9,stroke:#2c5f8a,color:#fff
     style LDP fill:#2ecc71,stroke:#1a9850,color:#fff
     style R403A fill:#e74c3c,stroke:#c0392b,color:#fff
-    style R403B fill:#e74c3c,stroke:#c0392b,color:#fff
+    style R400 fill:#e74c3c,stroke:#c0392b,color:#fff
     style R403C fill:#e74c3c,stroke:#c0392b,color:#fff
     style R401A fill:#e74c3c,stroke:#c0392b,color:#fff
     style R401B fill:#e74c3c,stroke:#c0392b,color:#fff
@@ -62,6 +62,14 @@ flowchart TD
     style IDENTITY fill:#f39c12,stroke:#d68910,color:#fff
     style WAC fill:#9b59b6,stroke:#7d3c98,color:#fff
 ```
+
+> Schnorr signature verification of NIP-98 events is feature-gated behind
+> `nip98-schnorr` (without it only structural checks run); the bundled
+> `solid-pod-rs-server` binary gets it transitively via its
+> `solid-pod-rs-idp` dependency. The DPoP lane is provided by the core
+> crate's `oidc` feature for embedders — the bundled server wires only the
+> NIP-98 lane into its request path (it advertises `DPoP`/`Bearer` in
+> `WWW-Authenticate`) as of 2026-06-12.
 
 ### Layer 1 — Request authentication
 

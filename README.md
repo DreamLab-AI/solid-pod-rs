@@ -158,6 +158,7 @@ graph TD
 
     SERVER --> CORE
     SERVER --> IDP
+    SERVER -.->|"feature: git"| GIT
     AP --> CORE
     GIT --> CORE
     IDP --> CORE

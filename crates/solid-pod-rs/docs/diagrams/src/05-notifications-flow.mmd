@@ -27,7 +27,7 @@ flowchart LR
   subgraph WH["WebhookChannelManager"]
     direction TB
     WHDISP["deliver_one / deliver_all\n(reqwest::Client)"]:::svc
-    WHRETRY["Retry ladder\n1s · 5s · 30s · give up"]:::gate
+    WHRETRY["Full-jitter exponential backoff\nbase 500 ms × 2^attempt, cap 1 h\nmax 3 retries on 5xx\n429 honours Retry-After"]:::gate
   end
   BCAST -->|pump_from_storage| WHDISP
   WHDISP --> WHRETRY
@@ -39,10 +39,10 @@ flowchart LR
   WSSUB1 --> WSC
   WSSUB2 --> WSC
   WHRETRY -->|HTTP 2xx| WEBHOOK
-  WHRETRY -.4xx/5xx.-> WHDEAD[["Dead-letter / log"]]:::deny
+  WHRETRY -.persistent failure.-> WHDEAD[["Circuit breaker opens after 10\nconsecutive failures →\nshort-circuits to TransientRetry\nuntil a delivery succeeds"]]:::deny
 
   %% ─── Payload envelope ───
-  ENV["AS 2.0 ChangeNotification envelope:\n{\n  '@context': ['https://www.w3.org/ns/activitystreams',\n               'https://www.w3.org/ns/solid/notification/v1'],\n  'id': 'urn:uuid:…',\n  'type': ['Update' | 'Create' | 'Delete'],\n  'object': { 'id': '&lt;pod-base&gt;/alice/notes/foo.ttl', 'type': 'Resource' },\n  'published': '2026-04-20T10:12:30Z'\n}"]:::gov
+  ENV["AS 2.0 ChangeNotification envelope:\n{\n  '@context': 'https://www.w3.org/ns/activitystreams',\n  'id': 'urn:uuid:…',\n  'type': 'Create' | 'Update' | 'Delete',\n  'object': '&lt;pod-base&gt;/alice/notes/foo.ttl',\n  'published': '2026-04-20T10:12:30Z'\n}"]:::gov
 
   BCAST -.serialises as.-> ENV
 

@@ -13,22 +13,22 @@ flowchart TB
     H_POST["POST /{container}/"]:::svc
     H_PATCH["PATCH /{path}"]:::svc
     H_DEL["DELETE /{path}"]:::svc
-    H_WS["GET /notifications&nbsp;(WS)"]:::svc
+    H_WS["GET /.notifications&nbsp;(WS)\n(advertised via Updates-Via;\nWS endpoint is host-wired,\nnot mounted by the bundled server)"]:::svc
   end
 
   %% ───── AUTH GATE ─────
   subgraph AUTH["Auth Gate (governance)"]
     direction LR
     NIP98["NIP-98 verify\n(auth::nip98)"]:::gov
-    OIDC["Solid-OIDC + DPoP\n(oidc)"]:::gov
+    OIDC["Solid-OIDC + DPoP\n(oidc feature — library lane\nfor embedders; not wired in the\nbundled server as of 2026-06-12)"]:::gov
   end
 
   %% ───── SERVICE LAYER ─────
   subgraph SVC["Service Layer"]
     direction LR
-    LDP["LdpService\n(ldp.rs)\ncontainers · RDF · PATCH"]:::svc
-    WAC["WacEvaluator\n(wac.rs)\nACL resolution"]:::gate
-    NOTIF["NotificationsManager\n(notifications.rs)\nWS + Webhook"]:::svc
+    LDP["ldp module\n(ldp.rs)\ncontainers · RDF · PATCH"]:::svc
+    WAC["wac::evaluate_access_ctx\n(wac/)\nStorageAclResolver walk-up"]:::gate
+    NOTIF["WebSocketChannelManager +\nWebhookChannelManager\n(notifications/)"]:::svc
     WEBID["WebID profiles\n(webid.rs)"]:::svc
   end
 
@@ -37,8 +37,7 @@ flowchart TB
     direction LR
     FS["FsBackend\n(storage::fs)"]:::store
     MEM["MemoryBackend\n(storage::memory)"]:::store
-    S3["S3Backend\n(feature: s3-backend)"]:::storeOpt
-    R2["R2Backend\n(feature: r2-backend)\nS3-compatible"]:::storeOpt
+    S3["s3-backend feature flag\n(aws-sdk-s3 dep declared;\nno backend impl ships yet)"]:::storeOpt
   end
 
   %% ───── FLOW ─────
@@ -48,11 +47,11 @@ flowchart TB
   H_PATCH --> NIP98
   H_DEL --> NIP98
   H_WS --> NIP98
-  NIP98 -.alt.-> OIDC
+  NIP98 -.library alt.-> OIDC
 
   AUTH --> WAC
   WAC -->|allow| LDP
-  WAC -.deny.-> DENY[["403 Forbidden"]]:::deny
+  WAC -.deny.-> DENY[["401 / 403 + WAC-Allow"]]:::deny
 
   LDP --> WEBID
   LDP --> STORE
