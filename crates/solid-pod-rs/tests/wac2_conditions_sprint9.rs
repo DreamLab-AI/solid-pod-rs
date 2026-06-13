@@ -14,9 +14,10 @@
 //!   * Round-trip of conditions through the Turtle serialiser.
 
 use solid_pod_rs::wac::{
-    evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl, validate_acl_document, AccessMode,
-    AclAuthorization, AclDocument, ClientConditionBody, Condition, ConditionRegistry, IdOrIds,
-    IdRef, IssuerConditionBody, RequestContext, StaticGroupMembership,
+    anchor_mode_of, evaluate_access_ctx, parse_turtle_acl, serialize_turtle_acl,
+    validate_acl_document, AccessMode, AclAuthorization, AclDocument, AnchorMode, ClientConditionBody,
+    Condition, ConditionRegistry, IdOrIds, IdRef, IssuerConditionBody, ProvenanceAnchorBody,
+    RequestContext, StaticGroupMembership,
 };
 
 // ---------------------------------------------------------------------------
@@ -319,4 +320,122 @@ fn serializer_round_trip_preserves_conditions() {
     assert_eq!(conds.len(), 2);
     assert!(matches!(conds[0], Condition::Client(_)));
     assert!(matches!(conds[1], Condition::Issuer(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — ProvenanceAnchor WAC condition (parse + eval + roundtrip).
+// ---------------------------------------------------------------------------
+
+/// Turtle parse: `acl:condition [ a acl:ProvenanceAnchor; acl:anchorMode "epoch" ]`
+/// resolves to the known `Condition::ProvenanceAnchor` variant with its mode.
+#[test]
+fn parses_provenance_anchor_condition_from_turtle() {
+    let ttl = r#"
+        @prefix acl: <http://www.w3.org/ns/auth/acl#> .
+        <#r> a acl:Authorization ;
+            acl:agent <did:nostr:alice> ;
+            acl:accessTo </receipts/r1.ttl> ;
+            acl:mode acl:Write ;
+            acl:condition [
+                a acl:ProvenanceAnchor ;
+                acl:anchorMode "always" ;
+                acl:anchorTicker "RCPT"
+            ] .
+    "#;
+    let doc = parse_turtle_acl(ttl).unwrap();
+    match single_condition(&doc) {
+        Condition::ProvenanceAnchor(body) => {
+            assert_eq!(body.mode(), AnchorMode::Inline, "always ⇒ inline");
+            assert_eq!(body.ticker.as_deref(), Some("RCPT"));
+        }
+        other => panic!("expected ProvenanceAnchor, got {other:?}"),
+    }
+}
+
+/// Turtle parse with no mode hint defaults to the bounded-cost epoch mode.
+#[test]
+fn provenance_anchor_turtle_defaults_to_epoch() {
+    let ttl = r#"
+        @prefix acl: <http://www.w3.org/ns/auth/acl#> .
+        <#r> a acl:Authorization ;
+            acl:agent <did:nostr:alice> ;
+            acl:accessTo </notes/n.ttl> ;
+            acl:mode acl:Write ;
+            acl:condition [ a acl:ProvenanceAnchor ] .
+    "#;
+    let doc = parse_turtle_acl(ttl).unwrap();
+    let conds = doc.graph.as_ref().unwrap()[0].condition.as_ref().unwrap();
+    assert_eq!(anchor_mode_of(conds), Some(AnchorMode::Epoch));
+}
+
+/// A ProvenanceAnchor marker must NOT block the write it flags: an
+/// authorisation that grants the agent + carries only a ProvenanceAnchor still
+/// grants (the marker dispatches Satisfied).
+#[test]
+fn provenance_anchor_does_not_block_authorisation() {
+    let doc = doc_with_conditions(vec![Condition::ProvenanceAnchor(ProvenanceAnchorBody {
+        anchor_mode: Some("epoch".into()),
+        ticker: None,
+    })]);
+    let registry = ConditionRegistry::default_with_client_and_issuer();
+    let ctx = RequestContext {
+        web_id: Some("did:nostr:alice"),
+        client_id: None,
+        issuer: None,
+        payment_balance_sats: None,
+    };
+    // `doc_with_conditions` grants `acl:Read`; the point is the marker doesn't
+    // veto an otherwise-granted access (it carries Satisfied, not Denied).
+    assert!(
+        evaluate_access_ctx(
+            Some(&doc),
+            &ctx,
+            "/r",
+            AccessMode::Read,
+            None,
+            &StaticGroupMembership::new(),
+            &registry,
+        ),
+        "ProvenanceAnchor is a marker — it must not veto an otherwise-granted access",
+    );
+}
+
+/// A ProvenanceAnchor `.acl` is a recognised type — write-time validation must
+/// NOT 422 it (regression-guards the fail-closed unknown path stays for others).
+#[test]
+fn validate_accepts_provenance_anchor_no_422() {
+    let json = r##"{
+        "@graph": [{
+            "acl:agent": {"@id": "did:nostr:alice"},
+            "acl:accessTo": {"@id": "/receipts/r1.ttl"},
+            "acl:mode": {"@id": "acl:Write"},
+            "acl:condition": [{"@type": "acl:ProvenanceAnchor", "acl:anchorMode": "always"}]
+        }]
+    }"##;
+    let doc: AclDocument = serde_json::from_str(json).expect("parse");
+    assert!(
+        validate_acl_document(&doc).is_ok(),
+        "ProvenanceAnchor is recognised — must not 422"
+    );
+    let conds = doc.graph.as_ref().unwrap()[0].condition.as_ref().unwrap();
+    assert_eq!(anchor_mode_of(conds), Some(AnchorMode::Inline));
+}
+
+/// Serializer round-trip: ProvenanceAnchor → Turtle → parse preserves it.
+#[test]
+fn serializer_round_trip_preserves_provenance_anchor() {
+    let doc = doc_with_conditions(vec![Condition::ProvenanceAnchor(ProvenanceAnchorBody {
+        anchor_mode: Some("epoch".into()),
+        ticker: Some("PROV".into()),
+    })]);
+    let ttl = serialize_turtle_acl(&doc);
+    assert!(ttl.contains("acl:ProvenanceAnchor"), "ttl: {ttl}");
+    assert!(ttl.contains("acl:anchorMode"), "ttl: {ttl}");
+    let reparsed = parse_turtle_acl(&ttl).expect("re-parse");
+    let conds = reparsed.graph.as_ref().unwrap()[0]
+        .condition
+        .as_ref()
+        .expect("conditions survive round-trip");
+    assert!(matches!(conds[0], Condition::ProvenanceAnchor(_)));
+    assert_eq!(anchor_mode_of(conds), Some(AnchorMode::Epoch));
 }

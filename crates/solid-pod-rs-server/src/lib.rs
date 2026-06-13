@@ -1268,7 +1268,7 @@ fn seed_graph_from_patch_target(current_body: &[u8]) -> Result<ldp::Graph, Actix
 /// equivalent of `StorageAclResolver::find_effective_acl` — the latter
 /// is generic over a concrete `Storage`, whereas the binary holds an
 /// `Arc<dyn Storage>`.
-async fn find_effective_acl_dyn(
+pub(crate) async fn find_effective_acl_dyn(
     storage: &dyn Storage,
     resource_path: &str,
 ) -> Result<Option<wac::AclDocument>, PodError> {
@@ -2475,37 +2475,45 @@ where
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "git")]
-fn pod_repo_path(state: &AppState, pubkey: &str) -> Option<PathBuf> {
+pub(crate) fn pod_repo_path(state: &AppState, pubkey: &str) -> Option<PathBuf> {
     if pubkey.len() != 64 || !pubkey.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     state.data_root.as_ref().map(|root| root.join(pubkey))
 }
 
-/// git-marks (ADR-059 D1, Phase 2): after a SUCCESSFUL LDP write to a
-/// **git-backed** pod, commit the written resource and persist a PROV-O
-/// provenance sidecar. This is the single canonical write-provenance path —
-/// the cheap, always-on tier (the Bitcoin block-trail anchor is the opt-in
-/// expensive tier, Phase 4).
+/// Provenance composition hook (ADR-059 Phase 5): after a SUCCESSFUL LDP write
+/// to a **git-backed** pod, record the write through the single canonical
+/// [`ProvenanceLog::record`] path — the cheap, always-on git-mark **always**,
+/// plus the expensive Bitcoin block-trail anchor **opt-in** when the resource's
+/// ACL carries a `ProvenanceAnchor` condition. A PROV-O sidecar is persisted
+/// at `<resource>.prov.ttl`.
+///
+/// **Single path — no parallel mark call.** This composes via
+/// [`ProvenanceLog`]; it does *not* call `ShellGitMarker::mark_write` directly.
+/// `ProvenanceLog::record` runs the git-mark, then conditionally the anchor
+/// (per the resolved [`AnchorPolicy`]), binding the anchor's `state_hash` to
+/// the git commit SHA (master-plan §2.3). The `Epoch` policy batches the SHA
+/// into the per-pod epoch ([`handlers::prov::epoch_push_and_maybe_anchor`]) so
+/// one Bitcoin tx notarises many commits (ADR-059 D5).
 ///
 /// **Additive and best-effort by contract.** The LDP write has *already*
 /// succeeded and the HTTP response is already determined when this runs. Every
-/// failure here — no git binary, a commit error, a sidecar-write error — is
-/// logged at `warn` and swallowed: a provenance failure must NEVER change the
-/// write's response status (PRD: "ADDITIVE + best-effort"). The function
-/// therefore returns `()`, not a `Result`.
+/// failure — no git binary, a commit error, an anchor error, a sidecar-write
+/// error — is logged at `warn` and swallowed: a provenance failure must NEVER
+/// change the write's response status. A failed *anchor* never fails the write
+/// and never suppresses the git-mark sidecar.
 ///
 /// **git-backed-only.** A mark is produced only when `data_root` is configured
 /// AND a git repository exists at `data_root/{pod}/.git`. Non-git / in-memory /
-/// cloud-backed pods are skipped silently (no commit, no sidecar) — the
-/// behaviour of those pods is unchanged.
+/// cloud-backed pods are skipped silently.
 ///
 /// **No recursive marking.** Writes to ACL/meta/provenance sidecars
 /// (`*.acl`, `*.meta`, `*.prov.ttl`) are skipped — marking a `.prov.ttl` would
 /// recurse, and ACL/meta writes are control-plane, not content.
 #[cfg(feature = "git")]
 async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&str>, message: &str) {
-    use solid_pod_rs::provenance::{prov_ttl, GitMarker, ProvenanceMark};
+    use solid_pod_rs::provenance::{prov_ttl, AnchorPolicy, ProvenanceLog};
     use solid_pod_rs_git::mark::ShellGitMarker;
 
     // Skip control-plane / provenance sidecars — never mark these, and never
@@ -2544,40 +2552,108 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
     }
 
     let agent_did = agent.unwrap_or("urn:solid:anonymous");
-
-    // Commit the written resource (cheap tier). On any error: log + return.
-    let marker = ShellGitMarker::new();
-    let git = match marker.mark_write(&repo, rel, agent_did, message).await {
-        Ok(g) => g,
-        Err(e) => {
-            tracing::warn!(
-                target: "solid_pod_rs_server::git_mark",
-                resource = %resource_path,
-                "git-mark commit failed (swallowed, write already succeeded): {e}"
-            );
-            return;
-        }
-    };
-
-    // Build the provenance mark (anchor is opt-in, Phase 4 — None here) and
-    // render the PROV-O Turtle sidecar.
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mark = ProvenanceMark {
-        resource: resource_path.to_string(),
-        git,
-        anchor: None,
-        agent_did: agent_did.to_string(),
+
+    // Resolve this resource's anchor policy from its effective ACL (the
+    // `ProvenanceAnchor` condition → HighValue/Epoch; absent → Never).
+    let (policy, ticker_override) =
+        handlers::prov::resolve_anchor_policy(state, resource_path).await;
+
+    // Build the composition log: cheap git-marker ALWAYS; expensive anchorer
+    // ONLY when the policy wants it AND the pod is configured for anchoring.
+    // For `Epoch` the anchorer is still needed (to anchor the batch root on
+    // close), so build it for any anchoring policy.
+    let marker = std::sync::Arc::new(ShellGitMarker::new());
+    let anchorer_bundle = if matches!(policy, AnchorPolicy::Never) {
+        None
+    } else {
+        handlers::prov::build_anchorer(state, ticker_override.as_deref()).await
+    };
+    let (log, ticker, network) = match &anchorer_bundle {
+        Some((anchorer, ticker, network)) => (
+            ProvenanceLog::with_anchorer(marker.clone(), anchorer.clone()),
+            ticker.clone(),
+            network.clone(),
+        ),
+        // No anchorer available (or policy Never): git-mark-only log.
+        None => (ProvenanceLog::new(marker.clone()), String::new(), String::new()),
+    };
+
+    // `record()` anchors INLINE only for HighValue (high_value=true). Epoch
+    // defers to the accumulator below, so we pass it as Never to `record` and
+    // batch the SHA ourselves; HighValue/Never flow straight through.
+    let record_policy = match policy {
+        AnchorPolicy::Epoch => AnchorPolicy::Never,
+        other => other,
+    };
+    let high_value = matches!(policy, AnchorPolicy::HighValue) && anchorer_bundle.is_some();
+
+    // SINGLE canonical path: compose via ProvenanceLog::record (git-mark always,
+    // anchor opt-in). A git-mark failure is the only hard error (the write
+    // already succeeded, so we just log + return).
+    let write_record = solid_pod_rs::provenance::WriteRecord {
+        repo: &repo,
+        path: rel,
+        agent_did,
+        message,
+        policy: record_policy,
+        high_value,
+        ticker: &ticker,
+        network: &network,
         created,
     };
-    let ttl = prov_ttl(&mark);
+    let mut mark = match log.record(write_record).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                target: "solid_pod_rs_server::git_mark",
+                resource = %resource_path,
+                "provenance record failed (swallowed, write already succeeded): {e}"
+            );
+            return;
+        }
+    };
+    // `record` only sees the repo-relative path; restore the full pod-relative
+    // resource path (`/{pod}/{rel}`) for the PROV-O sidecar + notification.
+    mark.resource = resource_path.to_string();
 
-    // Persist the sidecar at <resource>.prov.ttl via storage. This write also
-    // fires the FS-watch StorageEvent that the `Updates-via` notification
-    // stream relays, so subscribers see the new mark (no separate emit path).
-    // It ends in `.prov.ttl`, so the skip guard above prevents any recursion.
+    // Epoch policy: batch the freshly-produced commit SHA; anchor the batch
+    // root once when the epoch fills (best-effort — a failed batch anchor never
+    // fails the write nor the git-mark).
+    if matches!(policy, AnchorPolicy::Epoch) {
+        if let Some((anchorer, _, _)) = &anchorer_bundle {
+            match handlers::prov::epoch_push_and_maybe_anchor(
+                state,
+                anchorer,
+                &ticker,
+                &network,
+                &mark.git.commit_sha,
+            )
+            .await
+            {
+                Ok(Some(closed)) => tracing::debug!(
+                    target: "solid_pod_rs_server::git_mark",
+                    root = %closed.root,
+                    n = closed.commits.len(),
+                    "epoch anchored (one tx notarises {} commits)", closed.commits.len()
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    target: "solid_pod_rs_server::git_mark",
+                    "epoch batch/anchor failed (swallowed): {e}"
+                ),
+            }
+        }
+    }
+
+    // Persist the PROV-O sidecar at <resource>.prov.ttl. This write also fires
+    // the FS-watch StorageEvent the `Updates-via` notification stream relays,
+    // so subscribers see the new mark. It ends in `.prov.ttl`, so the skip
+    // guard above prevents any recursion.
+    let ttl = prov_ttl(&mark);
     let sidecar = format!("{resource_path}.prov.ttl");
     if let Err(e) = state
         .storage
@@ -2596,7 +2672,8 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
         target: "solid_pod_rs_server::git_mark",
         resource = %resource_path,
         commit = %mark.git.commit_sha,
-        "git-mark recorded"
+        anchored = mark.anchor.is_some(),
+        "provenance recorded"
     );
 }
 
@@ -2607,7 +2684,7 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
 async fn git_mark_write(_state: &AppState, _resource_path: &str, _agent: Option<&str>, _message: &str) {}
 
 #[cfg(feature = "git")]
-async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {
+pub(crate) async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {
     let caller = extract_pubkey(req).await?;
     if caller != pod_pubkey {
         return None;
@@ -3448,6 +3525,14 @@ pub fn build_app(
                 "/pods/{pubkey}/_git/discard",
                 web::post().to(handle_git_discard),
             );
+
+        // Provenance `_prov` API (ADR-059 Phase 5, master-plan §2.4):
+        // resolve a git-mark commit SHA, and the explicit (payment-gated)
+        // git-mark → Bitcoin-anchor upgrade. Registered before the LDP
+        // catch-all so `_prov` segments are never treated as pod resources.
+        // The `.prov.ttl` sidecar GET is served by the ordinary LDP read path
+        // (it is a stored resource).
+        app = app.configure(handlers::prov::register);
     }
     #[cfg(not(feature = "git"))]
     {

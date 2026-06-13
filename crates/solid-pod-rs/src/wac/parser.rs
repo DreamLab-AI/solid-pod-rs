@@ -358,6 +358,8 @@ fn parse_turtle_condition_body(
     let mut issuer_groups: Vec<String> = Vec::new();
     let mut issuer_classes: Vec<String> = Vec::new();
     let mut cost_sats: Option<u64> = None;
+    let mut anchor_mode: Option<String> = None;
+    let mut anchor_ticker: Option<String> = None;
 
     for pair in split_predicate_list(body) {
         let pair = pair.trim();
@@ -399,6 +401,16 @@ fn parse_turtle_condition_body(
                     cost_sats = first.parse::<u64>().ok();
                 }
             }
+            "http://www.w3.org/ns/auth/acl#anchorMode" | "acl:anchorMode" => {
+                if let Some(first) = objects.first() {
+                    anchor_mode = Some(first.clone());
+                }
+            }
+            "http://www.w3.org/ns/auth/acl#anchorTicker" | "acl:anchorTicker" => {
+                if let Some(first) = objects.first() {
+                    anchor_ticker = Some(first.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -418,6 +430,12 @@ fn parse_turtle_condition_body(
         "acl:PaymentCondition" => Some(Condition::Payment(PaymentConditionBody {
             cost_sats: cost_sats.unwrap_or(0),
         })),
+        "acl:ProvenanceAnchor" => Some(Condition::ProvenanceAnchor(
+            crate::wac::anchor::ProvenanceAnchorBody {
+                anchor_mode,
+                ticker: anchor_ticker,
+            },
+        )),
         other => Some(Condition::Unknown {
             type_iri: other.to_string(),
         }),
@@ -449,6 +467,8 @@ fn normalise_condition_type(raw: &str) -> String {
         | "https://www.w3.org/ns/auth/acl#IssuerCondition" => "acl:IssuerCondition".into(),
         "http://www.w3.org/ns/auth/acl#PaymentCondition"
         | "https://www.w3.org/ns/auth/acl#PaymentCondition" => "acl:PaymentCondition".into(),
+        "http://www.w3.org/ns/auth/acl#ProvenanceAnchor"
+        | "https://www.w3.org/ns/auth/acl#ProvenanceAnchor" => "acl:ProvenanceAnchor".into(),
         other => other.to_string(),
     }
 }
@@ -458,7 +478,32 @@ fn turtle_pop_term(input: &str) -> Option<(String, String)> {
     if let Some(rest) = input.strip_prefix('<') {
         let end = rest.find('>')?;
         Some((rest[..end].to_string(), rest[end + 1..].to_string()))
-    } else if input.starts_with('"') {
+    } else if let Some(rest) = input.strip_prefix('"') {
+        // Quoted string literal (e.g. `acl:anchorMode "always"`). Return the
+        // unquoted content; honour `\"` escapes. The closing quote terminates
+        // the term; any `^^<datatype>` / `@lang` suffix is left in the
+        // remainder (object-list parsing ignores it for the predicates that
+        // accept literals). Subjects/predicates are never quoted, so adding
+        // this branch only widens object parsing — it never mis-pops elsewhere.
+        let bytes = rest.as_bytes();
+        let mut i = 0;
+        let mut value = String::new();
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c == b'\\' && i + 1 < bytes.len() {
+                // Preserve the escaped character verbatim (sufficient for the
+                // short keyword literals conditions use).
+                value.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                return Some((value, rest[i + 1..].to_string()));
+            }
+            value.push(c as char);
+            i += 1;
+        }
+        // Unterminated literal — bail (matches the prior conservative None).
         None
     } else {
         // Identifier token terminated by whitespace *or* by Turtle

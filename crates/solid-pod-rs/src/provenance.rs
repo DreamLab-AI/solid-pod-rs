@@ -28,8 +28,10 @@
 //! no I/O leaks into this surface.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
 // Data model (§2.1)
@@ -190,6 +192,443 @@ pub trait BlockAnchorer: Send + Sync {
     /// (re-derives the taproot address from the portable proof, then confirms a
     /// UTXO sits at it).
     async fn verify(&self, anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError>;
+}
+
+// ---------------------------------------------------------------------------
+// Composition policy (§2.3, ADR-059 D1/D5)
+// ---------------------------------------------------------------------------
+
+/// When a [`ProvenanceLog::record`] write should incur the expensive Bitcoin
+/// block-trail anchor on top of the always-on git-mark.
+///
+/// The cheap tier (git-mark) runs for *every* policy — these variants only
+/// govern the **opt-in** anchor. Pure, `Copy`, wasm-safe: it carries no I/O.
+///
+/// | Variant | Anchor behaviour |
+/// |--------------|--------------------------------------------------------|
+/// | [`Never`](AnchorPolicy::Never) | git-mark only — no on-chain cost. The default for ordinary writes. |
+/// | [`Always`](AnchorPolicy::Always) | anchor **every** write (commits the git SHA on-chain). Expensive; only for trails where every state must be externally timestamped. |
+/// | [`HighValue`](AnchorPolicy::HighValue) | anchor iff the resource is flagged anchor-worthy (its ACL carries a `ProvenanceAnchor` condition / the caller passes the high-value flag). Settlement receipts, elevation/ACSP decisions. |
+/// | [`Epoch`](AnchorPolicy::Epoch) | accumulate the git SHA into an [`EpochAccumulator`]; the batch root is anchored **once** on epoch close (one Bitcoin tx notarises many commits — ADR-059 D5). |
+///
+/// An anchor is attempted only when the policy says so **and** the
+/// [`ProvenanceLog`] was built with an anchorer ([`ProvenanceLog::anchorer`]
+/// is `Some`). With `anchorer: None` (the wasm / no-Bitcoin pod) every policy
+/// degrades to git-mark-only, silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AnchorPolicy {
+    /// git-mark only; never anchor. The default for ordinary pod writes.
+    #[default]
+    Never,
+    /// Anchor every write — the git commit SHA is committed on-chain each time.
+    Always,
+    /// Anchor only when the resource is flagged high-value (ACL carries a
+    /// `ProvenanceAnchor` condition). Otherwise git-mark only.
+    HighValue,
+    /// Accumulate the commit into the current epoch; the epoch's Merkle root is
+    /// anchored once on close (amortised on-chain cost — ADR-059 D5).
+    Epoch,
+}
+
+impl AnchorPolicy {
+    /// Whether *this write* should be anchored inline (i.e. produce a
+    /// [`BlockTrailAnchor`] on the returned mark), given whether the resource
+    /// is flagged high-value.
+    ///
+    /// - `Never` / `Epoch` ⇒ never inline (`Epoch` defers to the accumulator).
+    /// - `Always` ⇒ always inline.
+    /// - `HighValue` ⇒ inline iff `high_value`.
+    #[must_use]
+    pub fn anchors_inline(self, high_value: bool) -> bool {
+        match self {
+            AnchorPolicy::Never | AnchorPolicy::Epoch => false,
+            AnchorPolicy::Always => true,
+            AnchorPolicy::HighValue => high_value,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Composition log (§2.2 `ProvenanceLog`, §2.3 composition rule)
+// ---------------------------------------------------------------------------
+
+/// The composition point for the two provenance tiers (master-plan §2.2/§2.3,
+/// ADR-059 D1).
+///
+/// A `ProvenanceLog` always holds the cheap-tier [`GitMarker`] and *optionally*
+/// the expensive-tier [`BlockAnchorer`]. [`record`](ProvenanceLog::record)
+/// implements the **cheap-always, expensive-opt-in** rule:
+///
+/// 1. **Always** `marker.mark_write()` → [`GitMark`] (every write becomes a
+///    commit; we capture the SHA).
+/// 2. **Conditionally** `anchorer.anchor()` when the [`AnchorPolicy`] says this
+///    write anchors inline AND an anchorer is present. The anchor's
+///    `state_hash` is set to the git commit SHA — so the Bitcoin UTXO commits
+///    to the git history, **binding the two tiers into one chain** (§2.3).
+///
+/// The returned [`ProvenanceMark`] carries the git-mark always and the anchor
+/// when one was produced. Persisting the PROV-O sidecar and emitting the
+/// `Updates-via` notification (step 3) is the server's job — kept out of this
+/// pure surface so it compiles for wasm.
+///
+/// ## wasm32 safety
+///
+/// `Arc<dyn GitMarker>` / `Arc<dyn BlockAnchorer>` are `?Send` trait objects;
+/// the type holds no runtime. On wasm the pod constructs it with a no-op marker
+/// and `anchorer: None`, so `record` is git-mark-only and never reaches any
+/// Bitcoin I/O.
+#[derive(Clone)]
+pub struct ProvenanceLog {
+    /// Cheap tier — always invoked. The native server injects
+    /// `solid-pod-rs-git`'s `ShellGitMarker`; wasm injects a no-op.
+    pub marker: Arc<dyn GitMarker>,
+    /// Expensive tier — optional. `None` in pods that do not pay for Bitcoin
+    /// anchoring (and always `None` on wasm).
+    pub anchorer: Option<Arc<dyn BlockAnchorer>>,
+}
+
+impl std::fmt::Debug for ProvenanceLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProvenanceLog")
+            .field("marker", &"Arc<dyn GitMarker>")
+            .field("anchorer", &self.anchorer.as_ref().map(|_| "Arc<dyn BlockAnchorer>"))
+            .finish()
+    }
+}
+
+/// Descriptor of a single pod write passed to [`ProvenanceLog::record`].
+///
+/// Borrowed (no allocation on the hot path), mirroring
+/// [`crate::wac::conditions::RequestContext`]. Bundles the write identity
+/// (repo/path/agent/message), the expensive-tier [`AnchorPolicy`] + its
+/// `high_value` flag, and the trail coordinates (`ticker`/`network`) an anchor
+/// targets. The trail fields are ignored unless the policy actually anchors.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteRecord<'a> {
+    /// Absolute filesystem path to the (non-bare) pod repo.
+    pub repo: &'a Path,
+    /// Repo-relative path of the resource written.
+    pub path: &'a str,
+    /// `did:nostr` of the writer (NIP-98 principal), or an anonymous marker.
+    pub agent_did: &'a str,
+    /// Commit subject (the LDP method + path).
+    pub message: &'a str,
+    /// Expensive-tier policy (see [`AnchorPolicy`]).
+    pub policy: AnchorPolicy,
+    /// Whether the resource is flagged high-value (ACL `ProvenanceAnchor`).
+    pub high_value: bool,
+    /// Trail ticker to anchor against (used only when anchoring).
+    pub ticker: &'a str,
+    /// Bitcoin network of the trail (used only when anchoring).
+    pub network: &'a str,
+    /// Unix seconds stamped onto the produced mark.
+    pub created: u64,
+}
+
+impl ProvenanceLog {
+    /// Construct a git-mark-only log (no Bitcoin tier). The common case for
+    /// ordinary pods and the only shape available on wasm.
+    #[must_use]
+    pub fn new(marker: Arc<dyn GitMarker>) -> Self {
+        Self { marker, anchorer: None }
+    }
+
+    /// Construct a log with both tiers wired.
+    #[must_use]
+    pub fn with_anchorer(marker: Arc<dyn GitMarker>, anchorer: Arc<dyn BlockAnchorer>) -> Self {
+        Self {
+            marker,
+            anchorer: Some(anchorer),
+        }
+    }
+
+    /// Record a pod resource write across both tiers (the composition rule).
+    ///
+    /// The write is described by a [`WriteRecord`]. Always commits (cheap tier).
+    /// Then, iff `policy.anchors_inline(high_value)` — both carried by the
+    /// [`WriteRecord`] — AND an anchorer is present, anchors the **git commit
+    /// SHA** under the record's `ticker`/`network`, attaching the
+    /// [`BlockTrailAnchor`] to the returned mark. The anchor's `state_hash` is
+    /// the commit SHA, binding git ↔ Bitcoin (master-plan §2.3).
+    ///
+    /// For [`AnchorPolicy::Epoch`] this method never anchors inline — the caller
+    /// feeds the returned `git.commit_sha` into an [`EpochAccumulator`] and
+    /// anchors the batch root on epoch close.
+    ///
+    /// Errors from the **cheap** tier propagate (the git-mark is the contract).
+    /// Errors from the **expensive** tier are returned too, so the caller can
+    /// decide its own best-effort policy — the server hook logs+swallows them
+    /// (a failed anchor must never fail the LDP write), exactly as it does for
+    /// the git-mark.
+    pub async fn record(&self, rec: WriteRecord<'_>) -> Result<ProvenanceMark, ProvenanceError> {
+        // 1. Cheap tier — ALWAYS. A failure here is a hard error: the git-mark
+        //    is the always-on contract.
+        let git = self
+            .marker
+            .mark_write(rec.repo, rec.path, rec.agent_did, rec.message)
+            .await?;
+
+        // 2. Expensive tier — opt-in. Only when the policy anchors this write
+        //    inline AND an anchorer is wired. The anchored state_hash IS the
+        //    git commit SHA — the Bitcoin UTXO now commits to the git history
+        //    (master-plan §2.3 "binds both primitives into one chain").
+        let anchor = if rec.policy.anchors_inline(rec.high_value) {
+            match &self.anchorer {
+                Some(a) => Some(a.anchor(rec.ticker, &git.commit_sha, rec.network).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(ProvenanceMark {
+            resource: path_to_resource(rec.path),
+            git,
+            anchor,
+            agent_did: rec.agent_did.to_string(),
+            created: rec.created,
+        })
+    }
+}
+
+/// Normalise a repo-relative `path` into the pod-relative `resource` form a
+/// [`ProvenanceMark`] records (leading slash). Idempotent for already-absolute
+/// inputs.
+fn path_to_resource(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Epoch Merkle-root anchoring (§2.3, ADR-059 D5) — pure, wasm-safe
+// ---------------------------------------------------------------------------
+
+/// Compute a binary SHA-256 Merkle root over `leaves` (each a 32-byte digest),
+/// duplicating the last node on an odd level (Bitcoin-style). Returns the
+/// all-zero digest for an empty input.
+///
+/// Pure and wasm-safe — uses only the always-compiled `sha2` dependency. Leaves
+/// are hashed *as given*; callers pass `sha256(commit_sha)` so the tree commits
+/// to the exact commit identifiers.
+fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
+    if leaves.is_empty() {
+        return [0u8; 32];
+    }
+    let mut level: Vec<[u8; 32]> = leaves.to_vec();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut i = 0;
+        while i < level.len() {
+            let left = level[i];
+            // Duplicate the last node when the level is odd.
+            let right = if i + 1 < level.len() { level[i + 1] } else { left };
+            let mut h = Sha256::new();
+            h.update(left);
+            h.update(right);
+            next.push(h.finalize().into());
+            i += 2;
+        }
+        level = next;
+    }
+    level[0]
+}
+
+/// Hash one leaf value (a git commit SHA, as text) into the Merkle leaf digest.
+fn merkle_leaf(commit_sha: &str) -> [u8; 32] {
+    Sha256::digest(commit_sha.as_bytes()).into()
+}
+
+/// A Merkle inclusion proof: the sibling digests from leaf to root, each tagged
+/// with whether the sibling sits on the **right** of the running hash at that
+/// level. Verified with [`EpochAccumulator::verify_inclusion`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MerkleProof {
+    /// Hex of the leaf value's digest (`sha256(commit_sha)`).
+    pub leaf: String,
+    /// Sibling steps from the leaf upward: `(sibling_hex, sibling_is_right)`.
+    pub siblings: Vec<(String, bool)>,
+}
+
+/// Accumulates git commit SHAs into an epoch and, on close, yields the single
+/// Merkle root to anchor (ADR-059 D5 — *one Bitcoin tx notarises many
+/// commits*).
+///
+/// Writes whose [`AnchorPolicy`] is [`Epoch`](AnchorPolicy::Epoch) call
+/// [`push`](EpochAccumulator::push) with the commit SHA the git-mark produced.
+/// When the configured commit-count threshold is reached
+/// ([`is_full`](EpochAccumulator::is_full)), the caller [`close`s](EpochAccumulator::close)
+/// the epoch to obtain the root (hex) and the batched SHAs, anchors the root
+/// **once** via a [`BlockAnchorer`], and starts a fresh epoch. A per-commit
+/// [`inclusion_proof`](EpochAccumulator::inclusion_proof) lets any commit be
+/// proven against the anchored root without re-anchoring.
+///
+/// Pure and wasm-safe: the accumulator and Merkle maths carry no I/O; the
+/// single anchor call is the caller's, via the (optional) anchorer.
+#[derive(Debug, Clone)]
+pub struct EpochAccumulator {
+    /// Commit SHAs collected so far this epoch (insertion order = leaf order).
+    commits: Vec<String>,
+    /// Commit-count threshold at which the epoch is considered full. Operator
+    /// policy (master-plan §5: "ACL writes epoch-only to bound cost").
+    threshold: usize,
+}
+
+/// The sealed result of closing an epoch: the Merkle root to anchor plus the
+/// batch of commit SHAs it commits to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedEpoch {
+    /// Hex SHA-256 Merkle root over the epoch's commit-SHA leaves — the single
+    /// value anchored on-chain for the whole batch.
+    pub root: String,
+    /// The commit SHAs this root notarises (leaf order).
+    pub commits: Vec<String>,
+}
+
+impl EpochAccumulator {
+    /// New, empty epoch with a close `threshold` (clamped to ≥ 1).
+    #[must_use]
+    pub fn new(threshold: usize) -> Self {
+        Self {
+            commits: Vec::new(),
+            threshold: threshold.max(1),
+        }
+    }
+
+    /// Add a git commit SHA to the current epoch.
+    pub fn push(&mut self, commit_sha: impl Into<String>) {
+        self.commits.push(commit_sha.into());
+    }
+
+    /// Number of commits accumulated this epoch.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.commits.len()
+    }
+
+    /// Whether the epoch holds no commits.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty()
+    }
+
+    /// The configured close threshold.
+    #[must_use]
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+
+    /// Whether the epoch has reached its close threshold (time to anchor).
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.commits.len() >= self.threshold
+    }
+
+    /// The current Merkle root (hex) over the accumulated commits, without
+    /// draining. Returns `None` for an empty epoch (nothing to anchor).
+    #[must_use]
+    pub fn root(&self) -> Option<String> {
+        if self.commits.is_empty() {
+            return None;
+        }
+        let leaves: Vec<[u8; 32]> = self.commits.iter().map(|c| merkle_leaf(c)).collect();
+        Some(hex::encode(merkle_root(&leaves)))
+    }
+
+    /// Seal the epoch: compute the root, return it with the batched commit SHAs,
+    /// and **drain** the accumulator so a fresh epoch begins. Returns `None`
+    /// (and drains nothing) for an empty epoch.
+    pub fn close(&mut self) -> Option<ClosedEpoch> {
+        if self.commits.is_empty() {
+            return None;
+        }
+        let commits = std::mem::take(&mut self.commits);
+        let leaves: Vec<[u8; 32]> = commits.iter().map(|c| merkle_leaf(c)).collect();
+        let root = hex::encode(merkle_root(&leaves));
+        Some(ClosedEpoch { root, commits })
+    }
+
+    /// Produce an inclusion proof for the commit at leaf `index` against the
+    /// *current* set of accumulated commits. `None` if `index` is out of range.
+    ///
+    /// The proof verifies against the root produced by [`root`](Self::root) /
+    /// [`close`](Self::close) over the same commit set — i.e. against the value
+    /// anchored on-chain.
+    #[must_use]
+    pub fn inclusion_proof(&self, index: usize) -> Option<MerkleProof> {
+        let n = self.commits.len();
+        if index >= n {
+            return None;
+        }
+        let mut level: Vec<[u8; 32]> = self.commits.iter().map(|c| merkle_leaf(c)).collect();
+        let leaf_hex = hex::encode(level[index]);
+        let mut idx = index;
+        let mut siblings: Vec<(String, bool)> = Vec::new();
+        while level.len() > 1 {
+            let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+            // On an odd level the rightmost node is paired with itself.
+            let sib = if sibling_idx < level.len() {
+                level[sibling_idx]
+            } else {
+                level[idx]
+            };
+            let sibling_is_right = idx % 2 == 0;
+            siblings.push((hex::encode(sib), sibling_is_right));
+
+            // Build the next level.
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
+            let mut i = 0;
+            while i < level.len() {
+                let left = level[i];
+                let right = if i + 1 < level.len() { level[i + 1] } else { left };
+                let mut h = Sha256::new();
+                h.update(left);
+                h.update(right);
+                next.push(h.finalize().into());
+                i += 2;
+            }
+            level = next;
+            idx /= 2;
+        }
+        Some(MerkleProof {
+            leaf: leaf_hex,
+            siblings,
+        })
+    }
+
+    /// Verify a [`MerkleProof`] against an expected `root_hex` (the anchored
+    /// root). Recomputes the path and compares — no accumulator state needed,
+    /// so a verifier can check inclusion with only the proof + the on-chain
+    /// root.
+    #[must_use]
+    pub fn verify_inclusion(proof: &MerkleProof, root_hex: &str) -> bool {
+        let Ok(mut acc) = hex::decode(&proof.leaf) else {
+            return false;
+        };
+        if acc.len() != 32 {
+            return false;
+        }
+        for (sib_hex, sib_is_right) in &proof.siblings {
+            let Ok(sib) = hex::decode(sib_hex) else {
+                return false;
+            };
+            if sib.len() != 32 {
+                return false;
+            }
+            let mut h = Sha256::new();
+            if *sib_is_right {
+                h.update(&acc);
+                h.update(&sib);
+            } else {
+                h.update(&sib);
+                h.update(&acc);
+            }
+            acc = h.finalize().to_vec();
+        }
+        hex::encode(acc) == root_hex
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,5 +910,336 @@ mod tests {
             ProvenanceError::InvalidPath("/x.acl".into()).to_string(),
             "invalid provenance path: /x.acl"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 5: composition (AnchorPolicy + ProvenanceLog) — pure, mocked tiers
+    // -----------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// In-memory [`GitMarker`] — fabricates a deterministic SHA per call and
+    /// counts invocations. No subprocess, so it compiles + runs on wasm too.
+    #[derive(Default)]
+    struct MockMarker {
+        calls: AtomicUsize,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl GitMarker for MockMarker {
+        async fn mark_write(
+            &self,
+            _repo: &Path,
+            path: &str,
+            _agent_did: &str,
+            _message: &str,
+        ) -> Result<GitMark, ProvenanceError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            // 40-hex deterministic SHA derived from the call ordinal + path.
+            let sha = hex::encode(Sha256::digest(format!("{n}:{path}").as_bytes()))[..40].to_string();
+            Ok(GitMark {
+                commit_sha: sha,
+                repo: "mockpod".into(),
+                branch: "main".into(),
+                parent: None,
+            })
+        }
+        async fn head(&self, _repo: &Path) -> Result<Option<String>, ProvenanceError> {
+            Ok(None)
+        }
+    }
+
+    /// In-memory [`BlockAnchorer`] — records the `state_hash` it was asked to
+    /// anchor (so a test can assert the git SHA was bound) and counts calls.
+    #[derive(Default)]
+    struct MockAnchorer {
+        calls: AtomicUsize,
+        last_state_hash: std::sync::Mutex<Option<String>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl BlockAnchorer for MockAnchorer {
+        async fn anchor(
+            &self,
+            ticker: &str,
+            state_hash: &str,
+            network: &str,
+        ) -> Result<BlockTrailAnchor, ProvenanceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_state_hash.lock().unwrap() = Some(state_hash.to_string());
+            Ok(BlockTrailAnchor {
+                ticker: ticker.into(),
+                state_hash: state_hash.into(),
+                txid: "ab".repeat(32),
+                vout: 0,
+                address: "tb1pmock".into(),
+                network: network.into(),
+                blockheight: None,
+                state_strings: vec!["{\"seq\":0}".into()],
+                pubkey: Some("02".to_string() + &"ab".repeat(32)),
+            })
+        }
+        async fn verify(&self, _anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+            Ok(true)
+        }
+    }
+
+    fn repo() -> &'static Path {
+        Path::new("/tmp/mockpod")
+    }
+
+    /// Build a [`WriteRecord`] for the mock tiers (PROV trail on testnet4).
+    fn rec<'a>(
+        path: &'a str,
+        policy: AnchorPolicy,
+        high_value: bool,
+        created: u64,
+    ) -> WriteRecord<'a> {
+        WriteRecord {
+            repo: repo(),
+            path,
+            agent_did: "did:nostr:a",
+            message: "PUT",
+            policy,
+            high_value,
+            ticker: "PROV",
+            network: "testnet4",
+            created,
+        }
+    }
+
+    #[test]
+    fn anchor_policy_inline_matrix() {
+        assert!(!AnchorPolicy::Never.anchors_inline(true));
+        assert!(!AnchorPolicy::Never.anchors_inline(false));
+        assert!(AnchorPolicy::Always.anchors_inline(false));
+        assert!(AnchorPolicy::Always.anchors_inline(true));
+        assert!(AnchorPolicy::HighValue.anchors_inline(true));
+        assert!(!AnchorPolicy::HighValue.anchors_inline(false));
+        // Epoch never anchors inline — it defers to the accumulator.
+        assert!(!AnchorPolicy::Epoch.anchors_inline(true));
+        assert_eq!(AnchorPolicy::default(), AnchorPolicy::Never);
+    }
+
+    #[tokio::test]
+    async fn record_cheap_write_is_git_mark_only() {
+        // Never policy ⇒ git-mark only, no anchor, anchorer untouched.
+        let marker = Arc::new(MockMarker::default());
+        let anchorer = Arc::new(MockAnchorer::default());
+        let log = ProvenanceLog::with_anchorer(marker.clone(), anchorer.clone());
+        let mark = log
+            .record(rec("notes/a.ttl", AnchorPolicy::Never, false, 1_750_000_000))
+            .await
+            .unwrap();
+        assert!(mark.anchor.is_none(), "cheap write must carry no anchor");
+        assert_eq!(mark.resource, "/notes/a.ttl");
+        assert_eq!(marker.calls.load(Ordering::SeqCst), 1, "git-mark always runs");
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 0, "anchorer must NOT be called");
+    }
+
+    #[tokio::test]
+    async fn record_high_value_write_carries_git_mark_and_anchor() {
+        // HighValue + high_value=true ⇒ BOTH tiers present, and the anchor's
+        // state_hash IS the git commit SHA (the two tiers are bound).
+        let marker = Arc::new(MockMarker::default());
+        let anchorer = Arc::new(MockAnchorer::default());
+        let log = ProvenanceLog::with_anchorer(marker.clone(), anchorer.clone());
+        let mark = log
+            .record(rec("receipts/r1.ttl", AnchorPolicy::HighValue, true, 1_750_000_000))
+            .await
+            .unwrap();
+        let anchor = mark.anchor.expect("high-value write must carry an anchor");
+        assert_eq!(
+            anchor.state_hash, mark.git.commit_sha,
+            "anchor must commit to the git SHA (binds the two tiers — §2.3)"
+        );
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            anchorer.last_state_hash.lock().unwrap().as_deref(),
+            Some(mark.git.commit_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_high_value_flag_false_is_git_only() {
+        // HighValue policy but the resource is NOT flagged ⇒ git-mark only.
+        let marker = Arc::new(MockMarker::default());
+        let anchorer = Arc::new(MockAnchorer::default());
+        let log = ProvenanceLog::with_anchorer(marker, anchorer.clone());
+        let mark = log
+            .record(rec("notes/x.ttl", AnchorPolicy::HighValue, false, 1))
+            .await
+            .unwrap();
+        assert!(mark.anchor.is_none());
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn record_always_anchors_every_write() {
+        let marker = Arc::new(MockMarker::default());
+        let anchorer = Arc::new(MockAnchorer::default());
+        let log = ProvenanceLog::with_anchorer(marker, anchorer.clone());
+        for i in 0..3 {
+            let m = log
+                .record(rec(&format!("s/{i}.ttl"), AnchorPolicy::Always, false, 1))
+                .await
+                .unwrap();
+            assert!(m.anchor.is_some());
+        }
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn record_without_anchorer_degrades_to_git_only() {
+        // No anchorer (the wasm / no-Bitcoin pod): even Always degrades to
+        // git-mark only, silently.
+        let marker = Arc::new(MockMarker::default());
+        let log = ProvenanceLog::new(marker.clone());
+        assert!(log.anchorer.is_none());
+        let mark = log
+            .record(rec("notes/a.ttl", AnchorPolicy::Always, true, 1))
+            .await
+            .unwrap();
+        assert!(mark.anchor.is_none(), "no anchorer ⇒ no anchor regardless of policy");
+        assert_eq!(marker.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn record_epoch_defers_anchoring_to_accumulator() {
+        // Epoch policy: record() never anchors inline; the caller batches the
+        // SHA and anchors the root once on epoch close.
+        let marker = Arc::new(MockMarker::default());
+        let anchorer = Arc::new(MockAnchorer::default());
+        let log = ProvenanceLog::with_anchorer(marker, anchorer.clone());
+
+        let mut epoch = EpochAccumulator::new(3);
+        let mut shas = Vec::new();
+        for i in 0..3 {
+            let m = log
+                .record(rec(&format!("e/{i}.ttl"), AnchorPolicy::Epoch, true, 1))
+                .await
+                .unwrap();
+            assert!(m.anchor.is_none(), "epoch writes never anchor inline");
+            epoch.push(m.git.commit_sha.clone());
+            shas.push(m.git.commit_sha);
+        }
+        // No per-write anchors happened.
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 0);
+
+        // Epoch is full → close → ONE anchor for the whole batch root.
+        assert!(epoch.is_full());
+        let closed = epoch.close().expect("non-empty epoch closes");
+        assert_eq!(closed.commits, shas);
+        let anchor = anchorer.anchor("PROV", &closed.root, "testnet4").await.unwrap();
+        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 1, "ONE anchor notarises N commits");
+        assert_eq!(anchor.state_hash, closed.root);
+        // Epoch drained — a fresh epoch begins.
+        assert!(epoch.is_empty());
+    }
+
+    // ── Merkle tree: root determinism + inclusion proofs ──────────────────
+
+    #[test]
+    fn merkle_root_empty_and_single() {
+        assert_eq!(merkle_root(&[]), [0u8; 32]);
+        let leaf = merkle_leaf("deadbeef");
+        // A single leaf is its own root.
+        assert_eq!(merkle_root(&[leaf]), leaf);
+    }
+
+    #[test]
+    fn merkle_root_is_deterministic_and_order_sensitive() {
+        let a = merkle_leaf("aaa");
+        let b = merkle_leaf("bbb");
+        let r1 = merkle_root(&[a, b]);
+        let r2 = merkle_root(&[a, b]);
+        assert_eq!(r1, r2, "deterministic");
+        let swapped = merkle_root(&[b, a]);
+        assert_ne!(r1, swapped, "leaf order changes the root");
+    }
+
+    #[test]
+    fn epoch_root_matches_close_root() {
+        let mut e = EpochAccumulator::new(10);
+        for i in 0..5 {
+            e.push(format!("commit{i:040}"));
+        }
+        let peeked = e.root().unwrap();
+        let closed = e.close().unwrap();
+        assert_eq!(peeked, closed.root, "root() peek == close() root");
+    }
+
+    #[test]
+    fn epoch_inclusion_proof_verifies_for_every_leaf() {
+        // N commits → one root → each commit's inclusion proof verifies.
+        let n = 7; // odd, to exercise last-node duplication
+        let mut e = EpochAccumulator::new(n);
+        for i in 0..n {
+            e.push(format!("c{i:039}")); // 40-char commit-like ids
+        }
+        let root = e.root().unwrap();
+        for i in 0..n {
+            let proof = e.inclusion_proof(i).expect("proof for in-range leaf");
+            assert!(
+                EpochAccumulator::verify_inclusion(&proof, &root),
+                "leaf {i} must verify against the anchored root"
+            );
+        }
+        // Out-of-range index → no proof.
+        assert!(e.inclusion_proof(n).is_none());
+    }
+
+    #[test]
+    fn epoch_inclusion_proof_rejects_wrong_root_and_tampered_leaf() {
+        let mut e = EpochAccumulator::new(4);
+        for i in 0..4 {
+            e.push(format!("c{i:039}"));
+        }
+        let root = e.root().unwrap();
+        let mut proof = e.inclusion_proof(1).unwrap();
+        // Wrong root → reject.
+        assert!(!EpochAccumulator::verify_inclusion(&proof, &"00".repeat(32)));
+        // Tampered leaf → reject against the genuine root.
+        proof.leaf = hex::encode(merkle_leaf("forged"));
+        assert!(!EpochAccumulator::verify_inclusion(&proof, &root));
+    }
+
+    #[test]
+    fn epoch_threshold_and_len_tracking() {
+        let mut e = EpochAccumulator::new(2);
+        assert_eq!(e.threshold(), 2);
+        assert!(e.is_empty() && !e.is_full());
+        e.push("a");
+        assert_eq!(e.len(), 1);
+        assert!(!e.is_full());
+        e.push("b");
+        assert!(e.is_full(), "reaching threshold ⇒ full");
+        // Threshold clamps to ≥ 1.
+        assert_eq!(EpochAccumulator::new(0).threshold(), 1);
+    }
+
+    #[test]
+    fn empty_epoch_close_is_none() {
+        let mut e = EpochAccumulator::new(3);
+        assert!(e.close().is_none());
+        assert!(e.root().is_none());
+    }
+
+    #[test]
+    fn merkle_proof_round_trips() {
+        let p = MerkleProof {
+            leaf: hex::encode(merkle_leaf("x")),
+            siblings: vec![("ab".repeat(32), true), ("cd".repeat(32), false)],
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: MerkleProof = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn anchor_policy_round_trips() {
+        for p in [AnchorPolicy::Never, AnchorPolicy::Always, AnchorPolicy::HighValue, AnchorPolicy::Epoch] {
+            let json = serde_json::to_string(&p).unwrap();
+            let back: AnchorPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(p, back);
+        }
     }
 }

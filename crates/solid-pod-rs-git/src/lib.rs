@@ -58,8 +58,8 @@ pub mod service;
 
 pub use api::{
     git_add, git_branches, git_commit, git_create_branch, git_diff, git_discard, git_log,
-    git_status, git_unstage, BranchInfo, ChangeType, CommitEntry, CommitResult, FileStatus,
-    StatusReport,
+    git_status, git_unstage, resolve_commit, BranchInfo, ChangeType, CommitEntry, CommitResult,
+    FileStatus, ResolvedCommit, StatusReport,
 };
 pub use auth::{AuthError, BasicNostrExtractor, GitAuth};
 pub use config::{find_git_dir, GitDir};

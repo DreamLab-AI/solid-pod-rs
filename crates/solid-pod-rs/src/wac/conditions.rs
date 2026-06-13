@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::wac::anchor::{ProvenanceAnchorBody, ProvenanceAnchorEvaluator};
 use crate::wac::client::{ClientConditionBody, ClientConditionEvaluator};
 use crate::wac::document::AclDocument;
 use crate::wac::evaluator::GroupMembership;
@@ -54,6 +55,11 @@ pub enum Condition {
     /// `acl:PaymentCondition` — gate on payment proof (balance deduction).
     Payment(PaymentConditionBody),
 
+    /// `acl:ProvenanceAnchor` — flag the resource as anchor-worthy (high-value).
+    /// A marker, not an access gate: always satisfied, but its presence
+    /// escalates the write's [`AnchorPolicy`](crate::provenance::AnchorPolicy).
+    ProvenanceAnchor(ProvenanceAnchorBody),
+
     /// Any condition type the server does not recognise. The `type_iri`
     /// is preserved verbatim from the `@type` (or Turtle `rdf:type`)
     /// discriminator.
@@ -72,6 +78,7 @@ impl Condition {
             Condition::Client(_) => "acl:ClientCondition",
             Condition::Issuer(_) => "acl:IssuerCondition",
             Condition::Payment(_) => "acl:PaymentCondition",
+            Condition::ProvenanceAnchor(_) => "acl:ProvenanceAnchor",
             Condition::Unknown { type_iri } => type_iri.as_str(),
         }
     }
@@ -125,6 +132,17 @@ impl Serialize for Condition {
                 m.serialize_entry("acl:costSats", &body.cost_sats)?;
                 m.end()
             }
+            Condition::ProvenanceAnchor(body) => {
+                let mut m = ser.serialize_map(None)?;
+                m.serialize_entry("@type", "acl:ProvenanceAnchor")?;
+                if let Some(v) = &body.anchor_mode {
+                    m.serialize_entry("acl:anchorMode", v)?;
+                }
+                if let Some(v) = &body.ticker {
+                    m.serialize_entry("acl:anchorTicker", v)?;
+                }
+                m.end()
+            }
             Condition::Unknown { type_iri } => {
                 let mut m = ser.serialize_map(Some(1))?;
                 m.serialize_entry("@type", type_iri)?;
@@ -164,6 +182,12 @@ impl<'de> Deserialize<'de> for Condition {
                 | "http://www.w3.org/ns/auth/acl#PaymentCondition"
                 | "https://www.w3.org/ns/auth/acl#PaymentCondition"
         );
+        let matches_anchor = matches!(
+            type_iri_str,
+            "acl:ProvenanceAnchor"
+                | "http://www.w3.org/ns/auth/acl#ProvenanceAnchor"
+                | "https://www.w3.org/ns/auth/acl#ProvenanceAnchor"
+        );
         if matches_client {
             let body = ClientConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Client(body))
@@ -173,6 +197,9 @@ impl<'de> Deserialize<'de> for Condition {
         } else if matches_payment {
             let body = PaymentConditionBody::deserialize(raw).map_err(serde::de::Error::custom)?;
             Ok(Condition::Payment(body))
+        } else if matches_anchor {
+            let body = ProvenanceAnchorBody::deserialize(raw).map_err(serde::de::Error::custom)?;
+            Ok(Condition::ProvenanceAnchor(body))
         } else {
             Ok(Condition::Unknown {
                 type_iri: type_iri_str.to_string(),
@@ -226,6 +253,7 @@ pub struct ConditionRegistry {
     client_eval: Option<ClientConditionEvaluator>,
     issuer_eval: Option<IssuerConditionEvaluator>,
     payment_eval: Option<PaymentConditionEvaluator>,
+    anchor_eval: Option<ProvenanceAnchorEvaluator>,
 }
 
 impl ConditionRegistry {
@@ -251,6 +279,15 @@ impl ConditionRegistry {
         self
     }
 
+    /// Register the default built-in provenance-anchor evaluator. A
+    /// `ProvenanceAnchor` is a marker condition (always satisfied); registering
+    /// it makes the type *recognised* so it never trips the unknown-condition
+    /// 422 path on a `.acl` write.
+    pub fn with_provenance_anchor(mut self, e: ProvenanceAnchorEvaluator) -> Self {
+        self.anchor_eval = Some(e);
+        self
+    }
+
     /// Convenience constructor enabling all built-ins. Used by most
     /// call sites and tests.
     pub fn default_with_client_and_issuer() -> Self {
@@ -258,6 +295,7 @@ impl ConditionRegistry {
             .with_client(ClientConditionEvaluator)
             .with_issuer(IssuerConditionEvaluator)
             .with_payment(PaymentConditionEvaluator)
+            .with_provenance_anchor(ProvenanceAnchorEvaluator)
     }
 
     /// List of condition-type IRIs the registry can dispatch. Used by
@@ -273,6 +311,9 @@ impl ConditionRegistry {
         }
         if self.payment_eval.is_some() {
             s.push("acl:PaymentCondition");
+        }
+        if self.anchor_eval.is_some() {
+            s.push("acl:ProvenanceAnchor");
         }
         s
     }
@@ -295,6 +336,10 @@ impl ConditionDispatcher for ConditionRegistry {
                 None => ConditionOutcome::NotApplicable,
             },
             Condition::Payment(body) => match &self.payment_eval {
+                Some(e) => e.evaluate(body, ctx),
+                None => ConditionOutcome::NotApplicable,
+            },
+            Condition::ProvenanceAnchor(body) => match &self.anchor_eval {
                 Some(e) => e.evaluate(body, ctx),
                 None => ConditionOutcome::NotApplicable,
             },
@@ -365,4 +410,115 @@ pub fn validate_for_write(
 /// [`validate_for_write`] directly.
 pub fn validate_acl_document(doc: &AclDocument) -> Result<(), UnsupportedCondition> {
     validate_for_write(doc, &ConditionRegistry::default_with_client_and_issuer())
+}
+
+// ---------------------------------------------------------------------------
+// Tests — ProvenanceAnchor condition wiring (Phase 5)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod anchor_condition_tests {
+    use super::*;
+    use crate::wac::anchor::AnchorMode;
+    use crate::wac::document::AclDocument;
+    use crate::wac::evaluator::StaticGroupMembership;
+
+    fn ctx() -> RequestContext<'static> {
+        RequestContext {
+            web_id: Some("did:nostr:alice"),
+            client_id: None,
+            issuer: None,
+            payment_balance_sats: None,
+        }
+    }
+
+    #[test]
+    fn provenance_anchor_parses_from_jsonld_into_known_variant() {
+        let json = r#"{"@type":"acl:ProvenanceAnchor","acl:anchorMode":"always"}"#;
+        let cond: Condition = serde_json::from_str(json).unwrap();
+        match &cond {
+            Condition::ProvenanceAnchor(b) => assert_eq!(b.mode(), AnchorMode::Inline),
+            other => panic!("expected ProvenanceAnchor, got {other:?}"),
+        }
+        assert_eq!(cond.type_iri(), "acl:ProvenanceAnchor");
+    }
+
+    #[test]
+    fn provenance_anchor_parses_full_iri_forms() {
+        for iri in [
+            "http://www.w3.org/ns/auth/acl#ProvenanceAnchor",
+            "https://www.w3.org/ns/auth/acl#ProvenanceAnchor",
+        ] {
+            let json = format!(r#"{{"@type":"{iri}"}}"#);
+            let cond: Condition = serde_json::from_str(&json).unwrap();
+            assert!(matches!(cond, Condition::ProvenanceAnchor(_)), "iri {iri}");
+        }
+    }
+
+    #[test]
+    fn provenance_anchor_dispatch_is_satisfied_never_blocks() {
+        let reg = ConditionRegistry::default_with_client_and_issuer();
+        let groups = StaticGroupMembership::default();
+        let cond = Condition::ProvenanceAnchor(Default::default());
+        assert_eq!(
+            reg.dispatch(&cond, &ctx(), &groups),
+            ConditionOutcome::Satisfied,
+            "a provenance marker must always be Satisfied — it never gates access"
+        );
+    }
+
+    /// Build a one-rule ACL document carrying `cond` from JSON-LD (exercises
+    /// the real deserialise path the handler runs on a `.acl` PUT).
+    fn doc_with_condition(cond_json: &str) -> AclDocument {
+        let json = format!(
+            r#"{{"@graph":[{{"@type":"acl:Authorization","acl:accessTo":{{"@id":"/x"}},"acl:mode":{{"@id":"acl:Write"}},"acl:condition":[{cond_json}]}}]}}"#
+        );
+        serde_json::from_str::<AclDocument>(&json).expect("parse acl doc")
+    }
+
+    #[test]
+    fn provenance_anchor_is_recognised_no_422() {
+        // A `.acl` carrying a ProvenanceAnchor must NOT trip the
+        // unknown-condition 422 path (it is a recognised type).
+        let doc = doc_with_condition(r#"{"@type":"acl:ProvenanceAnchor","acl:anchorMode":"epoch"}"#);
+        // The condition parsed as the known variant, not Unknown.
+        let conds = doc.graph.as_ref().unwrap()[0].condition.as_ref().unwrap();
+        assert!(matches!(conds[0], Condition::ProvenanceAnchor(_)));
+        assert!(
+            validate_acl_document(&doc).is_ok(),
+            "ProvenanceAnchor is recognised — fail-closed 422 must NOT fire"
+        );
+        assert!(
+            ConditionRegistry::default_with_client_and_issuer()
+                .supported_iris()
+                .contains(&"acl:ProvenanceAnchor")
+        );
+    }
+
+    #[test]
+    fn unknown_condition_still_422_fail_closed() {
+        // Regression: an actually-unknown condition still fails closed.
+        let doc = doc_with_condition(r#"{"@type":"acl:SomethingExotic"}"#);
+        let err = validate_acl_document(&doc).unwrap_err();
+        assert_eq!(err.iri, "acl:SomethingExotic");
+    }
+
+    #[test]
+    fn provenance_anchor_serialize_roundtrip_through_condition() {
+        let cond = Condition::ProvenanceAnchor(crate::wac::anchor::ProvenanceAnchorBody {
+            anchor_mode: Some("epoch".into()),
+            ticker: Some("PROV".into()),
+        });
+        let json = serde_json::to_string(&cond).unwrap();
+        assert!(json.contains("acl:ProvenanceAnchor"));
+        assert!(json.contains("acl:anchorMode"));
+        let back: Condition = serde_json::from_str(&json).unwrap();
+        match back {
+            Condition::ProvenanceAnchor(b) => {
+                assert_eq!(b.mode(), AnchorMode::Epoch);
+                assert_eq!(b.ticker.as_deref(), Some("PROV"));
+            }
+            other => panic!("roundtrip lost variant: {other:?}"),
+        }
+    }
 }

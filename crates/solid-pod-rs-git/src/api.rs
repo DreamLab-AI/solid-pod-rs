@@ -337,6 +337,98 @@ pub async fn git_log(repo: &Path, limit: u32) -> Result<Vec<CommitEntry>, GitErr
     Ok(entries)
 }
 
+/// Metadata + changed files for one commit, resolved by SHA. Backs the
+/// `_prov/{commit_sha}` provenance resolver (master-plan §2.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedCommit {
+    /// Full 40-char commit SHA (canonicalised from the requested rev).
+    pub hash: String,
+    /// Commit author email — the writer's `did:nostr` (the git-mark binds the
+    /// authenticated agent to commit author identity, see `mark.rs`).
+    pub author_email: String,
+    /// Commit author name (the committer label, e.g. `solid-pod-rs`).
+    pub author_name: String,
+    /// Commit subject (the LDP method + path the write recorded).
+    pub subject: String,
+    /// Author commit time, Unix seconds.
+    pub committed_at: u64,
+    /// Parent commit SHA (the append-only chain link), or `None` for the
+    /// genesis commit.
+    pub parent: Option<String>,
+    /// Repo-relative paths the commit touched (sidecars are caller-filtered).
+    pub files: Vec<String>,
+}
+
+/// Resolve a commit `sha` (any rev git accepts) to its metadata + changed
+/// files. Returns [`GitError::NotARepository`] mapped from a bad-revision
+/// failure so the caller can surface a 404 for an unknown commit.
+///
+/// Shells `git show --no-patch` (metadata) + `git show --name-only` (files),
+/// mirroring the other `api` operations. Used by the `_prov/{commit_sha}`
+/// route to map a git-mark back to its resource + [`ProvenanceMark`].
+pub async fn resolve_commit(repo: &Path, sha: &str) -> Result<ResolvedCommit, GitError> {
+    // Reject obviously-malformed revs early (defence-in-depth; the route also
+    // validates). A commit-ish is hex; refuse anything with shell/path metachars.
+    if sha.is_empty()
+        || sha.len() > 64
+        || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(GitError::PathTraversal(format!("invalid commit id: {sha}")));
+    }
+
+    // Metadata: full-hash, author-email, author-name, subject, author-unixtime,
+    // parent-hashes — unit-separated, one record.
+    let fmt = "%H\x1F%ae\x1F%an\x1F%s\x1F%at\x1F%P";
+    let meta = match git_run(&["show", "--no-patch", &format!("--format={fmt}"), sha], repo).await {
+        Ok(v) => v,
+        Err(GitError::BackendFailed { ref stderr, .. })
+            if stderr.contains("unknown revision")
+                || stderr.contains("bad revision")
+                || stderr.contains("bad object")
+                || stderr.contains("ambiguous argument")
+                || stderr.contains("does not have any commits") =>
+        {
+            return Err(GitError::NotARepository(format!("unknown commit {sha}")));
+        }
+        Err(e) => return Err(e),
+    };
+    let line = meta.lines().next().unwrap_or("");
+    let parts: Vec<&str> = line.splitn(6, '\x1F').collect();
+    if parts.len() < 5 {
+        return Err(GitError::MalformedCgi(format!("git show metadata for {sha}")));
+    }
+    let committed_at = parts[4].trim().parse::<u64>().unwrap_or(0);
+    let parent = parts
+        .get(5)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        // `%P` lists all parents space-separated; the first is the chain link.
+        .and_then(|s| s.split_whitespace().next())
+        .map(str::to_string);
+
+    // Changed files: `--name-only` with an empty format prints only paths.
+    let files_raw = git_run(&["show", "--name-only", "--format=", sha], repo)
+        .await
+        .unwrap_or_default();
+    let files: Vec<String> = files_raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    Ok(ResolvedCommit {
+        hash: parts[0].to_string(),
+        author_email: parts[1].to_string(),
+        author_name: parts[2].to_string(),
+        subject: parts[3].to_string(),
+        committed_at,
+        parent,
+        files,
+    })
+}
+
 /// Return a unified diff for the repository or a specific file.
 ///
 /// - `staged = true` produces `git diff --cached` (index vs HEAD).
@@ -631,5 +723,21 @@ mod tests {
     fn validate_path_accepts_normal() {
         assert!(validate_path("src/lib.rs").is_ok());
         assert!(validate_path("README.md").is_ok());
+    }
+
+    #[tokio::test]
+    async fn resolve_commit_rejects_malformed_rev() {
+        // Defence-in-depth: a non-hex / over-long / empty rev is rejected
+        // before ever shelling to git (no path/shell metachars reach `git`).
+        let repo = std::path::Path::new("/nonexistent");
+        for bad in ["", "../etc", "deadbeef; rm -rf /", &"a".repeat(65), "g00dbeef"] {
+            assert!(
+                matches!(
+                    resolve_commit(repo, bad).await,
+                    Err(GitError::PathTraversal(_))
+                ),
+                "malformed rev {bad:?} must be rejected pre-git"
+            );
+        }
     }
 }

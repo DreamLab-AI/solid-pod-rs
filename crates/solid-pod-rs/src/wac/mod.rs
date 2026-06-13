@@ -109,6 +109,7 @@ pub fn parse_jsonld_acl_with_limits(
 }
 
 // Sub-modules — each kept under 500 LOC.
+pub mod anchor;
 pub mod client;
 pub mod conditions;
 pub mod document;
@@ -125,6 +126,7 @@ pub mod serializer;
 // consumer import breaks).
 // ---------------------------------------------------------------------------
 
+pub use anchor::{anchor_mode_of, AnchorMode, ProvenanceAnchorBody, ProvenanceAnchorEvaluator};
 pub use client::{ClientConditionBody, ClientConditionEvaluator};
 pub use conditions::{
     validate_acl_document, validate_for_write, Condition, ConditionDispatcher, ConditionOutcome,

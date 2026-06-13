@@ -77,6 +77,14 @@ fn emit_conditions(out: &mut String, conds: Option<&[Condition]>) {
             Condition::Payment(body) => {
                 out.push_str(&format!(" ;\n        acl:costSats {}", body.cost_sats));
             }
+            Condition::ProvenanceAnchor(body) => {
+                if let Some(mode) = &body.anchor_mode {
+                    out.push_str(&format!(" ;\n        acl:anchorMode \"{mode}\""));
+                }
+                if let Some(ticker) = &body.ticker {
+                    out.push_str(&format!(" ;\n        acl:anchorTicker \"{ticker}\""));
+                }
+            }
             Condition::Unknown { .. } => {}
         }
         out.push_str("\n    ]");

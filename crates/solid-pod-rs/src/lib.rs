@@ -203,7 +203,8 @@ pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
 pub use metrics::SecurityMetrics;
 pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
 pub use provenance::{
-    prov_ttl, BlockAnchorer, BlockTrailAnchor, GitMark, GitMarker, ProvenanceError, ProvenanceMark,
+    prov_ttl, AnchorPolicy, BlockAnchorer, BlockTrailAnchor, ClosedEpoch, EpochAccumulator, GitMark,
+    GitMarker, MerkleProof, ProvenanceError, ProvenanceLog, ProvenanceMark, WriteRecord,
 };
 pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
