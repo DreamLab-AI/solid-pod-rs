@@ -176,8 +176,9 @@ pub trait GitMarker: Send + Sync {
 #[async_trait::async_trait(?Send)]
 pub trait BlockAnchorer: Send + Sync {
     /// Anchor `state_hash` under `ticker` on `network`, returning the produced
-    /// [`BlockTrailAnchor`].
-    // implemented in Phase 4
+    /// [`BlockTrailAnchor`]. Implemented by
+    /// `solid-pod-rs-server::mempool::MempoolBlockAnchorer` (builds + broadcasts
+    /// a taproot MRC20 anchoring tx via `bitcoin_tx.rs`).
     async fn anchor(
         &self,
         ticker: &str,
@@ -185,8 +186,9 @@ pub trait BlockAnchorer: Send + Sync {
         network: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError>;
 
-    /// Verify a previously-produced anchor against the chain / fixtures.
-    // implemented in Phase 4 (verify-side wired in Phase 3)
+    /// Verify a previously-produced anchor against the chain / fixtures
+    /// (re-derives the taproot address from the portable proof, then confirms a
+    /// UTXO sits at it).
     async fn verify(&self, anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError>;
 }
 

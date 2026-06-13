@@ -111,6 +111,11 @@
 // `default-features = false, features = ["core"]`.
 // ---------------------------------------------------------------------------
 pub mod auth;
+/// Bitcoin taproot transaction building (block-trail write-side). The module's
+/// own inner `#![cfg(all(feature = "mrc20", not(target_arch = "wasm32")))]`
+/// gates it: it compiles to nothing on wasm or without the `mrc20` feature, so
+/// the tx-building never leaks into the wasm `core` surface (ADR-059 D4).
+pub mod bitcoin_tx;
 pub mod config;
 pub mod error;
 pub mod interop;

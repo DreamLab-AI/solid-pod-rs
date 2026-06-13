@@ -1,0 +1,87 @@
+{
+  "caseA": {
+    "priv": "0000000000000000000000000000000000000000000000000000000000000001",
+    "xonly_internal": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "input": {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "vout": 0,
+      "amount": 10000,
+      "scriptPubKey": "512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "output": {
+      "amount": 9700,
+      "scriptPubKey": "5120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "raw": "02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000fdffffff01e425000000000000225120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee501401aa936e1d6cc7acacd039c7ab4984dc0f65ec5014bfd2b584db185cb01ae29c2d65bbc7dab1affe9ffa6f4aab1cd7a39797016eb23f97064e1c242afdb11f50500000000",
+    "sighashes": [
+      "8ab00bc726b7e5826dbca07f204928202304e68db02e7f17c9b2ccabfcf458bc"
+    ],
+    "sigs": [
+      "1aa936e1d6cc7acacd039c7ab4984dc0f65ec5014bfd2b584db185cb01ae29c2d65bbc7dab1affe9ffa6f4aab1cd7a39797016eb23f97064e1c242afdb11f505"
+    ],
+    "signingKey": "0000000000000000000000000000000000000000000000000000000000000001",
+    "unsigned": "0200000001aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000fdffffff01e425000000000000225120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee500000000"
+  },
+  "caseB": {
+    "priv": "0000000000000000000000000000000000000000000000000000000000000003",
+    "xonly_internal": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "input": {
+      "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "vout": 1,
+      "amount": 20000,
+      "scriptPubKey": "5120cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "output": {
+      "amount": 19700,
+      "scriptPubKey": "512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "raw": "02000000000101bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0100000000fdffffff01f44c00000000000022512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179801403a71bc5a508af697d96a2fa07c49e82533918f096ab1a33d78de77cb916bc6735e125e5e46b8b1fb2ea4cdc4820d466a1908fc5515f1cb947007bda95b61d63500000000",
+    "sighashes": [
+      "4cdf0067f757ab4ac8aa354a21122dfbda558641d79240c0c2614398cb7868ce"
+    ],
+    "sigs": [
+      "3a71bc5a508af697d96a2fa07c49e82533918f096ab1a33d78de77cb916bc6735e125e5e46b8b1fb2ea4cdc4820d466a1908fc5515f1cb947007bda95b61d635"
+    ],
+    "signingKey": "965a70e32ca36371d64d9942813b6e96e42498e4483c319cd4316cbc53485c85",
+    "unsigned": "0200000001bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0100000000fdffffff01f44c00000000000022512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179800000000"
+  },
+  "caseC": {
+    "priv": "0000000000000000000000000000000000000000000000000000000000000005",
+    "xonly_internal": "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+    "inputs": [
+      {
+        "txid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vout": 0,
+        "amount": 5000,
+        "scriptPubKey": "51202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+      },
+      {
+        "txid": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "vout": 2,
+        "amount": 8000,
+        "scriptPubKey": "51202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+      }
+    ],
+    "outputs": [
+      {
+        "amount": 9000,
+        "scriptPubKey": "5120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+      },
+      {
+        "amount": 3700,
+        "scriptPubKey": "51202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+      }
+    ],
+    "raw": "02000000000102cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000000000fdffffffdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0200000000fdffffff022823000000000000225120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5740e0000000000002251202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe40140a3cbf0b4dcab26402b262870e4ced52b415869eec84b2c21dd518a32fd5c5daad7f3802cef3409a934d79fc290f23280c8495d5af7647ba99b117d992218ab6f0140011be9bf32b396ecaef994d88d702693b361725692a07b75a39e02faac129b2f3a0eb8a2465963b1fc63149aa7120f89f31a4f67b764b962d332a6c0e52a08c100000000",
+    "sighashes": [
+      "bb8d9af3473eb981effad98a1bd56deaa0ba064f5e72e8b7ca840d3b82c17db6",
+      "73bebec1ee910ca701c23d7108706bcbf69785fdc9173af85f5e2bf2e3b3ed58"
+    ],
+    "sigs": [
+      "a3cbf0b4dcab26402b262870e4ced52b415869eec84b2c21dd518a32fd5c5daad7f3802cef3409a934d79fc290f23280c8495d5af7647ba99b117d992218ab6f",
+      "011be9bf32b396ecaef994d88d702693b361725692a07b75a39e02faac129b2f3a0eb8a2465963b1fc63149aa7120f89f31a4f67b764b962d332a6c0e52a08c1"
+    ],
+    "signingKey": "0000000000000000000000000000000000000000000000000000000000000005",
+    "unsigned": "0200000002cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000000000fdffffffdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0200000000fdffffff022823000000000000225120c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5740e0000000000002251202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe400000000"
+  }
+}

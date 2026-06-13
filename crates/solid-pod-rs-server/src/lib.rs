@@ -72,6 +72,13 @@ mod mcp;
 /// `reqwest::Client`); wasm consumers implement the trait over `fetch`.
 pub mod mempool;
 
+/// MRC20 trail persistence (provenance-upgrade Phase 4). Loads/saves a
+/// token's Bitcoin-anchored state chain at `/.well-known/token/{ticker}.json`
+/// via the pod's [`solid_pod_rs::storage::Storage`] backend (JSS
+/// `token.js:189-208`). Native-only; holds the issuer secret off the public
+/// [`solid_pod_rs::mrc20::Mrc20Trail`] type.
+pub mod trail_store;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};

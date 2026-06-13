@@ -35,6 +35,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use solid_pod_rs::bitcoin_tx::{anchor_state, MempoolBroadcast};
 use solid_pod_rs::mrc20::{bt_address, MempoolLookup, TxInfo, TxOut, Utxo};
 use solid_pod_rs::payments::PaymentError;
 use solid_pod_rs::provenance::{BlockAnchorer, BlockTrailAnchor, ProvenanceError};
@@ -107,6 +108,33 @@ impl MempoolHttpClient {
         resp.text()
             .await
             .map_err(|e| PaymentError::InvalidState(format!("mempool body read failed: {e}")))
+    }
+
+    /// POST `body` as `text/plain` to `url`, returning the response body on a
+    /// 2xx (the txid, for `/api/tx`) or a fail-closed
+    /// [`PaymentError::InvalidState`]. Mirrors JSS `broadcastTx`
+    /// (`token.js:176-187`).
+    async fn post_text(&self, url: &str, body: &str) -> Result<String, PaymentError> {
+        let resp = self
+            .client
+            .post(url)
+            .header("Content-Type", "text/plain")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| PaymentError::InvalidState(format!("mempool broadcast failed: {e}")))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| PaymentError::InvalidState(format!("mempool body read failed: {e}")))?;
+        if !status.is_success() {
+            return Err(PaymentError::InvalidState(format!(
+                "broadcast rejected ({}): {text}",
+                status.as_u16()
+            )));
+        }
+        Ok(text.trim().to_string())
     }
 }
 
@@ -205,50 +233,144 @@ impl MempoolLookup for MempoolHttpClient {
     }
 }
 
+#[async_trait(?Send)]
+impl MempoolBroadcast for MempoolHttpClient {
+    async fn broadcast_tx(&self, raw_hex: &str) -> Result<String, PaymentError> {
+        let url = format!("{}/api/tx", self.base);
+        self.post_text(&url, raw_hex).await
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BlockAnchorer::verify — the portable-proof read-side (provenance §2.2)
 // ---------------------------------------------------------------------------
 
-/// A [`BlockAnchorer`] whose **verify** side is fully implemented over any
-/// [`MempoolLookup`] (`anchor()` is Phase 4). Generic over the lookup so a
-/// fixture mempool drives it in tests and [`MempoolHttpClient`] drives it in
-/// production — both without changing the verification logic.
+/// A [`BlockAnchorer`] implementing **both** sides over a transport that can
+/// look up UTXOs ([`MempoolLookup`]) and broadcast transactions
+/// ([`MempoolBroadcast`]). Generic over that transport so a fixture drives it
+/// in tests and [`MempoolHttpClient`] drives it in production — without
+/// changing the logic.
 ///
-/// `verify` re-derives the expected taproot address from the anchor's
-/// *portable proof* (`pubkey` + `state_strings`) via [`bt_address`],
-/// confirms it matches the address recorded in the anchor (so a forged
-/// `address` is rejected), and then confirms a UTXO actually sits at that
-/// derived address. No pod trust is required: the proof is checked against
-/// independent chain state.
-#[derive(Debug, Clone)]
-pub struct MempoolBlockAnchorer<M: MempoolLookup + Send + Sync> {
+/// - `verify` (Phase 3) re-derives the expected taproot address from the
+///   anchor's *portable proof* (`pubkey` + `state_strings`) via [`bt_address`],
+///   rejects a forged `address`, and confirms a UTXO sits at the derived
+///   address. No pod trust required.
+/// - `anchor` (Phase 4) loads the named trail from storage, appends an MRC20
+///   state notarising `state_hash` (via
+///   [`anchor_state`](solid_pod_rs::bitcoin_tx::anchor_state)), broadcasts the
+///   anchoring tx, persists the updated trail, and returns the
+///   [`BlockTrailAnchor`] (txid/vout/address/state_strings/pubkey). It requires
+///   a `storage` handle (set via [`MempoolBlockAnchorer::with_storage`]); the
+///   verify-only constructor [`MempoolBlockAnchorer::new`] leaves it `None` and
+///   `anchor()` then errors with a clear message.
+#[derive(Clone)]
+pub struct MempoolBlockAnchorer<M: MempoolLookup + MempoolBroadcast + Send + Sync> {
     lookup: M,
+    storage: Option<std::sync::Arc<dyn solid_pod_rs::storage::Storage>>,
 }
 
-impl<M: MempoolLookup + Send + Sync> MempoolBlockAnchorer<M> {
-    /// Wrap a [`MempoolLookup`] as a verify-capable [`BlockAnchorer`].
+impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> MempoolBlockAnchorer<M> {
+    /// Wrap a transport as a **verify-capable** [`BlockAnchorer`]. `anchor()`
+    /// is unavailable (no storage) and returns an error explaining that
+    /// [`with_storage`](Self::with_storage) is required.
     pub fn new(lookup: M) -> Self {
-        Self { lookup }
+        Self { lookup, storage: None }
     }
 
-    /// Borrow the underlying lookup (e.g. for a one-off `address_utxos`).
+    /// Wrap a transport + pod storage as a **fully-capable** [`BlockAnchorer`]
+    /// (both `verify` and `anchor`). The `storage` backs the trail load/save at
+    /// `/.well-known/token/{ticker}.json`.
+    pub fn with_storage(
+        lookup: M,
+        storage: std::sync::Arc<dyn solid_pod_rs::storage::Storage>,
+    ) -> Self {
+        Self {
+            lookup,
+            storage: Some(storage),
+        }
+    }
+
+    /// Borrow the underlying transport (e.g. for a one-off `address_utxos`).
     pub fn lookup(&self) -> &M {
         &self.lookup
     }
 }
 
 #[async_trait(?Send)]
-impl<M: MempoolLookup + Send + Sync> BlockAnchorer for MempoolBlockAnchorer<M> {
-    /// Phase 4 — Bitcoin TX build/broadcast. Not in scope for Phase 3.
+impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for MempoolBlockAnchorer<M> {
+    /// Append one MRC20 state anchoring `state_hash` under `ticker`, build +
+    /// broadcast the anchoring tx, persist the updated trail, and return the
+    /// produced [`BlockTrailAnchor`]. This is the expensive-tier write the
+    /// provenance design hinges on (ADR-059 §2.2, master-plan Phase 4).
+    ///
+    /// `network` is honoured as a guard: it must match the trail's own network
+    /// (the trail's chained-key addresses are network-bound). The returned
+    /// anchor's `vout` is `0` (the anchoring tx pays the next chained-key UTXO
+    /// at output 0); `blockheight` is `None` until the tx confirms.
     async fn anchor(
         &self,
-        _ticker: &str,
-        _state_hash: &str,
-        _network: &str,
+        ticker: &str,
+        state_hash: &str,
+        network: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
-        Err(ProvenanceError::Anchor(
-            "anchor() (Bitcoin tx build/broadcast) is Phase 4; not implemented".into(),
-        ))
+        use crate::trail_store::{load_trail, save_trail};
+        use solid_pod_rs::bitcoin_tx::DEFAULT_FEE_SATS;
+
+        let storage = self.storage.as_ref().ok_or_else(|| {
+            ProvenanceError::Anchor(
+                "anchor() requires storage; construct with MempoolBlockAnchorer::with_storage"
+                    .into(),
+            )
+        })?;
+
+        // Load the trail that will carry the anchor (JSS `loadTrail`).
+        let mut stored = load_trail(storage, ticker)
+            .await
+            .map_err(|e| ProvenanceError::Anchor(format!("load trail {ticker}: {e}")))?
+            .ok_or_else(|| ProvenanceError::Anchor(format!("trail {ticker} not minted on this pod")))?;
+
+        if stored.network != network {
+            return Err(ProvenanceError::Anchor(format!(
+                "network mismatch: trail is {}, requested {network}",
+                stored.network
+            )));
+        }
+
+        // Build the anchoring tx (appends a state notarising `state_hash`).
+        let public = stored.to_public();
+        let update = anchor_state(&public, &stored.privkey, state_hash, DEFAULT_FEE_SATS, &self.lookup)
+            .await
+            .map_err(|e| ProvenanceError::Anchor(format!("build anchoring tx: {e}")))?;
+
+        // Broadcast (JSS `broadcastTx`). The returned txid IS the anchoring tx.
+        let txid = self
+            .lookup
+            .broadcast_tx(&update.tx.raw_hex)
+            .await
+            .map_err(|e| ProvenanceError::Anchor(format!("broadcast anchoring tx: {e}")))?;
+
+        // Persist the appended trail with the broadcast txid as the new
+        // currentTxid (so the next anchor/transfer spends this output).
+        let mut appended = update.trail.clone();
+        appended.current_txid = txid.clone();
+        stored.merge_public(&appended);
+        stored.current_txid = txid.clone();
+        stored.current_vout = 0;
+        save_trail(storage, &stored)
+            .await
+            .map_err(|e| ProvenanceError::Anchor(format!("save trail: {e}")))?;
+
+        Ok(BlockTrailAnchor {
+            ticker: ticker.to_string(),
+            state_hash: state_hash.to_string(),
+            txid,
+            vout: 0,
+            address: update.address,
+            network: network.to_string(),
+            blockheight: None,
+            state_strings: appended.state_strings,
+            pubkey: Some(stored.pubkey_base),
+        })
     }
 
     async fn verify(&self, anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
@@ -366,14 +488,20 @@ mod tests {
 
     use std::collections::HashMap;
 
-    /// In-memory [`MempoolLookup`] — address→UTXO map. No HTTP.
+    /// In-memory [`MempoolLookup`] + [`MempoolBroadcast`] — address→UTXO and
+    /// txid→outputs maps. No HTTP. Interior mutability so the broadcast side
+    /// can record raw txs and the anchor round-trip can register the spent
+    /// output's scriptPubKey.
+    #[derive(Clone, Default)]
     struct FixtureMempool {
-        utxos: HashMap<String, Vec<Utxo>>,
+        utxos: std::sync::Arc<std::sync::Mutex<HashMap<String, Vec<Utxo>>>>,
+        txs: std::sync::Arc<std::sync::Mutex<HashMap<String, Vec<TxOut>>>>,
+        broadcasts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
     impl FixtureMempool {
         fn with_utxo_at(address: &str) -> Self {
-            let mut utxos = HashMap::new();
-            utxos.insert(
+            let me = Self::default();
+            me.utxos.lock().unwrap().insert(
                 address.to_string(),
                 vec![Utxo {
                     txid: "ab".repeat(32),
@@ -383,24 +511,46 @@ mod tests {
                     block_height: Some(42_000),
                 }],
             );
-            Self { utxos }
+            me
         }
         fn empty() -> Self {
-            Self { utxos: HashMap::new() }
+            Self::default()
+        }
+        fn add_output(&self, txid: &str, vout: u32, spk_hex: &str) {
+            let mut txs = self.txs.lock().unwrap();
+            let outs = txs.entry(txid.to_string()).or_default();
+            while outs.len() <= vout as usize {
+                outs.push(TxOut { value: 0, scriptpubkey: None, scriptpubkey_address: None });
+            }
+            outs[vout as usize] = TxOut {
+                value: 0,
+                scriptpubkey: Some(spk_hex.to_string()),
+                scriptpubkey_address: None,
+            };
         }
     }
     #[async_trait(?Send)]
     impl MempoolLookup for FixtureMempool {
         async fn address_utxos(&self, address: &str) -> Result<Vec<Utxo>, PaymentError> {
-            Ok(self.utxos.get(address).cloned().unwrap_or_default())
+            Ok(self.utxos.lock().unwrap().get(address).cloned().unwrap_or_default())
         }
         async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError> {
             Ok(TxInfo {
                 txid: txid.to_string(),
-                vout: vec![],
+                vout: self.txs.lock().unwrap().get(txid).cloned().unwrap_or_default(),
                 confirmed: true,
                 block_height: Some(42_000),
             })
+        }
+    }
+    #[async_trait(?Send)]
+    impl MempoolBroadcast for FixtureMempool {
+        async fn broadcast_tx(&self, raw_hex: &str) -> Result<String, PaymentError> {
+            // Synthetic, stable txid (sha256 of raw hex) — crypto correctness
+            // is asserted elsewhere; the chain-walk only needs uniqueness.
+            let txid = solid_pod_rs::mrc20::sha256_hex(raw_hex);
+            self.broadcasts.lock().unwrap().push(raw_hex.to_string());
+            Ok(txid)
         }
     }
 
@@ -469,9 +619,143 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_anchorer_anchor_is_phase4_todo() {
+    async fn block_anchorer_anchor_requires_storage() {
+        // The verify-only constructor leaves storage None ⇒ anchor() errors
+        // with a clear message rather than panicking.
         let anchorer = MempoolBlockAnchorer::new(FixtureMempool::empty());
         let err = anchorer.anchor("PROV", "deadbeef", "testnet4").await.unwrap_err();
-        assert!(matches!(err, ProvenanceError::Anchor(_)));
+        match err {
+            ProvenanceError::Anchor(m) => assert!(m.contains("with_storage")),
+            other => panic!("expected Anchor(requires storage), got {other:?}"),
+        }
+    }
+
+    // ── Phase 4: full anchor() round-trip (mint → store → anchor → verify) ──
+
+    use crate::trail_store::{load_trail, save_trail, StoredTrail};
+    use solid_pod_rs::bitcoin_tx::mint_token;
+    use solid_pod_rs::storage::memory::MemoryBackend;
+    use solid_pod_rs::storage::Storage;
+
+    /// Mint a genesis trail through the write-side, persist it (with the
+    /// issuer secret), and register the genesis UTXO's scriptPubKey so a
+    /// subsequent anchor can spend it. Returns `(storage, mempool, ticker)`.
+    async fn mint_and_store(
+        ticker: &str,
+    ) -> (std::sync::Arc<dyn Storage>, FixtureMempool, String) {
+        let mempool = FixtureMempool::empty();
+        let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryBackend::new());
+
+        // Fund the genesis from an issuer-key voucher (untweaked path).
+        let sk = k256::SecretKey::from_slice(&hex::decode(ISSUER_PRIVKEY).unwrap()).unwrap();
+        let compressed = sk.public_key().to_sec1_bytes();
+        let xonly_hex = hex::encode(&compressed[1..]);
+        let voucher_txid = "11".repeat(32);
+        mempool.add_output(&voucher_txid, 0, &format!("5120{xonly_hex}"));
+
+        let voucher = solid_pod_rs::bitcoin_tx::TxoVoucher {
+            txid: voucher_txid,
+            vout: 0,
+            amount: 100_000,
+            privkey: ISSUER_PRIVKEY.to_string(),
+        };
+        let mint = mint_token(ticker, None, 1_000, &voucher, "testnet4", 300, &mempool)
+            .await
+            .unwrap();
+        let mint_txid = mempool.broadcast_tx(&mint.tx.raw_hex).await.unwrap();
+
+        // Persist the trail with the issuer secret + the broadcast txid.
+        let mut stored = StoredTrail {
+            ticker: mint.trail.ticker.clone(),
+            name: mint.trail.name.clone(),
+            supply: mint.trail.supply,
+            privkey: ISSUER_PRIVKEY.to_string(),
+            pubkey_base: mint.trail.pubkey_base.clone(),
+            states: mint.trail.states.clone(),
+            state_strings: mint.trail.state_strings.clone(),
+            current_txid: mint_txid.clone(),
+            current_vout: 0,
+            current_amount: mint.trail.current_amount,
+            network: mint.trail.network.clone(),
+            date_created: "2026-06-13T00:00:00Z".into(),
+        };
+        stored.current_txid = mint_txid.clone();
+        save_trail(&storage, &stored).await.unwrap();
+
+        // Register the genesis output scriptPubKey so anchor() can spend it.
+        let genesis_xonly = {
+            let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
+                &issuer_pubkey(),
+                &[mint.state_jcs.clone()],
+            )
+            .unwrap();
+            hex::encode(&chained[1..])
+        };
+        mempool.add_output(&mint_txid, 0, &format!("5120{genesis_xonly}"));
+
+        (storage, mempool, ticker.to_string())
+    }
+
+    #[tokio::test]
+    async fn block_anchorer_anchor_round_trip_and_self_verifies() {
+        let (storage, mempool, ticker) = mint_and_store("ANCH").await;
+        let anchorer = MempoolBlockAnchorer::with_storage(mempool.clone(), storage.clone());
+
+        // Anchor a git commit SHA (the provenance write).
+        let commit_sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334";
+        let anchor = anchorer
+            .anchor(&ticker, commit_sha, "testnet4")
+            .await
+            .expect("anchor() must build + broadcast + persist");
+
+        assert_eq!(anchor.ticker, "ANCH");
+        assert_eq!(anchor.state_hash, commit_sha);
+        assert_eq!(anchor.vout, 0);
+        assert!(anchor.blockheight.is_none());
+        assert_eq!(anchor.network, "testnet4");
+        assert!(anchor.pubkey.is_some());
+        // The portable proof carries genesis + anchor state strings.
+        assert_eq!(anchor.state_strings.len(), 2);
+        // The recorded address is the genuine derivation from the proof.
+        let derived = bt_address(
+            anchor.pubkey.as_deref().unwrap(),
+            &anchor.state_strings,
+            "testnet4",
+        )
+        .unwrap();
+        assert_eq!(anchor.address, derived);
+
+        // The trail was persisted with the new state appended + new txid.
+        let reloaded = load_trail(&storage, "ANCH").await.unwrap().unwrap();
+        assert_eq!(reloaded.states.len(), 2);
+        assert_eq!(reloaded.current_txid, anchor.txid);
+        assert_eq!(reloaded.states[1].anchor.as_deref(), Some(commit_sha));
+
+        // verify() ACCEPTS the produced anchor once a UTXO sits at its address.
+        mempool.utxos.lock().unwrap().insert(
+            anchor.address.clone(),
+            vec![Utxo {
+                txid: anchor.txid.clone(),
+                vout: 0,
+                value: 9_400,
+                confirmed: false,
+                block_height: None,
+            }],
+        );
+        assert!(
+            anchorer.verify(&anchor).await.unwrap(),
+            "the anchor we just produced must verify against its own UTXO"
+        );
+    }
+
+    #[tokio::test]
+    async fn block_anchorer_anchor_rejects_unminted_ticker() {
+        let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryBackend::new());
+        let anchorer = MempoolBlockAnchorer::with_storage(FixtureMempool::empty(), storage);
+        let err = anchorer.anchor("GHOST", "deadbeef", "testnet4").await.unwrap_err();
+        match err {
+            ProvenanceError::Anchor(m) => assert!(m.contains("not minted")),
+            other => panic!("expected not-minted error, got {other:?}"),
+        }
     }
 }

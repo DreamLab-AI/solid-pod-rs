@@ -44,6 +44,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::Deserialize;
 
+use solid_pod_rs::bitcoin_tx::{
+    anchor_proof_json, build_withdraw_voucher, parse_txo_voucher, transfer_token_with_key,
+    MempoolBroadcast, DEFAULT_FEE_SATS,
+};
 use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor, Mrc20State};
 use solid_pod_rs::payments::{
     balance_response, parse_txo_uri, payment_required_body, PaymentError, PaymentStore, WebLedger,
@@ -52,6 +56,7 @@ use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
 
 use crate::mempool::MempoolHttpClient;
+use crate::trail_store::{load_trail, save_trail};
 use crate::{agent_uri, extract_pubkey, AppState, WEBLEDGER_PATH};
 
 // ---------------------------------------------------------------------------
@@ -912,6 +917,441 @@ async fn handle_pool_post(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 — Bitcoin write-side routes: /pay/.buy, /pay/.withdraw,
+// /pay/.withdraw-sats (JSS pay.js:553-898, token.js mint/transfer/build).
+// ---------------------------------------------------------------------------
+
+/// Build the mempool transport: the test override (`state.mempool_url`,
+/// pointing at a fixture HTTP origin) or the env-driven testnet4 default.
+/// `MempoolHttpClient` implements both [`solid_pod_rs::mrc20::MempoolLookup`]
+/// (UTXO/scriptPubKey reads) and [`MempoolBroadcast`] (tx broadcast).
+fn mempool_client(state: &AppState) -> MempoolHttpClient {
+    match &state.mempool_url {
+        Some(url) => MempoolHttpClient::new(url.clone()),
+        None => MempoolHttpClient::from_env(),
+    }
+}
+
+/// The portable anchor proof returned alongside a `.buy` / `.withdraw`
+/// transfer (JSS `pay.js:647-656`): the state, the prev state, and the
+/// `{pubkey, stateStrings, network}` anchor needed to independently verify the
+/// derived taproot address against the chain.
+fn transfer_proof_json(
+    state: &Mrc20State,
+    prev_state: &Mrc20State,
+    trail: &solid_pod_rs::mrc20::Mrc20Trail,
+) -> serde_json::Value {
+    serde_json::json!({
+        "state": state,
+        "prevState": prev_state,
+        "anchor": anchor_proof_json(trail),
+    })
+}
+
+/// Shared `.buy` / `.withdraw` body — both move `payToken` tokens to the
+/// authenticated buyer/withdrawer against their sat balance, differing only in
+/// how the token amount is derived (buy: `amount`/`sats`; withdraw:
+/// `tokens`/`sats`/`all`).
+#[derive(Debug, Deserialize, Default)]
+struct TokenMoveBody {
+    #[serde(default)]
+    ticker: Option<String>,
+    #[serde(default)]
+    amount: Option<u64>,
+    #[serde(default)]
+    sats: Option<u64>,
+    #[serde(default)]
+    tokens: Option<u64>,
+    #[serde(default)]
+    all: Option<bool>,
+}
+
+/// Execute the token transfer + ledger debit shared by `.buy`/`.withdraw`.
+///
+/// Loads the trail, runs [`transfer_token_with_key`] (reusing the chained-key
+/// crypto), broadcasts the tx, persists the appended trail, debits `sat_cost`
+/// from the user's ledger entry, and returns `(txid, proof, new_balance)`.
+/// Fail-closed: if the broadcast or persistence fails the ledger is NOT
+/// debited (debit happens only after a successful broadcast, matching JSS
+/// ordering at `pay.js:636-637,740-741`).
+async fn execute_token_transfer(
+    state: &AppState,
+    ticker: &str,
+    buyer_pubkey: &str,
+    did: &str,
+    token_amount: u64,
+    sat_cost: u64,
+) -> Result<(String, serde_json::Value, u64), HttpResponse> {
+    let storage = &state.storage;
+
+    // Load the trail (must be minted on this pod).
+    let mut stored = match load_trail(storage, ticker).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return Err(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Token {ticker} not minted on this pod")
+            })));
+        }
+        Err(e) => return Err(payment_error_response(e)),
+    };
+
+    let mempool = mempool_client(state);
+    let public = stored.to_public();
+    let prev_state = match public.states.last() {
+        Some(s) => s.clone(),
+        None => {
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Trail has no states"})));
+        }
+    };
+
+    // Build the transfer (issuer → buyer pubkey). The issuer secret comes from
+    // the stored trail file (never the public type).
+    let update = match transfer_token_with_key(
+        &public,
+        &stored.privkey,
+        None,
+        buyer_pubkey,
+        token_amount,
+        DEFAULT_FEE_SATS,
+        &mempool,
+    )
+    .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Transfer failed: {e}")})));
+        }
+    };
+
+    // Broadcast, then (only on success) persist + debit.
+    let txid = match mempool.broadcast_tx(&update.tx.raw_hex).await {
+        Ok(t) => t,
+        Err(e) => {
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
+        }
+    };
+
+    let mut appended = update.trail.clone();
+    appended.current_txid = txid.clone();
+    stored.merge_public(&appended);
+    stored.current_txid = txid.clone();
+    stored.current_vout = 0;
+    if let Err(e) = save_trail(storage, &stored).await {
+        return Err(payment_error_response(e));
+    }
+
+    // Debit the user's sat balance (JSS `debit` then `writeLedger`).
+    let store = StoragePaymentStore::new(&**storage);
+    let mut ledger = match store.read_ledger().await {
+        Ok(l) => l,
+        Err(e) => return Err(payment_error_response(e)),
+    };
+    if let Err(e) = ledger.debit(did, sat_cost) {
+        return Err(payment_error_response(e));
+    }
+    if let Err(e) = store.write_ledger(&ledger).await {
+        return Err(payment_error_response(e));
+    }
+    let new_balance = ledger.get_balance(did);
+
+    let proof = transfer_proof_json(&update.state, &prev_state, &appended);
+    Ok((txid, proof, new_balance))
+}
+
+/// POST `/pay/.buy` — primary market: buy `payToken` tokens with sats
+/// (JSS `pay.js:553-657`).
+async fn handle_buy(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: Bytes,
+) -> Result<HttpResponse, ActixError> {
+    let did = match require_did(&req).await {
+        Ok(d) => d,
+        Err(rsp) => return Ok(rsp),
+    };
+    let buyer_pubkey = match did.strip_prefix("did:nostr:") {
+        Some(pk) => pk.to_string(),
+        None => return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "NIP-98 authentication required"
+        }))),
+    };
+
+    let token_cfg = match &state.pay_config.token {
+        Some(t) => t.clone(),
+        None => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Primary market not configured (no pay-token set)"
+            })));
+        }
+    };
+    let pay_token = token_cfg.ticker.clone();
+    let pay_rate = token_cfg.rate.max(1);
+
+    let req_body: TokenMoveBody = serde_json::from_slice(&body).unwrap_or_default();
+    let ticker = req_body.ticker.clone().unwrap_or_else(|| pay_token.clone());
+    if ticker != pay_token {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("This pod only sells {pay_token}")
+        })));
+    }
+
+    // amount (tokens to buy) or sats (sats to spend) — JSS `pay.js:580-592`.
+    let (token_amount, sat_cost) = if let Some(a) = req_body.amount {
+        (a, a * pay_rate)
+    } else if let Some(s) = req_body.sats {
+        (s / pay_rate, s)
+    } else {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Specify amount (tokens to buy) or sats (sats to spend)",
+            "rate": pay_rate, "unit": "sat/token"
+        })));
+    };
+    if token_amount == 0 {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "Amount must be positive"})));
+    }
+
+    // Balance check (JSS `pay.js:602-614`).
+    let store = StoragePaymentStore::new(&*state.storage);
+    let balance = match store.read_ledger().await {
+        Ok(l) => l.get_balance(&did),
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if balance < sat_cost {
+        return Ok(HttpResponse::PaymentRequired().json(serde_json::json!({
+            "error": "Insufficient sat balance",
+            "balance": balance, "cost": sat_cost, "rate": pay_rate,
+            "deposit": "/pay/.deposit"
+        })));
+    }
+
+    match execute_token_transfer(&state, &pay_token, &buyer_pubkey, &did, token_amount, sat_cost)
+        .await
+    {
+        Ok((txid, proof, new_balance)) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "bought": token_amount, "ticker": pay_token, "cost": sat_cost,
+            "rate": pay_rate, "balance": new_balance, "unit": "sat",
+            "txid": txid, "proof": proof
+        }))),
+        Err(rsp) => Ok(rsp),
+    }
+}
+
+/// POST `/pay/.withdraw` — withdraw a sat balance as portable `payToken`
+/// tokens with an MRC20 proof (JSS `pay.js:659-761`).
+async fn handle_withdraw(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: Bytes,
+) -> Result<HttpResponse, ActixError> {
+    let did = match require_did(&req).await {
+        Ok(d) => d,
+        Err(rsp) => return Ok(rsp),
+    };
+    let user_pubkey = match did.strip_prefix("did:nostr:") {
+        Some(pk) => pk.to_string(),
+        None => return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "NIP-98 authentication required"
+        }))),
+    };
+
+    let token_cfg = match &state.pay_config.token {
+        Some(t) => t.clone(),
+        None => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Withdrawal not configured (no pay-token set)"
+            })));
+        }
+    };
+    let pay_token = token_cfg.ticker.clone();
+    let pay_rate = token_cfg.rate.max(1);
+
+    let req_body: TokenMoveBody = serde_json::from_slice(&body).unwrap_or_default();
+
+    let store = StoragePaymentStore::new(&*state.storage);
+    let balance = match store.read_ledger().await {
+        Ok(l) => l.get_balance(&did),
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    // all / sats / tokens — JSS `pay.js:688-705`.
+    let (token_amount, sat_cost) = if req_body.all.unwrap_or(false) {
+        (balance / pay_rate, balance)
+    } else if let Some(s) = req_body.sats {
+        (s / pay_rate, s)
+    } else if let Some(t) = req_body.tokens {
+        (t, t * pay_rate)
+    } else {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Specify tokens, sats, or all: true",
+            "balance": balance, "rate": pay_rate, "unit": "sat/token"
+        })));
+    };
+    if token_amount == 0 {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Nothing to withdraw", "balance": balance, "rate": pay_rate
+        })));
+    }
+    if balance < sat_cost {
+        return Ok(HttpResponse::PaymentRequired().json(serde_json::json!({
+            "error": "Insufficient balance", "balance": balance,
+            "cost": sat_cost, "rate": pay_rate
+        })));
+    }
+
+    match execute_token_transfer(&state, &pay_token, &user_pubkey, &did, token_amount, sat_cost)
+        .await
+    {
+        Ok((txid, proof, new_balance)) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "withdrawn": token_amount, "ticker": pay_token, "cost": sat_cost,
+            "rate": pay_rate, "balance": new_balance, "unit": "sat",
+            "txid": txid, "proof": proof
+        }))),
+        Err(rsp) => Ok(rsp),
+    }
+}
+
+/// `/pay/.withdraw-sats` request body — withdraw `amount` sats as a fresh TXO
+/// voucher, funded by a pod-supplied funding voucher (JSS `pay.js:763-898`).
+///
+/// JSS draws funding from a pod-side UTXO pool (`loadUtxos`/`saveUtxos`). This
+/// crate has no such pool, so the operator supplies the funding output as a
+/// `txo:` voucher in `funding` (the pod's sat reserve), and the handler emits a
+/// new voucher paying `amount` to a freshly-generated key, with change back to
+/// the pod key. The crypto deliverable — voucher-tx build + new voucher minting
+/// — is identical to JSS `token.js`.
+#[derive(Debug, Deserialize)]
+struct WithdrawSatsBody {
+    amount: u64,
+    #[serde(default)]
+    chain: Option<String>,
+    /// Funding voucher (`txo:<chain>:<txid>:<vout>?amount=<sats>&key=<hex>`)
+    /// controlling the pod's sat reserve to spend from.
+    funding: String,
+}
+
+/// POST `/pay/.withdraw-sats` — withdraw sats as a TXO voucher (JSS
+/// `pay.js:763-898`, `token.js` voucher build).
+async fn handle_withdraw_sats(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: Bytes,
+) -> Result<HttpResponse, ActixError> {
+    let did = match require_did(&req).await {
+        Ok(d) => d,
+        Err(rsp) => return Ok(rsp),
+    };
+
+    let req_body: WithdrawSatsBody = match serde_json::from_slice(&body) {
+        Ok(b) => b,
+        Err(_) => {
+            return Ok(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "Invalid JSON body"})));
+        }
+    };
+    if req_body.amount == 0 {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "Specify amount to withdraw"})));
+    }
+
+    // Chain selection (JSS `pay.js:779-790`).
+    let chain_id = req_body
+        .chain
+        .clone()
+        .or_else(|| state.pay_config.chains.first().map(|c| c.id.clone()))
+        .unwrap_or_else(|| "tbtc4".to_string());
+    if !state.pay_config.chains.is_empty()
+        && !state.pay_config.chains.iter().any(|c| c.id == chain_id)
+    {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("Chain '{chain_id}' not enabled")
+        })));
+    }
+
+    // Balance check (JSS `pay.js:793-798`).
+    let store = StoragePaymentStore::new(&*state.storage);
+    let balance = match store.read_ledger().await {
+        Ok(l) => l.get_balance(&did),
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if balance < req_body.amount {
+        return Ok(HttpResponse::PaymentRequired().json(serde_json::json!({
+            "error": "Insufficient balance", "balance": balance,
+            "requested": req_body.amount
+        })));
+    }
+
+    // Parse the funding voucher (the pod sat reserve to spend).
+    let funding = match parse_txo_voucher(&req_body.funding) {
+        Ok(v) => v,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    // Fetch the funding output's scriptPubKey (hex).
+    let mempool = mempool_client(&state);
+    use solid_pod_rs::mrc20::MempoolLookup;
+    let funding_spk_hex = match mempool.tx(&funding.txid).await {
+        Ok(tx) => match tx.vout.get(funding.vout as usize).and_then(|o| o.scriptpubkey.clone()) {
+            Some(spk) => spk,
+            None => {
+                return Ok(HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "Funding output not found"})));
+            }
+        },
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    // Build the voucher tx (fresh-key voucher output + change) — the crypto
+    // lives in `bitcoin_tx::build_withdraw_voucher` (JSS `pay.js:842-869`).
+    let voucher = match build_withdraw_voucher(&funding, &funding_spk_hex, req_body.amount, DEFAULT_FEE_SATS) {
+        Ok(v) => v,
+        Err(PaymentError::InvalidState(m)) if m.contains("funding") && m.contains("needed") => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Not enough funding-voucher value for withdrawal + fee",
+                "available": funding.amount, "needed": req_body.amount + DEFAULT_FEE_SATS
+            })));
+        }
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    let txid = match mempool.broadcast_tx(&voucher.tx.raw_hex).await {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
+        }
+    };
+
+    // Debit the user's balance only after a successful broadcast.
+    let mut ledger = match store.read_ledger().await {
+        Ok(l) => l,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if let Err(e) = ledger.debit(&did, req_body.amount) {
+        return Ok(payment_error_response(e));
+    }
+    if let Err(e) = store.write_ledger(&ledger).await {
+        return Ok(payment_error_response(e));
+    }
+
+    // Return the new voucher URI (JSS `pay.js:890-892`).
+    let voucher_uri = format!(
+        "txo:{chain_id}:{txid}:0?amount={}&key={}",
+        req_body.amount, voucher.voucher_privkey_hex
+    );
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "voucher": voucher_uri,
+        "amount": req_body.amount,
+        "chain": chain_id,
+        "txid": txid,
+        "balance": ledger.get_balance(&did),
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // Route registration
 // ---------------------------------------------------------------------------
 
@@ -926,5 +1366,9 @@ pub fn register(app: &mut web::ServiceConfig) {
         .route("/pay/.sell", web::post().to(handle_sell))
         .route("/pay/.swap", web::post().to(handle_swap))
         .route("/pay/.pool", web::get().to(handle_pool_get))
-        .route("/pay/.pool", web::post().to(handle_pool_post));
+        .route("/pay/.pool", web::post().to(handle_pool_post))
+        // Phase 4 — Bitcoin write-side (token mint/transfer + voucher).
+        .route("/pay/.buy", web::post().to(handle_buy))
+        .route("/pay/.withdraw", web::post().to(handle_withdraw))
+        .route("/pay/.withdraw-sats", web::post().to(handle_withdraw_sats));
 }
