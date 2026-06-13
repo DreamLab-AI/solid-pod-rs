@@ -1,0 +1,33 @@
+%% Provenance tiers (ADR-059): cheap git-mark always, expensive Bitcoin
+%% block-trail anchor opt-in, composed by ProvenanceLog. Verified against
+%% src/provenance.rs, solid-pod-rs-git/src/mark.rs, src/bitcoin_tx.rs,
+%% solid-pod-rs-server/src/{mempool.rs,handlers/prov.rs}.
+flowchart TD
+    W["LDP write\nPUT / POST / PATCH\n(git-backed pod)"] --> PL{"ProvenanceLog::record\n(provenance.rs)"}
+
+    PL -->|"ALWAYS (cheap tier)"| GM["GitMarker::mark_write\nShellGitMarker → git add + commit\n(author = did:nostr of writer)"]
+    GM --> MARK["GitMark { commit_sha, parent, branch=main }"]
+    MARK --> SIDE["PROV-O sidecar\n&lt;resource&gt;.prov.ttl\n(emitted on Updates-via)"]
+
+    PL --> POL{"AnchorPolicy\nNever · Always · HighValue · Epoch\n(from acl:ProvenanceAnchor WAC condition)"}
+    POL -->|"Never"| ONLY["git-mark only"]
+    POL -->|"HighValue / Always\n(+ anchorer present)"| ANCH["BlockAnchorer::anchor\nstate_hash = commit_sha"]
+    POL -->|"Epoch"| EPOCH["EpochAccumulator\ncollect SHAs → Merkle root"]
+    EPOCH -->|"epoch close\n(JSS_PROV_EPOCH_SIZE)"| ANCH
+
+    ANCH --> BTX["bitcoin_tx.rs\nP2TR + BIP-341 TapSighash\n+ BIP-340 schnorr sign\n(byte-parity with JSS token.js)"]
+    BTX --> MEM["MempoolBroadcast\nPOST /api/tx\n(mempool.space/testnet4)"]
+    MEM --> TRAIL["BlockTrailAnchor\n{ txid, vout, address(P2TR),\n  state_strings, blockheight? }"]
+    TRAIL --> SIDE2["ProvenanceMark.anchor\n(in &lt;resource&gt;.prov.ttl)"]
+
+    SIDE -.-> API["_prov API\nGET /{pod}/_prov/{commit_sha}\nPOST /{pod}/_prov/anchor (NIP-98, 402-gated)"]
+    SIDE2 -.-> API
+
+    VER["Independent verification\n(no pod trust): re-derive P2TR\nfrom pubkey + state_strings,\ncheck live UTXO via mempool"] -.-> TRAIL
+
+    classDef cheap fill:#1A6B6B,stroke:#0d3535,color:#F7F4EA
+    classDef expensive fill:#C85A2A,stroke:#7a341a,color:#F7F4EA
+    classDef api fill:#2D2D2D,stroke:#000,color:#F7F4EA
+    class GM,MARK,SIDE,ONLY cheap
+    class ANCH,EPOCH,BTX,MEM,TRAIL,SIDE2,VER expensive
+    class API,PL,POL api

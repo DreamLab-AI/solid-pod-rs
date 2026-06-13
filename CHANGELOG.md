@@ -4,6 +4,51 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.0] - 2026-06-13
+
+The **provenance release** (ADR-059). Two composable, cost-tiered provenance
+primitives become first-class, and the JSS-derived payment economy is fully
+routed. Full workspace: 1542 tests pass; the wasm32 `core` surface stays pure.
+
+### Added
+- **git-marks** (cheap, always-on): every LDP write to a git-backed pod becomes
+  a git commit, captured as a `GitMark` and persisted as a PROV-O sidecar
+  (`<resource>.prov.ttl`), emitted on the Updates-via notification stream.
+  `provenance::GitMarker` trait + `solid-pod-rs-git::ShellGitMarker`.
+- **block-trails** (expensive, opt-in): a Bitcoin taproot-anchored, hash-chained,
+  tamper-evident provenance trail. `bitcoin_tx.rs` ports the JSS `token.js`
+  taproot tx-builder **byte-for-byte** (P2TR, BIP-341 TapSighash, BIP-340 schnorr
+  signing), validated against official BIP-340/341 vectors and a JSS cross-impl
+  golden. `MempoolLookup`/`MempoolBroadcast` over the public mempool.space
+  testnet4 API; `BlockAnchorer` (verify + write). MRC20 is one instance of the
+  general trail.
+- **ProvenanceLog** composition: git-mark always / Bitcoin anchor opt-in via
+  `AnchorPolicy` {Never, Always, HighValue, Epoch}; the anchor's `state_hash`
+  commits to the git commit SHA, binding the two tiers. **Epoch** batches commit
+  SHAs into one Merkle root anchored by a single tx (one tx notarises many
+  commits). `acl:ProvenanceAnchor` WAC condition flags anchor-worthy resources.
+- **`_prov` API**: `GET /{pod}/_prov/{commit_sha}` resolves a git-mark to its
+  resource + anchor; `POST /{pod}/_prov/anchor` (NIP-98, payment-gated) upgrades
+  a git-mark to a Bitcoin anchor.
+- Routed the previously-orphaned web-ledger / order-book / AMM **402 economy**:
+  `/pay/.balance`, `/pay/.deposit` (TXO + MRC20), `/pay/.address`, `/pay/.offers`,
+  `/pay/.sell`, `/pay/.swap`, `/pay/.pool`, `/pay/.buy`, `/pay/.withdraw`,
+  `/pay/.withdraw-sats`. `StoragePaymentStore` is now the sole ledger I/O path.
+
+### Fixed
+- **Security**: git smart-HTTP routes are now WAC-gated — `handle_git` enforces
+  Read for clone/fetch and Write for push against the pod ACL, closing the
+  anonymous clone/push hole (a private pod's history was world-clonable).
+- Payment **replay protection** (`check_replay`/`record_replay`) is now wired
+  into the deposit path — a duplicate TXO/MRC20-state deposit can no longer
+  double-credit.
+- `verify_mrc20_anchor` composes the taproot crypto with a real mempool UTXO
+  lookup (was: lookup left to the caller).
+
+### Changed
+- On-demand git auto-init on first push (replaces the prior 404-on-missing-repo).
+- Workspace `0.4.0-alpha.17` → `0.5.0-alpha.0`.
+
 ## [0.4.0-alpha.17] - 2026-06-10
 
 ### Fixed
