@@ -219,15 +219,7 @@ impl GitHttpService {
             path_safe(&self.repo_root, &slug)?
         };
 
-        // 2. Find the git dir. Missing => 404.
-        let git_dir = match find_git_dir(&repo_abs)? {
-            Some(g) => g,
-            None => {
-                return Err(GitError::NotARepository(slug));
-            }
-        };
-
-        // 3. Auth for writes (JSS: the route-level `preValidation`
+        // 2. Auth for writes (JSS: the route-level `preValidation`
         //    hook on `/git-receive-pack` calls `handleAuth`; we fold
         //    that into a single check here). P1-3: reads (clone/fetch)
         //    are gated through the SAME provider when one is configured,
@@ -235,6 +227,10 @@ impl GitHttpService {
         //    plugged in the service stays anonymous (the documented
         //    no-auth setup), matching JSS's behaviour with no
         //    `handleAuth` pre-hook.
+        //
+        //    Auth runs BEFORE the git-dir resolution so an unauthenticated /
+        //    unauthorised push can never trigger the on-demand auto-init below
+        //    (defense-in-depth; the server's WAC gate also denies it first).
         let mut remote_user = String::new();
         let needs_auth = req.is_write() || (req.is_read() && self.auth.is_some());
         if needs_auth {
@@ -250,6 +246,35 @@ impl GitHttpService {
                 Err(e) => return Err(GitError::Auth(e)),
             }
         }
+
+        // 3. Resolve the git dir. A missing `.git` on a WRITE triggers
+        //    on-demand auto-init (JSS `git.js` `tryAutoInitRepo`, #466/#469/
+        //    #472): the first push to a not-yet-initialised pod repo
+        //    initialises it (`git init -b main` + `receive.denyCurrentBranch
+        //    updateInstead`) and then proceeds, REPLACING the previous
+        //    "404 NotARepository on first push" behaviour. Reads to a missing
+        //    repo still 404 — there is nothing to clone. This is the single
+        //    canonical write path; there is no parallel branch.
+        let git_dir = match find_git_dir(&repo_abs)? {
+            Some(g) => g,
+            None if req.is_write() => {
+                crate::init::GitAutoInit::new()
+                    .init_repo_at(&repo_abs)
+                    .await
+                    .map_err(|e| {
+                        GitError::BackendFailed {
+                            exit_code: None,
+                            stderr: format!("auto-init {}: {e}", repo_abs.display()),
+                        }
+                    })?;
+                // Re-resolve after init; the `.git` dir must now exist.
+                find_git_dir(&repo_abs)?
+                    .ok_or_else(|| GitError::NotARepository(slug.clone()))?
+            }
+            None => {
+                return Err(GitError::NotARepository(slug));
+            }
+        };
 
         // 4. Apply the receive-pack config mutators on writes. Errors
         //    are best-effort (JSS swallows them too).
@@ -447,6 +472,117 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{AuthError, GitAuth};
+    use tempfile::TempDir;
+
+    /// Permissive auth used only to exercise the write path in unit tests —
+    /// the real server gates writes through WAC before `handle` is reached.
+    #[derive(Debug)]
+    struct AllowAll;
+
+    #[async_trait::async_trait]
+    impl GitAuth for AllowAll {
+        async fn authorise(&self, _req: &GitRequest) -> Result<String, AuthError> {
+            Ok("tester".to_string())
+        }
+    }
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn receive_pack_req(repo: &str) -> GitRequest {
+        GitRequest {
+            method: "POST".into(),
+            path: format!("/{repo}/git-receive-pack"),
+            query: String::new(),
+            headers: vec![(
+                "content-type".into(),
+                "application/x-git-receive-pack-request".into(),
+            )],
+            body: Bytes::new(),
+            host_url: Some("https://pod.example.com".into()),
+        }
+    }
+
+    /// First push to a not-yet-initialised repo must auto-init it instead of
+    /// 404ing at the `find_git_dir` gate (REPLACES the old 404 NotARepository
+    /// behaviour; JSS `tryAutoInitRepo` #466/#469/#472). We assert the `.git`
+    /// dir is created and the result is never `NotARepository`.
+    #[tokio::test]
+    async fn first_push_to_missing_repo_auto_inits_not_404() {
+        if !git_available() {
+            return;
+        }
+        let root = TempDir::new().unwrap();
+        // The pod container dir exists (the server creates it on provision) but
+        // there is no `.git` yet — the find_git_dir gate would previously 404.
+        std::fs::create_dir_all(root.path().join("myrepo")).unwrap();
+
+        let service = GitHttpService::new(root.path().to_path_buf()).with_auth(AllowAll);
+        let result = service.handle(receive_pack_req("myrepo")).await;
+
+        // Auto-init must have run: the `.git` directory now exists.
+        assert!(
+            root.path().join("myrepo").join(".git").is_dir(),
+            "first push must auto-init the repo (.git dir must exist)"
+        );
+
+        // The find_git_dir gate must NOT have produced a 404 NotARepository.
+        // The request proceeds to the CGI (which, given an empty body, may
+        // succeed or fail — either way it is past the gate, never 404-at-gate).
+        match result {
+            Ok(resp) => assert_ne!(
+                resp.status, 404,
+                "post-auto-init response must not be a 404 gate denial"
+            ),
+            Err(GitError::NotARepository(_)) => {
+                panic!("auto-init failed: still NotARepository after init")
+            }
+            // A CGI/backend error (e.g. the empty receive-pack body) is
+            // acceptable — it proves we got past the gate into the CGI.
+            Err(_) => {}
+        }
+    }
+
+    /// Reads to a missing repo still 404 — there is nothing to clone, and a
+    /// read must never trigger repo creation.
+    #[tokio::test]
+    async fn read_of_missing_repo_still_404s_and_does_not_init() {
+        if !git_available() {
+            return;
+        }
+        let root = TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("myrepo")).unwrap();
+
+        // Anonymous read (no auth provider) — is_read with no auth configured
+        // does not require auth, so it reaches the git-dir gate.
+        let service = GitHttpService::new(root.path().to_path_buf());
+        let req = GitRequest {
+            method: "GET".into(),
+            path: "/myrepo/info/refs".into(),
+            query: "service=git-upload-pack".into(),
+            headers: vec![],
+            body: Bytes::new(),
+            host_url: None,
+        };
+        let result = service.handle(req).await;
+
+        assert!(
+            matches!(result, Err(GitError::NotARepository(_))),
+            "read of a missing repo must 404 (NotARepository)"
+        );
+        assert!(
+            !root.path().join("myrepo").join(".git").exists(),
+            "a read must never auto-init the repo"
+        );
+    }
 
     #[test]
     fn parse_cgi_basic() {

@@ -55,6 +55,7 @@
 //! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
 //! | [`payments`] | HTTP 402, Web Ledgers, multi-chain TXO, payment store. |
 //! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
+//! | [`provenance`] | git-mark / block-trail provenance primitives + PROV-O.  |
 //! | [`trading`] | Peer-to-peer order book + AMM constant-product pool.  |
 //! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
@@ -119,6 +120,7 @@ pub mod metrics;
 pub mod mrc20;
 pub mod multitenant;
 pub mod payments;
+pub mod provenance;
 pub mod security;
 pub mod trading;
 pub mod wac;
@@ -195,6 +197,9 @@ pub use ldp::{
 pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
 pub use metrics::SecurityMetrics;
 pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver};
+pub use provenance::{
+    prov_ttl, BlockAnchorer, BlockTrailAnchor, GitMark, GitMarker, ProvenanceError, ProvenanceMark,
+};
 pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
     check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,

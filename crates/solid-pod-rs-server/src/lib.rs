@@ -943,6 +943,10 @@ async fn handle_put(
         .put(&path, Bytes::from(body.to_vec()), ct)
         .await
         .map_err(to_actix)?;
+    // git-mark (Phase 2): commit + PROV-O sidecar on git-backed pods. Runs
+    // AFTER the write succeeded; additive + best-effort (errors swallowed),
+    // git-backed-only, never changes the response.
+    git_mark_write(&state, &path, agent.as_deref(), "PUT").await;
     let mut rsp = HttpResponse::Created().finish();
     if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
         rsp.headers_mut().insert(header::ETAG, etag);
@@ -981,6 +985,9 @@ async fn handle_post(
         .put(&target, Bytes::from(body.to_vec()), ct)
         .await
         .map_err(to_actix)?;
+    // git-mark (Phase 2): commit + PROV-O sidecar for the newly-created child.
+    // Additive + best-effort, git-backed-only.
+    git_mark_write(&state, &target, agent.as_deref(), "POST").await;
     let mut rsp = HttpResponse::Created().finish();
     if let Ok(loc) = header::HeaderValue::from_str(&target) {
         rsp.headers_mut().insert(header::LOCATION, loc);
@@ -1067,6 +1074,7 @@ async fn handle_patch(
                         .put(&path, Bytes::from(bytes), &meta.content_type)
                         .await
                         .map_err(to_actix)?;
+                    git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
                     return Ok(HttpResponse::NoContent().finish());
                 }
             };
@@ -1079,6 +1087,7 @@ async fn handle_patch(
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
                 .await
                 .map_err(to_actix)?;
+            git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
             Ok(HttpResponse::NoContent().finish())
         }
         Err(PodError::NotFound(_)) => {
@@ -1095,6 +1104,7 @@ async fn handle_patch(
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
                 .await
                 .map_err(to_actix)?;
+            git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
             Ok(HttpResponse::Created().finish())
         }
         Err(e) => Err(to_actix(e)),
@@ -2451,6 +2461,130 @@ fn pod_repo_path(state: &AppState, pubkey: &str) -> Option<PathBuf> {
     }
     state.data_root.as_ref().map(|root| root.join(pubkey))
 }
+
+/// git-marks (ADR-059 D1, Phase 2): after a SUCCESSFUL LDP write to a
+/// **git-backed** pod, commit the written resource and persist a PROV-O
+/// provenance sidecar. This is the single canonical write-provenance path —
+/// the cheap, always-on tier (the Bitcoin block-trail anchor is the opt-in
+/// expensive tier, Phase 4).
+///
+/// **Additive and best-effort by contract.** The LDP write has *already*
+/// succeeded and the HTTP response is already determined when this runs. Every
+/// failure here — no git binary, a commit error, a sidecar-write error — is
+/// logged at `warn` and swallowed: a provenance failure must NEVER change the
+/// write's response status (PRD: "ADDITIVE + best-effort"). The function
+/// therefore returns `()`, not a `Result`.
+///
+/// **git-backed-only.** A mark is produced only when `data_root` is configured
+/// AND a git repository exists at `data_root/{pod}/.git`. Non-git / in-memory /
+/// cloud-backed pods are skipped silently (no commit, no sidecar) — the
+/// behaviour of those pods is unchanged.
+///
+/// **No recursive marking.** Writes to ACL/meta/provenance sidecars
+/// (`*.acl`, `*.meta`, `*.prov.ttl`) are skipped — marking a `.prov.ttl` would
+/// recurse, and ACL/meta writes are control-plane, not content.
+#[cfg(feature = "git")]
+async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&str>, message: &str) {
+    use solid_pod_rs::provenance::{prov_ttl, GitMarker, ProvenanceMark};
+    use solid_pod_rs_git::mark::ShellGitMarker;
+
+    // Skip control-plane / provenance sidecars — never mark these, and never
+    // recurse on our own `.prov.ttl` output.
+    if resource_path.ends_with(".acl")
+        || resource_path.ends_with(".meta")
+        || resource_path.ends_with(".prov.ttl")
+    {
+        return;
+    }
+    // Containers (trailing slash) are not file writes — nothing to commit.
+    if resource_path.ends_with('/') {
+        return;
+    }
+
+    // data_root is required to locate the pod repo on disk.
+    let Some(data_root) = state.data_root.as_ref() else {
+        return;
+    };
+
+    // The pod is the first path segment; the repo lives at data_root/{pod}.
+    let trimmed = resource_path.trim_start_matches('/');
+    let mut segments = trimmed.splitn(2, '/');
+    let pod = segments.next().unwrap_or("");
+    let rel = segments.next().unwrap_or("");
+    if pod.is_empty() || rel.is_empty() {
+        return;
+    }
+    let repo = data_root.join(pod);
+
+    // git-backed check: a `.git` dir must exist at the pod root. Non-git pods
+    // are skipped silently — this is the runtime guard that keeps memory /
+    // cloud pods unaffected even when the `git` feature is compiled in.
+    if !repo.join(".git").is_dir() {
+        return;
+    }
+
+    let agent_did = agent.unwrap_or("urn:solid:anonymous");
+
+    // Commit the written resource (cheap tier). On any error: log + return.
+    let marker = ShellGitMarker::new();
+    let git = match marker.mark_write(&repo, rel, agent_did, message).await {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(
+                target: "solid_pod_rs_server::git_mark",
+                resource = %resource_path,
+                "git-mark commit failed (swallowed, write already succeeded): {e}"
+            );
+            return;
+        }
+    };
+
+    // Build the provenance mark (anchor is opt-in, Phase 4 — None here) and
+    // render the PROV-O Turtle sidecar.
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mark = ProvenanceMark {
+        resource: resource_path.to_string(),
+        git,
+        anchor: None,
+        agent_did: agent_did.to_string(),
+        created,
+    };
+    let ttl = prov_ttl(&mark);
+
+    // Persist the sidecar at <resource>.prov.ttl via storage. This write also
+    // fires the FS-watch StorageEvent that the `Updates-via` notification
+    // stream relays, so subscribers see the new mark (no separate emit path).
+    // It ends in `.prov.ttl`, so the skip guard above prevents any recursion.
+    let sidecar = format!("{resource_path}.prov.ttl");
+    if let Err(e) = state
+        .storage
+        .put(&sidecar, Bytes::from(ttl.into_bytes()), "text/turtle")
+        .await
+    {
+        tracing::warn!(
+            target: "solid_pod_rs_server::git_mark",
+            sidecar = %sidecar,
+            "provenance sidecar write failed (swallowed): {e}"
+        );
+        return;
+    }
+
+    tracing::debug!(
+        target: "solid_pod_rs_server::git_mark",
+        resource = %resource_path,
+        commit = %mark.git.commit_sha,
+        "git-mark recorded"
+    );
+}
+
+/// No-op shim when the `git` feature is disabled, so the write handlers can
+/// call `git_mark_write(...)` unconditionally without per-call-site `cfg`.
+#[cfg(not(feature = "git"))]
+#[inline]
+async fn git_mark_write(_state: &AppState, _resource_path: &str, _agent: Option<&str>, _message: &str) {}
 
 #[cfg(feature = "git")]
 async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {

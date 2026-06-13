@@ -27,6 +27,8 @@ use tokio::process::Command;
 use solid_pod_rs::error::PodError;
 use solid_pod_rs::provision::GitInitHook;
 
+use crate::error::GitError;
+
 /// Runs `git init -b <branch>` + `git config receive.denyCurrentBranch
 /// updateInstead` in the pod directory at provisioning time.
 ///
@@ -85,9 +87,18 @@ impl Default for GitAutoInit {
     }
 }
 
-#[async_trait]
-impl GitInitHook for GitAutoInit {
-    async fn try_init_repo(&self, fs_pod_root: &Path) -> Result<(), PodError> {
+impl GitAutoInit {
+    /// Initialise a git repository at `fs_pod_root` (`git init -b <branch>` +
+    /// `receive.denyCurrentBranch updateInstead`), returning a git-crate-native
+    /// [`GitError`] on failure.
+    ///
+    /// This is the single canonical init implementation — the
+    /// [`GitInitHook::try_init_repo`] trait method (provisioning-time) and the
+    /// on-demand auto-init in [`crate::service::GitHttpService::handle`] (first
+    /// push) both delegate here, so there is exactly one place that shells
+    /// `git init`. Idempotent: re-running on an existing repo is safe (git
+    /// reinitialises in place). Mirrors JSS `tryAutoInitRepo` (#466/#469/#472).
+    pub async fn init_repo_at(&self, fs_pod_root: &Path) -> Result<(), GitError> {
         // ── Step 1: git init -b <branch> <path> ────────────────────────────
         let init_out = Command::new("git")
             .arg("init")
@@ -99,19 +110,22 @@ impl GitInitHook for GitAutoInit {
             .output()
             .await
             .map_err(|e| {
-                PodError::Backend(format!(
-                    "git init failed to spawn (is git installed?): {e}"
-                ))
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    GitError::BackendNotAvailable("git binary not found in PATH".into())
+                } else {
+                    GitError::Io(e)
+                }
             })?;
 
         if !init_out.status.success() {
             let stderr = String::from_utf8_lossy(&init_out.stderr).into_owned();
-            return Err(PodError::Backend(format!(
-                "git init -b {} {:?} exited {:?}: {stderr}",
-                self.default_branch,
-                fs_pod_root,
-                init_out.status.code(),
-            )));
+            return Err(GitError::BackendFailed {
+                exit_code: init_out.status.code(),
+                stderr: format!(
+                    "git init -b {} {:?}: {stderr}",
+                    self.default_branch, fs_pod_root,
+                ),
+            });
         }
 
         // ── Step 2: git config receive.denyCurrentBranch updateInstead ─────
@@ -155,6 +169,17 @@ impl GitInitHook for GitAutoInit {
         );
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl GitInitHook for GitAutoInit {
+    async fn try_init_repo(&self, fs_pod_root: &Path) -> Result<(), PodError> {
+        // Delegate to the single canonical init implementation, mapping the
+        // git-crate error back into the provisioning `PodError` surface.
+        self.init_repo_at(fs_pod_root)
+            .await
+            .map_err(|e| PodError::Backend(e.to_string()))
     }
 }
 
