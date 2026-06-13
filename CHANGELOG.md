@@ -4,6 +4,18 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.1] - 2026-06-13
+
+### Documentation
+- Complete in-crate Diataxis docs + crate-level rustdoc for the
+  `0.5.0-alpha.0` provenance/economy release (the embedded `DOCS_DIR` and the
+  `//!` overviews had no coverage of it). New `explanation/` docs for
+  provenance & the trust ledger and for payments & the web ledger; the new
+  `/pay/*` + `_prov` routes in `reference/http-endpoints.md`; the new env vars
+  in `reference/env-vars.md`; a corrected feature-flag table and JSS-parity
+  rows. **No code changes** — documentation only; `0.5.0-alpha.0` consumers
+  need not bump.
+
 ## [0.5.0-alpha.0] - 2026-06-13
 
 The **provenance release** (ADR-059). Two composable, cost-tiered provenance
