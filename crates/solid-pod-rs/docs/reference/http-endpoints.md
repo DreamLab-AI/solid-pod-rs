@@ -118,6 +118,70 @@ Returns the subscription-discovery JSON-LD document. Build with
 }
 ```
 
+## Payment (HTTP 402) economy endpoints
+
+Present in the `solid-pod-rs-server` binary, mounted unconditionally next
+to the always-on `/pay/.info` discovery route (there is no payments
+feature flag). Backed by `handlers::pay` and the `solid-pod-rs`
+`payments` / `trading` core. Every route except `.info`, `.offers`,
+`.address`, and `GET /pay/.pool` requires NIP-98 auth (resolved to
+`did:nostr:<pubkey>`); an unauthenticated call to a gated route gets
+`401` with `{"error":"NIP-98 authentication required"}`. See
+[explanation/payments-and-web-ledger.md](../explanation/payments-and-web-ledger.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET  | `/pay/.info`          | none   | Payment discovery (cost, chains, pay-token). |
+| GET  | `/pay/.balance`       | NIP-98 | The caller's Web-Ledger balance — `{did, balance, cost, unit}`. |
+| POST | `/pay/.deposit`       | NIP-98 | Credit a deposit. TXO body (`"<txid>:<vout>"` / `{"txo":…}`) or MRC20 body (`{"type":"mrc20", state, prevState, anchor}`, mempool-verified). Replay-guarded. |
+| GET  | `/pay/.address`       | none   | Derive a deposit address. `?user=<did:nostr:…>&chain=<id>` for a per-user tweaked address; both optional. |
+| GET  | `/pay/.offers`        | none   | List open sell orders. Optional `?sell=<cur>&buy=<cur>`. |
+| POST | `/pay/.sell`          | NIP-98 | Place a sell order (`sell_currency`, `sell_amount`, `buy_currency`, `price`). |
+| POST | `/pay/.swap`          | NIP-98 | Execute against an open order (`{id}`). |
+| GET  | `/pay/.pool`          | none   | AMM pool state. `?a=<cur>&b=<cur>` for one pool, else the registry. |
+| POST | `/pay/.pool`          | NIP-98 | AMM op — `action` ∈ `swap` / `add-liquidity` / `remove-liquidity`. |
+| POST | `/pay/.buy`           | NIP-98 | Primary market — buy the pod's pay-token with sats. |
+| POST | `/pay/.withdraw`      | NIP-98 | Withdraw a sat balance as portable MRC20 tokens (+ proof). |
+| POST | `/pay/.withdraw-sats` | NIP-98 | Withdraw sats as a fresh TXO voucher. |
+
+The order book (`/pay/.sell` / `.swap` / `.offers`) and the
+constant-product AMM (`/pay/.pool`) are live and routed. `.buy` /
+`.withdraw` / `.withdraw-sats` exercise the Bitcoin write-side
+(`bitcoin_tx`, feature `mrc20`): the balance is debited only after a
+successful broadcast.
+
+## Provenance (`_prov`) endpoints
+
+Present when built with `--features git`. Expose the git-mark +
+block-trail provenance primitives (ADR-059). The `_prov` routes register
+*before* the LDP catch-all so `_prov` segments are never treated as pod
+resources. See
+[explanation/provenance-and-trust-ledger.md](../explanation/provenance-and-trust-ledger.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET  | `/{pod}/{path}.prov.ttl`     | per ACL | PROV-O git-mark sidecar for a resource (served by the ordinary LDP read path; WAC-gated like any resource). |
+| GET  | `/{pod}/_prov/{commit_sha}`  | per ACL | Resolve a git-mark commit SHA → resource + `ProvenanceMark` (inlines the sidecar, incl. any anchor). |
+| POST | `/{pod}/_prov/anchor`        | NIP-98 (pod owner), payment-gated | Upgrade an existing git-mark (`{commit_sha, ticker?}`) to a Bitcoin block-trail anchor. Debits the configured anchor price; refunds on anchor failure. |
+
+## Git smart-HTTP endpoints
+
+Present when built with `--features git`. The git smart-protocol routes
+are **WAC-gated** (ADR-059 D6 — closing the prior anonymous clone/push
+hole): `handle_git` resolves the caller's `did:nostr` from the git
+`Basic nostr:` / `Nostr` NIP-98 credential and enforces `acl:Read` for
+clone/fetch and `acl:Write` for push against the pod-root container ACL.
+A public pod clones anonymously; a private pod replies `401` so the git
+client retries with credentials; anonymous/unauthorised push is denied.
+A first push to a not-yet-initialised git-backed pod auto-runs
+`git init -b main` (replacing the prior 404-on-missing-repo).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/{tail}/info/refs`          | Smart-protocol ref advertisement (clone/fetch — Read). |
+| POST | `/{tail}/git-upload-pack`    | Fetch negotiation (clone/fetch — Read). |
+| POST | `/{tail}/git-receive-pack`   | Push (Write). |
+
 ## Admin / provisioning endpoints
 
 These endpoints are only present in the `solid-pod-rs-server` binary and

@@ -54,6 +54,15 @@ feature-level status table.
 | `.provision` / account scaffold         | full (IdP + multiuser) | full (`provision_pod`) |
 | `.well-known/solid`                     | full      | full          |
 | WebFinger / NIP-05                      | full (via ActivityPub + Nostr features) | full |
+| Git smart-HTTP clone/push               | full      | full (**WAC-gated** — Read for fetch, Write for push; auto-init on first push) |
+| HTTP 402 Web Ledger + `PaymentCondition`| full      | full          |
+| `/pay/.balance` `.deposit` `.address`   | full      | full (TXO + mempool-verified MRC20; replay-guarded) |
+| Order book (`/pay/.sell` `.swap` `.offers`) | full  | full (currency-pair model; routed) |
+| AMM pool (`/pay/.pool`)                 | full      | full (constant-product `x·y=k`, 30 bps; routed) |
+| Bitcoin write-side (`/pay/.buy` `.withdraw` `.withdraw-sats`) | full | full (P2TR / BIP-341 / BIP-340, byte-parity with `token.js`) |
+| Block-trail / MRC20 anchor verify+build | full      | full (feature `mrc20`) |
+| git-marks (write-as-commit provenance)  | n/a (JSS has no PROV sidecar) | net-new — every write → commit + PROV-O `.prov.ttl` |
+| Generalised provenance trail + `_prov` API | n/a    | net-new (ADR-059 — git ↔ Bitcoin composition, epoch batching) |
 
 ## Defaults that differ (gotchas for JSS migrants)
 

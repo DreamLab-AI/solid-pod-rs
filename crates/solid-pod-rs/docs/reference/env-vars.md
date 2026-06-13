@@ -63,6 +63,23 @@ These variables are consumed by the `solid-pod-rs-server` binary directly
 | `SOLID_ALLOWED_ORIGINS` | `--allowed-origins` | Comma-separated URL list, default empty | CORS origin allowlist for git and pod routes. When non-empty, only listed origins receive `Access-Control-Allow-Origin` in responses. Empty = wildcard (`*`) — suitable for local dev only. Example: `https://dreamlab-ai.com,https://staging.dreamlab-ai.com`. |
 | `SOLID_ADMIN_KEY` | `--admin-key` | String (opaque secret), default unset | Pre-shared key (PSK) for the `POST /_admin/provision/{pubkey}` endpoint. The endpoint returns `403` on every request when this variable is unset. Generate with `openssl rand -hex 32`. Treat as a credential — do not log, do not commit. |
 
+## Payments + provenance (0.5.0-alpha.0)
+
+Consumed by the `solid-pod-rs-server` binary's payment (`handlers::pay`)
+and provenance (`handlers::prov`, `--features git`) routes. See
+[explanation/payments-and-web-ledger.md](../explanation/payments-and-web-ledger.md)
+and [explanation/provenance-and-trust-ledger.md](../explanation/provenance-and-trust-ledger.md).
+
+| Variable | Type / default | Consumed by | Purpose |
+|---|---|---|---|
+| `JSS_PAY_MEMPOOL_URL` | URL, default `https://mempool.space/testnet4` | `mempool::MempoolHttpClient::from_env` (`MEMPOOL_URL_ENV`) | Base URL of the mempool.space-style REST API used for block-trail anchor UTXO lookup + tx broadcast (MRC20 `/pay/.deposit`, `.buy`, `.withdraw*`, `_prov/anchor`). A trailing `/` is trimmed. Tests override per-request via `AppState.mempool_url` (a fixture server) so CI never reaches mempool.space. |
+| `JSS_PROV_EPOCH_SIZE` | usize ≥ 1, default `16` | `handlers::prov::epoch_size` (`EPOCH_SIZE_ENV`) | Epoch close threshold: the commit count at which an `AnchorPolicy::Epoch` batch is anchored as one Merkle root in a single Bitcoin tx (ADR-059 D5). Bounds on-chain cost — one anchor per this many commits. |
+| `JSS_PROV_ANCHOR_PRICE_SATS` | u64, default = the pay-token rate (`0` ⇒ ungated) | `handlers::prov` (`anchor_price_sats`) | Price in satoshis the caller's Web Ledger is debited for an explicit `POST /{pod}/_prov/anchor` git-mark → Bitcoin upgrade. Refunded if the on-chain anchor then fails. |
+
+The mempool, epoch, and anchor-price variables are read directly by the
+server binary (not by the `solid_pod_rs` library). Block-trail anchoring
+also requires the `mrc20` feature; provenance routes require `git`.
+
 ## Tracing / logging
 
 solid-pod-rs uses the `tracing` crate.

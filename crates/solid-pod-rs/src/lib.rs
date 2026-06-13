@@ -4,7 +4,17 @@
 //! Control (WAC 1.x + 2.0), WebID profile documents, Solid-OIDC 0.1,
 //! NIP-98 HTTP auth, and Solid Notifications 0.2 -- all without coupling
 //! to a specific HTTP framework. Wire it into actix-web, axum, hyper, or
-//! anything else; the crate never mounts routes itself.
+//! anything else; the crate never mounts routes itself. On top of the Solid
+//! core it adds two composable **provenance primitives** ([`provenance`]):
+//! cheap, always-on **git-marks** (every pod write captured as a git commit
+//! + a PROV-O sidecar) and expensive, opt-in **block-trails** (a
+//! Bitcoin-taproot-anchored, hash-chained state trail — [`mrc20`] /
+//! [`bitcoin_tx`]) — and a routed, sovereign HTTP-402 economy: a `did:nostr`-keyed
+//! [Web Ledger](payments), `acl:PaymentCondition` ([`wac`]) access gating, an MRC20
+//! deposit path, and a peer order book + constant-product AMM ([`trading`]).
+//! The HTTP routing for the 402 economy and the `_prov` provenance API lives in
+//! the sibling [`solid-pod-rs-server`](https://docs.rs/solid-pod-rs-server). See
+//! [ADR-059](https://docs.rs/crate/solid-pod-rs/latest/source/docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md).
 //!
 //! For a turnkey binary, use the sibling crate
 //! [`solid-pod-rs-server`](https://docs.rs/solid-pod-rs-server).
@@ -15,6 +25,7 @@
 //! |-------------------------|:-------:|-----------------------------------------------|
 //! | `core` | off | Pure-logic surfaces only — wasm32 / CF Workers. |
 //! | `std` | on | std lib (always; reserved for future no_std).  |
+//! | `embedded-docs` | off | Embed the Diataxis `docs/` tree as `pub static DOCS_DIR` (re-exports `include_dir`); consumed by `solid-pod-rs-server`'s MCP docs tools + docs.rs. |
 //! | `tokio-runtime` | on | Tokio + tokio-tungstenite + futures-util.       |
 //! | `notifications` | on | WebSocketChannel2023 + WebhookChannel2023.      |
 //! | `fs-backend` | on | POSIX filesystem storage. |
@@ -23,20 +34,30 @@
 //! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
 //! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
 //! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. |
-//! | `acl-origin` | off | WAC `acl:origin` enforcement. |
-//! | `security-primitives` | off | SSRF guard + dotfile allowlist. |
+//! | `jss-v04` | off | JSS-parity umbrella (ADR-056); no-op alone — sub-features below switch one bounded context each on. |
+//! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). |
+//! | `security-primitives` | off | SSRF guard + dotfile allowlist (pulls `jss-v04`). |
 //! | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS). |
-//! | `config-loader` | off | Layered config loader with `JSS_*` env vars. |
+//! | `config-loader` | off | Layered config loader with `JSS_*` env vars + YAML/TOML. |
 //! | `webhook-signing` | off | RFC 9421 Ed25519 webhook signing. |
-//! | `did-nostr-types` | off | Canonical did:nostr types (wasm32-safe). |
-//! | `did-nostr` | off | did:nostr resolver in `interop`. |
-//! | `rate-limit` | off | Sliding-window LRU rate limiter. |
+//! | `rate-limit` | off | Sliding-window LRU rate limiter + CORS. |
 //! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
-//! | `mrc20` | off | BIP-341 taproot key chaining for MRC20 tokens. |
+//! | `did-nostr-types` | off | Canonical did:nostr types (wasm32-safe). |
+//! | `did-nostr` | off | did:nostr DID-Doc ↔ WebID resolver in [`interop`]. |
+//! | `mrc20` | off | BIP-341 taproot key chaining + anchor verify/build for MRC20 / block-trails. |
 //! | `lws-cid` | off | LWS 1.0 CID self-signed JWT verifier (ES256K). |
 //! | `lws-cid-p256` | off | LWS-CID + ES256 (P-256) algorithm. |
 //! | `lws-cid-eddsa` | off | LWS-CID + EdDSA (Ed25519) algorithm. |
 //! | `lws-cid-full` | off | LWS-CID with all algorithms. |
+//! | `provision-keys` | off | Gates the optional `ProvisionPlan::provision_keys` field (IdP key provisioner extension point). |
+//! | `nip05-endpoint` | off | Pod-resident `GET /.well-known/nostr.json` (pulls `did-nostr`). |
+//! | `export-jsonld` | off | JSON-LD time-chain pod export (`GET /api/exports/all`). |
+//! | `git-auto-init` | off | `GitInitHook` trait + `provision_pod_ext` (on-demand `git init` on first push; impl in `solid-pod-rs-git`). |
+//!
+//! On `wasm32-unknown-unknown` targets the `getrandom` crate is pulled in with
+//! its `js` feature (transitively required by `uuid`/`rand`) so randomness
+//! resolves via `crypto.getRandomValues()`; this is a target-gated dependency,
+//! not a cargo feature you enable.
 //!
 //! `core` consumers wire the crate via `default-features = false,
 //! features = ["core"]` and get only the pure-logic surfaces (no

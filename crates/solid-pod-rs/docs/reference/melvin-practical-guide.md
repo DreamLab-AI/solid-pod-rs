@@ -116,10 +116,12 @@ P2TR address derivation), the `blocktrails` npm package.
 
 | Concept | Module | Status |
 |---|---|---|
-| BIP-341 chained public key derivation | `mrc20::bt_derive_chained_pubkey()` | present (feature `bip341-taproot`) |
-| BIP-341 chained private key derivation | `mrc20::bt_derive_chained_privkey()` | present (feature `bip341-taproot`) |
-| P2TR address derivation | `mrc20::bt_address()` | present (feature `bip341-taproot`) |
-| Anchor verification against mempool | `mrc20::verify_mrc20_anchor()` | present (feature `bip341-taproot`) |
+| BIP-341 chained public key derivation | `mrc20::bt_derive_chained_pubkey()` | present (feature `mrc20`) |
+| BIP-341 chained private key derivation | `mrc20::bt_derive_chained_privkey()` | present (feature `mrc20`) |
+| P2TR address derivation | `mrc20::bt_address()` | present (feature `mrc20`) |
+| Anchor verification against mempool | `mrc20::verify_mrc20_anchor()` + `MempoolHttpClient` | present (feature `mrc20`; live mempool wired 0.5.0-alpha.0) |
+| Bitcoin tx build + Schnorr/taproot sign | `bitcoin_tx` (P2TR, BIP-341 TapSighash, BIP-340) | present (feature `mrc20`; byte-parity with JSS `token.js`, 0.5.0-alpha.0) |
+| Generic (non-token) provenance trail | `provenance::BlockTrailAnchor`, `ProvenanceLog` | present (0.5.0-alpha.0 — MRC20 is one instance, ADR-059) |
 
 ---
 
@@ -150,13 +152,14 @@ endpoints, portable MRC20 proofs.
 | Concept | Module | Status |
 |---|---|---|
 | Multi-chain config with mempool URLs | `payments::ChainConfig` (btc, tbtc3, tbtc4, signet presets) | present |
-| `/pay/.offers` listing | not implemented | **missing** (P2) |
-| `/pay/.sell` order placement | not implemented | **missing** (P2) |
-| `/pay/.swap` atomic swap | not implemented | **missing** (P2) |
+| `/pay/.offers` listing | `trading::OrderBook::list_offers()` → `handlers::pay::handle_offers` | present (routed 0.5.0-alpha.0) |
+| `/pay/.sell` order placement | `trading::OrderBook::create_order()` → `handle_sell` | present (routed 0.5.0-alpha.0) |
+| `/pay/.swap` atomic swap | `trading::OrderBook::execute_swap()` → `handle_swap` | present (routed 0.5.0-alpha.0) |
 
-The multi-chain deposit and verification infrastructure is at parity.
-The peer-to-peer trading surface (sell, swap, offers) is not
-implemented.
+The multi-chain deposit and verification infrastructure is at parity. The
+peer-to-peer trading surface (sell, swap, offers) is complete and **routed**
+as of 0.5.0-alpha.0 — the library logic existed earlier but was orphaned;
+it is now mounted on HTTP via `handlers::pay`.
 
 ---
 
@@ -169,11 +172,12 @@ implemented.
 
 | Concept | Module | Status |
 |---|---|---|
-| AMM constant-product pool | not implemented | **missing** (P2) |
-| `/pay/.pool` endpoint | listed in `payments::pay_info()` discovery but no backing logic | **missing** (P2) |
+| AMM constant-product pool | `trading::AmmPool` (`x·y=k`, `add_liquidity`/`remove_liquidity`/`swap`, 30 bps default) | present (routed 0.5.0-alpha.0) |
+| `/pay/.pool` endpoint | `trading::Exchange` → `handlers::pay::handle_pool_{get,post}` | present (routed 0.5.0-alpha.0) |
 
-The pool endpoint appears in the discovery response but is
-non-functional.
+The AMM is a live constant-product pool. `GET /pay/.pool` returns pool
+reserves/shares (or the registry); `POST /pay/.pool` runs `swap` /
+`add-liquidity` / `remove-liquidity`, settling against the same Web Ledger.
 
 ---
 
@@ -187,13 +191,17 @@ commits via blocktrails.
 | Concept | Module | Status |
 |---|---|---|
 | Token-specific state trails | `mrc20::Mrc20Trail` | present |
-| Generic state anchoring abstraction | not abstracted beyond MRC20 | **partial-parity** (P3) |
-| NFT / smart contract rules engine | not implemented | **missing** (P3) |
+| Generic state anchoring abstraction | `provenance::BlockTrailAnchor`, `BlockAnchorer`, `ProvenanceLog` | present (0.5.0-alpha.0 — ADR-059 D2: MRC20 is one instance of a general trail) |
+| git-commit anchoring | `provenance::ProvenanceLog::record` (anchored `state_hash` = git commit SHA; epoch Merkle batching) | present (0.5.0-alpha.0) |
+| NFT / smart contract rules engine | not implemented | **missing** (P3 — out of scope; Bitcoin-only, no VM) |
 
-`Mrc20Trail` covers the token-specific case. A generic state
-anchoring layer that could anchor arbitrary data types (NFTs, smart
-contracts, git commits) is not yet abstracted from the token-specific
-implementation.
+The generic state-anchoring abstraction landed in 0.5.0-alpha.0: ADR-059
+lifts the trail from a token-only structure to one carrying arbitrary
+JCS-canonicalised payloads (`provenance`), with the MRC20 token as one
+instance. git commits are anchored via `ProvenanceLog` (the anchored
+`state_hash` is the git commit SHA, with epoch Merkle-root batching). A
+programmable NFT / smart-contract rules engine remains out of scope —
+the model is Bitcoin-anchored provenance, not a contract VM.
 
 ---
 
@@ -206,14 +214,17 @@ implementation.
 | 3 | HTTP 402: The Missing Status Code | `wac::conditions`, `payments` | full |
 | 4 | Pay Per Read | `payments` | full |
 | 5 | Your Pod Is Your Bank | `payments` | full |
-| 6 | Anchored to Bitcoin | `mrc20` (feature `bip341-taproot`) | full |
+| 6 | Anchored to Bitcoin | `mrc20`, `bitcoin_tx` (feature `mrc20`) | full |
 | 7 | Your Pod, Your Token | `mrc20` | full |
-| 8 | Multi-Currency | `payments::ChainConfig` | partial (trading surface missing) |
-| 9 | Your Pod Is an Exchange | `payments` (discovery only) | missing (AMM not implemented) |
-| 10 | Beyond Tokens | `mrc20::Mrc20Trail` | partial (token-specific only) |
+| 8 | Multi-Currency | `payments::ChainConfig`, `trading::OrderBook` | full (trading surface routed 0.5.0-alpha.0) |
+| 9 | Your Pod Is an Exchange | `trading::AmmPool` / `Exchange` | full (AMM routed 0.5.0-alpha.0) |
+| 10 | Beyond Tokens | `provenance` (`BlockTrailAnchor`, `ProvenanceLog`) | full for generic anchoring; NFT/contract VM out of scope |
 
-**Overall**: 7 of 10 articles at full parity, 2 partial, 1 missing.
-The core payment/token lifecycle (deposit, balance, debit, buy,
-withdraw, blocktrail anchor) is fully implemented. The exchange
-layer (sell, swap, offers, AMM pool) and generic state anchoring are
-the remaining gaps.
+**Overall**: as of 0.5.0-alpha.0 all 10 articles' payment/token/anchoring
+surfaces are implemented and routed. The core lifecycle (deposit, balance,
+debit, buy, withdraw, blocktrail anchor) plus the exchange layer (sell,
+swap, offers, AMM pool) and the generalised provenance trail are all
+present — the previously-orphaned trading/AMM logic is now mounted on HTTP
+(`handlers::pay`), and ADR-059 added the generic, non-token block-trail
+abstraction. The only deliberate non-goal is a programmable NFT /
+smart-contract rules engine (Bitcoin-only, no VM).

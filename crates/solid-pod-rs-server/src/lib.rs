@@ -39,6 +39,25 @@
 //! | GET      | `/.well-known/nodeinfo`                  | NodeInfo discovery   |
 //! | GET      | `/.well-known/nodeinfo/2.1`              | NodeInfo 2.1         |
 //! | GET      | `/.well-known/did/nostr/{pubkey}.json`   | DID:nostr document   |
+//! | GET      | `/pay/.info`                             | Payment discovery    |
+//! | GET      | `/pay/.balance`                          | Web-Ledger balance   |
+//! | POST     | `/pay/.deposit`                          | TXO + MRC20 deposit  |
+//! | GET      | `/pay/.address`                          | Tweaked deposit addr |
+//! | GET/POST | `/pay/.offers` `.sell` `.swap` `.pool`   | Order book + AMM     |
+//! | POST     | `/pay/.buy` `.withdraw` `.withdraw-sats` | Token mint/voucher   |
+//! | GET      | `/{pod}/{path}.prov.ttl`                 | PROV-O git-mark sidecar |
+//! | GET      | `/{pod}/_prov/{commit_sha}`              | Resolve a git-mark   |
+//! | POST     | `/{pod}/_prov/anchor`                    | Upgrade to Bitcoin anchor |
+//! | GET/POST | `/{pod}/info/refs` `…/git-{upload,receive}-pack` | Git smart-HTTP (WAC-gated) |
+//!
+//! The `/pay/*` HTTP-402 economy routes (`handlers::pay`) wire the
+//! `solid-pod-rs` Web-Ledger / order-book / AMM core onto actix; the `_prov`
+//! routes (`handlers::prov`, `--features git`) expose the git-mark +
+//! block-trail provenance API (ADR-059). Block-trail anchor verification and
+//! broadcast go through the native [`mempool`] client (mempool.space testnet4
+//! by default), with trail persistence via [`trail_store`]. Every LDP
+//! `PUT`/`POST`/`PATCH` to a git-backed pod additionally fires the always-on
+//! git-mark write hook (`git_mark_write`, when built with `--features git`).
 //!
 //! ## Middleware stack (applied in order)
 //!

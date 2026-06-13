@@ -87,6 +87,14 @@ tradeoffs?
   trait shape and why.
 - [Ecosystem integration](explanation/ecosystem-integration.md) — how
   this crate sits alongside URN-Solid, solid-schema, and Solid-Apps.
+- [Provenance and the trust ledger](explanation/provenance-and-trust-ledger.md)
+  — the two cost-tiered provenance primitives (git-marks + Bitcoin
+  block-trails), how they compose, epoch batching, the `_prov` API, and
+  independent (pod-trustless) verification.
+- [Payments and the web ledger](explanation/payments-and-web-ledger.md) —
+  the routed HTTP-402 economy: `did:nostr`-keyed Web Ledger,
+  `acl:PaymentCondition` gating, deposits, replay protection, and the live
+  order book + constant-product AMM.
 - [ADR-059 — block-trails & git-marks](adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
   — the two provenance primitives, their composition, and why
   Bitcoin-anchored (and not EVM).
