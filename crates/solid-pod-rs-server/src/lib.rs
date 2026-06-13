@@ -56,6 +56,12 @@
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 
+/// HTTP request handlers grouped by domain. Currently hosts the payment
+/// routing layer ([`handlers::pay`]) which wires the orphaned
+/// `solid-pod-rs` order-book / AMM / Web-Ledger logic onto actix routes
+/// with JSS-parity JSON.
+mod handlers;
+
 /// MCP (Model Context Protocol) server subsystem — `POST /mcp`, mounted
 /// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
 mod mcp;
@@ -227,7 +233,7 @@ impl PodCreateLimiter {
 // Error translation
 // ---------------------------------------------------------------------------
 
-fn to_actix(e: PodError) -> ActixError {
+pub(crate) fn to_actix(e: PodError) -> ActixError {
     match e {
         PodError::NotFound(_) => actix_web::error::ErrorNotFound(e.to_string()),
         PodError::BadRequest(_) => actix_web::error::ErrorBadRequest(e.to_string()),
@@ -244,7 +250,7 @@ fn to_actix(e: PodError) -> ActixError {
 // ---------------------------------------------------------------------------
 
 /// Attempt NIP-98 bearer verification; returns the pubkey on success.
-async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
+pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     let header_val = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -263,14 +269,14 @@ async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
         .ok()
 }
 
-fn agent_uri(pubkey: Option<&String>) -> Option<String> {
+pub(crate) fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     pubkey.map(|pk| format!("did:nostr:{pk}"))
 }
 
 /// Canonical pod-relative path of the Web Ledger document. The
 /// `acl:PaymentCondition` evaluator is fed the requesting principal's
 /// satoshi balance read from this resource.
-const WEBLEDGER_PATH: &str = "/.well-known/webledgers/webledgers.json";
+pub(crate) const WEBLEDGER_PATH: &str = "/.well-known/webledgers/webledgers.json";
 
 /// Resolve the requesting principal's satoshi balance from the pod's
 /// Web Ledger so the WAC `acl:PaymentCondition` evaluator receives a
@@ -2412,8 +2418,12 @@ where
         let path = req.path().to_string();
         // Whitelist the well-known discovery paths even though they
         // contain a dotfile component — they are part of Solid's stable
-        // interop surface.
-        let allow_system_route = path.starts_with("/.well-known/") || path == "/.pods";
+        // interop surface. `/pay/.*` is the same case: the payment control
+        // surface (`.info`, `.balance`, `.deposit`, `.offers`, `.sell`,
+        // `.swap`, `.pool`) is dot-prefixed protocol endpoints, not pod
+        // dotfiles, so the dotfile allowlist must not shadow them.
+        let allow_system_route =
+            path.starts_with("/.well-known/") || path == "/.pods" || path.starts_with("/pay/");
         if !allow_system_route {
             let pb = PathBuf::from(&path);
             if !self.allow.is_allowed(Path::new(&pb)) {
@@ -3167,6 +3177,12 @@ pub fn build_app(
 
     // Payment endpoint (JSS parity: GET /pay/.info).
     app = app.route("/pay/.info", web::get().to(handle_pay_info));
+
+    // Phase 0 payment routing (master-plan §"Phase 0"): wire the orphaned
+    // order-book / AMM / Web-Ledger logic. Registered with the SAME gating
+    // as `/pay/.info` above — always-on, no payments feature flag — so the
+    // whole `/pay/*` surface is consistent.
+    app = app.configure(handlers::pay::register);
 
     // WAC-gated CORS proxy endpoint.
     app = app.route("/proxy", web::get().to(handle_proxy));

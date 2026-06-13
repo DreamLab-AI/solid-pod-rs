@@ -134,3 +134,7 @@ tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 parking_lot = "0.12"
 async-trait = "0.1"
+# Pay-route integration tests mint NIP-98 tokens and derive the signer's
+# did:nostr from the secret key (deterministic, no network).
+hex = "0.4"
+k256 = { version = "0.13", features = ["schnorr"] }
