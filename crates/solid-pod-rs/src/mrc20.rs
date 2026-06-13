@@ -215,6 +215,92 @@ pub fn verify_mrc20_deposit(
     })
 }
 
+// ── Mempool lookup abstraction (pure, wasm-safe) ────────────────────
+//
+// The anchor *crypto* (taproot derivation) lives behind feature `mrc20`,
+// but the lookup boundary is pure: a small trait plus minimal value types
+// that compile for `wasm32-unknown-unknown` with no HTTP, no tokio. The
+// concrete `MempoolHttpClient` (reqwest over the mempool.space REST API)
+// is server-side only (`solid-pod-rs-server::mempool`). This mirrors the
+// crate's existing `?Send` pattern (`PaymentStore`, `provenance::GitMarker`)
+// so a single-threaded wasm executor can implement it.
+
+/// A minimal unspent-output record returned by a [`MempoolLookup`].
+///
+/// Shape mirrors the mempool.space `GET /api/address/{addr}/utxo` element
+/// (JSS `mrc20.js:315-327`, `token.js:176-187`): `txid`, `vout`, `value`
+/// (sats), and the `status.confirmed`/`status.block_height` confirmation
+/// fields flattened to `confirmed` + `block_height`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Utxo {
+    /// Transaction id funding this output (64-char hex).
+    pub txid: String,
+    /// Output index within `txid`.
+    pub vout: u32,
+    /// Output value in satoshis.
+    pub value: u64,
+    /// Whether the funding tx is confirmed in a block (mempool vs chain).
+    #[serde(default)]
+    pub confirmed: bool,
+    /// Confirmation height; `None` while unconfirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<u64>,
+}
+
+/// A single transaction output as returned inside [`TxInfo::vout`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxOut {
+    /// Output value in satoshis.
+    #[serde(default)]
+    pub value: u64,
+    /// Hex-encoded `scriptPubKey` of this output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scriptpubkey: Option<String>,
+    /// Decoded address the output pays, when the indexer provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scriptpubkey_address: Option<String>,
+}
+
+/// Minimal view of a transaction returned by [`MempoolLookup::tx`].
+///
+/// Mirrors mempool.space `GET /api/tx/{txid}` (JSS `token.js:270-275`):
+/// the `vout` array (for `scriptpubkey` lookup) and the confirmation
+/// `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxInfo {
+    /// Transaction id (64-char hex).
+    pub txid: String,
+    /// The transaction's outputs, indexed by `vout`.
+    #[serde(default)]
+    pub vout: Vec<TxOut>,
+    /// Whether the tx is confirmed in a block.
+    #[serde(default)]
+    pub confirmed: bool,
+    /// Confirmation height; `None` while unconfirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<u64>,
+}
+
+/// Read-only Bitcoin mempool/chain lookup used by anchor verification.
+///
+/// Pure abstraction: implementors fetch UTXO sets and transactions from
+/// whatever transport is appropriate (reqwest on native, `fetch` in a
+/// Worker). The trait itself drags in no I/O, so it — and the value types
+/// above — compile to `wasm32`. `?Send` to match the crate's existing
+/// single-threaded-executor-friendly traits.
+#[async_trait::async_trait(?Send)]
+pub trait MempoolLookup {
+    /// Return every UTXO currently at `address` (confirmed or in-mempool).
+    ///
+    /// An empty vec means "no UTXO" (not an error). A transport failure is
+    /// surfaced as [`PaymentError::InvalidState`] so anchor verification can
+    /// fail-closed without a bespoke error variant.
+    async fn address_utxos(&self, address: &str) -> Result<Vec<Utxo>, PaymentError>;
+
+    /// Fetch a transaction by id (for `scriptPubKey` / confirmation reads).
+    async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError>;
+}
+
 // ── BIP-341 key chaining (feature: mrc20) ───────────────────────────
 
 #[cfg(feature = "mrc20")]
@@ -401,18 +487,32 @@ mod anchor {
         Ok(bech32m_encode(hrp, 1, x_only))
     }
 
-    /// Verify an MRC20 deposit is anchored to a Bitcoin UTXO.
+    /// Verify an MRC20 deposit is anchored to a confirmed/in-mempool Bitcoin UTXO.
     ///
-    /// Combines state chain verification with taproot address derivation.
-    /// The actual mempool UTXO lookup is left to the caller (transport-layer
-    /// concern — HTTP fetch in Workers, reqwest on native).
-    pub fn verify_mrc20_anchor(
+    /// This is the full, independently-verifiable anchor check (JSS
+    /// `mrc20.js:279-335`): it composes
+    ///
+    /// 1. state-chain integrity + transfer extraction ([`verify_mrc20_deposit`]),
+    /// 2. `stateStrings`/pubkey shape validation and the last-string↔`JCS(state)` bind,
+    /// 3. taproot address re-derivation ([`bt_address`]) from the *portable*
+    ///    proof (`pubkey` + `state_strings`), then
+    /// 4. a **mempool UTXO lookup** at that derived address via the supplied
+    ///    [`MempoolLookup`].
+    ///
+    /// The earlier shape, which returned the derived address and left the
+    /// UTXO lookup "to the caller", is replaced: the lookup is now part of
+    /// verification, so a verified result genuinely means *anchored on
+    /// Bitcoin*. Pass a server-side `MempoolHttpClient` on native, or a
+    /// fixture implementation in tests — the crypto and the chain read
+    /// compose in one place.
+    pub async fn verify_mrc20_anchor(
         state: &Mrc20State,
         prev_state: &Mrc20State,
         to_address: &str,
         pubkey_hex: &str,
         state_strings: &[String],
         network: &str,
+        mempool: &dyn MempoolLookup,
     ) -> Result<Mrc20AnchorResult, PaymentError> {
         let deposit = verify_mrc20_deposit(state, prev_state, to_address)?;
 
@@ -441,20 +541,34 @@ mod anchor {
 
         let address = bt_address(pubkey_hex, state_strings, network)?;
 
+        // Mempool lookup: the anchor is only valid if a UTXO actually
+        // exists at the derived taproot address (JSS `mrc20.js:315-327`).
+        let utxos = mempool.address_utxos(&address).await?;
+        if utxos.is_empty() {
+            return Err(PaymentError::InvalidState(format!(
+                "no UTXO at derived address {address}"
+            )));
+        }
+
         Ok(Mrc20AnchorResult {
             amount: deposit.amount,
             ticker: deposit.ticker,
             address,
+            utxos,
         })
     }
 
-    /// Result of anchor verification — includes derived taproot address
-    /// for the caller to check against mempool UTXOs.
+    /// Result of anchor verification.
+    ///
+    /// Carries the verified transfer amount/ticker, the derived taproot
+    /// `address`, and the `utxos` found there (so callers can inspect
+    /// confirmation depth without a second round-trip).
     #[derive(Debug, Clone)]
     pub struct Mrc20AnchorResult {
         pub amount: u64,
         pub ticker: String,
         pub address: String,
+        pub utxos: Vec<Utxo>,
     }
 }
 
@@ -779,6 +893,7 @@ mod tests {
     #[cfg(feature = "mrc20")]
     mod anchor_tests {
         use super::*;
+        use std::collections::HashMap;
 
         // k256 test keypair (arbitrary).
         const TEST_PRIVKEY: &str =
@@ -787,6 +902,68 @@ mod tests {
         fn test_pubkey_compressed() -> String {
             let sk = k256::SecretKey::from_slice(&hex::decode(TEST_PRIVKEY).unwrap()).unwrap();
             hex::encode(sk.public_key().to_sec1_bytes())
+        }
+
+        /// Fixture [`MempoolLookup`] backed by an in-memory address→UTXO map
+        /// — NO network. Lets the anchor crypto + lookup be exercised
+        /// deterministically (any UTXO present ⇒ anchored; absent ⇒ not).
+        struct FixtureMempool {
+            utxos: HashMap<String, Vec<Utxo>>,
+        }
+        impl FixtureMempool {
+            fn empty() -> Self {
+                Self { utxos: HashMap::new() }
+            }
+            /// Register one UTXO at `address` (value/vout arbitrary but plausible).
+            fn with_utxo_at(address: &str) -> Self {
+                let mut utxos = HashMap::new();
+                utxos.insert(
+                    address.to_string(),
+                    vec![Utxo {
+                        txid: "ab".repeat(32),
+                        vout: 0,
+                        value: 9700,
+                        confirmed: true,
+                        block_height: Some(840_000),
+                    }],
+                );
+                Self { utxos }
+            }
+        }
+        #[async_trait::async_trait(?Send)]
+        impl MempoolLookup for FixtureMempool {
+            async fn address_utxos(&self, address: &str) -> Result<Vec<Utxo>, PaymentError> {
+                Ok(self.utxos.get(address).cloned().unwrap_or_default())
+            }
+            async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError> {
+                Ok(TxInfo {
+                    txid: txid.to_string(),
+                    vout: vec![],
+                    confirmed: true,
+                    block_height: Some(840_000),
+                })
+            }
+        }
+
+        /// Drive an async future to completion on a single-thread runtime —
+        /// the verify path is now async; this keeps the unit tests `#[test]`.
+        fn block_on<F: std::future::Future>(f: F) -> F::Output {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(f)
+        }
+
+        /// Build a valid genesis→transfer chain plus its `state_strings`,
+        /// returning `(prev, next, state_strings)` ready for anchor verify.
+        fn valid_chain() -> (Mrc20State, Mrc20State, Vec<String>) {
+            let genesis = genesis_state();
+            let genesis_val = serde_json::to_value(&genesis).unwrap();
+            let genesis_jcs = jcs(&genesis_val);
+            let genesis_hash = sha256_hex(&genesis_jcs);
+            let next = transfer_state(&genesis_hash);
+            let next_jcs = jcs(&serde_json::to_value(&next).unwrap());
+            (genesis, next, vec![genesis_jcs, next_jcs])
         }
 
         #[test]
@@ -887,9 +1064,11 @@ mod tests {
             let genesis_hash = sha256_hex(&jcs(&genesis_val));
             let next = transfer_state(&genesis_hash);
             let pubkey = test_pubkey_compressed();
+            let mp = FixtureMempool::empty();
 
-            let result =
-                verify_mrc20_anchor(&next, &genesis, "recipient", &pubkey, &[], "testnet4");
+            let result = block_on(verify_mrc20_anchor(
+                &next, &genesis, "recipient", &pubkey, &[], "testnet4", &mp,
+            ));
             assert!(result.is_err());
         }
 
@@ -899,16 +1078,92 @@ mod tests {
             let genesis_val = serde_json::to_value(&genesis).unwrap();
             let genesis_hash = sha256_hex(&jcs(&genesis_val));
             let next = transfer_state(&genesis_hash);
+            let mp = FixtureMempool::empty();
 
-            let result = verify_mrc20_anchor(
+            let result = block_on(verify_mrc20_anchor(
                 &next,
                 &genesis,
                 "recipient",
                 "short",
                 &["s1".into()],
                 "testnet4",
-            );
+                &mp,
+            ));
             assert!(result.is_err());
+        }
+
+        // ── Mempool-composed verification (fixture, no live chain) ──────
+
+        /// TRUE path: a UTXO exists at the derived taproot address ⇒ the
+        /// anchor verifies and reports the transfer amount.
+        #[test]
+        fn verify_anchor_true_when_utxo_present() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            // Derive the SAME address the verifier will, and seed it.
+            let address = bt_address(&pubkey, &state_strings, "testnet4").unwrap();
+            let mp = FixtureMempool::with_utxo_at(&address);
+
+            let result = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ))
+            .expect("anchor with a present UTXO must verify");
+            assert_eq!(result.amount, 100);
+            assert_eq!(result.ticker, "TEST");
+            assert_eq!(result.address, address);
+            assert_eq!(result.utxos.len(), 1);
+            assert!(result.utxos[0].confirmed);
+        }
+
+        /// FALSE path: crypto is valid but NO UTXO sits at the derived
+        /// address ⇒ verification fails closed.
+        #[test]
+        fn verify_anchor_false_when_utxo_absent() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mp = FixtureMempool::empty(); // nothing anywhere
+
+            let err = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ))
+            .unwrap_err();
+            match err {
+                PaymentError::InvalidState(m) => assert!(m.contains("no UTXO")),
+                other => panic!("expected no-UTXO InvalidState, got {other:?}"),
+            }
+        }
+
+        /// MISMATCH path: a UTXO exists, but at a DIFFERENT address (e.g. a
+        /// UTXO for some other state chain) ⇒ verification still fails,
+        /// because the lookup is keyed on the *derived* address.
+        #[test]
+        fn verify_anchor_false_when_utxo_at_wrong_address() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mp = FixtureMempool::with_utxo_at("tb1pdecoy0000000000000000000000000000");
+
+            let result = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ));
+            assert!(result.is_err(), "UTXO at a non-derived address must not verify");
         }
     }
 }

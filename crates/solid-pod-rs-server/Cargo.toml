@@ -27,7 +27,13 @@ path = "src/main.rs"
 # always has DPoP `jti` replay protection wired into `verify_dpop_proof`
 # (Solid-OIDC §5.2 / RFC 9449 §4.3; mirrors JSS 2026-01-05 #2). Without
 # it `verify_dpop_proof` compiles to its replay-unaware form.
-solid-pod-rs = { version = "0.4.0-alpha.17", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs"] }
+#
+# `mrc20` is enabled unconditionally so the server always carries the
+# block-trail anchor verify-side: BIP-341 taproot derivation + the
+# `MempoolLookup` trait the native `MempoolHttpClient` (mempool.rs)
+# implements for `/pay/.deposit` (MRC20) and `/pay/.address`
+# (provenance-upgrade Phase 3).
+solid-pod-rs = { version = "0.4.0-alpha.17", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.

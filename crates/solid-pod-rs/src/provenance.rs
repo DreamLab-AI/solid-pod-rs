@@ -96,6 +96,15 @@ pub struct BlockTrailAnchor {
     /// Portable, independently-verifiable proof — the serialised states.
     #[serde(default)]
     pub state_strings: Vec<String>,
+    /// Issuer's compressed pubkey (66-char hex). Together with
+    /// `state_strings` it re-derives the taproot `address` via
+    /// `mrc20::bt_address` — the read-side check
+    /// ([`BlockAnchorer::verify`](crate::provenance::BlockAnchorer::verify))
+    /// needs it to confirm `address` was not forged. `None` on legacy /
+    /// partially-populated anchors (verify then has nothing to re-derive
+    /// against and reports `false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +373,7 @@ mod tests {
             network: "testnet4".into(),
             blockheight: Some(840_000),
             state_strings: vec!["{\"seq\":0}".into(), "{\"seq\":1}".into()],
+            pubkey: Some("02".to_string() + &"ab".repeat(32)),
         });
         let json = serde_json::to_string(&m).unwrap();
         let back: ProvenanceMark = serde_json::from_str(&json).unwrap();
@@ -422,6 +432,7 @@ mod tests {
             network: "testnet4".into(),
             blockheight: Some(840_000),
             state_strings: vec![],
+            pubkey: None,
         });
         let ttl = prov_ttl(&m);
         assert!(ttl.contains("<urn:bt:tx:cafebabe:2> a prov:Entity"));

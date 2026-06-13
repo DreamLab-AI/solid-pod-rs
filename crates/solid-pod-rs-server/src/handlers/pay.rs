@@ -44,13 +44,30 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::Deserialize;
 
+use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor, Mrc20State};
 use solid_pod_rs::payments::{
     balance_response, parse_txo_uri, payment_required_body, PaymentError, PaymentStore, WebLedger,
 };
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
 
+use crate::mempool::MempoolHttpClient;
 use crate::{agent_uri, extract_pubkey, AppState, WEBLEDGER_PATH};
+
+// ---------------------------------------------------------------------------
+// Chain → Bitcoin network mapping (JSS parity — pay.js:295, 489)
+// ---------------------------------------------------------------------------
+
+/// Map a chain id to the BIP-341 network string used by `mrc20::bt_address`.
+/// Mirrors JSS: `btc`→`mainnet`, `tbtc3`→`testnet`, everything else
+/// (`tbtc4`, `signet`, unknown) → `testnet4`.
+fn network_for_chain(chain: &str) -> &'static str {
+    match chain {
+        "btc" => "mainnet",
+        "tbtc3" => "testnet",
+        _ => "testnet4",
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Canonical storage paths (JSS parity — PAY.md "Storage layout")
@@ -259,15 +276,43 @@ struct DepositBody {
     txo: String,
 }
 
-/// Phase 0 TXO deposit: parse the URI, derive the sat amount, credit the
-/// caller — guarded by replay protection keyed on `txid:vout` so the same
-/// output can never be credited twice.
+/// The `anchor` block of an MRC20 deposit — the portable proof needed to
+/// re-derive the taproot address and check the chain (JSS `pay.js:402-411`).
+#[derive(Debug, Deserialize)]
+struct Mrc20AnchorBody {
+    pubkey: String,
+    #[serde(rename = "stateStrings")]
+    state_strings: Vec<String>,
+    #[serde(default)]
+    network: Option<String>,
+}
+
+/// An MRC20 token deposit body: `{type:"mrc20", state, prevState, anchor}`
+/// (JSS `pay.js:384-438`). `state`/`prevState` are full MRC20 states; the
+/// `anchor` carries the issuer pubkey + state-string proof.
+#[derive(Debug, Deserialize)]
+struct Mrc20DepositBody {
+    #[allow(dead_code)]
+    #[serde(rename = "type")]
+    kind: String,
+    state: Mrc20State,
+    #[serde(rename = "prevState")]
+    prev_state: Mrc20State,
+    anchor: Mrc20AnchorBody,
+}
+
+/// `POST /pay/.deposit`. Two paths, discriminated by body:
 ///
-/// **Out of scope (Phase 3+):** mempool verification of the UTXO value.
-/// Until then the credited amount is derived deterministically from the
-/// vout (`(vout + 1) * 1000` sats) so the route is exercisable end-to-end
-/// without a live chain. This is replaced by the real mempool-read value
-/// in Phase 3; the replay guard wired here remains unchanged.
+/// * **MRC20** (`Content-Type: application/json`, `{type:"mrc20", …}`) —
+///   verify the block-trail anchor against live mempool state via
+///   [`verify_mrc20_anchor`] + [`MempoolHttpClient`], replay-guard on the
+///   `JCS(state)` hash, then credit the verified transfer amount (Phase 3,
+///   JSS `pay.js:384-438`).
+/// * **TXO** (text/plain or `{"txo":…}`) — the Phase-0 path, unchanged.
+///
+/// The TXO path remains a deterministic stand-in for the mempool-read sat
+/// value (`(vout + 1) * 1000`); its real mempool valuation is a later step.
+/// The MRC20 path is the one that genuinely round-trips to the chain here.
 async fn handle_deposit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -277,6 +322,13 @@ async fn handle_deposit(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+
+    // MRC20 path: a JSON body tagged `type: "mrc20"`. Probe cheaply for the
+    // tag before committing to full deserialisation so a TXO JSON body
+    // (`{"txo":…}`) still falls through to the Phase-0 path.
+    if body_is_mrc20(&body) {
+        return handle_mrc20_deposit(&did, &state, &body).await;
+    }
 
     // Accept either a bare TXO URI (text/plain) or {"txo": "..."} (JSON).
     let raw = String::from_utf8_lossy(&body);
@@ -332,6 +384,242 @@ async fn handle_deposit(
         "txid": txo.txid,
         "vout": txo.vout,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// POST /pay/.deposit  (MRC20 path — pay.js:384-438, mrc20.js:279-335)
+// ---------------------------------------------------------------------------
+
+/// Cheap discriminator: does the body deserialise to an object whose
+/// `type` is `"mrc20"`? Avoids committing to full `Mrc20DepositBody`
+/// parsing for a TXO body. Any non-JSON / non-tagged body returns `false`.
+fn body_is_mrc20(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|s| s.eq_ignore_ascii_case("mrc20"))
+        })
+        .unwrap_or(false)
+}
+
+/// The pod's issuer pubkey (66-char hex) — the key that anchors derive
+/// against. Sourced from `pay_config.token.issuer`. `None` means MRC20
+/// deposits / `/pay/.address` are not configured for this pod.
+fn pod_issuer_pubkey(state: &AppState) -> Option<String> {
+    state
+        .pay_config
+        .token
+        .as_ref()
+        .map(|t| t.issuer.clone())
+        .filter(|p| !p.is_empty())
+}
+
+/// Verify an MRC20 token deposit and credit the verified transfer amount.
+///
+/// Flow (JSS `pay.js:384-438`):
+/// 1. require an issuer pubkey configured on the pod (`payAddress` parity);
+/// 2. derive the pod's generic deposit address `bt_address(issuer, [], net)`
+///    — the `toAddress` transfers must target;
+/// 3. **replay-guard** on `JCS(state)` (reuse the Phase-0 replay set) so a
+///    state can't be credited twice;
+/// 4. [`verify_mrc20_anchor`] — state-chain integrity + taproot re-derivation
+///    + a live mempool UTXO check via [`MempoolHttpClient`];
+/// 5. credit the verified amount via the [`PaymentStore`].
+async fn handle_mrc20_deposit(
+    did: &str,
+    state: &AppState,
+    body: &[u8],
+) -> Result<HttpResponse, ActixError> {
+    let deposit: Mrc20DepositBody = match serde_json::from_slice(body) {
+        Ok(d) => d,
+        Err(e) => {
+            return Ok(HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("malformed mrc20 deposit: {e}") })))
+        }
+    };
+
+    // (1) Issuer pubkey — the pod must be configured to accept MRC20.
+    let issuer = match pod_issuer_pubkey(state) {
+        Some(p) => p,
+        None => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "MRC20 deposits not configured (no token issuer set)"
+            })))
+        }
+    };
+
+    let network = deposit
+        .anchor
+        .network
+        .clone()
+        .unwrap_or_else(|| "testnet4".to_string());
+
+    // (2) The pod's generic deposit address — transfers must target it.
+    let to_address = match bt_address(&issuer, &[], &network) {
+        Ok(a) => a,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    // (3) Replay guard on the canonical state hash. Reuses the Phase-0
+    // replay set; keyed `mrc20:<sha256(JCS(state))>` so it can't collide
+    // with a TXO `txid:vout` key.
+    let state_value = match serde_json::to_value(&deposit.state) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("serialize state: {e}") })))
+        }
+    };
+    let state_hash = solid_pod_rs::mrc20::sha256_hex(&solid_pod_rs::mrc20::jcs(&state_value));
+    let replay_key = format!("mrc20:{state_hash}");
+    let store = StoragePaymentStore::new(&*state.storage);
+    match store.check_replay(&replay_key).await {
+        Ok(true) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Replay: this state has already been used for a deposit",
+                "state_hash": state_hash,
+            })))
+        }
+        Ok(false) => {}
+        Err(e) => return Ok(payment_error_response(e)),
+    }
+
+    // (4) Anchor verification against live mempool state. An explicit
+    // `mempool_url` (tests → local fixture server) overrides the env-driven
+    // default so the route never reaches mempool.space in CI.
+    let mempool = match &state.mempool_url {
+        Some(url) => MempoolHttpClient::new(url.clone()),
+        None => MempoolHttpClient::from_env(),
+    };
+    let result = match verify_mrc20_anchor(
+        &deposit.state,
+        &deposit.prev_state,
+        &to_address,
+        &deposit.anchor.pubkey,
+        &deposit.anchor.state_strings,
+        &network,
+        &mempool,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    // (5) Credit the verified amount, then record the replay key.
+    let mut ledger = match store.read_ledger().await {
+        Ok(l) => l,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    ledger.credit(did, result.amount);
+    if let Err(e) = store.write_ledger(&ledger).await {
+        return Ok(payment_error_response(e));
+    }
+    if let Err(e) = store.record_replay(&replay_key).await {
+        return Ok(payment_error_response(e));
+    }
+
+    let balance = ledger.get_balance(did);
+    Ok(HttpResponse::Ok().content_type("application/json").json(serde_json::json!({
+        "did": did,
+        "deposited": result.amount,
+        "ticker": result.ticker,
+        "balance": balance,
+        "unit": "token",
+        "anchor": result.address,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /pay/.address  (per-user tweaked deposit address — pay.js:286-305)
+// ---------------------------------------------------------------------------
+
+/// `?user=<did:nostr:…>&chain=<id>`. Both optional: without `user` the
+/// generic pod deposit address is returned; without `chain` the first
+/// configured chain (or `tbtc4`) is used.
+#[derive(Debug, Deserialize)]
+pub struct AddressQuery {
+    user: Option<String>,
+    chain: Option<String>,
+}
+
+/// Derive a deposit address (JSS `pay.js:286-305`). Public, no auth — it
+/// returns only a derived address + the pod's issuer pubkey, never a
+/// secret. The per-user address tweaks the issuer key by the user's DID
+/// (`bt_address(issuer, [did], net)`), so funds sent there are
+/// attributable to that user on the `/pay/.balance` auto-detect scan.
+async fn handle_address(
+    state: web::Data<AppState>,
+    query: web::Query<AddressQuery>,
+) -> Result<HttpResponse, ActixError> {
+    let issuer = match pod_issuer_pubkey(&state) {
+        Some(p) => p,
+        None => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Deposit addresses not configured (no token issuer set)"
+            })))
+        }
+    };
+
+    // Chain: explicit query, else first configured chain, else tbtc4.
+    let chain = query
+        .chain
+        .clone()
+        .or_else(|| state.pay_config.chains.first().map(|c| c.id.clone()))
+        .unwrap_or_else(|| "tbtc4".to_string());
+
+    // If chains are configured, the requested chain must be among them.
+    if !state.pay_config.chains.is_empty()
+        && !state.pay_config.chains.iter().any(|c| c.id == chain)
+    {
+        let enabled: Vec<&str> = state.pay_config.chains.iter().map(|c| c.id.as_str()).collect();
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("Chain not enabled: {chain}"),
+            "enabledChains": enabled,
+        })));
+    }
+
+    let network = network_for_chain(&chain);
+
+    // Optional per-user tweak. Validate the DID shape (JSS regex parity).
+    let user = query.user.as_ref().map(|u| u.trim().to_lowercase());
+    if let Some(u) = &user {
+        if !is_valid_did_nostr(u) {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid user DID. Expected: did:nostr:<64-hex>"
+            })));
+        }
+    }
+
+    let states: Vec<String> = match &user {
+        Some(u) => vec![u.clone()],
+        None => vec![],
+    };
+    let address = match bt_address(&issuer, &states, network) {
+        Ok(a) => a,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+
+    let mut response = serde_json::json!({
+        "address": address,
+        "chain": chain,
+        "pubkey": issuer,
+    });
+    if let Some(u) = &user {
+        response["user"] = serde_json::Value::String(u.clone());
+    }
+    Ok(HttpResponse::Ok().content_type("application/json").json(response))
+}
+
+/// JSS parity (`pay.js:297`): `^did:nostr:[0-9a-f]{64}$`.
+fn is_valid_did_nostr(did: &str) -> bool {
+    if let Some(hex) = did.strip_prefix("did:nostr:") {
+        hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    } else {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +921,7 @@ async fn handle_pool_post(
 pub fn register(app: &mut web::ServiceConfig) {
     app.route("/pay/.balance", web::get().to(handle_balance))
         .route("/pay/.deposit", web::post().to(handle_deposit))
+        .route("/pay/.address", web::get().to(handle_address))
         .route("/pay/.offers", web::get().to(handle_offers))
         .route("/pay/.sell", web::post().to(handle_sell))
         .route("/pay/.swap", web::post().to(handle_swap))

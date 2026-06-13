@@ -60,6 +60,7 @@ async fn public_read_state() -> AppState {
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
+        mempool_url: None,
     }
 }
 
@@ -99,6 +100,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
+        mempool_url: None,
     }
 }
 
@@ -259,6 +261,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
+        mempool_url: None,
     };
     let app = test::init_service(build_app(state)).await;
 

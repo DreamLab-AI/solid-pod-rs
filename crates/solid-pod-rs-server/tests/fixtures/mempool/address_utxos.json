@@ -1,0 +1,13 @@
+[
+  {
+    "txid": "abababababababababababababababababababababababababababababababab",
+    "vout": 0,
+    "value": 9700,
+    "status": {
+      "confirmed": true,
+      "block_height": 42000,
+      "block_hash": "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054",
+      "block_time": 1716300000
+    }
+  }
+]

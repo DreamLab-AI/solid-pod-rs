@@ -66,6 +66,12 @@ mod handlers;
 /// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
 mod mcp;
 
+/// Native mempool.space REST client (provenance-upgrade Phase 3). Concrete
+/// [`solid_pod_rs::mrc20::MempoolLookup`] + the verify-side
+/// [`solid_pod_rs::provenance::BlockAnchorer`]. Server-side only (builds a
+/// `reqwest::Client`); wasm consumers implement the trait over `fetch`.
+pub mod mempool;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -138,6 +144,12 @@ pub struct AppState {
     /// default — keys-on-disk and agent write access are an opt-in
     /// security tradeoff. Configured via `--mcp` / `JSS_MCP` (JSS #490).
     pub mcp_enabled: bool,
+    /// Optional override for the mempool REST base URL used by the MRC20
+    /// `/pay/.deposit` anchor verification (provenance-upgrade Phase 3).
+    /// `None` ⇒ the handler reads `JSS_PAY_MEMPOOL_URL` (default testnet4).
+    /// Tests point this at a local fixture server so they never reach
+    /// mempool.space; production leaves it `None`.
+    pub mempool_url: Option<String>,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -194,6 +206,7 @@ impl AppState {
             allowed_origins: Vec::new(),
             admin_key: None,
             mcp_enabled: false,
+            mempool_url: None,
         }
     }
 }

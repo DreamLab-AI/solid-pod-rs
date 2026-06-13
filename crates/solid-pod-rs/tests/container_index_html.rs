@@ -75,6 +75,7 @@ async fn make_state() -> AppState {
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
+        mempool_url: None,
     }
 }
 
