@@ -1,7 +1,9 @@
 # solid-pod-rs documentation
 
 Rust implementation of a Solid Pod server: WAC + LDP + NIP-98 +
-Solid-OIDC + Notifications, on a pluggable `Storage` trait.
+Solid-OIDC + Notifications, on a pluggable `Storage` trait — with a
+sovereign, Bitcoin-settled HTTP 402 trust ledger and verifiable,
+tamper-evident provenance (git-marks + Bitcoin block-trails, ADR-059).
 
 This site follows the [Diátaxis](https://diataxis.fr/) framework: four
 distinct documentation modes, each optimised for a different user
@@ -85,6 +87,12 @@ tradeoffs?
   trait shape and why.
 - [Ecosystem integration](explanation/ecosystem-integration.md) — how
   this crate sits alongside URN-Solid, solid-schema, and Solid-Apps.
+- [ADR-059 — block-trails & git-marks](adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+  — the two provenance primitives, their composition, and why
+  Bitcoin-anchored (and not EVM).
+- [Provenance upgrade master plan](design/provenance-upgrade-master-plan.md)
+  — the full JSS payment inheritance matrix and phased delivery of the
+  trust ledger and provenance trail.
 
 ## Reading order
 

@@ -34,11 +34,11 @@ JSS goes further than the base Solid Protocol in several areas. solid-pod-rs tra
 
 - **ActivityPub federation** — JSS can federate with Mastodon, Pleroma, and other fediverse servers. Pods can follow and be followed; posts are delivered via signed HTTP requests (draft-cavage-12 HTTP Signatures).
 - **Embedded identity provider** — JSS includes a full Solid-OIDC identity provider (authorization-code flow, DPoP-bound tokens, dynamic client registration, JWKS publication) so operators don't need a separate IdP deployment.
-- **Git HTTP backend** — JSS can serve Git repositories over smart HTTP, letting users store and clone code directly from their pod.
+- **Git HTTP backend** — JSS can serve Git repositories over smart HTTP, letting users store and clone code directly from their pod. solid-pod-rs additionally turns every LDP write into a git commit (git-marks, see *Provenance & trust ledger*) and WAC-gates all git routes.
 - **Nostr integration** — NIP-98 HTTP authentication (Schnorr signatures over secp256k1), did:nostr DID document resolution, and an embedded NIP-01 relay.
 - **Passkey and Schnorr SSO** — WebAuthn passkey authentication and NIP-07 Schnorr single sign-on as alternatives to password-based login.
 - **did:key support** — Ed25519, P-256, and secp256k1 did:key documents with self-signed JWT verification (LWS 1.0 SSI profile).
-- **HTTP 402 Web Ledgers** — PaymentCondition in WAC ACLs, per-read micropayments, webledger balance tracking, multi-chain TXO deposits (btc/tbtc3/tbtc4/signet), MRC20 token minting/buy/withdraw, BIP-341 blocktrail anchoring. See [Melvin Carvalho's Practical Guide to Solid](https://melvin.me/public/solid/) for a 10-part walkthrough of the JSS payment system.
+- **HTTP 402 Web Ledgers + provenance** — a sovereign, Bitcoin-settled (sats; no EVM) trust ledger: PaymentCondition in WAC ACLs, per-read micropayments, routed order book + AMM with replay protection, multi-chain TXO deposits (btc/tbtc3/tbtc4/signet), and MRC20 minting/buy/withdraw with a full Bitcoin write side. The same taproot crypto anchors **block-trails** — a tamper-evident, hash-chained provenance trail — paired with always-on **git-marks**. See *Provenance & trust ledger* below and [Melvin Carvalho's Practical Guide to Solid](https://melvin.me/public/solid/) for a 10-part walkthrough of the JSS payment system.
 </details>
 
 <details>
@@ -117,7 +117,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.4.0-alpha.17", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.0", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run
@@ -222,6 +222,51 @@ The WAC evaluator implements the full [WAC spec](https://solidproject.org/TR/wac
 Modules: `wac::evaluator`, `wac::resolver`, `wac::document`, `wac::origin`, `wac::conditions`.
 
 See [`debug-acl-denials.md`](crates/solid-pod-rs/docs/how-to/debug-acl-denials.md) and [`wac-modes.md`](crates/solid-pod-rs/docs/reference/wac-modes.md).
+</details>
+
+---
+
+## Provenance & trust ledger
+
+A pod is not just storage — it is a record of *who changed what, when, and on whose authority*. As of `0.5.0-alpha.0` (ADR-059), solid-pod-rs makes that record first-class with two composable, cost-tiered provenance primitives. The headline value is **traceability**: every change to pod data is attributable to a commit, and high-value records carry an external, tamper-evident proof.
+
+- **git-marks** (cheap, always-on) — every LDP write (`PUT` / `POST` / `PATCH`) becomes a git commit. The commit is captured as a `GitMark` and persisted as a [PROV-O](https://www.w3.org/TR/prov-o/) sidecar at `<resource>.prov.ttl`. You get content-addressed, append-only, tamper-evident ordering of every write for free — and a full, queryable history of who wrote each resource.
+- **block-trails** (high-value, opt-in) — a Bitcoin-taproot-anchored, hash-chained, tamper-evident state trail. An anchor irreversibly timestamps a record against the Bitcoin chain, so no single party — not even the pod operator — can forge or silently rewrite it. This is one instance of a general provenance trail (the MRC20 payment token is another).
+
+The two compose through `ProvenanceLog`: git-marks are recorded on **every** write; a Bitcoin anchor is added only when a resource's ACL carries a `ProvenanceAnchor` condition or the write is a high-value record. To keep on-chain cost amortised, an **epoch Merkle root** over a batch of git commits is anchored in a single transaction — so one Bitcoin tx notarises an entire epoch of writes. A `_prov` API resolves marks (`GET /{pod}/_prov/{commit_sha}`) and upgrades them to anchors (`POST /{pod}/_prov/anchor`).
+
+Taken together with the payment layer below, this gives the pod a **verifiable, tamper-evident provenance** trail over its data and a **global trust ledger and value-transfer substrate** beneath it — sovereign and Bitcoin-settled, with no external trust assumptions and no chain to trust but Bitcoin.
+
+<details>
+<summary><strong>Technical detail</strong></summary>
+
+- **`GitMark`** — `commit_sha`, `repo`, `branch` (pinned `main`), `parent` (prior commit → append-only chain). Produced by a `GitMarker` trait; the native implementation lives in `solid-pod-rs-git`, the wasm `core` build compiles a no-op marker.
+- **`BlockTrailAnchor`** — `state_hash` (the JCS hash that commits to the git SHA, or an epoch Merkle root), `txid`, `vout`, derived P2TR `address`, `network`, `blockheight` (`None` until confirmed), and `state_strings` — a portable, independently-verifiable proof.
+- **Crypto** — RFC-8785 JCS canonicalisation, SHA-256 state-chain linking, BIP-341 taproot key-chaining (pubkey **and** privkey), bech32m P2TR derivation. The write side (`bitcoin_tx.rs`: P2TR output construction, BIP-341 TapSighash, BIP-340 Schnorr signing, witness assembly) is byte-parity with JSS `token.js` and validated against the official BIP-340/341 test vectors. UTXO lookup and tx broadcast use the public [mempool.space](https://mempool.space/) API.
+- **Default network is `testnet4`** — anchoring runs against testnet4 via the public mempool API by default; mainnet is an explicit operator choice. git-marks are always-on and cost nothing; Bitcoin anchors are opt-in and reserved for records that warrant the sats.
+- **WAC condition** — `acl:ProvenanceAnchor` (`wac::anchor::ProvenanceAnchorEvaluator`) flags a resource as anchor-worthy, evaluated by the same `ConditionRegistry` as `PaymentCondition`.
+- **Surface** — `ProvenanceMark` persisted as `<resource>.prov.ttl` and emitted on the `Updates-Via` notification stream. Routes: `GET /{pod}/{path}.prov.ttl`, `GET /{pod}/_prov/{commit_sha}`, `POST /{pod}/_prov/anchor` (NIP-98, payment-gated).
+- **wasm-safe** — `GitMarker` / `BlockAnchorer` are `?Send` traits; all Bitcoin / mempool / process-spawning code is `#[cfg(not(target_arch = "wasm32"))]` behind feature `mrc20`.
+
+Modules: `provenance` (`ProvenanceMark`, `GitMark`, `BlockTrailAnchor`, `ProvenanceLog`, `EpochAccumulator`, `prov_ttl`), `mrc20`, `bitcoin_tx`, `wac::anchor`. Feature: `mrc20`. See [ADR-059](crates/solid-pod-rs/docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and the [provenance upgrade master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md).
+</details>
+
+---
+
+## Payments & web ledger
+
+solid-pod-rs inherits JSS's HTTP 402 economy and routes it end-to-end: a `PaymentCondition` in a WAC ACL gates a resource behind a price, the client pays, and the read succeeds. Settlement is **sovereign and Bitcoin-native** — sats over Bitcoin, no Ethereum or EVM. The same Bitcoin write-side that powers block-trail anchors also drives deposits, withdrawals, and the trading layer, so payments and provenance share one verified cryptographic core.
+
+<details>
+<summary><strong>Technical detail</strong></summary>
+
+- **Web Ledger** — multi-currency CRUD, per-read micropayments, `X-Balance` / `X-Cost` / `X-Pay-Currency` headers, `/pay/.info`, `/pay/.balance`, multi-chain balance gating.
+- **Deposits** — TXO and MRC20 deposit verification against real mempool UTXOs; per-user tweaked deposit addresses (`/pay/.address?user=<did>&chain=<id>`); claim / auto-detect.
+- **Markets** — order book (sell / swap) and a constant-product AMM pool, both routed through `PaymentStore` as the **sole ledger I/O path**.
+- **Replay protection** — every deposit passes `check_replay` / `record_replay`; double-spend of a settlement proof is rejected.
+- **Anchored settlement** — settlement receipts can carry a `git_commit_sha`, `txid`, and `blockheight`, binding a payment to the code commit that approved it and the Bitcoin block that settled it.
+
+The payment + provenance layers together form a verifiable, tamper-evident value-transfer substrate. See [Melvin Carvalho's Practical Guide to Solid](https://melvin.me/public/solid/) for a 10-part walkthrough of the JSS payment system, and the [master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md) §1 for the full inheritance matrix.
 </details>
 
 ---
@@ -355,6 +400,8 @@ solid-pod-rs is designed to be safe by default. The library rejects paths contai
 - **Password validation** — 8-char minimum (CWE-521).
 - **Atomic quota writes** — temp-file + rename prevents torn `.quota.json`.
 - **Webhook signing** — RFC 9421 Ed25519 over method, target-uri, content-type, content-digest, date, notification-id.
+- **WAC-gated git smart-HTTP** — every git route runs `enforce_read` / `enforce_write` before reaching CGI; the anonymous-push hole is closed (ADR-059).
+- **Payment replay protection** — settlement proofs pass `check_replay` / `record_replay`; `PaymentStore` is the sole ledger I/O path.
 
 See [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md) and the full [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md).
 </details>
@@ -496,6 +543,7 @@ Feature flags keep the dependency surface tight. A minimal NIP-98-only build is 
 | `config-loader` | off | Layered config loader with `JSS_*` env vars |
 | `webhook-signing` | off | RFC 9421 Ed25519 webhook signing |
 | `did-nostr` | off | did:nostr resolver in `interop` |
+| `mrc20` | off | Bitcoin block-trail anchors + taproot tx build/sign (BIP-340/341) for the provenance & payment layer |
 | `rate-limit` | off | Sliding-window LRU rate limiter |
 | `quota` | off | Per-pod `.quota.json` sidecar |
 

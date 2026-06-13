@@ -14,7 +14,7 @@ use the sibling crate [`solid-pod-rs-server`](../solid-pod-rs-server/).
 
 ```toml
 [dependencies]
-solid-pod-rs = "0.4.0-alpha.17"
+solid-pod-rs = "0.5.0-alpha.0"
 ```
 
 ```rust,no_run
@@ -24,6 +24,36 @@ use std::path::PathBuf;
 let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Compose with your framework; see examples/embed_in_actix.rs.
 ```
+
+## What's new in 0.5.0-alpha.0 (2026-06-13, provenance primitives — ADR-059)
+
+Two composable, cost-tiered **provenance primitives** become first-class, giving
+the pod **verifiable, tamper-evident traceability** over every change to its
+data, plus a sovereign, Bitcoin-settled trust ledger beneath it. See
+[ADR-059](docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and
+the [master plan](docs/design/provenance-upgrade-master-plan.md).
+
+- **git-marks** (cheap, always-on) — every LDP write (`PUT`/`POST`/`PATCH`)
+  becomes a git commit, captured as a `GitMark` and persisted as a PROV-O
+  sidecar at `<resource>.prov.ttl`. Content-addressed, append-only,
+  tamper-evident ordering of every write — and a queryable history of who wrote
+  what. Module `provenance`; native `GitMarker` in `solid-pod-rs-git`, no-op on
+  wasm.
+- **block-trails** (high-value, opt-in, feature `mrc20`) — a Bitcoin-taproot
+  -anchored, hash-chained MRC20 state trail. Verify **and** write side
+  (`bitcoin_tx.rs`: P2TR build, BIP-341 TapSighash, BIP-340 Schnorr signing) —
+  byte-parity with JSS `token.js`, validated against the official BIP-340/341
+  vectors. One instance of a general `ProvenanceTrail`; the payment token is
+  another. Anchors run against **testnet4** via the public mempool API by
+  default.
+- **composition** — `ProvenanceLog` records a git-mark on every write and adds a
+  Bitcoin anchor only when an ACL carries `acl:ProvenanceAnchor` or the record is
+  high-value. An **epoch Merkle root** batches many commits so one tx notarises
+  an entire epoch. New `_prov` routes: `GET /{pod}/{path}.prov.ttl`,
+  `GET /{pod}/_prov/{commit_sha}`, `POST /{pod}/_prov/anchor`.
+- **economy + hardening** — the routed web-ledger / order-book / AMM 402 economy
+  with replay protection (`PaymentStore` the sole ledger I/O), and WAC-gated git
+  smart-HTTP closing the anonymous-push hole.
 
 ## What's new in 0.4.0-alpha.15 (2026-05-30, JSS v0.0.204 sync)
 
@@ -87,6 +117,7 @@ a small WAC Turtle serializer quirk is tracked in
 | `config-loader`         | off     | Layered config loader with `JSS_*` env vars.  |
 | `webhook-signing`       | off     | RFC 9421 Ed25519 webhook signing.             |
 | `did-nostr`             | off     | did:nostr resolver in `interop`.              |
+| `mrc20`                 | off     | Bitcoin block-trail anchors + taproot tx build/sign (BIP-340/341). |
 | `rate-limit`            | off     | Sliding-window LRU rate limiter.              |
 | `quota`                 | off     | Per-pod `.quota.json` sidecar (atomic writes).|
 
@@ -104,6 +135,9 @@ a small WAC Turtle serializer quirk is tracked in
 | `notifications` | WebSocket, Webhook (RFC 9421 signed), legacy adapter.        |
 | `security`      | SSRF guard + dotfile allowlist + CORS + rate limiter.        |
 | `quota`         | Per-pod `.quota.json` sidecar with atomic writes.            |
+| `provenance`    | git-marks + block-trail anchors; `ProvenanceLog`, PROV-O sidecars, epoch Merkle batching. |
+| `payments`      | HTTP 402 web ledger, deposits, order book + AMM (Bitcoin-settled). |
+| `mrc20`         | Taproot MRC20 state trail (verify) + `bitcoin_tx` (build/sign). |
 | `multitenant`   | `PodResolver` trait; path + subdomain modes.                 |
 | `config`        | Layered configuration schema.                                |
 | `interop`       | `.well-known/solid`, WebFinger, NodeInfo 2.1, did:nostr.     |
