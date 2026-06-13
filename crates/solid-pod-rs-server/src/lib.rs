@@ -2988,20 +2988,26 @@ async fn handle_git(
     body: web::Bytes,
     state: web::Data<AppState>,
 ) -> HttpResponse {
+    use solid_pod_rs_git::auth::{BasicNostrExtractor, GitAuth};
     use solid_pod_rs_git::service::{GitHttpService, GitRequest};
 
     let path = req.uri().path().to_string();
 
     // Locate the pod's FS root: the first path segment after "/" is the
     // pod name (username/pubkey). The FS root is data_root/{pod_name}/.
-    let pod_name = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    let pod_name = path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
     let Some(ref data_root) = state.data_root else {
         return HttpResponse::NotImplemented().json(serde_json::json!({
             "error": "git requires fs-backend storage",
             "reason": "data_root_not_configured"
         }));
     };
-    let repo_root = data_root.join(pod_name);
+    let repo_root = data_root.join(&pod_name);
     if !repo_root.exists() {
         return HttpResponse::NotFound().json(serde_json::json!({"error": "pod not found"}));
     }
@@ -3025,6 +3031,32 @@ async fn handle_git(
         body: body.into(),
         host_url,
     };
+
+    // WAC gate (mirrors JSS `server.js` checkAccess before git, ~498-530).
+    // Git requests were previously handed straight to the CGI with no
+    // authorisation: a private pod's history was anonymously clonable and
+    // pushes were anonymous (R5 "No WAC" finding / ADR-059 D6). Resolve the
+    // caller's `did:nostr` from the git `Basic nostr:`/`Nostr` NIP-98
+    // credential — an absent or invalid credential resolves to anonymous,
+    // and WAC then decides, fail-closed. Enforce Read for clone/fetch and
+    // Write for push against the pod-root container ACL. `enforce_read`
+    // grants public pods to anonymous callers and replies 401 on a private
+    // pod so the git client knows to retry with credentials; `enforce_write`
+    // denies anonymous/unauthorised push.
+    let is_write = git_req.is_write();
+    let agent = match BasicNostrExtractor::new().authorise(&git_req).await {
+        Ok(pk) => Some(format!("did:nostr:{pk}")),
+        Err(_) => None,
+    };
+    let wac_path = format!("/{pod_name}/");
+    let wac = if is_write {
+        enforce_write(&state, &wac_path, AccessMode::Write, agent.as_deref()).await
+    } else {
+        enforce_read(&state, &wac_path, agent.as_deref()).await
+    };
+    if let Err(e) = wac {
+        return e.error_response();
+    }
 
     let service = GitHttpService::new(repo_root);
     match service.handle(git_req).await {
