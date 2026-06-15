@@ -512,6 +512,16 @@ impl SelfSignedVerifier for Nip98Verifier {
 // ---------------------------------------------------------------------------
 // WebID elevation helpers (lws-cid only)
 // ---------------------------------------------------------------------------
+//
+// I3 BOUNDARY (ADR-124 §7): `try_elevate` is the ONLY VM-parsing site in the
+// crate. It runs strictly AFTER NIP-98 Schnorr verification has already
+// succeeded against the RAW event pubkey (see `verify_at` / the
+// `VerifiedSubject` construction above); a mismatch here merely declines the
+// optional WebID upgrade and falls back to `urn:nip98:<pubkey>`. It can NEVER
+// authenticate, and re-encoding any verification method cannot touch the auth
+// decision. The `feb<hex>` needle below is the WebID-side `bip340-pub`
+// multibase (D-3) — kept in exact lockstep with `webid.rs` (D-2). Legacy
+// `publicKeyHex` is still matched for back-compat with pre-pivot profiles.
 
 #[cfg(feature = "lws-cid")]
 async fn try_elevate(

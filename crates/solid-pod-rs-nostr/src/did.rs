@@ -7,14 +7,19 @@
 //! - `JavaScriptSolidServer/src/auth/did-nostr.js:94-107` — `alsoKnownAs`
 //!   array is the canonical carrier for the WebID link.
 //!
+//! The DID Document shape is the canonical `DIDNostr` / `Multikey` form
+//! (ADR-125 — `did:nostr` CG / melvincarvalho create-agent), superseding the
+//! 2019-suite / `publicKeyHex` shape (ADR-074 §D2/§D3/§D4/§D13).
+//!
 //! The canonical implementations live in `solid_pod_rs::did_nostr_types`
 //! (feature `did-nostr-types`). This module re-exports them for backward
 //! compatibility.
 
 // Re-export canonical types from the core crate.
 pub use solid_pod_rs::did_nostr_types::{
-    did_nostr_uri, format_multibase_schnorr, is_valid_hex_pubkey, render_did_document_tier1,
-    render_did_document_tier3, verify_webid_tag, well_known_path, NostrPubkey, ServiceEntry,
+    did_nostr_uri, format_multibase_schnorr, is_valid_hex_pubkey, parse_multibase_schnorr,
+    render_did_document, render_did_document_tier1, render_did_document_tier3, verify_webid_tag,
+    well_known_path, NostrPubkey, ServiceEntry,
 };
 
 #[cfg(test)]
@@ -56,27 +61,34 @@ mod tests {
     }
 
     #[test]
-    fn tier1_document_has_required_fields() {
+    fn canonical_document_has_required_fields() {
         let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
-        let doc = render_did_document_tier1(&pk);
-        assert_eq!(doc["id"], format!("did:nostr:{PK_HEX}"));
-        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
-        assert_eq!(
-            doc["@context"][1], "https://w3id.org/security/suites/secp256k1-2019/v1",
-            "Tier-1 must include the secp256k1-2019 suite context so \
-             SchnorrSecp256k1VerificationKey2019 resolves under JSON-LD"
-        );
-        assert!(doc["alsoKnownAs"].is_array());
-        assert_eq!(doc["alsoKnownAs"].as_array().unwrap().len(), 0);
+        let did = format!("did:nostr:{PK_HEX}");
+        let doc = render_did_document(&pk);
+        assert_eq!(doc["id"], did);
+        assert_eq!(doc["@context"][0], "https://w3id.org/did");
+        assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
+        assert_eq!(doc["type"], "DIDNostr");
+        // service:[] is the canonical create-agent form; no top-level alsoKnownAs.
+        assert!(doc["service"].as_array().unwrap().is_empty());
+        assert!(doc.get("alsoKnownAs").is_none());
 
         let vm = &doc["verificationMethod"][0];
-        assert_eq!(vm["type"], "SchnorrSecp256k1VerificationKey2019");
-        assert_eq!(vm["publicKeyHex"], PK_HEX);
-        assert!(vm["publicKeyMultibase"].as_str().unwrap().starts_with('z'));
+        assert_eq!(vm["type"], "Multikey");
+        assert!(vm.get("publicKeyHex").is_none());
+        assert_eq!(vm["publicKeyMultibase"], format!("fe70102{PK_HEX}"));
+        assert_eq!(doc["authentication"][0], "#key1");
+        assert_eq!(doc["assertionMethod"][0], "#key1");
     }
 
     #[test]
-    fn tier3_document_carries_webid_and_services() {
+    fn tier1_alias_emits_canonical_document() {
+        let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
+        assert_eq!(render_did_document_tier1(&pk), render_did_document(&pk));
+    }
+
+    #[test]
+    fn tier3_document_carries_webid_and_services_as_extensions() {
         let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
         let webid = "https://alice.example/profile/card#me";
         let service = ServiceEntry {
@@ -86,17 +98,13 @@ mod tests {
             extra: None,
         };
         let doc = render_did_document_tier3(&pk, Some(webid), &[service]);
+        assert_eq!(doc["type"], "DIDNostr");
+        assert_eq!(doc["verificationMethod"][0]["type"], "Multikey");
+        assert_eq!(doc["authentication"][0], "#key1");
+        // agentbox extensions.
         assert_eq!(doc["alsoKnownAs"][0], webid);
-        assert_eq!(
-            doc["verificationMethod"][0]["type"],
-            "SchnorrSecp256k1VerificationKey2019"
-        );
         assert_eq!(doc["service"][0]["type"], "SolidWebID");
         assert_eq!(doc["service"][0]["serviceEndpoint"], webid);
-        assert_eq!(
-            doc["authentication"][0],
-            format!("did:nostr:{PK_HEX}#nostr-schnorr")
-        );
     }
 
     #[test]
@@ -116,19 +124,25 @@ mod tests {
     }
 
     #[test]
-    fn tier3_without_webid_has_empty_also_known_as() {
+    fn tier3_without_webid_or_services_is_canonical() {
         let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
         let doc = render_did_document_tier3(&pk, None, &[]);
-        assert!(doc["alsoKnownAs"].as_array().unwrap().is_empty());
+        assert_eq!(doc, render_did_document(&pk));
+        assert!(doc.get("alsoKnownAs").is_none());
+        assert!(doc["service"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn multibase_schnorr_is_deterministic() {
+    fn multibase_schnorr_round_trips_canonical() {
         let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
         let a = format_multibase_schnorr(&pk.0);
-        let b = format_multibase_schnorr(&pk.0);
-        assert_eq!(a, b);
-        assert!(a.starts_with('z'));
-        assert!(a.len() > 10);
+        assert_eq!(a, format_multibase_schnorr(&pk.0), "deterministic");
+        assert_eq!(a, format!("fe70102{PK_HEX}"));
+        assert_eq!(a.len(), 71);
+        assert_eq!(a, a.to_lowercase());
+        // ACCEPT path: round-trips to the identical key (I2).
+        assert_eq!(parse_multibase_schnorr(&a).unwrap(), pk);
+        // Reject the pre-pivot z-base58 form.
+        assert!(parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err());
     }
 }

@@ -305,52 +305,69 @@ pub mod did_nostr {
         )
     }
 
-    /// Build a minimal DID Doc for publication at the well-known URL.
-    /// Tier-1 schema (matches JSS): `id`, `alsoKnownAs`, and a single
-    /// `verificationMethod` entry of type
-    /// `SchnorrSecp256k1VerificationKey2019` derived from the x-only pubkey.
+    /// Build the canonical `did:nostr` DID Doc for publication at the
+    /// well-known URL (ADR-125 — supersedes ADR-074 §D2/§D3/§D4/§D13).
     ///
-    /// Per ADR-074 D1 (cross-system DID:Nostr canonicalisation): all DreamLab
-    /// emitters MUST use `SchnorrSecp256k1VerificationKey2019` (the only
-    /// published W3C secp256k1 Schnorr suite). The legacy `NostrSchnorrKey2024`
-    /// term was a forum invention that no W3C verifier can resolve. Tier-1
-    /// includes the secp256k1-2019 suite context so the term resolves.
+    /// The single published form: `@context`
+    /// `["https://w3id.org/did", "https://w3id.org/nostr/context"]`,
+    /// top-level `type: "DIDNostr"`, a single `Multikey` verification method
+    /// with `publicKeyMultibase: "fe70102<hex>"`, fragment `#key1`, and
+    /// `service: []`. The 2019 suite + `publicKeyHex` + `z`-base58 multibase
+    /// are dropped. No dual-publish.
+    ///
+    /// `also_known_as` is an agentbox extension (C4): when non-empty it is
+    /// surfaced as a top-level `alsoKnownAs` link; the canonical create-agent
+    /// form carries none.
     ///
     /// NOTE: The canonical DID:nostr types (including `NostrPubkey`,
-    /// `render_did_document_tier1`, `render_did_document_tier3`) now live
-    /// in [`crate::did_nostr_types`] (feature `did-nostr-types`). This
+    /// `render_did_document`, `render_did_document_tier3`) live in
+    /// [`crate::did_nostr_types`] (feature `did-nostr-types`). This
     /// convenience wrapper accepts a raw hex string and merges
-    /// `also_known_as` into the Tier-1 skeleton. New code should prefer
+    /// `also_known_as` into the canonical skeleton. New code should prefer
     /// the canonical types directly.
     pub fn did_nostr_document(pubkey: &str, also_known_as: &[String]) -> serde_json::Value {
-        // Delegate to the canonical Tier-1 renderer when the pubkey
-        // parses cleanly; fall back to inline JSON for malformed input
-        // (preserves backward-compat — callers never saw an error here).
+        // Delegate to the canonical renderer when the pubkey parses cleanly;
+        // fall back to inline JSON for malformed input (preserves
+        // backward-compat — callers never saw an error here).
         #[cfg(feature = "did-nostr-types")]
         if let Ok(pk) = crate::did_nostr_types::NostrPubkey::from_hex(pubkey) {
-            let mut doc = crate::did_nostr_types::render_did_document_tier1(&pk);
+            let mut doc = crate::did_nostr_types::render_did_document(&pk);
             if !also_known_as.is_empty() {
                 doc["alsoKnownAs"] = serde_json::json!(also_known_as);
             }
             return doc;
         }
 
-        // Fallback: raw JSON construction (identical output shape minus
-        // publicKeyMultibase, which requires valid 32-byte key material).
-        serde_json::json!({
+        // Fallback for malformed hex (D-1 fix, ADR-124 §7 / I2).
+        //
+        // A malformed pubkey cannot produce the `fe70102` framing, so we must
+        // NEVER emit a `Multikey` verification method without its
+        // `publicKeyMultibase` — a keyless `Multikey` is an I2 violation (the
+        // VM would advertise a key type it cannot back). The signature is
+        // infallible by contract (callers never saw an error here), so instead
+        // of erroring we emit the canonical envelope with an EMPTY
+        // `verificationMethod` (and, in lockstep, empty `authentication` /
+        // `assertionMethod`, since `#key1` no longer resolves). The
+        // `did:nostr:<pubkey>` body and the canonical context/type are
+        // preserved verbatim. Well-formed input always takes the delegating
+        // branch above and carries the full `Multikey` VM.
+        let did = format!("did:nostr:{pubkey}");
+        let mut doc = serde_json::json!({
             "@context": [
-                "https://www.w3.org/ns/did/v1",
-                "https://w3id.org/security/suites/secp256k1-2019/v1"
+                "https://w3id.org/did",
+                "https://w3id.org/nostr/context"
             ],
-            "id": format!("did:nostr:{}", pubkey),
-            "alsoKnownAs": also_known_as,
-            "verificationMethod": [{
-                "id": format!("did:nostr:{}#nostr-schnorr", pubkey),
-                "type": "SchnorrSecp256k1VerificationKey2019",
-                "controller": format!("did:nostr:{}", pubkey),
-                "publicKeyHex": pubkey,
-            }]
-        })
+            "id": did,
+            "type": "DIDNostr",
+            "verificationMethod": [],
+            "authentication": [],
+            "assertionMethod": [],
+            "service": []
+        });
+        if !also_known_as.is_empty() {
+            doc["alsoKnownAs"] = serde_json::json!(also_known_as);
+        }
+        doc
     }
 
     /// Parsed DID Doc. Only the subset of fields relevant to WebID

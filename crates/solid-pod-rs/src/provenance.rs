@@ -72,6 +72,83 @@ pub struct GitMark {
     pub parent: Option<String>,
 }
 
+/// The on-disk `gitmark.json` envelope — the Carvalho-lineage substrate
+/// shape (ADR-124, C7), verified byte-for-byte against
+/// `microfed/gitmark.json`.
+///
+/// **Exactly five keys**: `@id`, `genesis`, `nick`, `package`, `repository`.
+/// `@context`/`@type`/`commit`/`parent` are deliberately ABSENT — they are
+/// not in the ground-truth file (parent-linkage lives in `blocktrails.json`
+/// `states[]`/`txo[]`, not here). For byte-parity with create-agent, emit
+/// only these five keys.
+///
+/// `@id` is `gitmark:<commit_sha>:<vout>`; `genesis` is
+/// `gitmark:<first-commit-sha>:0` (and equals `@id` for the first mark).
+/// This is a *projection* of the internal [`GitMark`] — the in-memory
+/// `{commit_sha, repo, branch, parent}` shape (used by the PROV-O sidecar +
+/// the composition log) is unchanged; only the on-disk substrate file
+/// adopts this shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMarkEnvelope {
+    /// `gitmark:<commit_sha>:<vout>` — the single-use-seal coordinate.
+    #[serde(rename = "@id")]
+    pub id: String,
+    /// `gitmark:<first-commit-sha>:0` — the trail's genesis seal.
+    pub genesis: String,
+    /// Short human name for the mark (e.g. the package/pod nickname).
+    pub nick: String,
+    /// Pod-relative package path (e.g. `./package.json`).
+    pub package: String,
+    /// Repo-relative root (e.g. `./`).
+    pub repository: String,
+}
+
+impl GitMark {
+    /// Project this internal [`GitMark`] onto the canonical 5-key
+    /// `gitmark.json` envelope (ADR-124, C7).
+    ///
+    /// - `vout` is the seal output index for this mark's `@id`
+    ///   (`gitmark:<commit_sha>:<vout>`).
+    /// - `genesis_sha` is the trail's first commit SHA; pass this mark's own
+    ///   `commit_sha` for the genesis mark (then `genesis == @id`).
+    /// - `nick`/`package` are the additive projection fields; `repository`
+    ///   defaults to `./` (repo-relative root, matching the ground truth).
+    ///
+    /// `branch`/`parent` are intentionally NOT emitted — they are not part of
+    /// the on-disk envelope. Parent-linkage is carried by `blocktrails.json`.
+    #[must_use]
+    pub fn to_gitmark_envelope(
+        &self,
+        vout: u32,
+        genesis_sha: &str,
+        nick: impl Into<String>,
+        package: impl Into<String>,
+    ) -> GitMarkEnvelope {
+        GitMarkEnvelope {
+            id: format!("gitmark:{}:{vout}", self.commit_sha),
+            genesis: format!("gitmark:{genesis_sha}:0"),
+            nick: nick.into(),
+            package: package.into(),
+            repository: "./".to_string(),
+        }
+    }
+
+    /// Serialise this mark to the canonical `gitmark.json` text (5-key
+    /// envelope, ADR-124). Convenience over [`Self::to_gitmark_envelope`] +
+    /// `serde_json::to_string_pretty`.
+    pub fn to_gitmark_json(
+        &self,
+        vout: u32,
+        genesis_sha: &str,
+        nick: impl Into<String>,
+        package: impl Into<String>,
+    ) -> Result<String, ProvenanceError> {
+        let env = self.to_gitmark_envelope(vout, genesis_sha, nick, package);
+        serde_json::to_string_pretty(&env)
+            .map_err(|e| ProvenanceError::Store(format!("gitmark.json serialise: {e}")))
+    }
+}
+
 /// The expensive-tier Bitcoin anchor for a record.
 ///
 /// Reuses the existing [`crate::mrc20`] crypto (`Mrc20State`, `bt_address`,
@@ -107,6 +184,83 @@ pub struct BlockTrailAnchor {
     /// against and reports `false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<String>,
+}
+
+/// A single UTXO step in a [`BlocktrailEnvelope`] `txo[]` chain — the
+/// BIP-341 single-use-seal coordinate (`<txid>:<vout>`) plus its
+/// confirmation status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlocktrailTxo {
+    /// `<txid>:<vout>` — the seal output this state was sealed under.
+    pub outpoint: String,
+    /// Confirmation height; `None` until the sealing tx confirms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blockheight: Option<u64>,
+}
+
+/// The on-disk `blocktrails.json` envelope — the 4th web-contract layer
+/// (ADR-124 §2.2). The `gitmark.json` substrate anchors the reducer/state/
+/// ledger layers; `blocktrails.json` is the **trail** layer.
+///
+/// Per the reconciliation (C6): this shape is reconstructed from the
+/// `webcontracts.org` / "Melvo Predicts" reference pattern — it is NOT
+/// byte-verifiable against a fetchable create-agent artefact (the
+/// create-agent repo contains only `gitmark.json`). Only `gitmark.json` is
+/// "verbatim".
+///
+/// Shape: `@type "Blocktrail"`, `profile "gitmark"` (the anchoring
+/// substrate), a BIP-341 single-use-seal chain expressed as `states[]`
+/// (the commit SHAs — the ledger states, in order) paired with `txo[]` (the
+/// UTXO chain that seals them). `genesis` ties back to the `gitmark.json`
+/// genesis seal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlocktrailEnvelope {
+    /// `gitmark:<first-commit-sha>:0` — the genesis seal (shared with the
+    /// `gitmark.json` `genesis`).
+    #[serde(rename = "@id")]
+    pub id: String,
+    /// Always `"Blocktrail"`.
+    #[serde(rename = "@type")]
+    pub type_: String,
+    /// Anchoring substrate profile — always `"gitmark"` here.
+    pub profile: String,
+    /// `gitmark:<first-commit-sha>:0`.
+    pub genesis: String,
+    /// The ledger states in order — commit SHAs the trail notarises.
+    pub states: Vec<String>,
+    /// The BIP-341 single-use-seal UTXO chain sealing `states[]` (1:1 order).
+    pub txo: Vec<BlocktrailTxo>,
+}
+
+impl BlocktrailEnvelope {
+    /// Build a `Blocktrail` over an ordered set of commit SHAs (`states`)
+    /// and their sealing UTXO chain (`txo`), profiled on the `gitmark`
+    /// substrate (ADR-124 §2.2, C6 reference shape).
+    ///
+    /// `genesis_sha` is the trail's first commit SHA; the envelope's `@id`
+    /// and `genesis` are both `gitmark:<genesis_sha>:0`.
+    #[must_use]
+    pub fn new_gitmark_profile(
+        genesis_sha: &str,
+        states: Vec<String>,
+        txo: Vec<BlocktrailTxo>,
+    ) -> Self {
+        let genesis = format!("gitmark:{genesis_sha}:0");
+        Self {
+            id: genesis.clone(),
+            type_: "Blocktrail".to_string(),
+            profile: "gitmark".to_string(),
+            genesis,
+            states,
+            txo,
+        }
+    }
+
+    /// Serialise to the canonical `blocktrails.json` text.
+    pub fn to_blocktrails_json(&self) -> Result<String, ProvenanceError> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| ProvenanceError::Store(format!("blocktrails.json serialise: {e}")))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -790,6 +944,104 @@ mod tests {
         let json = serde_json::to_string(&g).unwrap();
         let back: GitMark = serde_json::from_str(&json).unwrap();
         assert_eq!(g, back);
+    }
+
+    // ── ADR-124: gitmark.json / blocktrails.json substrate envelopes ──────
+
+    #[test]
+    fn gitmark_envelope_has_exactly_five_keys() {
+        // C7 + CI invariant #6: gitmark.json is EXACTLY {@id, genesis, nick,
+        // package, repository}. No @context/@type/commit/parent.
+        let g = sample_git();
+        let env = g.to_gitmark_envelope(0, &g.commit_sha, "gitmark", "./package.json");
+        let v: serde_json::Value = serde_json::to_value(&env).unwrap();
+        let obj = v.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["@id", "genesis", "nick", "package", "repository"],
+            "gitmark.json must be exactly the 5-key envelope (C7)"
+        );
+        // The four invented keys must be absent.
+        for forbidden in ["@context", "@type", "commit", "parent"] {
+            assert!(
+                !obj.contains_key(forbidden),
+                "gitmark.json must NOT carry `{forbidden}` (not in ground truth)"
+            );
+        }
+    }
+
+    #[test]
+    fn gitmark_envelope_projection_values() {
+        let g = sample_git();
+        // Genesis mark: genesis == @id.
+        let env = g.to_gitmark_envelope(0, &g.commit_sha, "pod", "./package.json");
+        assert_eq!(env.id, format!("gitmark:{}:0", g.commit_sha));
+        assert_eq!(env.genesis, format!("gitmark:{}:0", g.commit_sha));
+        assert_eq!(env.repository, "./");
+        // Non-genesis mark with a distinct genesis SHA + vout.
+        let env2 = g.to_gitmark_envelope(2, "00".repeat(20).as_str(), "pod", "./package.json");
+        assert_eq!(env2.id, format!("gitmark:{}:2", g.commit_sha));
+        assert_eq!(env2.genesis, format!("gitmark:{}:0", "00".repeat(20)));
+        assert_ne!(env2.id, env2.genesis);
+    }
+
+    #[test]
+    fn gitmark_json_matches_carvalho_shape() {
+        // Mirrors microfed/gitmark.json key set + ordering-agnostic shape.
+        let g = sample_git();
+        let json = g.to_gitmark_json(0, &g.commit_sha, "gitmark", "./package.json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["@id"], format!("gitmark:{}:0", g.commit_sha));
+        assert_eq!(v["nick"], "gitmark");
+        assert_eq!(v["package"], "./package.json");
+        assert_eq!(v["repository"], "./");
+    }
+
+    #[test]
+    fn blocktrail_envelope_shape() {
+        // C6 webcontracts reference shape: @type Blocktrail, profile gitmark,
+        // states[] = commit SHAs, txo[] = UTXO chain.
+        let g = sample_git();
+        let txo = vec![BlocktrailTxo {
+            outpoint: format!("{}:0", "ab".repeat(32)),
+            blockheight: Some(840_000),
+        }];
+        let bt = BlocktrailEnvelope::new_gitmark_profile(
+            &g.commit_sha,
+            vec![g.commit_sha.clone()],
+            txo,
+        );
+        assert_eq!(bt.type_, "Blocktrail");
+        assert_eq!(bt.profile, "gitmark");
+        assert_eq!(bt.id, format!("gitmark:{}:0", g.commit_sha));
+        assert_eq!(bt.genesis, bt.id);
+        assert_eq!(bt.states, vec![g.commit_sha.clone()]);
+        assert_eq!(bt.txo.len(), 1);
+
+        // JSON shape: @type / profile / states / txo present.
+        let v: serde_json::Value = serde_json::from_str(&bt.to_blocktrails_json().unwrap()).unwrap();
+        assert_eq!(v["@type"], "Blocktrail");
+        assert_eq!(v["profile"], "gitmark");
+        assert!(v["states"].is_array());
+        assert!(v["txo"].is_array());
+        assert_eq!(v["txo"][0]["outpoint"], format!("{}:0", "ab".repeat(32)));
+    }
+
+    #[test]
+    fn blocktrail_envelope_round_trips() {
+        let bt = BlocktrailEnvelope::new_gitmark_profile(
+            &"cd".repeat(20),
+            vec!["aa".repeat(20), "bb".repeat(20)],
+            vec![
+                BlocktrailTxo { outpoint: "t0:0".into(), blockheight: None },
+                BlocktrailTxo { outpoint: "t1:0".into(), blockheight: Some(1) },
+            ],
+        );
+        let json = serde_json::to_string(&bt).unwrap();
+        let back: BlocktrailEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(bt, back);
     }
 
     #[test]

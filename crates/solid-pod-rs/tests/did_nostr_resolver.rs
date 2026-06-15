@@ -56,28 +56,82 @@ fn did_nostr_well_known_url_format() {
 // --- test-2 --------------------------------------------------------------
 
 #[test]
-fn did_nostr_document_emits_minimal_schema() {
+fn did_nostr_document_emits_canonical_schema() {
+    // ADR-125: canonical DIDNostr / Multikey form. The pre-pivot 2019-suite
+    // + publicKeyHex + z-base58 shape is superseded.
     let also = vec!["https://alice.example/me#i".to_string()];
     let doc = did_nostr_document(TEST_PUBKEY, &also);
+    let did = format!("did:nostr:{TEST_PUBKEY}");
 
-    assert_eq!(doc["id"], format!("did:nostr:{TEST_PUBKEY}"));
+    assert_eq!(doc["id"], did);
+    assert_eq!(doc["type"], "DIDNostr");
+    // alsoKnownAs is an agentbox extension (C4), surfaced when supplied.
     assert_eq!(doc["alsoKnownAs"][0], "https://alice.example/me#i");
 
     let vm = &doc["verificationMethod"][0];
-    // ADR-074 D1: canonical W3C Schnorr suite identifier.
-    assert_eq!(vm["type"], "SchnorrSecp256k1VerificationKey2019");
-    assert_eq!(vm["controller"], format!("did:nostr:{TEST_PUBKEY}"));
-    assert_eq!(vm["publicKeyHex"], TEST_PUBKEY);
-    assert_eq!(vm["id"], format!("did:nostr:{TEST_PUBKEY}#nostr-schnorr"));
+    assert_eq!(vm["type"], "Multikey");
+    assert_eq!(vm["controller"], did);
+    assert_eq!(vm["id"], format!("{did}#key1"));
+    // The 2019 suite + publicKeyHex are GONE; publicKeyMultibase is canonical.
+    assert!(vm.get("publicKeyHex").is_none(), "publicKeyHex must be dropped");
+    let mb = vm["publicKeyMultibase"].as_str().expect("publicKeyMultibase");
+    assert_eq!(mb, format!("fe70102{TEST_PUBKEY}"), "fe70102 + x-only hex (I2)");
+    assert_eq!(mb.len(), 71);
+    assert_eq!(mb, mb.to_lowercase(), "lowercase hex (C3)");
+    // I2: multibase body round-trips to the DID body.
+    assert_eq!(&mb[7..], TEST_PUBKEY);
 
-    // Tier-1 must also include the secp256k1-2019 suite context.
+    // Canonical contexts (ADR-125 §2).
     let contexts = doc["@context"].as_array().expect("@context array");
+    assert_eq!(contexts[0], "https://w3id.org/did");
+    assert_eq!(contexts[1], "https://w3id.org/nostr/context");
+
+    // Fragment-only auth/assertion; canonical service:[] (unset by extension
+    // here because alsoKnownAs is the only extension supplied).
+    assert_eq!(doc["authentication"][0], "#key1");
+    assert_eq!(doc["assertionMethod"][0], "#key1");
+    assert!(doc["service"].as_array().unwrap().is_empty());
+}
+
+// --- test-2b (D-1 regression) --------------------------------------------
+
+/// D-1 (ADR-124 §7 / I2): malformed hex MUST NOT yield a keyless `Multikey`.
+///
+/// A pubkey that does not parse as 32-byte x-only hex cannot produce the
+/// `fe70102` framing. The fallback path must emit an EMPTY
+/// `verificationMethod` (and empty `authentication`/`assertionMethod`), never
+/// a `Multikey` VM lacking `publicKeyMultibase`. The canonical envelope
+/// (context/id/type/service) is still preserved.
+#[test]
+fn did_nostr_document_rejects_keyless_multikey_for_malformed_hex() {
+    // Not 64 hex chars → cannot frame as fe70102 + x-only.
+    let malformed = "not-a-valid-pubkey";
+    let doc = did_nostr_document(malformed, &[]);
+
+    // Canonical envelope preserved.
+    assert_eq!(doc["id"], format!("did:nostr:{malformed}"));
+    assert_eq!(doc["type"], "DIDNostr");
+    assert_eq!(doc["@context"][0], "https://w3id.org/did");
+    assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
+
+    // The critical I2 guarantee: verificationMethod is EMPTY, not a keyless
+    // Multikey.
+    let vms = doc["verificationMethod"].as_array().expect("vm array");
     assert!(
-        contexts
-            .iter()
-            .any(|c| c == "https://w3id.org/security/suites/secp256k1-2019/v1"),
-        "DID Doc must include the secp256k1-2019 suite context (ADR-074 D1)",
+        vms.is_empty(),
+        "malformed hex must yield verificationMethod:[] (no keyless Multikey)"
     );
+    // No Multikey without a publicKeyMultibase anywhere in the doc.
+    for vm in vms {
+        assert!(
+            !(vm["type"] == "Multikey" && vm.get("publicKeyMultibase").is_none()),
+            "keyless Multikey VM is an I2 violation"
+        );
+    }
+    // Auth/assertion references dropped in lockstep (no dangling #key1).
+    assert!(doc["authentication"].as_array().unwrap().is_empty());
+    assert!(doc["assertionMethod"].as_array().unwrap().is_empty());
+    assert!(doc["service"].as_array().unwrap().is_empty());
 }
 
 // --- test-3 --------------------------------------------------------------

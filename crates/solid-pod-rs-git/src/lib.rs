@@ -9,6 +9,7 @@
 //! - [`auth`]    — `Basic nostr:<token>` and NIP-98 bearer auth extractors.
 //! - [`guard`]   — Path-traversal rejection and repo-slug extraction.
 //! - [`config`]  — Git repository config helpers (`receive.denyCurrentBranch`, etc.).
+//! - [`identity`] — Pod-git-root agent identity ([`write_agent_identity`]): canonical `agent.did.json` + `git config nostr.privkey` (ADR-124 §5.3).
 //! - [`mark`]    — [`ShellGitMarker`]: native `GitMarker` (write-as-commit provenance).
 //! - [`error`]   — [`GitError`] enum with HTTP status-code mapping.
 //!
@@ -52,6 +53,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod guard;
+pub mod identity;
 pub mod init;
 pub mod mark;
 pub mod service;
@@ -65,6 +67,9 @@ pub use auth::{AuthError, BasicNostrExtractor, GitAuth};
 pub use config::{find_git_dir, GitDir};
 pub use error::GitError;
 pub use guard::{extract_repo_slug, path_safe};
+pub use identity::{
+    write_agent_identity, AgentIdentityWritten, AGENT_DID_FILE, NOSTR_PRIVKEY_KEY,
+};
 pub use init::GitAutoInit;
 pub use mark::ShellGitMarker;
 pub use service::{GitHttpService, GitRequest, GitResponse, DEFAULT_GIT_HTTP_BACKEND};

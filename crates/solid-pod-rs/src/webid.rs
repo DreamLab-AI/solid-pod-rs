@@ -91,8 +91,26 @@ pub fn generate_webid_html_with_issuer(
     // Keep context shape mutable in case future rows add more terms.
     let _ = context.as_object_mut();
 
-    // CID v1 verificationMethod: Nostr x-only BIP-340 pubkey encoded
-    // as hex multibase (`f` prefix + `eb` bip340-pub multicodec + hex).
+    // CID v1 verificationMethod: Nostr x-only BIP-340 pubkey encoded as hex
+    // multibase: `f` (base16-lower multibase) + `eb` (multicodec
+    // `bip340-pub`, the 32-byte x-only form) + the 64-char x-only hex.
+    //
+    // D-2 (ADR-124 §7) — `feb` is the DELIBERATE WebID-side standard and is
+    // INTENTIONALLY distinct from the DID-document `fe70102`
+    // (`secp256k1-pub` = `0xe7` over the 33-byte SEC1-compressed even-y
+    // point). The two surfaces use two different W3C-registered multicodecs
+    // by design:
+    //   - DID doc  (did_nostr_types::format_multibase_schnorr): `fe70102`
+    //     — secp256k1-pub, 33-byte compressed (02 ‖ X), the create-agent /
+    //     did-nostr-CG canonical form.
+    //   - WebID CID v1 profile (here): `feb` — bip340-pub, 32-byte x-only,
+    //     the Controlled-Identifier-document form.
+    // Both round-trip to the same raw x-only pubkey, so I1/I2 hold across
+    // both. This is NOT drift to reconcile — aligning `feb`→`fe70102` here
+    // would mis-tag an x-only key as a compressed key. Kept in lockstep with
+    // the `try_elevate` needle in `auth/nip98.rs` (D-3), which matches this
+    // exact `feb<hex>` string. The elevation path runs AFTER NIP-98 Schnorr
+    // verification and never gates auth (I3).
     let pubkey_multibase = format!("feb{pubkey}");
 
     let mut body = json!({
