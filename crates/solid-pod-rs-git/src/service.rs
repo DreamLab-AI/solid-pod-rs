@@ -37,6 +37,21 @@ use crate::guard::{extract_repo_slug, path_safe};
 /// default matches Debian/Ubuntu).
 pub const DEFAULT_GIT_HTTP_BACKEND: &str = "/usr/lib/git-core/git-http-backend";
 
+/// CORS headers emitted on every git HTTP response — the OPTIONS preflight,
+/// the CGI output, **and** (from a server's WAC gate) the 401/402/403 denials
+/// (#371/#548). Single source of truth so a browser-based git client (e.g.
+/// `jss.live/git/`) always sees the real status instead of a generic CORS
+/// error. `Git-Protocol` is allowed so git protocol-v2 clients can send their
+/// capability header cross-origin.
+pub const GIT_CORS_HEADERS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    (
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, Git-Protocol",
+    ),
+];
+
 /// Opaque HTTP request shape consumed by the service.
 ///
 /// The crate stays intentionally binder-agnostic — callers (axum,
@@ -216,17 +231,10 @@ impl GitHttpService {
         if req.method.eq_ignore_ascii_case("OPTIONS") {
             return Ok(GitResponse {
                 status: 200,
-                headers: vec![
-                    ("access-control-allow-origin".into(), "*".into()),
-                    (
-                        "access-control-allow-methods".into(),
-                        "GET, POST, OPTIONS".into(),
-                    ),
-                    (
-                        "access-control-allow-headers".into(),
-                        "Content-Type, Authorization".into(),
-                    ),
-                ],
+                headers: GIT_CORS_HEADERS
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
                 body: Bytes::new(),
             });
         }
@@ -318,6 +326,24 @@ impl GitHttpService {
     }
 }
 
+/// Resolve the `CONTENT_LENGTH` CGI variable for a buffered git request
+/// (#561). Prefers the buffered body's real length: git sends packs larger
+/// than `http.postBuffer` (1 MiB default) with `Transfer-Encoding: chunked`
+/// and **no** `Content-Length`, so trusting the header reported "0 bytes" and
+/// `receive-pack` died with "the remote end hung up unexpectedly" on any push
+/// over 1 MiB. The body is already buffered here, so its length is
+/// authoritative; the header (then "0") is only the empty-body fallback.
+fn resolve_content_length(body_len: usize, headers: &[(String, String)]) -> String {
+    if body_len > 0 {
+        return body_len.to_string();
+    }
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "0".to_string())
+}
+
 /// Core CGI driver — shared by all routes.
 async fn spawn_cgi(
     backend: &Path,
@@ -358,12 +384,12 @@ async fn spawn_cgi(
         let kl = k.to_lowercase();
         if kl == "content-type" {
             env.insert("CONTENT_TYPE".into(), v.clone());
-        } else if kl == "content-length" {
-            env.insert("CONTENT_LENGTH".into(), v.clone());
         }
     }
-    env.entry("CONTENT_LENGTH".into())
-        .or_insert_with(|| req.body.len().to_string());
+    env.insert(
+        "CONTENT_LENGTH".into(),
+        resolve_content_length(req.body.len(), &req.headers),
+    );
     env.entry("CONTENT_TYPE".into()).or_default();
 
     if git_dir.is_regular {
@@ -471,16 +497,10 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
         }
     }
 
-    // CORS headers (JSS lines 218-220).
-    headers.push(("Access-Control-Allow-Origin".into(), "*".into()));
-    headers.push((
-        "Access-Control-Allow-Methods".into(),
-        "GET, POST, OPTIONS".into(),
-    ));
-    headers.push((
-        "Access-Control-Allow-Headers".into(),
-        "Content-Type, Authorization".into(),
-    ));
+    // CORS headers (JSS lines 218-220) — single source of truth (#371/#548).
+    for (k, v) in GIT_CORS_HEADERS {
+        headers.push((k.to_string(), v.to_string()));
+    }
 
     Ok(GitResponse {
         status,
@@ -509,6 +529,26 @@ mod tests {
         async fn authorise(&self, _req: &GitRequest) -> Result<String, AuthError> {
             Ok("tester".to_string())
         }
+    }
+
+    #[test]
+    fn content_length_prefers_buffered_body_over_header() {
+        // #561: a chunked push has a non-empty body but no Content-Length
+        // header — the buffered length must win, not the missing/"0" header.
+        let headers = vec![("Transfer-Encoding".into(), "chunked".into())];
+        assert_eq!(resolve_content_length(4096, &headers), "4096");
+
+        // A bogus/stale header is overridden by the real buffered length.
+        let stale = vec![("Content-Length".into(), "0".into())];
+        assert_eq!(resolve_content_length(2_000_000, &stale), "2000000");
+    }
+
+    #[test]
+    fn content_length_falls_back_to_header_for_empty_body() {
+        let headers = vec![("Content-Length".into(), "512".into())];
+        assert_eq!(resolve_content_length(0, &headers), "512");
+        // No header, empty body → "0".
+        assert_eq!(resolve_content_length(0, &[]), "0");
     }
 
     fn git_available() -> bool {

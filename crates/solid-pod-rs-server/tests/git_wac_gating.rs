@@ -102,6 +102,34 @@ async fn anonymous_clone_of_private_pod_is_denied() {
 }
 
 #[actix_web::test]
+async fn wac_denied_git_response_carries_cors_headers() {
+    // #548/#371: a browser-based git client hitting an auth-gated repo must see
+    // the real 401/403 — which requires CORS headers on the WAC-denial response,
+    // not just on the git service's own responses (the gate runs before it).
+    let (state, _tmp) = fs_state_with_pods(&[("alice", owner_only_acl("/alice/"))]).await;
+    let app = actix_web::test::init_service(build_app(state)).await;
+
+    let req = actix_web::test::TestRequest::get()
+        .uri("/alice/info/refs?service=git-upload-pack")
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+
+    let status = rsp.status().as_u16();
+    assert!(status == 401 || status == 403, "expected denial, got {status}");
+    assert_eq!(
+        rsp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+        "WAC-denied git response must carry CORS so browser git clients see the status"
+    );
+    assert!(
+        rsp.headers().get("access-control-allow-methods").is_some(),
+        "WAC-denied git response must advertise allowed methods"
+    );
+}
+
+#[actix_web::test]
 async fn anonymous_push_to_private_pod_is_denied() {
     let (state, _tmp) = fs_state_with_pods(&[("alice", owner_only_acl("/alice/"))]).await;
     let app = actix_web::test::init_service(build_app(state)).await;

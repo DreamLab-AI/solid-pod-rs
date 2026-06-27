@@ -3656,7 +3656,21 @@ async fn handle_git(
         enforce_read(&state, &wac_path, agent.as_deref()).await
     };
     if let Err(e) = wac {
-        return e.error_response();
+        // #548/#371: a browser-based git client (e.g. jss.live/git/) hitting an
+        // auth-gated repo must see the real 401/402/403, not a generic CORS
+        // error. The git service sets these on its own responses; the WAC gate
+        // runs before the service, so mirror them on the denial here.
+        let mut resp = e.error_response();
+        let h = resp.headers_mut();
+        for (k, v) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+            if let (Ok(name), Ok(value)) = (
+                header::HeaderName::from_bytes(k.as_bytes()),
+                header::HeaderValue::from_str(v),
+            ) {
+                h.insert(name, value);
+            }
+        }
+        return resp;
     }
 
     let service = GitHttpService::new(repo_root);
