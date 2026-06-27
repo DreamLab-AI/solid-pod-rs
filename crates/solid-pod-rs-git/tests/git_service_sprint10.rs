@@ -264,6 +264,34 @@ async fn upload_pack_read_stays_anonymous_without_provider() {
 }
 
 #[tokio::test]
+async fn require_read_auth_rejects_anonymous_read_without_provider() {
+    // B6.1: an embedder that opts into require_read_auth() but configures no
+    // provider must reject an unauthenticated clone with 401 — closing the
+    // world-readable contract for consumers without their own access gate.
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(td.path().join("repo")).unwrap();
+    std::fs::create_dir(td.path().join("repo/.git")).unwrap();
+
+    let svc = GitHttpService::new(td.path().to_path_buf()).require_read_auth();
+
+    let req = GitRequest {
+        method: "GET".into(),
+        path: "/repo/info/refs".into(),
+        query: "service=git-upload-pack".into(),
+        headers: vec![],
+        body: Bytes::new(),
+        host_url: Some("http://localhost".into()),
+    };
+
+    let err = svc.handle(req).await.unwrap_err();
+    assert_eq!(
+        err.status_code(),
+        401,
+        "require_read_auth must reject an anonymous read (B6.1)"
+    );
+}
+
+#[tokio::test]
 async fn path_traversal_denied_via_parent_dir() {
     let td = tempfile::TempDir::new().unwrap();
     let svc = GitHttpService::new(td.path().to_path_buf());

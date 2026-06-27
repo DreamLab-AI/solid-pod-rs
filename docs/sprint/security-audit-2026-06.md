@@ -26,17 +26,19 @@ Verdict legend: **CONFIRMED** (reproduced against source) · **CORRECTED**
 |----|---------|----------|---------|--------|
 | B1 | Stored content served inline, no `nosniff` → XSS | HIGH | CONFIRMED | **Fixed** |
 | B2 | CORS reflects any origin **+** `credentials: true` | HIGH | CONFIRMED | **Fixed** |
-| B3 | Container listing leaks names of ACL-private children | MEDIUM | CONFIRMED | Open |
-| B4 | NIP-05 endpoint has no rate limit | MEDIUM | CORRECTED | Open |
-| B5 | Quota never enforced on the write path | MEDIUM | CORRECTED | Open |
-| B6 | git read contract / inbox spam / WebID HTML escaping | LOW | CONFIRMED | **B6.3 fixed** |
+| B3 | Container listing leaks names of ACL-private children | MEDIUM | CONFIRMED | **Fixed** |
+| B4 | NIP-05 endpoint has no rate limit | MEDIUM | CORRECTED | **Fixed** |
+| B5 | Quota never enforced on the write path | MEDIUM | CORRECTED | **Fixed** |
+| B6 | git read contract / inbox spam / WebID HTML escaping | LOW | CONFIRMED | **Fixed** |
 | A1–A7 | Forum-relay findings (zones, COUNT, moderation, WoT, WebAuthn) | — | **N/A** | n/a |
+
+All B-series findings are now fixed on `claude/agentic-qe-global-install-l20lwk`
+with regression tests; see [§5 Status](#5-status) for the per-commit breakdown.
 
 **Posture:** the cryptographic / access-control core is sound (WAC deny-by-default,
 NIP-98 verified, path-traversal defence in depth, zero `unsafe`). All confirmed
-issues are **response-hardening and resource-accounting** gaps. The two HIGH
-findings were exploitable in the default configuration and are now closed on this
-branch.
+issues were **response-hardening and resource-accounting** gaps. The two HIGH
+findings were exploitable in the default configuration and are now closed.
 
 ---
 
@@ -122,7 +124,7 @@ added. *Note:* Solid's bearer/DPoP tokens are explicit headers, not CORS
 auth. A follow-up may wire the middleware through `CorsPolicy` to retire the
 parallel implementation entirely.
 
-### B3 — Container listing enumerates ACL-private children · MEDIUM · CONFIRMED · *open*
+### B3 — Container listing enumerates ACL-private children · MEDIUM · CONFIRMED · *fixed*
 **Evidence:** `container_representation` (`crates/solid-pod-rs/src/ldp.rs:2187`) is
 `list(path)` → `render_container` with no per-child WAC evaluation; the WAC gate
 fires once for the container (`lib.rs:767`). A caller with Read on the container
@@ -133,7 +135,7 @@ restricts. Content stays protected; existence/naming leaks.
 already-satisfied container ACL (only fetch a child `.acl` when one exists). Cap
 listing size to bound worst-case ACL fetches.
 
-### B4 — NIP-05 endpoint has no rate limit · MEDIUM · CORRECTED · *open*
+### B4 — NIP-05 endpoint has no rate limit · MEDIUM · CORRECTED · *fixed*
 **Evidence:** `handle_well_known_nip05` performs no throttle; `LruRateLimiter`
 exists (`crates/solid-pod-rs/src/security/rate_limit.rs`) but is not wired to the
 route, enabling unbounded username enumeration (`{"names":{}}` vs a populated map
@@ -145,7 +147,7 @@ imported from the Cloudflare Worker variant.)
 **Recommended fix:** add an `LruRateLimiter` (per-IP) to `AppState`, call it at the
 top of the handler, return 429 + `Retry-After`.
 
-### B5 — Quota never enforced on the write path · MEDIUM · CORRECTED · *open*
+### B5 — Quota never enforced on the write path · MEDIUM · CORRECTED · *fixed*
 **Evidence:** the only `quota` references in the server are the `quota reconcile`
 CLI subcommand (`crates/solid-pod-rs-server/src/cli/mod.rs`) — a post-hoc disk
 scan. No write handler (`handle_put`/`handle_post`/`handle_patch`) calls
@@ -162,15 +164,20 @@ nothing is charged at write time.
 unauthenticated/append writes.
 
 ### B6 — Minor (git read contract; inbox spam; WebID HTML) · LOW · CONFIRMED
-- **B6.1 git read contract — *open*.** `crates/solid-pod-rs-git/src/service.rs:235`
-  gates reads only when `self.auth.is_some()`. The deployed server is protected by
-  the WAC gate in `handle_git` (`lib.rs`), so this is a *library-contract* hazard
-  for direct embedders, not a production hole. Recommend default-deny with an
-  explicit `allow_public_read` opt-in.
-- **B6.2 inbox append spam — *open*.** `handle_post` enforces WAC `Append` but no
-  per-sender rate limit; the `rate_limit_writes_per_min` config field
-  (`config/schema.rs`) is never consumed. Recommend wiring `LruRateLimiter`
-  keyed by `RateLimitSubject::WebId`.
+- **B6.1 git read contract — *fixed this branch (non-breaking opt-in).***
+  `crates/solid-pod-rs-git/src/service.rs` gated reads only when
+  `self.auth.is_some()`, so an embedder mounting `GitHttpService` without an auth
+  provider *and* without its own access gate served anonymous clones. The
+  deployed server is already protected by the WAC gate in `handle_git`, and the
+  anonymous-read default is a documented JSS-parity behaviour with a test
+  asserting it — so rather than flip that contract, a `require_read_auth()`
+  builder was added: an embedder without its own gate opts in and unauthenticated
+  reads are then rejected `401`. Default behaviour and existing tests are
+  unchanged. Test: `require_read_auth_rejects_anonymous_read_without_provider`.
+- **B6.2 inbox append spam — *fixed this branch*.** `handle_post` enforced WAC
+  `Append` but applied no per-sender rate limit. Now throttled per sender (WebID
+  when authenticated, else source IP) via the always-compiled `RouteRateLimiter`,
+  honouring `JSS_RATE_LIMIT_WRITES_PER_MIN`. (See B4 for the shared limiter.)
 - **B6.3 WebID HTML escaping — *fixed this branch*.** `generate_webid_html_with_issuer`
   (`crates/solid-pod-rs/src/webid.rs`) interpolated `display_name`/`webid`/`pod_url`
   into the HTML title, `<h1>`, and `href` attributes unescaped, and embedded
@@ -197,14 +204,28 @@ here because nothing in it is mechanically applicable to this codebase.
 
 ## 5. Status
 
-**Fixed on `claude/agentic-qe-global-install-l20lwk`:** B1, B2, B6.3 — with
-regression tests; full `solid-pod-rs` and `solid-pod-rs-server` suites green.
+**All B-series findings fixed on `claude/agentic-qe-global-install-l20lwk`**, each
+with regression tests; full `solid-pod-rs`, `solid-pod-rs-server`, and
+`solid-pod-rs-git` suites green (default features, plus `nip05-endpoint`, `quota`,
+and `git` feature builds verified).
 
-**Recommended next (priority order):**
-1. **B4** — wire `LruRateLimiter` to NIP-05 (low effort).
-2. **B6.2** — per-sender inbox rate limit (low effort, infra exists).
-3. **B3** — per-child WAC filter on container listing (medium).
-4. **B5** — wire quota into write handlers + inbox cap (medium).
-5. **B6.1** — default-deny git read contract for embedders (low).
+| Commit | Findings | Headline change |
+|--------|----------|-----------------|
+| 1 | B1, B2, B6.3 | `SecurityHeaders` middleware + `Content-Disposition`; CORS credentials only for allowlisted origins; WebID HTML escaping |
+| 2 | B4, B6.2 | always-compiled `RouteRateLimiter` on NIP-05 (per-IP) and container POST (per-sender) |
+| 3 | B3 | per-child WAC filter + auxiliary-resource exclusion on container listing |
+| 4 | B5 | per-pod quota check/record on PUT/POST (507 on exceed); `FsQuotaStore` wired under the `quota` feature |
+| 5 | B6.1 | `require_read_auth()` opt-in for git embedders without their own gate |
+
+**Follow-ups (not blocking, noted for completeness):**
+- B5 — extend quota to `PATCH` (the resulting body size must be computed after
+  applying the patch) and add an independent inbox child-count cap.
+- B6.3 — harden `validate_webid_html` to reject executable markup in *uploaded*
+  profiles (the generation path is escaped; the validation path is not).
+- B2 — optionally retire the parallel `add_cors_headers` by delegating to the
+  library `CorsPolicy`.
+- Relay robustness (separate from the report): subscription/event-size caps and
+  surfaced broadcast-lag errors in `solid-pod-rs-nostr` — low priority while the
+  relay is an unmounted library.
 
 The crypto/auth core needs no changes at this pin.

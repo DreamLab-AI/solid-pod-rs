@@ -140,6 +140,7 @@ pub struct GitHttpService {
     repo_root: PathBuf,
     auth: Option<Arc<dyn GitAuth>>,
     backend_path: PathBuf,
+    require_read_auth: bool,
 }
 
 impl std::fmt::Debug for GitHttpService {
@@ -148,6 +149,7 @@ impl std::fmt::Debug for GitHttpService {
             .field("repo_root", &self.repo_root)
             .field("auth", &self.auth.is_some())
             .field("backend_path", &self.backend_path)
+            .field("require_read_auth", &self.require_read_auth)
             .finish()
     }
 }
@@ -164,6 +166,7 @@ impl GitHttpService {
             repo_root,
             auth: None,
             backend_path: backend,
+            require_read_auth: false,
         }
     }
 
@@ -171,6 +174,23 @@ impl GitHttpService {
     #[must_use]
     pub fn with_backend_path(mut self, path: PathBuf) -> Self {
         self.backend_path = path;
+        self
+    }
+
+    /// Require authentication for *reads* (clone/fetch) as well as writes,
+    /// even when no auth provider is configured (B6.1).
+    ///
+    /// By default, with no [`with_auth`](Self::with_auth) provider the service
+    /// serves reads anonymously (the JSS no-`handleAuth` parity behaviour),
+    /// which is safe only when the embedder enforces access control in front
+    /// of the service (as the bundled server does via its WAC gate). An
+    /// embedder that mounts this service **without** such a gate should call
+    /// this so an unauthenticated clone is rejected (`401`) instead of
+    /// silently world-readable. With a provider configured, reads are already
+    /// gated and this is a no-op.
+    #[must_use]
+    pub fn require_read_auth(mut self) -> Self {
+        self.require_read_auth = true;
         self
     }
 
@@ -232,7 +252,11 @@ impl GitHttpService {
         //    unauthorised push can never trigger the on-demand auto-init below
         //    (defense-in-depth; the server's WAC gate also denies it first).
         let mut remote_user = String::new();
-        let needs_auth = req.is_write() || (req.is_read() && self.auth.is_some());
+        // Reads are gated when a provider is configured, or when the embedder
+        // opted into `require_read_auth()` (B6.1) — in which case a read with
+        // no provider falls through to the `ok_or_else` below and is rejected.
+        let needs_auth = req.is_write()
+            || (req.is_read() && (self.auth.is_some() || self.require_read_auth));
         if needs_auth {
             let auth = self
                 .auth
