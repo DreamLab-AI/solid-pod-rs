@@ -11,7 +11,18 @@ and our status against it.
 
 ---
 
-## Current state (Sprint 16, JSS v0.0.204 sync, 2026-05-30, alpha.15)
+## Current state (Sprint 17, JSS v0.0.210 sync, 2026-06-27)
+
+**207 rows tracked** across 22 functional sections. §22 adds the JSS
+v0.0.204 → v0.0.210 delta (16 changed source files): git CORS on the WAC
+denial path (#548/#371) + chunked-push `CONTENT_LENGTH` (#561),
+`JSS_BODY_LIMIT` env (#563), and `write_acl` `acl:default` container gating
+(#575). The HEAD/GET parity retrofit (#552) and the NIP-98 raw-byte payload
+hash (#565) are satisfied by the Rust port's design; the IdP/tunnel deltas
+(#451/#524/#526/#556/#530) are sibling-crate / not-applicable. Full per-item
+rationale: [`docs/explanation/jss-parity-upgrade-2026-06-v0.0.210.md`](./docs/explanation/jss-parity-upgrade-2026-06-v0.0.210.md).
+
+### Previous state (Sprint 16, JSS v0.0.204 sync, 2026-05-30, alpha.15)
 
 **207 rows tracked** across 21 functional sections. §21 adds the JSS
 v0.0.197 → v0.0.204 delta: MCP server (#490), `install` CLI, NIP-98
@@ -502,6 +513,26 @@ freely.
 
 ---
 
+## 22. JSS v0.0.204 → v0.0.210 delta (Sprint 17)
+
+Reconstructed by `npm pack`-diffing `0.0.204` (`9d29167`) against `0.0.210`
+(`0f4287f`) — 15 changed + 1 new source file. Full rationale:
+[`docs/explanation/jss-parity-upgrade-2026-06-v0.0.210.md`](./docs/explanation/jss-parity-upgrade-2026-06-v0.0.210.md).
+
+| # | JSS change | JSS ref | solid-pod-rs | Status | Rust file:line | Notes |
+|---|---|---|---|---|---|---|
+| 208 | git CORS headers on the auth-gated denial (browser git clients see the real 401/402/403, not a CORS error) + `Git-Protocol` allow-header | JSS #548/#371 — `server.js` `setGitCorsHeaders`, `git.js` | `GIT_CORS_HEADERS` const (single source) used by OPTIONS preflight, CGI output, and `handle_git`'s WAC-denial path | present (Sprint 17) | `crates/solid-pod-rs-git/src/service.rs`; `crates/solid-pod-rs-server/src/lib.rs` `handle_git` | Test `wac_denied_git_response_carries_cors_headers`. |
+| 209 | CGI `CONTENT_LENGTH` from the buffered body — chunked pushes > 1 MiB (`http.postBuffer`) carry no `Content-Length`, so the header read "0" and `receive-pack` died | JSS #561 — `git.js` | `resolve_content_length(body_len, headers)` prefers buffered length | present (Sprint 17) | `crates/solid-pod-rs-git/src/service.rs` `spawn_cgi` | 2 unit tests (chunked-prefers-body, empty-falls-back). |
+| 210 | Configurable body limit via canonical `JSS_BODY_LIMIT` env (was hardcoded 10 MiB → configurable, 20 MiB default) | JSS #563/#474 — `config.js`, `server.js` | `body_cap_from_env` + config overlay recognise `JSS_BODY_LIMIT`; `JSS_MAX_REQUEST_BODY`/`JSS_MAX_BODY_SIZE` aliases | present (Sprint 17) | `crates/solid-pod-rs-server/src/lib.rs`; `crates/solid-pod-rs/src/config/sources.rs` | semantic-difference: we keep the more-permissive 50 MiB default (lower via `JSS_BODY_LIMIT`). |
+| 211 | `write_acl` emits `acl:default` only on container ACLs; resource ACL `accessTo` targets the resource (not the parent) | JSS #575/#428 — `mcp/tools.js` | `build_acl_jsonld` gates `acl:default` on `path.ends_with('/')`; `accessTo` already absolute → resource-lockout bug N/A | present (Sprint 17) | `crates/solid-pod-rs-server/src/mcp/tools.rs` | #428 host-portable relative IRIs = deliberate divergence (we use absolute). |
+| — | HEAD emits the same Content-Type/Cache-Control as GET (RFC 9110 §9.3.2) | JSS #552 — `handlers/resource.js` | satisfied-by-design: HEAD routes to `handle_get` (one handler) | present (by design) | `crates/solid-pod-rs-server/src/lib.rs` `handle_get` | Residual: whole-file read for HEAD on huge files (efficiency, not correctness). |
+| — | NIP-98 payload hash over the exact signed raw bytes (no re-serialization) | JSS #565/#573 — `server.js`, `auth/nostr.js` | library hashes raw `web::Bytes` already; presence via `Option`, not truthiness | present (by design) | `crates/solid-pod-rs/src/auth/nip98.rs` | Server `extract_pubkey` passes `None` (no payload binding) — separate pre-existing item. |
+| — | `findFreePort` / `formatUrl` for `jss start` | JSS #557 — `utils/port.js` (new) | not ported — would change hard bind-failure semantics | other | `crates/solid-pod-rs-server/src/main.rs` | Optional future `--auto-port` flag. |
+| — | root-path WebID resolution; IdP discovery/interactions/WebView gate | JSS #451/#524/#526/#556 — `idp/*` | sibling-crate (`solid-pod-rs-idp`, `-nostr`) — direct resolution / no Node `oidc-provider` HTML views | n/a | — | No 1:1 analog; Rust IdP delegates UI to the consumer. |
+| — | tunnel credential passthrough | JSS #530 — `tunnel/index.js` | tunnel feature not ported | wontfix-in-crate | — | No `tunnel` module in the Rust port. |
+
+---
+
 ## Sprint history
 
 Compressed appendix — one line per sprint. Consult git history for per-row corrections.
@@ -516,3 +547,4 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 12 close (2026-05-06)**: JSS v0.0.60–v0.0.71 drift closed. 11 new rows (169–179); 8 landed as `present` (security hardening: size-capped ACL parsing, iterative podName sanitization, DNS failure blocking, `.account` dotfile; IdP: min password length; AP: outbox POST + Note wrapping, User-Agent, Accept-negotiation, follower fan-out, actor cache datetime). 3 deferred (cf-visitor, AP CLI, error pages). 922 insertions across 23 files, ~35 new tests. 132 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 13 close (2026-05-16, alpha.11)**: JSS v0.0.190 Phase 1 absorption complete. 3 new rows (196–198): key provisioning (`provision-keys`), pod-resident NIP-05 endpoint (`nip05-endpoint`), JSON-LD export (`export-jsonld`). All three shipped with bodies + tests. 135 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 14 close (2026-05-16, alpha.12)**: Git pod auto-init (JSS #466/#469/#471). 2 new rows (199–200): `GitInitHook` wasm32-safe trait in core + `GitAutoInit` subprocess impl in `solid-pod-rs-git`. 4 unit tests. `provision_pod_ext` call-site API. 137 rows, **~99% strict / ~100% spec-normative**.
+- **Sprint 17 close (2026-06-27)**: JSS v0.0.204 → v0.0.210 delta (§22). 4 rows landed `present` (208–211): git CORS on the WAC-denial path + `Git-Protocol` header (#548/#371), chunked-push `CONTENT_LENGTH` (#561), `JSS_BODY_LIMIT` env (#563), `write_acl` `acl:default` container gating (#575). HEAD/GET parity (#552) and the NIP-98 raw-byte payload hash (#565) confirmed satisfied-by-design; IdP/tunnel deltas (#451/#524/#526/#556/#530) classified sibling-crate / N/A. 5 new tests across `solid-pod-rs-git` + `solid-pod-rs-server`; all suites green. **~100% spec-normative parity maintained**.

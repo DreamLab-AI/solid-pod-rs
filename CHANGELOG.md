@@ -4,6 +4,40 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — JSS v0.0.210 sync (Sprint 17, 2026-06-27)
+
+Integrates the upstream JSS delta `0.0.204` (`9d29167`) → `0.0.210` (`0f4287f`),
+reconstructed by `npm pack`-diffing both versions (no upstream releases/CHANGELOG
+exist). Four functional gaps closed; HEAD/GET parity (#552) and the NIP-98
+raw-byte payload hash (#565) are satisfied by the Rust port's design, and the
+IdP/tunnel deltas (#451/#524/#526/#556/#530) are sibling-crate / not-applicable.
+Full rationale: `crates/solid-pod-rs/docs/explanation/jss-parity-upgrade-2026-06-v0.0.210.md`
+and PARITY-CHECKLIST §22.
+
+### Fixed
+- **git CORS on the WAC-denial path** (JSS #548/#371): browser-based git clients
+  hitting an auth-gated repo now receive the real 401/402/403 with CORS headers
+  instead of a generic CORS error. A single `GIT_CORS_HEADERS` const in
+  `solid-pod-rs-git` backs the OPTIONS preflight, the CGI output, and the WAC
+  denial; `Git-Protocol` is added to `Allow-Headers` for protocol-v2 clients.
+- **git CGI `CONTENT_LENGTH`** (JSS #561): now derived from the buffered body
+  length, fixing chunked `git push` of packs > 1 MiB (`http.postBuffer`) that
+  carry no `Content-Length` and previously died with "the remote end hung up
+  unexpectedly".
+
+### Added / Changed
+- **`JSS_BODY_LIMIT`** (JSS #563/#474): the canonical env name for the request
+  body cap is now recognised (in `body_cap_from_env` and the config overlay),
+  with `JSS_MAX_REQUEST_BODY` / `JSS_MAX_BODY_SIZE` retained as aliases. We keep
+  the more-permissive 50 MiB default (a deliberate divergence from JSS's 20 MiB).
+- **MCP `write_acl`** (JSS #575): `acl:default` is emitted only for container
+  ACLs (it is inert on a resource ACL). Our `accessTo` already uses the absolute
+  resource path, so JSS's relative-`./` resource-lockout bug does not arise here.
+
+### Tests
+- `wac_denied_git_response_carries_cors_headers`, `resolve_content_length` unit
+  tests (chunked-prefers-body / empty-falls-back). All workspace suites green.
+
 ## [0.5.0-alpha.1] - 2026-06-13
 
 ### Documentation
