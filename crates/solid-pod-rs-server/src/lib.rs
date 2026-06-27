@@ -117,7 +117,7 @@ use solid_pod_rs::{
     auth::nip98,
     config::sources::parse_size,
     interop,
-    ldp::{self, LdpContainerOps, PatchCreateOutcome},
+    ldp::{self, PatchCreateOutcome},
     mashlib::{self, MashlibConfig},
     provision,
     security::DotfileAllowlist,
@@ -741,6 +741,76 @@ async fn enforce_read(
     Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
 }
 
+/// Whether a container member is an auxiliary resource (a WAC `.acl` or a
+/// `.meta` / `.meta.json` description sidecar) rather than a real contained
+/// resource. These are linked via `rel="acl"` / `rel="describedby"`, not
+/// `ldp:contains`, so they are excluded from listings.
+fn is_auxiliary_member(name: &str) -> bool {
+    let n = name.trim_end_matches('/');
+    n == ".acl"
+        || n == ".meta"
+        || n.ends_with(".acl")
+        || n.ends_with(".meta")
+        || n.ends_with(".meta.json")
+}
+
+/// Return the direct children of container `path` that the requesting agent
+/// is allowed to `acl:Read` (B3). Each child's effective ACL is evaluated
+/// individually, so a child carrying a stricter own `.acl` — or one that does
+/// not inherit a readable `acl:default` from the container — is omitted.
+/// This stops a container listing from enumerating the names of resources the
+/// caller cannot actually read.
+///
+/// Cost: one effective-ACL resolution per child (the same per-resource cost
+/// the read path already pays); the payment balance is resolved once and
+/// shared. A child whose ACL fails to resolve fails closed (it is hidden) and
+/// the read is never charged here — listing is a pure visibility check.
+async fn visible_container_members(
+    state: &AppState,
+    path: &str,
+    agent_uri: Option<&str>,
+) -> Result<Vec<String>, PodError> {
+    let members = state.storage.list(path).await?;
+    let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
+    let ctx = RequestContext {
+        web_id: agent_uri,
+        client_id: None,
+        issuer: None,
+        payment_balance_sats,
+    };
+    let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
+    let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
+
+    let mut visible = Vec::with_capacity(members.len());
+    for member in members {
+        // Auxiliary resources (`.acl` / `.meta` sidecars) are not LDP
+        // contained members and must never be enumerated — listing
+        // `secret.txt.acl` would leak the name of a child the per-resource
+        // check below is hiding.
+        if is_auxiliary_member(&member) {
+            continue;
+        }
+        let child_path = format!("{path}{member}");
+        let acl_doc = match find_effective_acl_dyn(&*state.storage, &child_path).await {
+            Ok(doc) => doc,
+            Err(_) => continue,
+        };
+        let granted = wac::evaluate_access_ctx_with_registry(
+            acl_doc.as_ref(),
+            &ctx,
+            &child_path,
+            AccessMode::Read,
+            None,
+            &groups,
+            &registry,
+        );
+        if granted {
+            visible.push(member);
+        }
+    }
+    Ok(visible)
+}
+
 /// Debit `cost` satoshis from `did`'s Web Ledger entry and persist the
 /// updated ledger document, deducting exactly once for a granted
 /// payment-gated request.
@@ -848,11 +918,13 @@ async fn handle_get(
             }
         }
 
-        let v = state
-            .storage
-            .container_representation(&path)
+        // B3: list only children the caller may read, then render. The
+        // container-level `enforce_read` above gates access to the listing
+        // itself; this gates each member so private child names do not leak.
+        let members = visible_container_members(&state, &path, agent.as_deref())
             .await
             .map_err(to_actix)?;
+        let v = ldp::render_container(&path, &members);
 
         // Mashlib: serve HTML wrapper for browser navigation.
         let sec_fetch_dest = req
