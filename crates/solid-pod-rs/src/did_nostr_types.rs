@@ -115,7 +115,7 @@ const KEY_FRAGMENT: &str = "#key1";
 ///
 /// ```json
 /// {
-///   "@context": ["https://w3id.org/did", "https://w3id.org/nostr/context"],
+///   "@context": ["https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"],
 ///   "id": "did:nostr:<hex>",
 ///   "type": "DIDNostr",
 ///   "verificationMethod": [{
@@ -140,7 +140,7 @@ pub fn render_did_document(pk: &NostrPubkey) -> Value {
     let did = did_nostr_uri(pk);
     json!({
         "@context": [
-            "https://w3id.org/did",
+            "https://www.w3.org/ns/cid/v1",
             "https://w3id.org/nostr/context"
         ],
         "id": did,
@@ -217,6 +217,11 @@ pub fn render_did_document_tier3(
 /// prefix). The 64-char x-only hex body follows. ADR-125 §2.1 / I2.
 pub const MULTIKEY_PREFIX: &str = "fe70102";
 
+/// Alternate prefix with odd-y parity byte (`0x03`). The spec says
+/// "Implementations SHOULD handle both cases" — we accept `fe70103` on
+/// decode but always produce the canonical even-y `fe70102` on encode.
+pub const MULTIKEY_PREFIX_ODD: &str = "fe70103";
+
 /// Fixed total length of a canonical `publicKeyMultibase` string:
 /// `fe70102`(7) + 64 hex chars = 71. ADR-125 §2.1.
 pub const MULTIKEY_LEN: usize = 71;
@@ -243,13 +248,16 @@ pub fn format_multibase_schnorr(pk: &[u8; 32]) -> String {
 /// Decode a canonical `publicKeyMultibase` string back to the x-only key
 /// (the ACCEPT path — strict round-trip with [`format_multibase_schnorr`]).
 ///
-/// Validates, in order: the `fe70102` prefix (base16-lower ‖
-/// `varint(secp256k1-pub)` ‖ even-y compressed prefix), the fixed
+/// Validates, in order: the `fe70102` or `fe70103` prefix (base16-lower ‖
+/// `varint(secp256k1-pub)` ‖ even-y or odd-y compressed prefix), the fixed
 /// [`MULTIKEY_LEN`], lowercase hex, and that the 33-byte multicodec payload
-/// frames as `02 ‖ X`. Returns the 32-byte x-only `X`.
+/// frames as `02 ‖ X` or `03 ‖ X`. Returns the 32-byte x-only `X`.
+///
+/// The spec says "Implementations SHOULD handle both cases" (even-y `0x02`
+/// and odd-y `0x03`). Both decode to the same x-only key.
 ///
 /// Rejects (each an I2 violation): base58btc (`z…`); the missing-parity
-/// `fe701<x>` 67-char form; parity other than `02`; uppercase hex under `f`;
+/// `fe701<x>` 67-char form; uppercase hex under `f`;
 /// any non-71 length; retained `publicKeyHex`-style raw hex.
 pub fn parse_multibase_schnorr(s: &str) -> Result<NostrPubkey, PodError> {
     if s.len() != MULTIKEY_LEN {
@@ -259,12 +267,14 @@ pub fn parse_multibase_schnorr(s: &str) -> Result<NostrPubkey, PodError> {
         )));
     }
     // Lowercase + exact prefix in one pass (uppercase under `f` is malformed).
-    let Some(body) = s.strip_prefix(MULTIKEY_PREFIX) else {
-        return Err(PodError::BadRequest(format!(
-            "publicKeyMultibase: expected `{MULTIKEY_PREFIX}` prefix (got `{}`)",
+    // Accept both even-y (02) and odd-y (03) parity — the spec says
+    // "Implementations SHOULD handle both cases".
+    let body = s.strip_prefix(MULTIKEY_PREFIX)
+        .or_else(|| s.strip_prefix(MULTIKEY_PREFIX_ODD))
+        .ok_or_else(|| PodError::BadRequest(format!(
+            "publicKeyMultibase: expected `{MULTIKEY_PREFIX}` or `{MULTIKEY_PREFIX_ODD}` prefix (got `{}`)",
             &s[..s.len().min(7)]
-        )));
-    };
+        )))?;
     if body.chars().any(|c| c.is_ascii_uppercase()) {
         return Err(PodError::BadRequest(
             "publicKeyMultibase: uppercase hex under `f` indicator is malformed".into(),
@@ -346,8 +356,8 @@ mod tests {
         let did = format!("did:nostr:{PK_HEX}");
         let doc = render_did_document(&pk);
         assert_eq!(doc["id"], did);
-        // Canonical did:nostr CG / create-agent contexts (ADR-125 §2).
-        assert_eq!(doc["@context"][0], "https://w3id.org/did");
+        // Canonical did:nostr CG / Controlled Identifiers v1.0 context (ADR-125 §2).
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
         assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
         // Top-level type + canonical Multikey VM.
         assert_eq!(doc["type"], "DIDNostr");
@@ -452,6 +462,14 @@ mod tests {
         let decoded = parse_multibase_schnorr(&mb).unwrap();
         assert_eq!(decoded, pk);
         assert_eq!(decoded.to_hex(), PK_HEX);
+    }
+
+    #[test]
+    fn parse_multibase_accepts_odd_parity() {
+        let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
+        let odd = format!("fe70103{PK_HEX}");
+        let decoded = parse_multibase_schnorr(&odd).unwrap();
+        assert_eq!(decoded, pk, "odd parity decodes to same x-only key");
     }
 
     #[test]

@@ -83,7 +83,7 @@ fn did_nostr_document_emits_canonical_schema() {
 
     // Canonical contexts (ADR-125 §2).
     let contexts = doc["@context"].as_array().expect("@context array");
-    assert_eq!(contexts[0], "https://w3id.org/did");
+    assert_eq!(contexts[0], "https://www.w3.org/ns/cid/v1");
     assert_eq!(contexts[1], "https://w3id.org/nostr/context");
 
     // Fragment-only auth/assertion; canonical service:[] (unset by extension
@@ -111,7 +111,7 @@ fn did_nostr_document_rejects_keyless_multikey_for_malformed_hex() {
     // Canonical envelope preserved.
     assert_eq!(doc["id"], format!("did:nostr:{malformed}"));
     assert_eq!(doc["type"], "DIDNostr");
-    assert_eq!(doc["@context"][0], "https://w3id.org/did");
+    assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
     assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
 
     // The critical I2 guarantee: verificationMethod is EMPTY, not a keyless

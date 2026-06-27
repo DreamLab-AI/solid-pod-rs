@@ -153,7 +153,7 @@ mod tests {
         let written = std::fs::read_to_string(out.did_path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["type"], "DIDNostr");
-        assert_eq!(v["@context"][0], "https://w3id.org/did");
+        assert_eq!(v["@context"][0], "https://www.w3.org/ns/cid/v1");
         assert_eq!(v["@context"][1], "https://w3id.org/nostr/context");
         let vm = &v["verificationMethod"][0];
         assert_eq!(vm["type"], "Multikey");

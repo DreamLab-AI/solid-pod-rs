@@ -66,7 +66,7 @@ mod tests {
         let did = format!("did:nostr:{PK_HEX}");
         let doc = render_did_document(&pk);
         assert_eq!(doc["id"], did);
-        assert_eq!(doc["@context"][0], "https://w3id.org/did");
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
         assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
         assert_eq!(doc["type"], "DIDNostr");
         // service:[] is the canonical create-agent form; no top-level alsoKnownAs.

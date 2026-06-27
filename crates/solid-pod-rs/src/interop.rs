@@ -309,7 +309,7 @@ pub mod did_nostr {
     /// well-known URL (ADR-125 — supersedes ADR-074 §D2/§D3/§D4/§D13).
     ///
     /// The single published form: `@context`
-    /// `["https://w3id.org/did", "https://w3id.org/nostr/context"]`,
+    /// `["https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"]`,
     /// top-level `type: "DIDNostr"`, a single `Multikey` verification method
     /// with `publicKeyMultibase: "fe70102<hex>"`, fragment `#key1`, and
     /// `service: []`. The 2019 suite + `publicKeyHex` + `z`-base58 multibase
@@ -354,7 +354,7 @@ pub mod did_nostr {
         let did = format!("did:nostr:{pubkey}");
         let mut doc = serde_json::json!({
             "@context": [
-                "https://w3id.org/did",
+                "https://www.w3.org/ns/cid/v1",
                 "https://w3id.org/nostr/context"
             ],
             "id": did,
