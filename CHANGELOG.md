@@ -4,6 +4,42 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.3] - 2026-06-27
+
+The **interop-convergence release**. Also the release that finishes shipping
+the workspace: `0.5.0-alpha.2` was published for the `solid-pod-rs` core crate
+only — the six sibling crates (`-server`, `-idp`, `-git`, `-nostr`,
+`-activitypub`, `-didkey`) were version-bumped but never published and stayed
+at `0.5.0-alpha.1` on crates.io. `alpha.3` publishes the whole workspace
+together, so all seven crates now carry the canonical Multikey + CID work.
+
+### Changed
+- **W3C CID v1.0 context** — the did:nostr DID-document `@context[0]` migrates
+  from `https://w3id.org/did` to the W3C Controlled Identifiers v1.0 IRI
+  `https://www.w3.org/ns/cid/v1` (`render_did_document`, `did_nostr_document`,
+  `did_nostr_types` docs). This matches the context already emitted by the
+  downstream `dreamlab-ai-website` resolver, closing a live interop skew where
+  the published pod crates trailed their own consumer. ADR-125 §2.
+
+### Added
+- **Odd-parity Multikey accept** — `parse_multibase_schnorr` now accepts the
+  odd-y compressed prefix `fe70103` (`MULTIKEY_PREFIX_ODD`) on decode, per the
+  CID guidance that implementations SHOULD handle both parities; canonical
+  even-y `fe70102` is still the only form produced on encode. New
+  `parse_multibase_accepts_odd_parity` round-trip test.
+
+## [0.5.0-alpha.2] - 2026-06-15
+
+> Partial release: only `solid-pod-rs` (core) reached crates.io at this version;
+> the sibling crates ship this content under `0.5.0-alpha.3`.
+
+### Changed
+- **Canonical Multikey convergence** (`did-nostr`) — DID-document emission
+  converges on the canonical `Multikey` verification-method form
+  (`publicKeyMultibase: "fe70102<hex>"`, `MULTIKEY_PREFIX`/`MULTIKEY_LEN`),
+  superseding the 2019-suite + `publicKeyHex` shapes. Adds
+  `solid-pod-rs-git::identity` write-side DID emission.
+
 ## [0.5.0-alpha.1] - 2026-06-13
 
 ### Documentation

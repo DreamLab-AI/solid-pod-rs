@@ -14,7 +14,7 @@ categories = ["web-programming::http-server"]
 readme = "README.md"
 
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.2", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
+solid-pod-rs = { version = "0.5.0-alpha.3", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs"] }
 async-trait = "0.1"
