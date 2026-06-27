@@ -232,6 +232,22 @@ async fn main() -> anyhow::Result<()> {
             std::time::Duration::from_secs(60),
         ));
     }
+    // B5: enforce per-pod storage quota when built with the `quota` feature and
+    // backed by the filesystem. `JSS_QUOTA_DEFAULT_BYTES` sets the default cap
+    // for pods without a `.quota.json` sidecar; 0 (the default) means "no global
+    // cap — honour only per-pod sidecar limits".
+    #[cfg(feature = "quota")]
+    if let Some(ref root) = state.data_root {
+        let default_limit = std::env::var("JSS_QUOTA_DEFAULT_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        state.quota = Some(Arc::new(solid_pod_rs::quota::FsQuotaStore::new(
+            root.clone(),
+            default_limit,
+        )));
+        info!(default_limit, "per-pod storage quota enforcement enabled");
+    }
     state.allowed_origins = cli.allowed_origins.clone();
     state.admin_key = cli.admin_key.clone();
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a

@@ -120,6 +120,7 @@ use solid_pod_rs::{
     ldp::{self, PatchCreateOutcome},
     mashlib::{self, MashlibConfig},
     provision,
+    quota::QuotaPolicy,
     security::DotfileAllowlist,
     storage::Storage,
     wac::{
@@ -162,6 +163,12 @@ pub struct AppState {
     /// authenticated, else by source IP. Default 120 requests / 60 s;
     /// overridable via `JSS_RATE_LIMIT_WRITES_PER_MIN`.
     pub write_limiter: Arc<RouteRateLimiter>,
+    /// Optional per-pod storage quota policy (B5). When set, PUT/POST writes
+    /// are checked against the pod's cap before the write and recorded after,
+    /// rejecting with 507 on exceed. `None` (the default) disables quota
+    /// enforcement; the binary wires an `FsQuotaStore` when built with the
+    /// `quota` feature and backed by the filesystem.
+    pub quota: Option<Arc<dyn QuotaPolicy>>,
     /// When non-empty, CORS responses are only reflected for origins in this
     /// list. Origins not in the list receive no `Access-Control-Allow-Origin`
     /// header. When empty (the default), the request `Origin` is echoed back
@@ -240,6 +247,7 @@ impl AppState {
             pod_create_limiter: Arc::new(PodCreateLimiter::default()),
             nip05_limiter: Arc::new(RouteRateLimiter::new(30, Duration::from_secs(60))),
             write_limiter: Arc::new(RouteRateLimiter::new(120, Duration::from_secs(60))),
+            quota: None,
             allowed_origins: Vec::new(),
             admin_key: None,
             mcp_enabled: false,
@@ -846,6 +854,57 @@ async fn debit_ledger(
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Resolve the pod key (storage subdirectory) that owns `path` for quota
+/// accounting (B5): the first path segment, matching `FsQuotaStore`'s
+/// `root/<pod>/` layout and the `quota reconcile <pod>` CLI. Root-level paths
+/// map to the empty key — the single-tenant whole-storage quota.
+fn pod_key_for_path(path: &str) -> String {
+    path.trim_start_matches('/')
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Pre-write quota gate (B5). When a quota policy is configured, computes the
+/// net byte delta for writing `new_len` bytes at `path` (new size minus any
+/// existing resource's size) and rejects with `507 Insufficient Storage` when
+/// it would push the pod over its cap. Returns `Some((pod, delta))` to record
+/// after a successful write, or `None` when no quota policy is active.
+async fn quota_pre_write(
+    state: &AppState,
+    path: &str,
+    new_len: usize,
+) -> Result<Option<(String, i64)>, ActixError> {
+    let Some(quota) = state.quota.as_ref() else {
+        return Ok(None);
+    };
+    let pod = pod_key_for_path(path);
+    // Existing size (0 when the resource is new) so an overwrite is charged
+    // only its net growth.
+    let old_size = state.storage.head(path).await.map(|m| m.size).unwrap_or(0);
+    let delta = new_len as i64 - old_size as i64;
+    if delta > 0 {
+        if let Err(e) = quota.check(&pod, delta as u64).await {
+            return Err(actix_web::error::InternalError::new(
+                e.to_string(),
+                StatusCode::INSUFFICIENT_STORAGE,
+            )
+            .into());
+        }
+    }
+    Ok(Some((pod, delta)))
+}
+
+/// Record a completed write against the pod's quota (B5). No-op when no quota
+/// policy is active or there is no pre-write context.
+async fn quota_post_write(state: &AppState, ctx: Option<(String, i64)>) {
+    if let (Some(quota), Some((pod, delta))) = (state.quota.as_ref(), ctx) {
+        quota.record(&pod, delta).await;
+    }
+}
+
 fn set_link_headers(rsp: &mut HttpResponse, path: &str) {
     let links = ldp::link_headers(path).join(", ");
     if let Ok(value) = header::HeaderValue::from_str(&links) {
@@ -1116,11 +1175,14 @@ async fn handle_put(
         ));
     }
 
+    // B5: quota gate — reject before writing if it would exceed the pod cap.
+    let quota_ctx = quota_pre_write(&state, &path, body.len()).await?;
     let meta = state
         .storage
         .put(&path, Bytes::from(body.to_vec()), ct)
         .await
         .map_err(to_actix)?;
+    quota_post_write(&state, quota_ctx).await;
     // git-mark (Phase 2): commit + PROV-O sidecar on git-backed pods. Runs
     // AFTER the write succeeded; additive + best-effort (errors swallowed),
     // git-backed-only, never changes the response.
@@ -1170,11 +1232,14 @@ async fn handle_post(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
+    // B5: quota gate on the newly-created child before writing it.
+    let quota_ctx = quota_pre_write(&state, &target, body.len()).await?;
     let meta = state
         .storage
         .put(&target, Bytes::from(body.to_vec()), ct)
         .await
         .map_err(to_actix)?;
+    quota_post_write(&state, quota_ctx).await;
     // git-mark (Phase 2): commit + PROV-O sidecar for the newly-created child.
     // Additive + best-effort, git-backed-only.
     git_mark_write(&state, &target, agent.as_deref(), "POST").await;
