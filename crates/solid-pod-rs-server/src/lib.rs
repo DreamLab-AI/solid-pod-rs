@@ -220,15 +220,22 @@ impl Default for NodeInfoMeta {
 /// `50MB`, `1.5GB`, or a bare integer (bytes). Falls back to 50 MiB.
 pub const DEFAULT_BODY_CAP: usize = 50 * 1024 * 1024;
 
-/// Read `JSS_MAX_REQUEST_BODY` and parse via [`parse_size`]. On any
-/// failure, returns [`DEFAULT_BODY_CAP`].
+/// Read the request body cap from the environment and parse via
+/// [`parse_size`] (accepts size strings like `"100MB"`). Recognises
+/// `JSS_BODY_LIMIT` — the canonical name JSS adopted in v0.0.210 (#563/#474)
+/// — first, falling back to the historical `JSS_MAX_REQUEST_BODY` alias. On
+/// any failure (or when neither is set) returns [`DEFAULT_BODY_CAP`].
+///
+/// Note: JSS's out-of-the-box default is 20 MiB; we keep the historically
+/// more-permissive [`DEFAULT_BODY_CAP`] (a larger limit is not a security
+/// regression — lower it via `JSS_BODY_LIMIT` for tighter memory-DoS bounds).
 pub fn body_cap_from_env() -> usize {
-    match std::env::var("JSS_MAX_REQUEST_BODY") {
-        Ok(v) => parse_size(&v)
-            .map(|u| u as usize)
-            .unwrap_or(DEFAULT_BODY_CAP),
-        Err(_) => DEFAULT_BODY_CAP,
-    }
+    std::env::var("JSS_BODY_LIMIT")
+        .or_else(|_| std::env::var("JSS_MAX_REQUEST_BODY"))
+        .ok()
+        .and_then(|v| parse_size(&v).ok())
+        .map(|u| u as usize)
+        .unwrap_or(DEFAULT_BODY_CAP)
 }
 
 impl AppState {

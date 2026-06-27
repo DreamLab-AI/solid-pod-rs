@@ -379,7 +379,12 @@ where
     if let Some(v) = get("JSS_CORS_ALLOWED_ORIGINS") {
         extras.insert("cors_allowed_origins".into(), parse_csv(&v));
     }
-    if let Some(v) = get("JSS_MAX_BODY_SIZE").or_else(|| get("JSS_MAX_REQUEST_BODY")) {
+    // `JSS_BODY_LIMIT` is the canonical name from JSS v0.0.210 (#563/#474);
+    // `JSS_MAX_BODY_SIZE` / `JSS_MAX_REQUEST_BODY` are retained aliases.
+    if let Some(v) = get("JSS_BODY_LIMIT")
+        .or_else(|| get("JSS_MAX_BODY_SIZE"))
+        .or_else(|| get("JSS_MAX_REQUEST_BODY"))
+    {
         if let Ok(bytes) = parse_size(&v) {
             extras.insert("max_body_size_bytes".into(), Value::Number(bytes.into()));
         }

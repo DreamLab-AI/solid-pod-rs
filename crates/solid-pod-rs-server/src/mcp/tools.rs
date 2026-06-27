@@ -483,7 +483,14 @@ fn build_acl_jsonld(path: &str, authorizations: &[Value]) -> Value {
                     );
                 }
             }
-            if auth.get("isDefault").and_then(Value::as_bool).unwrap_or(false) {
+            // `acl:default` only has meaning on a *container* ACL — it supplies
+            // the defaults inherited by contained resources (#575). On a
+            // resource ACL it is inert, so don't emit it. (Our `accessTo` uses
+            // the absolute `path`, so unlike JSS's relative `./` form it already
+            // targets the resource correctly — the resource-lockout half of
+            // #575 does not arise here.)
+            let is_container = path.ends_with('/');
+            if is_container && auth.get("isDefault").and_then(Value::as_bool).unwrap_or(false) {
                 node["acl:default"] = json!({ "@id": path });
             }
             node
