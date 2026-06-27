@@ -17,7 +17,7 @@ use bytes::Bytes;
 use solid_pod_rs::security::DotfileAllowlist;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta, PodCreateLimiter};
+use solid_pod_rs_server::{build_app, AppState, NodeInfoMeta, PodCreateLimiter, RouteRateLimiter};
 
 // ---------------------------------------------------------------------------
 // Test harness — in-memory storage, permissive ACL, deterministic base URL.
@@ -74,6 +74,9 @@ async fn make_state() -> AppState {
         pay_config: solid_pod_rs::payments::PayConfig::default(),
         data_root: None,
         pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+        nip05_limiter: Arc::new(RouteRateLimiter::new(30, std::time::Duration::from_secs(60))),
+        write_limiter: Arc::new(RouteRateLimiter::new(120, std::time::Duration::from_secs(60))),
+        quota: None,
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
