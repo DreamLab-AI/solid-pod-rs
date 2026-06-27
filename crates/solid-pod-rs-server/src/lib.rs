@@ -153,6 +153,15 @@ pub struct AppState {
     pub data_root: Option<PathBuf>,
     /// JSS-compatible pod creation limiter: one `POST /.pods` per IP per day.
     pub pod_create_limiter: Arc<PodCreateLimiter>,
+    /// Per-IP limiter for the public NIP-05 directory
+    /// (`/.well-known/nostr.json`), bounding username enumeration (B4).
+    /// Default 30 requests / 60 s per IP.
+    pub nip05_limiter: Arc<RouteRateLimiter>,
+    /// Per-sender limiter for container `POST` (inbox / append), bounding
+    /// spam from any single appender (B6.2). Keyed by WebID when
+    /// authenticated, else by source IP. Default 120 requests / 60 s;
+    /// overridable via `JSS_RATE_LIMIT_WRITES_PER_MIN`.
+    pub write_limiter: Arc<RouteRateLimiter>,
     /// When non-empty, CORS responses are only reflected for origins in this
     /// list. Origins not in the list receive no `Access-Control-Allow-Origin`
     /// header. When empty (the default), the request `Origin` is echoed back
@@ -229,6 +238,8 @@ impl AppState {
             pay_config: solid_pod_rs::payments::PayConfig::default(),
             data_root: None,
             pod_create_limiter: Arc::new(PodCreateLimiter::default()),
+            nip05_limiter: Arc::new(RouteRateLimiter::new(30, Duration::from_secs(60))),
+            write_limiter: Arc::new(RouteRateLimiter::new(120, Duration::from_secs(60))),
             allowed_origins: Vec::new(),
             admin_key: None,
             mcp_enabled: false,
@@ -264,6 +275,50 @@ impl PodCreateLimiter {
             }
         }
         hits.insert(ip, now);
+        Ok(())
+    }
+}
+
+/// In-process sliding-window limiter keyed by an opaque string (route +
+/// subject). Unlike the feature-gated [`solid_pod_rs::security::LruRateLimiter`],
+/// this is always compiled, so the public NIP-05 directory (B4) and inbox /
+/// container append (B6.2) are throttled in the default build. Up to `max`
+/// hits are permitted per `window`; the bucket prunes entries older than the
+/// window on each check.
+#[derive(Debug)]
+pub struct RouteRateLimiter {
+    hits: Mutex<HashMap<String, Vec<Instant>>>,
+    max: u32,
+    window: Duration,
+}
+
+impl RouteRateLimiter {
+    /// Build a limiter allowing `max` hits (clamped to ≥1) per `window`.
+    pub fn new(max: u32, window: Duration) -> Self {
+        Self {
+            hits: Mutex::new(HashMap::new()),
+            max: max.max(1),
+            window,
+        }
+    }
+
+    /// Check and record one hit for `key`. Returns `Ok(())` when permitted,
+    /// or `Err(retry_after_secs)` (≥1) when the window is saturated; the hit
+    /// is not recorded on denial.
+    fn check(&self, key: &str) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut map = self.hits.lock().unwrap();
+        let bucket = map.entry(key.to_string()).or_default();
+        match now.checked_sub(self.window) {
+            Some(cutoff) => bucket.retain(|t| *t > cutoff),
+            None => bucket.clear(),
+        }
+        if bucket.len() as u32 >= self.max {
+            let oldest = bucket.first().copied().unwrap_or(now);
+            let elapsed = now.saturating_duration_since(oldest);
+            return Err(self.window.saturating_sub(elapsed).as_secs().max(1));
+        }
+        bucket.push(now);
         Ok(())
     }
 }
@@ -1018,6 +1073,18 @@ async fn handle_post(
     let agent = agent_uri(auth_pk.as_ref());
     enforce_write(&state, &path, AccessMode::Append, agent.as_deref()).await?;
 
+    // B6.2: bound append spam per sender (WebID when authenticated, else
+    // source IP) so a single appender cannot flood an inbox/container.
+    let subject = match agent.as_deref() {
+        Some(webid) => format!("webid:{webid}"),
+        None => format!("ip:{}", request_ip(&req)),
+    };
+    if let Err(retry_after) = state.write_limiter.check(&format!("container_post:{subject}")) {
+        return Ok(HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", retry_after.to_string()))
+            .finish());
+    }
+
     let slug = req
         .headers()
         .get(header::HeaderName::from_static("slug"))
@@ -1503,10 +1570,22 @@ fn nip05_name_is_valid(name: &str) -> bool {
 
 #[cfg(feature = "nip05-endpoint")]
 async fn handle_well_known_nip05(
+    req: HttpRequest,
     state: web::Data<AppState>,
     query: web::Query<Nip05Query>,
 ) -> HttpResponse {
     use solid_pod_rs::webid::extract_nostr_pubkey;
+
+    // B4: the directory is public-by-design but must not be a free
+    // enumeration oracle. Throttle per source IP before any lookup.
+    let ip = request_ip(&req);
+    if let Err(retry_after) = state.nip05_limiter.check(&format!("nip05:{ip}")) {
+        return HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", retry_after.to_string()))
+            .insert_header(("Access-Control-Allow-Origin", "*"))
+            .content_type("application/json")
+            .json(serde_json::json!({ "error": "rate limited" }));
+    }
 
     // JSS Phase 1 (issue #437) parity row 197.
     let name = query.name.clone().unwrap_or_else(|| "_".to_string());

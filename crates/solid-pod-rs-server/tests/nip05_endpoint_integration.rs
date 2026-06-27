@@ -13,9 +13,11 @@ use std::sync::Arc;
 use actix_web::test;
 use bytes::Bytes;
 
+use std::time::Duration;
+
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
-use solid_pod_rs_server::{build_app, AppState};
+use solid_pod_rs_server::{build_app, AppState, RouteRateLimiter};
 
 const SAMPLE_PUBKEY: &str = "deadbeefcafebabe000000000000000000000000000000000000000000000001";
 
@@ -111,6 +113,34 @@ async fn nip05_endpoint_rejects_invalid_local_part() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status().as_u16(), 400);
+}
+
+#[actix_web::test]
+async fn nip05_endpoint_rate_limits_per_ip() {
+    // B4: bound directory enumeration. Tighten the limiter to 2/window, then
+    // the third request from the same IP must be refused with 429 + Retry-After.
+    let storage = Arc::new(MemoryBackend::new());
+    let mut state = AppState::new(storage);
+    state.nip05_limiter = Arc::new(RouteRateLimiter::new(2, Duration::from_secs(60)));
+    let app = test::init_service(build_app(state)).await;
+
+    for _ in 0..2 {
+        let req = test::TestRequest::get()
+            .uri("/.well-known/nostr.json?name=ghost")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status().as_u16(), 200, "first two requests allowed");
+    }
+
+    let req = test::TestRequest::get()
+        .uri("/.well-known/nostr.json?name=ghost")
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 429, "third request rate-limited");
+    assert!(
+        resp.headers().get("Retry-After").is_some(),
+        "429 must carry Retry-After"
+    );
 }
 
 #[actix_web::test]

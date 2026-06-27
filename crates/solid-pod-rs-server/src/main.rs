@@ -18,7 +18,7 @@ use solid_pod_rs::{
 use solid_pod_rs_server::{
     build_app,
     cli::{dispatch as dispatch_operator_cmd, OperatorCommand},
-    AppState, NodeInfoMeta,
+    AppState, NodeInfoMeta, RouteRateLimiter,
 };
 use tracing::{info, warn};
 
@@ -224,6 +224,14 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::new(storage);
     state.data_root = data_root;
+    // B6.2: honour the operator's write-rate cap when configured
+    // (`JSS_RATE_LIMIT_WRITES_PER_MIN`); otherwise keep the AppState default.
+    if let Some(per_min) = cfg.extras.rate_limit_writes_per_min {
+        state.write_limiter = Arc::new(RouteRateLimiter::new(
+            per_min as u32,
+            std::time::Duration::from_secs(60),
+        ));
+    }
     state.allowed_origins = cli.allowed_origins.clone();
     state.admin_key = cli.admin_key.clone();
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
