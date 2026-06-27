@@ -117,11 +117,13 @@ async fn cors_headers_match_jss_global_envelope() {
             .and_then(|v| v.to_str().ok()),
         Some("https://app.example")
     );
-    assert_eq!(
-        headers
-            .get("access-control-allow-credentials")
-            .and_then(|v| v.to_str().ok()),
-        Some("true")
+    // B2: with no allowlist configured (open mode) the origin is reflected but
+    // credentials MUST NOT be advertised — reflecting an arbitrary origin
+    // together with `Access-Control-Allow-Credentials: true` is a cross-origin
+    // credential leak.
+    assert!(
+        headers.get("access-control-allow-credentials").is_none(),
+        "open-mode CORS must not advertise credentials"
     );
     let expose = headers
         .get("access-control-expose-headers")
@@ -129,6 +131,66 @@ async fn cors_headers_match_jss_global_envelope() {
         .unwrap_or("");
     assert!(expose.contains("Updates-Via"), "Expose-Headers = {expose}");
     assert!(expose.contains("WAC-Allow"), "Expose-Headers = {expose}");
+}
+
+#[actix_web::test]
+async fn cors_credentials_only_for_allowlisted_origin() {
+    // B2: with an explicit allowlist, a matching origin is echoed back as a
+    // concrete origin and may carry credentials; the response varies by Origin.
+    let mut state = make_state();
+    state.allowed_origins = vec!["https://trusted.example".to_string()];
+    let app = actix_web::test::init_service(build_app(state)).await;
+
+    let req = actix_web::test::TestRequest::get()
+        .uri("/")
+        .insert_header(("origin", "https://trusted.example"))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    let headers = rsp.headers();
+
+    assert_eq!(
+        headers
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("https://trusted.example")
+    );
+    assert_eq!(
+        headers
+            .get("access-control-allow-credentials")
+            .and_then(|v| v.to_str().ok()),
+        Some("true")
+    );
+    let vary = headers
+        .get_all("vary")
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(vary.contains("Origin"), "Vary must include Origin: {vary}");
+}
+
+#[actix_web::test]
+async fn cors_blocks_origin_outside_allowlist() {
+    // B2: an origin absent from a configured allowlist receives no CORS
+    // headers at all, so the browser's preflight fails closed.
+    let mut state = make_state();
+    state.allowed_origins = vec!["https://trusted.example".to_string()];
+    let app = actix_web::test::init_service(build_app(state)).await;
+
+    let req = actix_web::test::TestRequest::get()
+        .uri("/")
+        .insert_header(("origin", "https://evil.example"))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    let headers = rsp.headers();
+
+    assert!(
+        headers.get("access-control-allow-origin").is_none(),
+        "blocked origin must not receive an ACAO header"
+    );
+    assert!(
+        headers.get("access-control-allow-credentials").is_none(),
+        "blocked origin must not receive credentials"
+    );
 }
 
 // ---------------------------------------------------------------------------

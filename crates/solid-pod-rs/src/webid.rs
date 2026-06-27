@@ -149,6 +149,21 @@ pub fn generate_webid_html_with_issuer(
     let body_json =
         serde_json::to_string_pretty(&body).expect("serde_json::Value always serialises");
 
+    // B6.3 — escape every untrusted value before it reaches the HTML
+    // surface. `display_name` (caller-supplied) and the URLs (built from
+    // `pubkey` / `pod_base`) are interpolated into element text and
+    // double-quoted attributes; without escaping a name such as
+    // `</title><script>…` executes in the pod origin. The JSON-LD island is
+    // guarded separately by replacing every `<` with the equivalent JSON
+    // unicode escape so a value cannot close the `<script>` block (serde
+    // does not escape `<` on its own).
+    // These shadow the originals — `body_json` is already serialised above,
+    // so the raw values are still what landed in the JSON-LD graph.
+    let display_name = html_escape(display_name);
+    let webid = html_escape(&webid);
+    let pod_url = html_escape(&pod_url);
+    let body_json = body_json.replace('<', "\\u003c");
+
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -166,6 +181,25 @@ pub fn generate_webid_html_with_issuer(
 </body>
 </html>"#
     )
+}
+
+/// Minimal HTML-escaper for interpolating untrusted text into the WebID
+/// profile document. Escapes the five characters significant in HTML
+/// element text and double-quoted attribute values, closing the stored-XSS
+/// vector (B6.3) where a display name or pod URL carries markup.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Locate and parse the JSON-LD data island from a WebID HTML document.
@@ -483,5 +517,45 @@ mod tests {
                 panic!("embedded JSON-LD failed to parse: {e}\n----\n{body}\n----")
             });
         }
+    }
+
+    #[test]
+    fn display_name_with_markup_is_escaped() {
+        // B6.3: a hostile display name must not break out of the title/body
+        // into executable markup, nor close the JSON-LD <script> island.
+        let attack = r#"</title><script>alert(1)</script>"#;
+        let html = generate_webid_html("abc", Some(attack), "https://pods.example.com");
+
+        // The raw payload must never appear verbatim anywhere in the output.
+        assert!(
+            !html.contains("<script>alert(1)"),
+            "unescaped <script> reached the HTML surface:\n{html}"
+        );
+        assert!(
+            !html.contains("</title><script>"),
+            "title break-out reached the HTML surface:\n{html}"
+        );
+        // It must appear in escaped form instead.
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "escaped form missing:\n{html}"
+        );
+
+        // The only literal </script> in the document is the genuine close of
+        // the JSON-LD island — the payload's copy is neutralised to <.
+        assert_eq!(
+            html.matches("</script>").count(),
+            1,
+            "exactly one real </script> expected:\n{html}"
+        );
+    }
+
+    #[test]
+    fn html_escape_covers_significant_chars() {
+        assert_eq!(
+            html_escape(r#"&<>"'"#),
+            "&amp;&lt;&gt;&quot;&#x27;"
+        );
+        assert_eq!(html_escape("plain text"), "plain text");
     }
 }

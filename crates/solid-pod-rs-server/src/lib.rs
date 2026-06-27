@@ -905,6 +905,18 @@ async fn handle_get(
                     header::HeaderValue::from_static("application/octet-stream")
                 }),
             );
+            // B1: stored pod content declared as an executable/active type is
+            // served as an attachment so it cannot run in the pod origin if a
+            // user stores HTML/JS/SVG in a world-readable container. `nosniff`
+            // (set globally) covers mis-typed uploads; this covers correctly
+            // typed ones. RDF and media keep rendering inline (handled above /
+            // not active types).
+            if is_active_content_type(&meta.content_type) {
+                rsp.headers_mut().insert(
+                    header::CONTENT_DISPOSITION,
+                    header::HeaderValue::from_static("attachment"),
+                );
+            }
             if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                 rsp.headers_mut().insert(header::ETAG, etag);
             }
@@ -2249,16 +2261,119 @@ where
     }
 }
 
+/// Baseline security-header middleware (B1).
+///
+/// Applied to *every* response — including those short-circuited by the
+/// inner path/dotfile guards — so stored pod content can never be
+/// MIME-sniffed into an executable type:
+///
+/// - `X-Content-Type-Options: nosniff` is inserted unconditionally. This
+///   stops a browser from re-interpreting, say, an `application/octet-stream`
+///   upload as `text/html`. (Content that is *declared* `text/html` is
+///   additionally served `Content-Disposition: attachment` on the blob path.)
+/// - `X-Frame-Options: SAMEORIGIN` is inserted only when absent, so the
+///   stricter `DENY` already set on the mashlib HTML wrapper is preserved.
+pub struct SecurityHeaders;
+
+impl<S, B> Transform<S, ServiceRequest> for SecurityHeaders
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type InitError = ();
+    type Transform = SecurityHeadersMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(SecurityHeadersMiddleware { service }))
+    }
+}
+
+/// Per-request service instance produced by [`SecurityHeaders`].
+pub struct SecurityHeadersMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for SecurityHeadersMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = ActixError;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let fut = self.service.call(req);
+        Box::pin(async move {
+            let mut resp = fut.await?;
+            let headers = resp.headers_mut();
+            headers.insert(
+                header::HeaderName::from_static("x-content-type-options"),
+                header::HeaderValue::from_static("nosniff"),
+            );
+            if !headers.contains_key("x-frame-options") {
+                headers.insert(
+                    header::HeaderName::from_static("x-frame-options"),
+                    header::HeaderValue::from_static("SAMEORIGIN"),
+                );
+            }
+            Ok(resp)
+        })
+    }
+}
+
+/// Return `true` when a stored resource's content-type can execute script
+/// in the pod origin if a browser renders it inline (B1). Such resources are
+/// served `Content-Disposition: attachment` on the verbatim blob path so they
+/// download instead of running. The media-type parameters (`; charset=…`) are
+/// ignored and the comparison is case-insensitive.
+fn is_active_content_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "application/javascript"
+            | "text/javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+            | "application/x-javascript"
+    )
+}
+
 fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allowed: &[String]) {
     // Determine the effective ACAO value, respecting the allowlist.
-    let effective_origin: Option<String> = if allowed.is_empty() {
-        // No allowlist — echo back the request origin or fall back to "*".
-        Some(origin.unwrap_or("*").to_string())
+    //
+    // `allowlisted` records whether the echoed origin was matched against an
+    // explicit allowlist. Only an allowlisted, concrete origin may carry
+    // credentials (B2): per the Fetch spec, `Access-Control-Allow-Credentials:
+    // true` must never accompany `*`, and reflecting an *arbitrary* origin
+    // together with credentials is a cross-origin credential-leak — any site
+    // could then make credentialed requests to the pod. With no allowlist
+    // configured we stay in open mode (echo the origin so apps still work) but
+    // suppress credentials.
+    let (effective_origin, allowlisted): (Option<String>, bool) = if allowed.is_empty() {
+        // No allowlist — open mode. Echo the request origin or fall back to
+        // "*". Never credentialed.
+        (Some(origin.unwrap_or("*").to_string()), false)
     } else {
-        // Allowlist set — only reflect recognised origins.
-        origin
-            .filter(|o| allowed.iter().any(|a| a == *o))
-            .map(str::to_string)
+        // Allowlist set — only reflect recognised origins, and only those may
+        // be credentialed.
+        match origin.filter(|o| allowed.iter().any(|a| a == *o)) {
+            Some(o) => (Some(o.to_string()), true),
+            None => (None, false),
+        }
     };
 
     // If the origin is blocked (allowlist non-empty and origin not in list),
@@ -2282,7 +2397,6 @@ fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allow
             "access-control-expose-headers",
             "Accept-Patch, Accept-Post, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Link, Location, Updates-Via, WAC-Allow, X-Cost, X-Balance, X-Pay-Currency",
         ),
-        ("access-control-allow-credentials", "true"),
         ("access-control-max-age", "86400"),
     ];
 
@@ -2293,6 +2407,17 @@ fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allow
         ) {
             headers.insert(name, value);
         }
+    }
+
+    // Credentialed CORS only for an explicitly allowlisted, concrete origin.
+    // The echoed origin now varies by request, so advertise `Vary: Origin`
+    // (appended so it does not clobber a `Vary: Accept` from content
+    // negotiation).
+    if allowlisted {
+        if let Ok(name) = header::HeaderName::from_lowercase(b"access-control-allow-credentials") {
+            headers.insert(name, header::HeaderValue::from_static("true"));
+        }
+        headers.append(header::VARY, header::HeaderValue::from_static("Origin"));
     }
 }
 
@@ -3375,6 +3500,9 @@ pub fn build_app(
         // guards. Wrapping first means `wrap()` applies it last in
         // actix's stack order.
         .wrap(ErrorLoggingMiddleware)
+        // B1: baseline security headers (nosniff + frame-options) on every
+        // response, including those short-circuited by the inner guards.
+        .wrap(SecurityHeaders)
         .wrap(CorsHeaders { allowed_origins })
         // `MergeOnly` collapses duplicate slashes (//a → /a) without
         // stripping the trailing slash, which is the container/resource
