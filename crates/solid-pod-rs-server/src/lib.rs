@@ -3412,8 +3412,9 @@ pub fn build_app(
     }
 
     // JSS v0.0.190 Phase 1 port (issue #437), parity row 197.
-    // Pod-resident NIP-05 endpoint. Scaffold only — handler body
-    // is `todo!()`. Feature `nip05-endpoint` (default-off).
+    // Pod-resident NIP-05 endpoint. `handle_well_known_nip05` is
+    // implemented and routed (bodies landed in 0.4.0-alpha.11; no
+    // `todo!()`). Feature `nip05-endpoint` (default-off).
     #[cfg(feature = "nip05-endpoint")]
     {
         app = app.route(

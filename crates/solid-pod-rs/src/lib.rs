@@ -183,11 +183,16 @@ pub mod storage;
 pub mod oidc;
 
 // ---------------------------------------------------------------------------
-// JSS v0.0.190 Phase 1 port (issue #437) — scaffolds.
+// JSS v0.0.190 Phase 1 port (issue #437) — pod data export.
 //
-// Parity row 198. Default-off; function body is `todo!()`. Type
-// surface is stable for downstream consumers (NRF,
-// dreamlab-ai-website).
+// Parity row 198. Default-off (`export-jsonld`). `export_pod_jsonld` is
+// fully implemented and tested (bodies landed in 0.4.0-alpha.11; no
+// `todo!()`); the library surface is stable for downstream consumers
+// (NRF, dreamlab-ai-website). The `export-jsonld` feature pulls
+// `tokio-runtime` and is therefore native-only — the wasm32 CF-Workers
+// pod build cannot compile or serve it. Only native `solid-pod-rs-server`
+// deployments can expose the export; there is no server route registered
+// yet, so consumers call `export_pod_jsonld` directly.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "export-jsonld")]
 pub mod export;
@@ -258,7 +263,7 @@ pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolic
 pub use storage::{ResourceMeta, Storage, StorageEvent};
 
 // ---------------------------------------------------------------------------
-// JSS v0.0.190 Phase 1 port — re-exports (scaffolds).
+// JSS v0.0.190 Phase 1 port — export re-exports (implemented, not stubs).
 // ---------------------------------------------------------------------------
 #[cfg(feature = "export-jsonld")]
 pub use export::{
