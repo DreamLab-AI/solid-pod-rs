@@ -2,8 +2,12 @@
 # scripts/sync-fixtures.sh — solid-pod-rs substrate
 #
 # Per ADR-082 D5: solid-pod-rs consumes cross-substrate fixtures from VisionClaw
-# (the master host). This script copies docs/specs/fixtures/ into the relevant
+# (the master host). This script copies tests/fixtures/ into the relevant
 # crate test directories and writes CHECKSUM.txt for CI drift detection.
+#
+# Canonical source path: VisionClaw's fixtures were relocated from
+# tests/fixtures/ to tests/fixtures/ on 2026-06-29 (VisionClaw commit
+# 031f539a5, clean-room documentation rebuild). This script tracks that move.
 #
 # solid-pod-rs has two crates consuming fixtures:
 #   - solid-pod-rs-nostr  (NIP-01, NIP-19, NIP-98, BIP-340, RFC-8785,
@@ -51,21 +55,23 @@ if [[ "$SOURCE" =~ ^https://.*\.git$ ]]; then
   TMPDIR=$(mktemp -d)
   trap "rm -rf $TMPDIR" EXIT
   git clone --depth=1 --filter=blob:none --sparse --quiet "$SOURCE" "$TMPDIR"
-  (cd "$TMPDIR" && git sparse-checkout add docs/specs/fixtures)
-  FIXTURE_SRC="$TMPDIR/docs/specs/fixtures"
+  (cd "$TMPDIR" && git sparse-checkout add tests/fixtures)
+  FIXTURE_SRC="$TMPDIR/tests/fixtures"
 else
-  if [ ! -d "$SOURCE/docs/specs/fixtures" ]; then
-    echo "ERROR: VISIONCLAW_FIXTURES_PATH=$SOURCE has no docs/specs/fixtures/" >&2
+  if [ ! -d "$SOURCE/tests/fixtures" ]; then
+    echo "ERROR: VISIONCLAW_FIXTURES_PATH=$SOURCE has no tests/fixtures/" >&2
     exit 1
   fi
-  FIXTURE_SRC="$SOURCE/docs/specs/fixtures"
+  FIXTURE_SRC="$SOURCE/tests/fixtures"
 fi
 
 # Sync to both crate test dirs.
 for TARGET in "$NOSTR_TARGET" "$DIDKEY_TARGET"; do
   mkdir -p "$TARGET"
   if command -v rsync &>/dev/null; then
-    rsync -a --delete --exclude='CHECKSUM.txt' \
+    rsync -a --delete \
+      --exclude='CHECKSUM.txt' --exclude='CHECKSUMS.txt' \
+      --exclude='mod.rs' --exclude='data-model' --exclude='ontology' --exclude='ontologies' \
       "$FIXTURE_SRC/" "$TARGET/"
   else
     rm -rf "$TARGET"/*.json "$TARGET"/*.md "$TARGET"/*.txt "$TARGET"/schemas 2>/dev/null
