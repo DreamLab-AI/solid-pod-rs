@@ -142,7 +142,8 @@ use solid_pod_rs::{
     security::DotfileAllowlist,
     storage::Storage,
     wac::{
-        self, conditions::RequestContext, parse_jsonld_acl, parser::parse_turtle_acl, AccessMode,
+        self, conditions::RequestContext, effective_acl_target, parse_jsonld_acl,
+        parser::parse_turtle_acl, protected_resource_for_acl, AccessMode,
     },
     PodError,
 };
@@ -447,31 +448,12 @@ fn accept_includes_html(accept: &str) -> bool {
 // WAC enforcement for writes (PUT / POST / PATCH / DELETE)
 // ---------------------------------------------------------------------------
 
-/// Resolve the effective ACL and evaluate whether the given WebID may
-/// perform `mode` on `path`.
-///
-/// Returns `Ok(())` on grant. On deny, returns an `actix_web::Error`:
-/// * `401` when the request had no authenticated agent (so the client
-///   knows retrying with credentials might work);
-/// * `403` when authenticated but the ACL does not grant the mode.
-/// Strip a `.acl` / `.meta` suffix from `path`, returning the protected
-/// resource the sidecar governs. `/victim/.acl` → `/victim/`,
-/// `/a/b.acl` → `/a/b`, `/.acl` → `/`. Returns `None` when `path` is not
-/// an ACL/meta sidecar.
-fn protected_resource_for_acl(path: &str) -> Option<String> {
-    for suffix in [".acl", ".meta"] {
-        if let Some(stripped) = path.strip_suffix(suffix) {
-            // `/.acl` and `/dir/.acl` strip to `/` and `/dir/`
-            // respectively (container ACLs); `/a/b.acl` strips to the
-            // resource `/a/b`.
-            if stripped.is_empty() {
-                return Some("/".to_string());
-            }
-            return Some(stripped.to_string());
-        }
-    }
-    None
-}
+// `protected_resource_for_acl` and the sidecar-elevation decision now live
+// in wasm-safe core (`solid_pod_rs::wac::{protected_resource_for_acl,
+// effective_acl_target}`) so this server, the CF-Workers pod, and any
+// downstream consumer share one policy. Imported above via the `wac::{…}`
+// use; the lockout-guard call sites below and the enforcement functions
+// both route through it.
 
 /// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
 /// `.acl` document body and confirm at least one authorization still
@@ -582,48 +564,24 @@ async fn enforce_write_ctx(
     request_origin: Option<&str>,
 ) -> Result<(), ActixError> {
     let origin = request_origin.and_then(wac::Origin::parse);
-    // P0-2: an `.acl`/`.meta` sidecar governs *another* resource's
-    // permissions. Authorising its mutation as plain `Write` on the
-    // sidecar path lets any writer rewrite the ACL and self-escalate
+    // P0-2 / P0-4: an `.acl`/`.meta` sidecar governs *another* resource's
+    // permissions. Authorising its mutation as plain `Write`/`Append` on
+    // the sidecar path lets any writer rewrite the ACL and self-escalate
     // (privilege escalation). WAC §4.3.5 requires `acl:Control` on the
-    // PROTECTED resource. Elevate the check accordingly, mirroring the
-    // MCP `write_acl` path (mcp/tools.rs:505), and apply the same
-    // lockout guard so a Control holder cannot strip every other
-    // principal's Control in a single write.
-    if let Some(protected) = protected_resource_for_acl(path) {
-        let control_acl = match find_effective_acl_dyn(&*state.storage, &protected).await {
-            Ok(doc) => doc,
-            Err(e) => return Err(to_actix(e)),
-        };
-        let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
-        let ctx = RequestContext {
-            web_id: agent_uri,
-            client_id: None,
-            issuer: None,
-            payment_balance_sats,
-        };
-        let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
-        let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
-        let has_control = wac::evaluate_access_ctx_with_registry(
-            control_acl.as_ref(),
-            &ctx,
-            &protected,
-            AccessMode::Control,
-            origin.as_ref(),
-            &groups,
-            &registry,
-        );
-        if !has_control {
-            return Err(acl_denial(control_acl.as_ref(), agent_uri, &protected));
-        }
-        return Ok(());
-    }
+    // PROTECTED resource. That elevation is no longer hand-rolled here:
+    // `wac::effective_acl_target` is the single source of truth, shared
+    // with the read path (`enforce_read_ctx`) and any wasm runtime. For an
+    // ordinary resource it returns `(path, mode)` unchanged; for a sidecar
+    // it returns `(protected_resource, Control)`. The lockout guard
+    // (`proposed_acl_keeps_caller_control`) still runs at the PUT/POST/PATCH
+    // handler call sites, keyed on the same `protected_resource_for_acl`.
+    let (resource, eff_mode) = effective_acl_target(path, mode);
 
     // `StorageAclResolver` is generic over a concrete backend. `state`
-    // holds an `Arc<dyn Storage>`; wrap it in a trait-object-friendly
-    // adapter (`DynStorage`) that forwards each trait method so the
-    // resolver can be constructed with a concrete type.
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
+    // holds an `Arc<dyn Storage>`; `find_effective_acl_dyn` wraps it in a
+    // trait-object-friendly adapter so the resolver runs against the
+    // effective resource (the sidecar's governed resource, or `path`).
+    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
     };
@@ -645,30 +603,39 @@ async fn enforce_write_ctx(
     let granted = wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &ctx,
-        path,
-        mode,
+        &resource,
+        eff_mode,
         origin.as_ref(),
         &groups,
         &registry,
     );
-    if granted {
-        // Sat-gating consumption for the write path: identical to the
-        // read path (see `enforce_read`). A granted write whose
-        // authorising rule carried an `acl:PaymentCondition` debits the
-        // caller's Web Ledger by the matched rule's cost. The WAC gate
-        // above already proved `balance >= cost`, so a debit failure can
-        // only mean a concurrent spend raced the balance below cost —
-        // fail closed, never serve an unpaid write.
-        if let Err(e) =
-            charge_granted_payment(state, acl_doc.as_ref(), &ctx, path, mode, &groups, &registry)
-                .await
-        {
-            return Err(e);
-        }
-        return Ok(());
+    if !granted {
+        return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
     }
-
-    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+    // Sat-gating consumption applies only to a non-elevated (ordinary)
+    // write. A sidecar elevation demands `acl:Control` on the protected
+    // resource — the owner-repair path — and is never itself a metered
+    // write, matching the pre-unification behaviour where the Control
+    // pre-check returned `Ok` without a Web-Ledger debit. `resource ==
+    // path` iff `effective_acl_target` did NOT elevate a sidecar.
+    if resource.as_str() == path {
+        // A granted write whose authorising rule carried an
+        // `acl:PaymentCondition` debits the caller's Web Ledger by the
+        // matched rule's cost. The WAC gate above already proved `balance
+        // >= cost`, so a debit failure can only mean a concurrent spend
+        // raced the balance below cost — fail closed, never serve unpaid.
+        charge_granted_payment(
+            state,
+            acl_doc.as_ref(),
+            &ctx,
+            &resource,
+            eff_mode,
+            &groups,
+            &registry,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Apply the `acl:PaymentCondition` debit for a request the WAC gate has
@@ -771,41 +738,15 @@ async fn enforce_read_ctx(
     // authorization graph of the resource it governs — every WebID,
     // `acl:agentGroup` IRI, `acl:origin`, and `acl:PaymentCondition`
     // amount. WAC §4.3.5 requires `acl:Control` on the PROTECTED resource
-    // to read (as well as write) its ACL. The write path already elevates
-    // (see `enforce_write_ctx`); before this block the read path enforced
-    // only `acl:Read` on the sidecar, so any Read-granted agent could
-    // exfiltrate the ACL — the inverse of JSS, which gates all ACL ops on
-    // Control (`auth/middleware.js:93`). Elevate the read check to Control
-    // on the protected resource, mirroring the write path.
-    if let Some(protected) = protected_resource_for_acl(path) {
-        let control_acl = match find_effective_acl_dyn(&*state.storage, &protected).await {
-            Ok(doc) => doc,
-            Err(e) => return Err(to_actix(e)),
-        };
-        let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
-        let ctx = RequestContext {
-            web_id: agent_uri,
-            client_id: None,
-            issuer: None,
-            payment_balance_sats,
-        };
-        let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
-        let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
-        let has_control = wac::evaluate_access_ctx_with_registry(
-            control_acl.as_ref(),
-            &ctx,
-            &protected,
-            AccessMode::Control,
-            origin.as_ref(),
-            &groups,
-            &registry,
-        );
-        if !has_control {
-            return Err(acl_denial(control_acl.as_ref(), agent_uri, &protected));
-        }
-        return Ok(());
-    }
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
+    // to read (as well as write) its ACL — the invariant a downstream
+    // forum previously got wrong on the READ side. This elevation is now
+    // the SAME shared `wac::effective_acl_target` the write path uses
+    // (base mode `Read`), so read and write can no longer drift: an
+    // ordinary resource stays `(path, Read)`; a sidecar becomes
+    // `(protected_resource, Control)`, gating ACL disclosure on Control
+    // exactly as JSS does (`auth/middleware.js:93`).
+    let (resource, eff_mode) = effective_acl_target(path, AccessMode::Read);
+    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
     };
@@ -821,30 +762,35 @@ async fn enforce_read_ctx(
     let granted = wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &ctx,
-        path,
-        AccessMode::Read,
+        &resource,
+        eff_mode,
         origin.as_ref(),
         &groups,
         &registry,
     );
-    if granted {
-        // Sat-gating consumption: a granted read whose authorising rule
-        // carried an `acl:PaymentCondition` debits the caller's Web
-        // Ledger by the matched rule's cost (fail-closed on a raced
-        // balance). See `charge_granted_payment`.
+    if !granted {
+        return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
+    }
+    // Sat-gating consumption applies only to a non-elevated (ordinary)
+    // read; a sidecar Control elevation is never metered (see
+    // `enforce_write_ctx`). `resource == path` iff no elevation happened.
+    if resource.as_str() == path {
+        // A granted read whose authorising rule carried an
+        // `acl:PaymentCondition` debits the caller's Web Ledger by the
+        // matched rule's cost (fail-closed on a raced balance). See
+        // `charge_granted_payment`.
         charge_granted_payment(
             state,
             acl_doc.as_ref(),
             &ctx,
-            path,
-            AccessMode::Read,
+            &resource,
+            eff_mode,
             &groups,
             &registry,
         )
         .await?;
-        return Ok(());
     }
-    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+    Ok(())
 }
 
 /// Debit `cost` satoshis from `did`'s Web Ledger entry and persist the

@@ -192,6 +192,67 @@ pub fn mode_name(mode: AccessMode) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sidecar-enforcement policy — SINGLE SOURCE OF TRUTH.
+//
+// An `.acl` / `.meta` sidecar governs *another* resource's permissions, so
+// WAC §4.3.5 requires `acl:Control` on the PROTECTED resource for ANY
+// access to the sidecar — read AND write. Encoding that rule once, in
+// wasm-safe core, keeps every runtime (native `solid-pod-rs-server`,
+// CF-Workers pods, downstream forums) on the same decision so the READ
+// and WRITE elevation cannot drift apart per-consumer.
+// ---------------------------------------------------------------------------
+
+/// Strip a `.acl` / `.meta` suffix from `path`, returning the protected
+/// resource the sidecar governs. `/victim/.acl` → `/victim/`,
+/// `/a/b.acl` → `/a/b`, `/.acl` → `/`, `.acl` → `/`. Returns `None` when
+/// `path` is not an ACL/meta sidecar.
+///
+/// Pure and I/O-free (wasm-safe). This is THE canonical
+/// "is-this-a-sidecar / what-does-it-govern" predicate; do not re-derive
+/// it per runtime.
+pub fn protected_resource_for_acl(path: &str) -> Option<String> {
+    for suffix in [".acl", ".meta"] {
+        if let Some(stripped) = path.strip_suffix(suffix) {
+            // `/.acl` and `/dir/.acl` strip to `/` and `/dir/`
+            // respectively (container ACLs); `/a/b.acl` strips to the
+            // resource `/a/b`. A bare `.acl` (no leading slash) strips to
+            // the empty string and maps to the pod root `/`.
+            if stripped.is_empty() {
+                return Some("/".to_string());
+            }
+            return Some(stripped.to_string());
+        }
+    }
+    None
+}
+
+/// Canonical sidecar-elevation decision for BOTH reads and writes.
+///
+/// Maps a `(path, base_mode)` access request to the `(resource, mode)` the
+/// WAC check must actually run against:
+///
+/// * When `path` is an `.acl`/`.meta` sidecar
+///   ([`protected_resource_for_acl`] is `Some(p)`), the check elevates to
+///   `(p, AccessMode::Control)` — because reading or writing the sidecar
+///   discloses or rewrites the full authorization graph of `p`, which WAC
+///   §4.3.5 gates on `acl:Control` of `p`, never the base mode on the
+///   sidecar path.
+/// * Otherwise the request passes through unchanged as `(path, base_mode)`.
+///
+/// Callers pass `base_mode = AccessMode::Read` for a read and the request's
+/// write mode (`Write`/`Append`/`Control`) for a write; the elevation
+/// collapses either to `Control` on the governed resource. This is the ONE
+/// function the native server's read/write enforcement and any wasm runtime
+/// share, so the sidecar rule has a single source of truth. Pure and
+/// I/O-free (wasm-safe).
+pub fn effective_acl_target(path: &str, base_mode: AccessMode) -> (String, AccessMode) {
+    match protected_resource_for_acl(path) {
+        Some(protected) => (protected, AccessMode::Control),
+        None => (path.to_string(), base_mode),
+    }
+}
+
 /// Build a `WAC-Allow` header value (WAC 1.x — no condition dispatcher).
 ///
 /// Advertises static capabilities for the authenticated agent and for
@@ -446,5 +507,75 @@ mod tests {
         let body = b"{}";
         let doc = parse_jsonld_acl_with_limits(body, 1024, 32).unwrap();
         assert!(doc.graph.is_none());
+    }
+
+    // ----- Sidecar-enforcement policy (single source of truth) ------------
+
+    #[test]
+    fn protected_resource_for_acl_strips_suffixes() {
+        assert_eq!(
+            protected_resource_for_acl("/victim/.acl").as_deref(),
+            Some("/victim/")
+        );
+        assert_eq!(protected_resource_for_acl("/a/b.acl").as_deref(), Some("/a/b"));
+        assert_eq!(protected_resource_for_acl("/.acl").as_deref(), Some("/"));
+        assert_eq!(protected_resource_for_acl("/a/b.meta").as_deref(), Some("/a/b"));
+        assert_eq!(protected_resource_for_acl("/dir/.meta").as_deref(), Some("/dir/"));
+        assert_eq!(protected_resource_for_acl("/.meta").as_deref(), Some("/"));
+        assert_eq!(protected_resource_for_acl(".acl").as_deref(), Some("/"));
+        // Not a sidecar.
+        assert_eq!(protected_resource_for_acl("/a/b").as_deref(), None);
+        assert_eq!(protected_resource_for_acl("/foo.aclx").as_deref(), None);
+    }
+
+    /// GOLDEN CONFORMANCE VECTORS for [`effective_acl_target`].
+    ///
+    /// Every runtime that enforces WAC (native server, CF-Workers pod,
+    /// downstream forum) MUST reproduce this table exactly: `(path,
+    /// base_mode)` → `(resource, mode)`. The sidecar rows cover both READ
+    /// and WRITE elevating to `Control` on the governed resource — the
+    /// invariant a downstream consumer previously got wrong on the READ
+    /// side.
+    #[test]
+    fn effective_acl_target_golden_conformance_vectors() {
+        use AccessMode::{Append, Control, Read, Write};
+        // (input path, base_mode) -> (expected resource, expected mode)
+        let vectors: &[(&str, AccessMode, &str, AccessMode)] = &[
+            // Ordinary resource: read / write / append pass through unchanged.
+            ("/foo", Read, "/foo", Read),
+            ("/foo", Write, "/foo", Write),
+            ("/foo", Append, "/foo", Append),
+            ("/dir/", Read, "/dir/", Read),
+            ("/dir/", Write, "/dir/", Write),
+            // `.acl` sidecar: READ *and* WRITE both elevate to Control on /foo.
+            ("/foo.acl", Read, "/foo", Control),
+            ("/foo.acl", Write, "/foo", Control),
+            ("/foo.acl", Append, "/foo", Control),
+            // Container `.acl`: /dir/.acl -> (/dir/, Control).
+            ("/dir/.acl", Read, "/dir/", Control),
+            ("/dir/.acl", Write, "/dir/", Control),
+            // Root `.acl`: /.acl -> (/, Control).
+            ("/.acl", Read, "/", Control),
+            ("/.acl", Write, "/", Control),
+            // `.meta` behaves identically to `.acl`.
+            ("/foo.meta", Read, "/foo", Control),
+            ("/foo.meta", Write, "/foo", Control),
+            ("/dir/.meta", Read, "/dir/", Control),
+            ("/.meta", Write, "/", Control),
+        ];
+        for (path, base, exp_res, exp_mode) in vectors {
+            let (res, mode) = effective_acl_target(path, *base);
+            assert_eq!(&res, exp_res, "resource for ({path:?}, {base:?})");
+            assert_eq!(mode, *exp_mode, "mode for ({path:?}, {base:?})");
+        }
+    }
+
+    #[test]
+    fn effective_acl_target_non_sidecar_is_identity() {
+        for mode in ALL_MODES {
+            let (res, out) = effective_acl_target("/data/note.ttl", *mode);
+            assert_eq!(res, "/data/note.ttl");
+            assert_eq!(out, *mode);
+        }
     }
 }

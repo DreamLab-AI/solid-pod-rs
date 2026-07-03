@@ -339,22 +339,91 @@ pub fn is_valid_hex_pubkey(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// Check whether `tag_value` matches the expected `did:nostr` URI for
-/// `pubkey`, or is a pod URL that embeds the pubkey hex.
+/// Check whether `tag_value` binds back to `pubkey` — the bidirectional
+/// `did:nostr` ↔ WebID backlink test.
 ///
-/// This supports two patterns:
-/// 1. Exact `did:nostr:<pubkey>` match.
-/// 2. A URL containing the pubkey hex (e.g.
-///    `https://pod.example/.well-known/did/nostr/<pubkey>.json`).
+/// Accepts exactly two forms and NOTHING ELSE (no bare-substring match):
+/// 1. An exact `did:nostr:<pubkey>` URI.
+/// 2. A URL whose PATH carries the pubkey as a full segment, optionally
+///    with a file extension — e.g.
+///    `https://pod.example/.well-known/did/nostr/<pubkey>.json`.
+///
+/// A value that merely *contains* the hex elsewhere — in a query string
+/// (`https://evil.example/?ref=<pubkey>`), a fragment, or a host label
+/// (`https://<pubkey>.evil.example/`) — is REJECTED. The previous
+/// `tag_value.contains(pubkey)` substring check accepted all of those,
+/// letting an attacker forge a backlink by parking the victim's key in a
+/// query parameter.
 pub fn verify_webid_tag(tag_value: &str, pubkey: &str) -> bool {
     if !is_valid_hex_pubkey(pubkey) {
         return false;
     }
-    let expected_did = format!("did:nostr:{pubkey}");
-    if tag_value == expected_did {
+    // 1. Exact `did:nostr:<pubkey>` match.
+    if tag_value == format!("did:nostr:{pubkey}") {
         return true;
     }
-    tag_value.contains(pubkey)
+    // 2. Validated pod-URL-path match (full path segment, not a substring).
+    url_path_declares_pubkey(tag_value, pubkey)
+}
+
+/// Whether `pubkey` appears as a full PATH SEGMENT of `tag_value`
+/// (optionally with a file extension, e.g. `<pubkey>.json`) — never as a
+/// bare substring, query-string value, fragment, or host label.
+///
+/// Isolates the URL path by dropping `scheme://authority` and any
+/// `?query` / `#fragment`, then requires an exact segment (or
+/// `<pubkey>.<ext>`) match. Pure and I/O-free (wasm-safe).
+fn url_path_declares_pubkey(tag_value: &str, pubkey: &str) -> bool {
+    let is_delim = |c: char| c == '/' || c == '?' || c == '#';
+    // Drop `scheme://authority` so a host-embedded key does not match.
+    let after_authority = match tag_value.find("://") {
+        Some(i) => {
+            let rest = &tag_value[i + 3..];
+            match rest.find(is_delim) {
+                // The authority ends at the first '/', which begins the path.
+                Some(j) if rest.as_bytes()[j] == b'/' => &rest[j..],
+                // A '?'/'#' before any '/', or no delimiter, => no path.
+                _ => return false,
+            }
+        }
+        // No scheme: treat the whole value as a (relative) path.
+        None => tag_value,
+    };
+    // Drop the query / fragment.
+    let path = match after_authority.find(|c: char| c == '?' || c == '#') {
+        Some(k) => &after_authority[..k],
+        None => after_authority,
+    };
+    path.split('/').any(|seg| {
+        seg == pubkey
+            || seg
+                .strip_prefix(pubkey)
+                .is_some_and(|ext| ext.starts_with('.'))
+    })
+}
+
+/// Bidirectional-binding verifier: does the fetched WebID profile document
+/// declare `pubkey_hex` back?
+///
+/// A `did:nostr` DID-Document may point at a WebID (`alsoKnownAs`); a
+/// trustworthy binding requires the WebID profile to point back at the same
+/// Nostr key. This function is the PURE half of that check: the runtime
+/// fetches the WebID over the network (I/O stays per-runtime), then hands
+/// the raw `profile` bytes here. It extracts the profile's advertised
+/// `nostr:pubkey` (via [`crate::webid::extract_nostr_pubkey`]) and confirms
+/// it binds to `pubkey_hex` under the tightened [`verify_webid_tag`] rule
+/// (exact `did:nostr:` / bare hex / validated pod-URL-path — never a
+/// substring). Returns `false` when `pubkey_hex` is not a valid key, the
+/// profile is unparseable, advertises no key, or advertises a different
+/// key. Pure and I/O-free (wasm-safe).
+pub fn webid_declares_pubkey(profile: &[u8], pubkey_hex: &str) -> bool {
+    if !is_valid_hex_pubkey(pubkey_hex) {
+        return false;
+    }
+    match crate::webid::extract_nostr_pubkey(profile) {
+        Ok(Some(declared)) => verify_webid_tag(&declared, pubkey_hex),
+        _ => false,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -629,5 +698,72 @@ mod tests {
     #[test]
     fn verify_webid_tag_rejects_invalid_pubkey() {
         assert!(!verify_webid_tag("did:nostr:abc", "abc"));
+    }
+
+    #[test]
+    fn verify_webid_tag_rejects_pubkey_in_query_string() {
+        // The pubkey parked in a query parameter must NOT be accepted as a
+        // backlink — the exact forgery the old substring `contains` allowed.
+        let evil = format!("https://evil.example/?ref={PK_HEX}");
+        assert!(!verify_webid_tag(&evil, PK_HEX));
+    }
+
+    #[test]
+    fn verify_webid_tag_rejects_pubkey_in_host_or_fragment() {
+        assert!(!verify_webid_tag(&format!("https://{PK_HEX}.evil.example/"), PK_HEX));
+        assert!(!verify_webid_tag(&format!("https://evil.example/x#{PK_HEX}"), PK_HEX));
+        // A longer segment that merely starts with the key (no '.' boundary).
+        assert!(!verify_webid_tag(
+            &format!("https://pod.example/{PK_HEX}deadbeef"),
+            PK_HEX
+        ));
+    }
+
+    #[test]
+    fn verify_webid_tag_accepts_bare_hex_segment() {
+        // A bare-hex path segment (no extension) still binds.
+        assert!(verify_webid_tag(
+            &format!("https://pod.example/keys/{PK_HEX}"),
+            PK_HEX
+        ));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_matches_profile_triple() {
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "{PK_HEX}" }}
+            </script></head></html>"#
+        );
+        assert!(webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_matches_did_uri_triple() {
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "did:nostr:{PK_HEX}" }}
+            </script></head></html>"#
+        );
+        assert!(webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_rejects_absent_or_mismatched() {
+        // No nostr:pubkey triple.
+        let none = br#"<html><head><script type="application/ld+json">
+            { "name": "Alice" }
+            </script></head></html>"#;
+        assert!(!webid_declares_pubkey(none, PK_HEX));
+        // A different key declared.
+        let other = "1111111111111111111111111111111111111111111111111111111111111111";
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "{other}" }}
+            </script></head></html>"#
+        );
+        assert!(!webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+        // Invalid expected key.
+        assert!(!webid_declares_pubkey(profile.as_bytes(), "abc"));
     }
 }

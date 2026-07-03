@@ -237,10 +237,10 @@ pub use provenance::{
 };
 pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
-    check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,
-    method_to_mode, mode_name, parse_turtle_acl, serialize_turtle_acl, wac_allow_header,
-    AccessMode, AclDocument, GroupMembership, Origin, OriginDecision, OriginPattern,
-    StaticGroupMembership,
+    check_origin, effective_acl_target, evaluate_access, evaluate_access_with_groups,
+    extract_origin_patterns, method_to_mode, mode_name, parse_turtle_acl,
+    protected_resource_for_acl, serialize_turtle_acl, wac_allow_header, AccessMode, AclDocument,
+    GroupMembership, Origin, OriginDecision, OriginPattern, StaticGroupMembership,
 };
 pub use webid::{
     extract_nostr_pubkey, extract_oidc_issuer, generate_webid_html,
