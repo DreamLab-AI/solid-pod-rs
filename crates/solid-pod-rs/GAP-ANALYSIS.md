@@ -301,8 +301,11 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 
 **C.7a CLI**: Scope call — JSS is a full server; we are a library. The
 standalone example intentionally stays small. For feature-parity, the
-admin CLI belongs in a consumer crate. **Action**: formalise this as
-ADR-054 "library vs server separation".
+admin CLI belongs in a consumer crate — which now ships as the
+`solid-pod-rs-server` binary crate. The "library vs server separation"
+decision was never captured as a standalone ADR in this crate's
+`docs/adr/` set (which holds ADR-057, ADR-058, ADR-059 only); the split
+is implemented directly.
 
 ### C.8 Architecture
 
@@ -722,10 +725,11 @@ demonstration, not a production CLI.
 
 **Bug or feature?** Feature — scope call. Library vs server.
 
-**Compatibility impact**: operators cannot drop solid-pod-rs into a
-JSS-replacement slot without writing their own wrapper. **Action**: add
-ADR-054 documenting the library-vs-server split; ship
-`solid-pod-rs-server` as a future consumer crate.
+**Compatibility impact**: operators can drop the `solid-pod-rs-server`
+binary crate into a JSS-replacement slot. The library-vs-server split
+shipped; it was implemented directly rather than captured as a standalone
+ADR in this crate's `docs/adr/` set (which holds ADR-057, ADR-058,
+ADR-059 only).
 
 ### F.5 Default WAC stance
 
@@ -950,8 +954,18 @@ crate alone).
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
 - JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `9d29167` / `0.0.204`).
-- ADR-053 — backend boundary + extraction scope.
-- ADR-054 (pending) — library-vs-server separation.
+- **Referenced decision records not present in this crate's `docs/adr/`
+  set** (which holds ADR-057, ADR-058, ADR-059 only): ADR-053 (backend
+  boundary + extraction scope), ADR-054 (library-vs-server separation) and
+  ADR-056 §D3 (library-server split) are backlog record numbers that were
+  never authored in this repo. The decisions they name are nonetheless
+  **implemented** — the library-vs-server split ships as the
+  `solid-pod-rs-server` binary crate, the S3 backend ships gated behind
+  `s3-backend`, and WebID-TLS is a recorded won't-fix (E.5). Treat the
+  inline "ADR-053/054/056 §…" citations throughout this document and
+  [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) as backlog pointers, not
+  as extant authoritative documents. ADR-089 (referenced by §20 of the
+  checklist) is owned by the nostr-rust-forum (NRF) repo, not this one.
 - Solid Protocol 0.11: <https://solidproject.org/TR/protocol>
 - WAC: <https://solidproject.org/TR/wac>
 - Solid-OIDC 0.1: <https://solidproject.org/TR/oidc>

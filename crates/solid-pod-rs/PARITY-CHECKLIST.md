@@ -16,6 +16,16 @@ and our status against it.
 > JSS oracle in CI. Read the `_jss` suffix as "JSS-behaviour regression
 > test", not "diffed against JSS at runtime".
 
+> **Referenced ADRs.** Rows below cite ADR-053 (backend boundary / RDF
+> format coverage / WebID-TLS deprecation), ADR-056 §D3 (library-server
+> split) and, in §20, NRF ADR-089. ADR-053 and ADR-056 are backlog record
+> numbers **not** authored in this crate's `docs/adr/` set — which holds
+> ADR-057, ADR-058, ADR-059 only. The decisions they name are implemented
+> (the split ships as `solid-pod-rs-server`; S3 is gated behind
+> `s3-backend`; WebID-TLS is a recorded won't-fix). ADR-089 lives in the
+> nostr-rust-forum repo. Treat these citations as backlog pointers, not
+> extant authoritative documents.
+
 ---
 
 ## Current state (Sprint 16, 2026-05-30, alpha.15 — JSS `10bd60f`/0.0.197 on disk, 0.0.204 delta tracked)
