@@ -1,11 +1,37 @@
 # ADR-059: Block-trails and git-marks as first-class provenance primitives
 
-**Status**: Proposed
+**Status**: Proposed — primitives partly built; status lags code (see Status detail)
 **Date**: 2026-06-13
 **Supersedes**: none
 **Related**: ADR-058 (JSS drift analysis), the master plan in
 [`docs/design/provenance-upgrade-master-plan.md`](../design/provenance-upgrade-master-plan.md),
 agentbox PRD-015 v1.2 (Lightning-first economy) and ADR-032 (402 scheme grammar)
+
+## Status detail (open items, 2026-07-03)
+
+**Shipped in code** (the *verify* half): `mrc20.rs` carries RFC-8785 JCS,
+SHA-256 state-chain linking, BIP-341 taproot key-chaining
+(`bt_derive_chained_pubkey` / `bt_derive_chained_privkey`) and anchor
+verification (`verify_mrc20_anchor`), feature-gated behind
+`bip341-taproot` / `mrc20`. The `solid-pod-rs-git` smart-HTTP backend and
+the server's `git_mark_write` write hook (`--features git`) also exist.
+
+**Still Proposed / not built** (the *produce* half and the composition):
+D2 generalised `ProvenanceTrail` beyond tokens; D3 `bitcoin_tx.rs` +
+`mempool.rs` write side; D5 epoch Merkle anchoring; D6 WAC-gating of the
+git routes and the replay-protection wiring; D7 the `ProvenanceMark`
+PROV-O sidecar and `_prov` routes. The Phase-5 `ProvenanceLog::record`
+composition that the Accepted criteria (below) require has not landed.
+
+**Capability caveat — git-marks are off by default.** D1 below describes
+the git-mark tier as "always-on", but the server's `git` feature is **off
+in the default build** (the server's default feature set is empty). In a
+default build `git_mark_write` is a no-op empty shim
+(`#[cfg(not(feature = "git"))]`), so **default builds record zero
+provenance marks**. Git-mark provenance requires building the server with
+`--features git`; only then is every LDP `PUT`/`POST`/`PATCH` committed.
+Read "always-on" as "on every write *when compiled with `git`*", not "on
+by default".
 
 ## Context
 
@@ -48,8 +74,10 @@ VisionClaw) inherits verifiable traceability without re-implementing crypto.
 
 ### D1 — Two tiers, composed
 
-- **git-mark** (cheap, always-on): every pod write becomes a git commit. The
-  commit SHA is captured and surfaced as a `GitMark` — content-addressed,
+- **git-mark** (cheap, on every write *when the server is built with
+  `--features git`* — see the capability caveat above; **not** enabled in
+  the default build): every pod write becomes a git commit. The commit SHA
+  is captured and surfaced as a `GitMark` — content-addressed,
   append-only, tamper-evident ordering for free.
 - **block-trail anchor** (expensive, opt-in): a Bitcoin-anchored MRC20 state
   whose taproot UTXO externally and irreversibly timestamps a record. Reserved

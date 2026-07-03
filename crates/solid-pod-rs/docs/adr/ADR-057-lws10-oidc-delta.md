@@ -1,8 +1,22 @@
 # ADR-057 — LWS10 OIDC Delta (Sprint 11 row 150)
 
-**Status:** partial-parity (action items open)
+**Status:** partial-parity — action items open (see §6)
 **Date:** 2026-04-24
 **Sprint:** 11 — JSS parity close
+
+**Open items at closeout (2026-07-03).** The ten LWS10 port tickets in §6
+remain the tracked delta and are unclosed. The P1 low-cost set closes the
+bulk of the cosmetic gap:
+
+- B.3 — add `EdDSA` to `dpop_signing_alg_values_supported` (XS)
+- B.5 — add `lws_supported`, keep `solid_oidc_supported` one cycle (XS)
+- C.2 — default DPoP `iat` skew to 90s (XS)
+- B.1 — advertise `authorization_response_iss_parameter_supported` (S)
+- C.1 — accept `cnf.webid` in `extract_webid` (S)
+
+The larger P2/P3 remainder is B.4, C.4, B.7, B.6 (Client ID Document
+resolver) and B.2 (PAR endpoint). Until these land, do **not** read
+ADR-057 as full LWS10 conformance — it stays partial-parity.
 **Reference docs:**
 - W3C *Linked Web Storage — Authorization with OIDC* FPWD, 2026-04-23
   <https://www.w3.org/TR/2026/FPWD-lws-auth-oidc-20260423/>
@@ -267,9 +281,11 @@ Port tickets, ordered by cost. None require breaking the public API.
 
 Items 1-4 close ~60% of the LWS10 delta at negligible cost and lift JSS
 #319 box 1 to "partial-parity — cosmetic gaps only". Items 5-8 are
-targeted for Sprint 12. Items 9-10 are tracked under a separate ADR
-(forthcoming: ADR-058 *Client ID Document resolver* and ADR-059 *PAR
-endpoint*).
+targeted for Sprint 12. Items 9-10 are tracked as separate follow-up
+tickets (a Client ID Document resolver and a PAR endpoint). Note: the
+ADR-058 and ADR-059 numbers were subsequently authored for unrelated
+topics (JSS drift analysis and provenance primitives respectively), so
+they do **not** cover items 9-10.
 
 ## 7. Out of scope
 
@@ -282,8 +298,8 @@ endpoint*).
 
 Status: **partial-parity — cosmetic gaps only** once items 1-4 land.
 Status: **full-parity** once items 5-8 land.
-Status: **LWS10 + CID-as-identity** once items 9-10 land and ADR-058 +
-ADR-059 close.
+Status: **LWS10 + CID-as-identity** once items 9-10 (Client ID Document
+resolver + PAR endpoint) land.
 
 ## 9. References
 
