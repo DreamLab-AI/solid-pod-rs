@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/solid-pod-rs/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'crates/solid-pod-rs/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/ci.yml'
   schedule:
     # Weekly cron for audit + scheduled-only jobs (Mondays 06:17 UTC)
@@ -27,7 +31,9 @@ env:
   RUSTFLAGS: "-D warnings"
   RUSTDOCFLAGS: "-D warnings"
   RUST_BACKTRACE: 1
-  # All CI steps are scoped to the standalone crate subtree
+  # Consumed by the core-crate matrix (build-test/msrv/wasm-check); the
+  # `workspace` job below deliberately runs at the repo root to cover every
+  # workspace member.
   CRATE_DIR: crates/solid-pod-rs
 
 jobs:
@@ -168,14 +174,13 @@ jobs:
   cargo-audit:
     name: cargo-audit
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: crates/solid-pod-rs
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+      # Runs at the repo root so the whole-workspace Cargo.lock (all 7 members'
+      # transitive deps) is audited, not just the core crate's slice.
       - name: cargo audit
         run: cargo audit --deny warnings
 
@@ -215,6 +220,31 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # ---------------------------------------------------------------------------
+  # Workspace-wide build/lint/test — covers ALL 7 workspace members, not just
+  # the core crate. The core-crate matrix above exercises solid-pod-rs feature
+  # combinations; this job guarantees the six sibling crates (server, idp,
+  # activitypub, nostr, git, didkey) are compiled, linted and tested on every
+  # PR/push. Runs at the repo root with default features (feature combos are
+  # a per-crate concern handled by the matrix above).
+  # ---------------------------------------------------------------------------
+  workspace:
+    name: workspace (test + clippy, all members)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: workspace-all-members
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets
+
+  # ---------------------------------------------------------------------------
   # Single required status check aggregator — branch protection points here.
   # ---------------------------------------------------------------------------
   ci-required:
@@ -222,6 +252,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-test
+      - workspace
       - msrv
       - wasm-check
       - cargo-deny
@@ -231,11 +262,13 @@ jobs:
       - name: Verify dependent jobs succeeded
         run: |
           echo "build-test=${{ needs.build-test.result }}"
+          echo "workspace=${{ needs.workspace.result }}"
           echo "msrv=${{ needs.msrv.result }}"
           echo "wasm-check=${{ needs.wasm-check.result }}"
           echo "cargo-deny=${{ needs.cargo-deny.result }}"
           echo "cargo-audit=${{ needs.cargo-audit.result }}"
           if [[ "${{ needs.build-test.result }}" != "success" ]] \
+             || [[ "${{ needs.workspace.result }}" != "success" ]] \
              || [[ "${{ needs.msrv.result }}" != "success" ]] \
              || [[ "${{ needs.wasm-check.result }}" != "success" ]] \
              || [[ "${{ needs.cargo-deny.result }}" != "success" ]] \
