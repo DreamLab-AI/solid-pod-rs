@@ -110,8 +110,9 @@ a small WAC Turtle serializer quirk is tracked in
 | `s3-backend`            | off     | AWS S3 / S3-compatible object stores.         |
 | `oidc`                  | off     | Solid-OIDC 0.1 + DPoP.                        |
 | `dpop-replay-cache`     | off     | DPoP `jti` replay cache (pulls `oidc`).       |
-| `nip98-schnorr`         | off     | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash). |
-| `acl-origin`            | off     | WAC `acl:origin` enforcement.                 |
+| `nip98-schnorr`         | off     | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash). Verification is unconditional and fail-closed — without this feature the verifier returns `PodError::Unsupported` rather than accepting a forged pubkey. |
+| `nip98-replay`          | off     | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU on the canonical event id; closes the ±120s replay window. |
+| `acl-origin`            | off     | WAC `acl:origin` enforcement (request `Origin` threaded into the evaluator by `solid-pod-rs-server`). |
 | `security-primitives`   | off     | SSRF guard + dotfile allowlist.               |
 | `legacy-notifications`  | off     | `solid-0.1` WebSocket adapter (SolidOS).      |
 | `config-loader`         | off     | Layered config loader with `JSS_*` env vars.  |
@@ -188,6 +189,26 @@ flowchart TD
 
 ## Security posture
 
+- **NIP-98 Schnorr verification is unconditional and fail-closed** —
+  BIP-340 signature verification runs on every `verify_*` path. Without
+  the `nip98-schnorr` feature the verifier returns `PodError::Unsupported`
+  instead of degrading to structural-only checks that would accept a
+  forged pubkey. `assert_schnorr_verification_enabled` (a `const fn`
+  present only under the feature) lets a binary make a fail-open build a
+  compile error.
+- **NIP-98 single-use replay guard** (`nip98-replay`) — the verifier
+  returns a signature-bound canonical event id, and
+  `auth::replay::Nip98ReplayCache` (a bounded process-local LRU) rejects a
+  re-presented token, closing the ±120s window the stateless verifier
+  leaves open. Wired into every request by `solid-pod-rs-server`.
+- **WAC `acl:origin` enforcement** (`acl-origin`) — the request `Origin`
+  header is threaded into the evaluator by `solid-pod-rs-server`, so an
+  ACL bearing `acl:origin` triples gates cross-origin reads and writes.
+  Plain ACLs are unaffected; `acl:Control` bypasses the origin gate so an
+  owner can always repair a mis-configured ACL. `acl:origin` is the only
+  WAC 2.0 condition satisfiable end-to-end today — `client_id`/`issuer`
+  conditions still evaluate deny because no authenticated OIDC
+  client_id/issuer is surfaced into the request context yet.
 - **DPoP signature verification** against the proof's embedded JWK
   (RFC 9449 §4.3), with an algorithm allowlist (`ES256`/`ES384`,
   `RS256`/`RS384`/`RS512`, `PS256`/`PS384`/`PS512`, `EdDSA`); `alg=none`

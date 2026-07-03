@@ -33,9 +33,10 @@
 //! | `s3-backend` | off | AWS S3 / S3-compatible object stores. |
 //! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
 //! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
-//! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. |
+//! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. Verification is **unconditional and fail-closed**: without this feature the verifier returns [`PodError::Unsupported`] rather than accepting a forged pubkey after structural checks alone. |
+//! | `nip98-replay` | off | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU keyed on the canonical event id; closes the ±120s replay window the stateless verifier leaves open. |
 //! | `jss-v04` | off | JSS-parity umbrella (ADR-056); no-op alone — sub-features below switch one bounded context each on. |
-//! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). |
+//! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). Wired into the request path in `solid-pod-rs-server` (the request `Origin` is threaded into the evaluator `RequestContext`). Note: `acl:origin` is the only WAC 2.0 condition satisfiable end-to-end today — `client_id`/`issuer` conditions still evaluate deny (no authenticated OIDC client_id/issuer is surfaced into the context yet). |
 //! | `security-primitives` | off | SSRF guard + dotfile allowlist (pulls `jss-v04`). |
 //! | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS). |
 //! | `config-loader` | off | Layered config loader with `JSS_*` env vars + YAML/TOML. |
@@ -73,7 +74,7 @@
 //! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
 //! | [`mashlib`] | SolidOS data-browser HTML wrapper + data-island embed.    |
-//! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
+//! | [`auth`] | NIP-98 HTTP auth (unconditional fail-closed Schnorr verify + single-use replay guard) + LWS-CID self-signed JWT verifier. |
 //! | [`payments`] | HTTP 402, Web Ledgers, multi-chain TXO, payment store. |
 //! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
 //! | [`provenance`] | git-mark / block-trail provenance primitives + PROV-O.  |

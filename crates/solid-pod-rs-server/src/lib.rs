@@ -48,6 +48,7 @@
 //! | GET      | `/{pod}/{path}.prov.ttl`                 | PROV-O git-mark sidecar |
 //! | GET      | `/{pod}/_prov/{commit_sha}`              | Resolve a git-mark   |
 //! | POST     | `/{pod}/_prov/anchor`                    | Upgrade to Bitcoin anchor |
+//! | GET      | `/api/exports/all`                       | JSON-LD pod export (`export-jsonld`, `acl:Control`-gated) |
 //! | GET/POST | `/{pod}/info/refs` `…/git-{upload,receive}-pack` | Git smart-HTTP (WAC-gated) |
 //!
 //! The `/pay/*` HTTP-402 economy routes (`handlers::pay`) wire the
@@ -67,6 +68,24 @@
 //! 4. `PayloadConfig` -- enforces `JSS_MAX_REQUEST_BODY` body cap.
 //! 5. `ErrorLoggingMiddleware` -- structured 5xx logging.
 //! 6. WAC-on-write -- PUT/POST/PATCH/DELETE require a write/append grant.
+//!
+//! ## Security posture (closeout, 0.5.0-alpha.4)
+//!
+//! - **NIP-98 single-use replay guard** — every request runs through a
+//!   shared process-local `Nip98ReplayCache`, so a captured token cannot be
+//!   replayed within the ±120s NIP-98 tolerance window (`extract_pubkey`
+//!   returns `None` on a replayed id → the WAC gate denies with 401). TTL /
+//!   size via `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`.
+//!   The cache is per-process; multi-replica deployments share no state.
+//! - **Fail-open compile guard** — this binary references
+//!   `solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled` in const
+//!   context, so a build that ever dropped BIP-340 signature verification from
+//!   the NIP-98 verifier is a **compile error**, not a silently fail-open
+//!   server.
+//! - **WAC `acl:origin` gate** — the request `Origin` header is threaded into
+//!   the evaluator (`enforce_read_ctx` / `enforce_write_ctx`), so ACLs bearing
+//!   `acl:origin` triples gate cross-origin access. Plain ACLs are unaffected;
+//!   `acl:Control` bypasses the origin gate by design.
 
 #![doc = include_str!("../README.md")]
 #![deny(unsafe_code)]
