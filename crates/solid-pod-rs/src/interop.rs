@@ -311,13 +311,14 @@ pub mod did_nostr {
     /// The single published form: `@context`
     /// `["https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"]`,
     /// top-level `type: "DIDNostr"`, a single `Multikey` verification method
-    /// with `publicKeyMultibase: "fe70102<hex>"`, fragment `#key1`, and
-    /// `service: []`. The 2019 suite + `publicKeyHex` + `z`-base58 multibase
-    /// are dropped. No dual-publish.
+    /// with `publicKeyMultibase: "fe70102<hex>"`, fragment `#key1`. Optional
+    /// members are omitted when empty (no `service: []`), per the did:nostr CG
+    /// spec (<https://nostrcg.github.io/did-nostr/>). The 2019 suite +
+    /// `publicKeyHex` + `z`-base58 multibase are dropped. No dual-publish.
     ///
-    /// `also_known_as` is an agentbox extension (C4): when non-empty it is
-    /// surfaced as a top-level `alsoKnownAs` link; the canonical create-agent
-    /// form carries none.
+    /// `also_known_as` is surfaced as a top-level `alsoKnownAs` link when
+    /// non-empty — the spec's canonical location for cross-platform identity
+    /// (WebID / ActivityPub / AT-proto).
     ///
     /// NOTE: The canonical DID:nostr types (including `NostrPubkey`,
     /// `render_did_document`, `render_did_document_tier3`) live in
@@ -361,8 +362,7 @@ pub mod did_nostr {
             "type": "DIDNostr",
             "verificationMethod": [],
             "authentication": [],
-            "assertionMethod": [],
-            "service": []
+            "assertionMethod": []
         });
         if !also_known_as.is_empty() {
             doc["alsoKnownAs"] = serde_json::json!(also_known_as);
