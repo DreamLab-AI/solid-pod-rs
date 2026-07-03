@@ -33,7 +33,15 @@ path = "src/main.rs"
 # `MempoolLookup` trait the native `MempoolHttpClient` (mempool.rs)
 # implements for `/pay/.deposit` (MRC20) and `/pay/.address`
 # (provenance-upgrade Phase 3).
-solid-pod-rs = { version = "0.5.0-alpha.3", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20"] }
+# `nip98-schnorr` is enabled EXPLICITLY (not left to feature-unification
+# via solid-pod-rs-idp) so the deployed server always has BIP-340
+# signature verification compiled into the NIP-98 auth path. A compile
+# guard (`const _: () = …assert_schnorr_verification_enabled()` in lib.rs)
+# turns any regression here into a build failure rather than a silent
+# fail-open. `nip98-replay` wires the single-use replay guard into the
+# default build; `acl-origin` activates the WAC `acl:origin` gate (F4)
+# fed by the request Origin header threaded through the enforce_* paths.
+solid-pod-rs = { version = "0.5.0-alpha.3", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20", "nip98-schnorr", "nip98-replay", "acl-origin"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.

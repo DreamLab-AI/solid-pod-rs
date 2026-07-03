@@ -129,6 +129,28 @@ use solid_pod_rs::{
 };
 
 // ---------------------------------------------------------------------------
+// F3 compile guard — refuse to build a fail-open NIP-98 auth path.
+// ---------------------------------------------------------------------------
+//
+// `assert_schnorr_verification_enabled` is a `const fn` that exists ONLY
+// under the core crate's `nip98-schnorr` feature. Referencing it in const
+// context here makes this binary impossible to build if BIP-340 signature
+// verification is ever dropped from the NIP-98 verifier — a dependency
+// change or a feature-unification regression that removed it becomes a
+// compile error rather than a server that silently accepts any forged
+// pubkey after structural checks alone.
+const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();
+
+/// Process-local NIP-98 single-use replay guard (F3). Shared across every
+/// request in this server process; a captured token cannot be replayed
+/// within the ~120s NIP-98 tolerance window. TTL/size are overridable via
+/// `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`.
+/// See `solid_pod_rs::auth::replay` for the tier persistence limit
+/// (process-local; multi-replica deployments share no state).
+static NIP98_REPLAY: std::sync::LazyLock<solid_pod_rs::auth::replay::Nip98ReplayCache> =
+    std::sync::LazyLock::new(solid_pod_rs::auth::replay::Nip98ReplayCache::from_env);
+
+// ---------------------------------------------------------------------------
 // Shared app state
 // ---------------------------------------------------------------------------
 
@@ -289,6 +311,12 @@ pub(crate) fn to_actix(e: PodError) -> ActixError {
 // ---------------------------------------------------------------------------
 
 /// Attempt NIP-98 bearer verification; returns the pubkey on success.
+///
+/// Runs the full structural + BIP-340 signature check and then a
+/// **single-use replay check** on the canonical event id: a token whose id
+/// was already seen within the replay window is rejected (returns `None`,
+/// i.e. treated as unauthenticated → the WAC gate denies with 401). This
+/// closes the ~120s replay window the stateless verifier leaves open.
 pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     let header_val = req
         .headers()
@@ -303,13 +331,43 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     // elsewhere in this file (see `conn.scheme()` call sites).
     let conn = req.connection_info();
     let url = format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path());
-    nip98::verify(header_val, &url, req.method().as_str(), None)
-        .await
-        .ok()
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let verified = nip98::verify_at(header_val, &url, req.method().as_str(), None, now).ok()?;
+
+    // F3 replay guard: reject a re-presented token. The event id is the
+    // signature-bound single-use nonce; a hit means the same signed request
+    // was already accepted within the replay window. Fail closed.
+    if NIP98_REPLAY.check_and_record(&verified.event_id).await.is_err() {
+        tracing::warn!(
+            pubkey = %verified.pubkey,
+            method = %req.method(),
+            "NIP-98 replay rejected: token id already used within window"
+        );
+        return None;
+    }
+
+    Some(verified.pubkey)
 }
 
 pub(crate) fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     pubkey.map(|pk| format!("did:nostr:{pk}"))
+}
+
+/// The request `Origin` header value, if present and valid UTF-8.
+///
+/// Threaded into the WAC `acl:origin` gate (F4) via the `enforce_*_ctx`
+/// paths so an ACL that declares `acl:origin` triples can restrict
+/// cross-origin access (CSRF defence). Requests without an `Origin` header
+/// (server-to-server, git smart-protocol, curl) yield `None`, which the
+/// evaluator rejects only for resources whose ACL explicitly restricts
+/// origins — plain ACLs (no `acl:origin`) are unaffected.
+fn req_origin(req: &HttpRequest) -> Option<&str> {
+    req.headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
 }
 
 /// Canonical pod-relative path of the Web Ledger document. The
@@ -469,12 +527,37 @@ fn ids_of_acl_field(field: &Option<wac::IdOrIds>) -> Vec<&str> {
     }
 }
 
+/// Origin-unaware convenience wrapper (used where no HTTP `Origin` is
+/// available — internal callers and unit tests). Delegates with
+/// `request_origin = None`; under `acl-origin` this denies only ACLs that
+/// explicitly restrict by origin, leaving plain ACLs (NoPolicySet) intact.
+/// Live request handlers call [`enforce_write_ctx`] directly, so in a
+/// non-test build this wrapper is exercised only by the test suite.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn enforce_write(
     state: &AppState,
     path: &str,
     mode: AccessMode,
     agent_uri: Option<&str>,
 ) -> Result<(), ActixError> {
+    enforce_write_ctx(state, path, mode, agent_uri, None).await
+}
+
+/// WAC write enforcement threading the request `Origin` (F4 `acl:origin`).
+///
+/// `request_origin` is the raw HTTP `Origin` header; it is parsed to a
+/// canonical [`wac::Origin`] and passed to the evaluator so an ACL bearing
+/// `acl:origin` triples gates cross-origin writes. `acl:Control` (the
+/// sidecar path below) bypasses the origin gate by design so an owner can
+/// always repair a mis-configured ACL from any origin.
+async fn enforce_write_ctx(
+    state: &AppState,
+    path: &str,
+    mode: AccessMode,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+) -> Result<(), ActixError> {
+    let origin = request_origin.and_then(wac::Origin::parse);
     // P0-2: an `.acl`/`.meta` sidecar governs *another* resource's
     // permissions. Authorising its mutation as plain `Write` on the
     // sidecar path lets any writer rewrite the ACL and self-escalate
@@ -502,7 +585,7 @@ async fn enforce_write(
             &ctx,
             &protected,
             AccessMode::Control,
-            None,
+            origin.as_ref(),
             &groups,
             &registry,
         );
@@ -540,7 +623,7 @@ async fn enforce_write(
         &ctx,
         path,
         mode,
-        None,
+        origin.as_ref(),
         &groups,
         &registry,
     );
@@ -639,11 +722,27 @@ fn acl_denial(
 /// resource body verbatim with no read-authz check, so every private
 /// resource was world-readable. Returns `Ok(())` on grant; on deny a
 /// `401`/`403` matching the write path's denial shape.
+/// Origin-unaware convenience wrapper (see [`enforce_write`]). Delegates
+/// with `request_origin = None`. Live handlers call [`enforce_read_ctx`]
+/// directly, so in a non-test build this is exercised only by tests.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn enforce_read(
     state: &AppState,
     path: &str,
     agent_uri: Option<&str>,
 ) -> Result<(), ActixError> {
+    enforce_read_ctx(state, path, agent_uri, None).await
+}
+
+/// WAC read enforcement threading the request `Origin` (F4 `acl:origin`).
+/// See [`enforce_write_ctx`] for the origin-gate semantics.
+async fn enforce_read_ctx(
+    state: &AppState,
+    path: &str,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+) -> Result<(), ActixError> {
+    let origin = request_origin.and_then(wac::Origin::parse);
     let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
@@ -662,7 +761,7 @@ async fn enforce_read(
         &ctx,
         path,
         AccessMode::Read,
-        None,
+        origin.as_ref(),
         &groups,
         &registry,
     );
@@ -764,7 +863,7 @@ async fn handle_get(
     // both resource GETs and the RDF container listing below, and — since
     // HEAD is routed to this same handler — HEAD requests too. Without it
     // a private resource is world-readable.
-    enforce_read(&state, &path, agent.as_deref()).await?;
+    enforce_read_ctx(&state, &path, agent.as_deref(), req_origin(&req)).await?;
 
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
@@ -938,7 +1037,7 @@ async fn handle_put(
         if has_basic_container_link(&req) {
             let auth_pk = extract_pubkey(&req).await;
             let agent = agent_uri(auth_pk.as_ref());
-            enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+            enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -956,7 +1055,7 @@ async fn handle_put(
 
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let ct = req
         .headers()
@@ -1004,7 +1103,7 @@ async fn handle_post(
     // `POST /{tail:.*}/` registration.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Append, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Append, agent.as_deref(), req_origin(&req)).await?;
 
     let slug = req
         .headers()
@@ -1054,7 +1153,7 @@ async fn handle_patch(
     // (which creates new child resources in a container) is allowed with
     // Append-only permission. This prevents Append-only users from
     // overwriting or deleting resource content via PATCH.
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let ct = req
         .headers()
@@ -1348,7 +1447,7 @@ async fn handle_delete(
     let path = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     match state.storage.delete(&path).await {
         Ok(()) => Ok(HttpResponse::NoContent().finish()),
@@ -1546,6 +1645,61 @@ fn nip05_empty_response() -> HttpResponse {
 }
 
 // ---------------------------------------------------------------------------
+// JSS v0.0.190 Phase 1 port (issue #437), parity row 198.
+// JSON-LD time-chain pod export (`GET /api/exports/all`). NATIVE-ONLY:
+// gated behind `export-jsonld` (default-off); the CF-Workers pod tier does
+// not walk a local storage tree. `solid_pod_rs::export::export_pod_jsonld`
+// is the pure-logic walker — this handler adds the HTTP surface + WAC gate.
+// ---------------------------------------------------------------------------
+
+/// `GET /api/exports/all` — export the whole pod as a JSON-LD time-chain
+/// bundle. Owner-gated: the caller must hold `acl:Control` on the pod root
+/// (`/`), because the bundle can expose every resource — including
+/// `/private/*` when `?include_private=true` — bypassing per-resource ACLs.
+/// A Control credential is therefore the correct (highest) authorisation.
+#[cfg(feature = "export-jsonld")]
+async fn handle_export_all(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<HttpResponse, ActixError> {
+    let auth_pk = extract_pubkey(&req).await;
+    let agent = agent_uri(auth_pk.as_ref());
+
+    // Owner gate: require `acl:Control` on the pod root. `enforce_write_ctx`
+    // evaluates the passed mode against the root ACL and returns the shared
+    // 401/403 WAC denial; `Control` bypasses the origin gate by design so an
+    // owner can always export from any origin.
+    enforce_write_ctx(&state, "/", AccessMode::Control, agent.as_deref(), req_origin(&req)).await?;
+
+    // `include_private=true` is honoured only for this Control-authorised
+    // caller (the export function itself is unauthenticated — the gate above
+    // is the credential the docs require before flipping the flag).
+    let include_private = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .ok()
+        .and_then(|q| q.get("include_private").map(|v| v == "true"))
+        .unwrap_or(false);
+
+    // Pod base URL stamped into the bundle envelope: the externally-visible
+    // scheme + host (honours `X-Forwarded-Proto`), matching the URL agents
+    // sign over elsewhere in this file.
+    let conn = req.connection_info();
+    let pod_base = format!("{}://{}/", conn.scheme(), conn.host());
+    drop(conn);
+
+    let options = solid_pod_rs::ExportOptions { include_private };
+    let bundle = solid_pod_rs::export::export_pod_jsonld(&*state.storage, &pod_base, options)
+        .await
+        .map_err(to_actix)?;
+
+    let body = serde_json::to_vec(&bundle).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("export serialise: {e}"))
+    })?;
+    Ok(HttpResponse::Ok()
+        .content_type(solid_pod_rs::export::EXPORT_CONTENT_TYPE)
+        .body(body))
+}
+
+// ---------------------------------------------------------------------------
 // Pod management API (JSS parity: /api/accounts/*)
 // ---------------------------------------------------------------------------
 
@@ -1726,7 +1880,7 @@ async fn handle_copy(
     let dest = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &dest, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &dest, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let source = req
         .headers()
@@ -1794,7 +1948,7 @@ async fn handle_glob_get(
     // read-authz check applied to plain container GETs.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_read(&state, &folder, agent.as_deref()).await?;
+    enforce_read_ctx(&state, &folder, agent.as_deref(), req_origin(&req)).await?;
 
     let children = state.storage.list(&folder).await.map_err(to_actix)?;
     let mut merged = String::new();
@@ -3309,10 +3463,11 @@ async fn handle_git(
         Err(_) => None,
     };
     let wac_path = format!("/{pod_name}/");
+    let origin = req_origin(&req);
     let wac = if is_write {
-        enforce_write(&state, &wac_path, AccessMode::Write, agent.as_deref()).await
+        enforce_write_ctx(&state, &wac_path, AccessMode::Write, agent.as_deref(), origin).await
     } else {
-        enforce_read(&state, &wac_path, agent.as_deref()).await
+        enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin).await
     };
     if let Err(e) = wac {
         return e.error_response();
@@ -3421,6 +3576,15 @@ pub fn build_app(
             "/.well-known/nostr.json",
             web::get().to(handle_well_known_nip05),
         );
+    }
+
+    // JSS v0.0.190 Phase 1 port (issue #437), parity row 198. JSON-LD
+    // time-chain pod export. Native-only (`export-jsonld`, default-off);
+    // owner-WAC-gated inside the handler. Registered before the LDP
+    // catch-all so `/api/exports/all` is never treated as a pod resource.
+    #[cfg(feature = "export-jsonld")]
+    {
+        app = app.route("/api/exports/all", web::get().to(handle_export_all));
     }
 
     // App discovery endpoint (JSS #464 Phase 2 — public, no auth required).
