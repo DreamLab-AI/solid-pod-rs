@@ -123,8 +123,12 @@ quota = ["solid-pod-rs/quota"]
 did-nostr = ["solid-pod-rs/did-nostr"]
 security-primitives = ["solid-pod-rs/security-primitives"]
 
-# JSS v0.0.190 Phase 1 port (issue #437) — scaffolds. Pass-through.
-# Default-off; handlers are `todo!()` stubs. Parity rows 196, 197, 198.
+# JSS v0.0.190 Phase 1 port (issue #437). Pass-through, default-off.
+# Bodies are implemented (not `todo!()`): `nip05-endpoint` routes
+# `/.well-known/nostr.json` and `export-jsonld` routes the owner-gated
+# `GET /api/exports/all`; `provision-keys` gates the IdP key provisioner,
+# which is a library surface only (no HTTP route mints secret keys).
+# Parity rows 196, 197, 198.
 provision-keys = [
     "solid-pod-rs/provision-keys",
     "solid-pod-rs-idp/provision-keys",
