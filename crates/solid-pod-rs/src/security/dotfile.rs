@@ -119,6 +119,18 @@ impl DotfileAllowlist {
                         self.record_deny();
                         return false;
                     }
+                    // Reserve the internal storage-sidecar namespace. The fs
+                    // backend stores each resource's content-type in a
+                    // `<name>.meta.json` sidecar; because that name does not
+                    // start with `.` it slips the dotfile rule above. A direct
+                    // HTTP write to `/foo.meta.json` would hide `/foo` from
+                    // container listings AND poison the Content-Type served
+                    // for a sibling (a stored-XSS vector). These are never
+                    // directly addressable over HTTP.
+                    if s.ends_with(".meta.json") {
+                        self.record_deny();
+                        return false;
+                    }
                 }
                 Component::CurDir | Component::ParentDir => {
                     // Defensive: reject navigation components even
@@ -225,6 +237,16 @@ pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
         }
         if segment == ".." {
             return Err(DotfilePathError::ParentTraversal(path.to_string()));
+        }
+        // Reserve the internal storage-sidecar namespace (`<name>.meta.json`):
+        // it does not start with `.`, so without this it would slip the
+        // dotfile rule below and let an HTTP writer hide or content-type-
+        // poison a sibling resource. See `DotfileAllowlist::is_allowed`.
+        if segment.ends_with(".meta.json") {
+            return Err(DotfilePathError::NotAllowed {
+                segment: segment.to_string(),
+                path: path.to_string(),
+            });
         }
         if !segment.starts_with('.') {
             continue;

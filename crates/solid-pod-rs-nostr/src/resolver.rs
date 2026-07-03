@@ -183,10 +183,27 @@ impl NostrWebIdResolver {
             )));
         }
 
-        Ok(doc
+        // P1-m: an `alsoKnownAs` entry is an UNVERIFIED claim made by the DID
+        // document ("I am also this WebID"). Returning it blind lets a hostile
+        // pod publish a DID doc whose `alsoKnownAs` points at a victim's WebID
+        // and thereby impersonate them — same-origin is not same-control.
+        // Mirror JSS `verifyWebIdBacklink`: accept a candidate WebID only when
+        // that WebID's own profile declares THIS pubkey back (bidirectional
+        // binding). On any failure — no candidate, no backlink, a different
+        // key, or a fetch error — fail closed and return `None`.
+        let candidate = doc
             .also_known_as
             .into_iter()
-            .find(|u| u.starts_with("http://") || u.starts_with("https://")))
+            .find(|u| u.starts_with("http://") || u.starts_with("https://"));
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
+        match self.resolve_webid_to_nostr(&candidate).await {
+            Ok(Some(back)) if back.to_hex().eq_ignore_ascii_case(&pk.to_hex()) => {
+                Ok(Some(candidate))
+            }
+            _ => Ok(None),
+        }
     }
 }
 

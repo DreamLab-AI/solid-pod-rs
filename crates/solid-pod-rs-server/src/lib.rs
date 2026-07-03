@@ -489,8 +489,13 @@ fn proposed_acl_keeps_caller_control(body: &[u8], content_type: &str, caller: Op
             let looks_turtle = ct.starts_with("text/turtle")
                 || ct.starts_with("application/turtle")
                 || ct.starts_with("application/x-turtle")
+                || ct.starts_with("application/n-triples")
                 || text.contains("@prefix")
-                || text.contains("acl:Authorization");
+                || text.contains("acl:Authorization")
+                // N-Triples ACL bodies (e.g. the post-PATCH write-back form)
+                // carry no `@prefix`/`acl:` shorthand — they use the full
+                // ACL IRI. Recognise that so the lockout guard can parse them.
+                || text.contains("auth/acl#Authorization");
             if looks_turtle {
                 parse_turtle_acl(text).ok()
             } else {
@@ -762,6 +767,44 @@ async fn enforce_read_ctx(
     request_origin: Option<&str>,
 ) -> Result<(), ActixError> {
     let origin = request_origin.and_then(wac::Origin::parse);
+    // P0-3: reading an `.acl`/`.meta` sidecar discloses the full
+    // authorization graph of the resource it governs — every WebID,
+    // `acl:agentGroup` IRI, `acl:origin`, and `acl:PaymentCondition`
+    // amount. WAC §4.3.5 requires `acl:Control` on the PROTECTED resource
+    // to read (as well as write) its ACL. The write path already elevates
+    // (see `enforce_write_ctx`); before this block the read path enforced
+    // only `acl:Read` on the sidecar, so any Read-granted agent could
+    // exfiltrate the ACL — the inverse of JSS, which gates all ACL ops on
+    // Control (`auth/middleware.js:93`). Elevate the read check to Control
+    // on the protected resource, mirroring the write path.
+    if let Some(protected) = protected_resource_for_acl(path) {
+        let control_acl = match find_effective_acl_dyn(&*state.storage, &protected).await {
+            Ok(doc) => doc,
+            Err(e) => return Err(to_actix(e)),
+        };
+        let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
+        let ctx = RequestContext {
+            web_id: agent_uri,
+            client_id: None,
+            issuer: None,
+            payment_balance_sats,
+        };
+        let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
+        let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
+        let has_control = wac::evaluate_access_ctx_with_registry(
+            control_acl.as_ref(),
+            &ctx,
+            &protected,
+            AccessMode::Control,
+            origin.as_ref(),
+            &groups,
+            &registry,
+        );
+        if !has_control {
+            return Err(acl_denial(control_acl.as_ref(), agent_uri, &protected));
+        }
+        return Ok(());
+    }
     let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
@@ -1112,6 +1155,35 @@ async fn handle_put(
     Ok(rsp)
 }
 
+/// P1-k: probe storage for `target` and, if it already exists, append
+/// `-1`, `-2`, … before the file extension (or at the end when there is no
+/// extension) until a free name is found — mirroring JSS
+/// `generateUniqueFilename` so an LDP POST never overwrites a sibling. The
+/// probe is bounded; on the practically-unreachable ceiling it falls back
+/// to a content-hash suffix so the write still lands on a fresh name.
+async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
+    if !storage.exists(target).await.unwrap_or(false) {
+        return target.to_string();
+    }
+    // Split stem/ext at the last '.' that falls after the last '/', so a
+    // leading-dot filename (e.g. `/c/.keep`) is treated as extension-less.
+    let seg_start = target.rfind('/').map(|s| s + 1).unwrap_or(0);
+    let (stem, ext) = match target.rfind('.') {
+        Some(dot) if dot > seg_start => (&target[..dot], &target[dot..]),
+        _ => (target, ""),
+    };
+    for n in 1..10_000u32 {
+        let candidate = format!("{stem}-{n}{ext}");
+        if !storage.exists(&candidate).await.unwrap_or(false) {
+            return candidate;
+        }
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    target.hash(&mut h);
+    format!("{stem}-{:x}{ext}", h.finish())
+}
+
 async fn handle_post(
     req: HttpRequest,
     body: web::Bytes,
@@ -1128,7 +1200,7 @@ async fn handle_post(
         .headers()
         .get(header::HeaderName::from_static("slug"))
         .and_then(|v| v.to_str().ok());
-    let target = match ldp::resolve_slug(&path, slug) {
+    let mut target = match ldp::resolve_slug(&path, slug) {
         Ok(p) => p,
         Err(e) => return Err(to_actix(e)),
     };
@@ -1137,6 +1209,39 @@ async fn handle_post(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
+
+    // P0-4: POST authorised only `Append` on the container. If the client's
+    // Slug resolves to an `.acl`/`.meta` sidecar, that sidecar governs
+    // ANOTHER resource's permissions — minting it from Append-only rights is
+    // privilege escalation (an attacker self-grants Control on a sibling).
+    // Elevate exactly as the PUT path does: require `acl:Control` on the
+    // protected resource AND run the lockout guard on the proposed body.
+    // (This gap is shared with JSS, which keys its Control guard on the
+    // container path, not the resolved `.acl` — candidate upstream PR.)
+    if protected_resource_for_acl(&target).is_some() {
+        enforce_write_ctx(
+            &state,
+            &target,
+            AccessMode::Write,
+            agent.as_deref(),
+            req_origin(&req),
+        )
+        .await?;
+        if !proposed_acl_keeps_caller_control(&body, ct, agent.as_deref()) {
+            return Ok(HttpResponse::Conflict().body(
+                "refused: the proposed ACL would not grant Control to the caller \
+                 (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+            ));
+        }
+    } else {
+        // P1-k: LDP POST must CREATE a new resource, never overwrite one.
+        // `resolve_slug` joins the Slug verbatim, so a repeated `Slug: note`
+        // would clobber the first note (silent data loss). Mint a unique
+        // target by probing existence and appending `-1`, `-2`, … exactly as
+        // JSS `generateUniqueFilename` does.
+        target = mint_unique_target(&*state.storage, &target).await;
+    }
+
     let meta = state
         .storage
         .put(&target, Bytes::from(body.to_vec()), ct)
@@ -1239,6 +1344,23 @@ async fn handle_patch(
             // Round-trip the updated graph back to Turtle so the next
             // GET reflects the mutation.
             let serialised = graph_to_turtle(&outcome.graph);
+            // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
+            // (enforced above), but — unlike PUT — the POST-patch result was
+            // never checked against the lockout guard, so a Control holder
+            // could strip every principal's Control in one patch. Apply the
+            // same guard PUT uses, on the serialised post-patch ACL.
+            if protected_resource_for_acl(&path).is_some()
+                && !proposed_acl_keeps_caller_control(
+                    serialised.as_bytes(),
+                    "application/n-triples",
+                    agent.as_deref(),
+                )
+            {
+                return Ok(HttpResponse::Conflict().body(
+                    "refused: the patched ACL would not grant Control to the caller \
+                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                ));
+            }
             let _ = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
@@ -1256,6 +1378,19 @@ async fn handle_patch(
                 )));
             };
             let serialised = graph_to_turtle(&graph);
+            // F7: same lockout guard on the create-via-PATCH `.acl` path.
+            if protected_resource_for_acl(&path).is_some()
+                && !proposed_acl_keeps_caller_control(
+                    serialised.as_bytes(),
+                    "application/n-triples",
+                    agent.as_deref(),
+                )
+            {
+                return Ok(HttpResponse::Conflict().body(
+                    "refused: the patched ACL would not grant Control to the caller \
+                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                ));
+            }
             let _ = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
@@ -1584,6 +1719,29 @@ async fn handle_well_known_did_nostr(
             .insert_header(("Cache-Control", "no-store"))
             .json(serde_json::json!({
                 "error": "invalid did:nostr pubkey (expected 64-char lowercase hex)"
+            }));
+    }
+    // P1-l: this endpoint asserts an identity binding (did:nostr:<pubkey> ⇒
+    // this pod's WebID via `alsoKnownAs`). Returning a document for ANY
+    // well-formed pubkey asserted a FALSE binding for every key the pod
+    // owner does not hold (and is flatly wrong on a multi-user pod). Resolve
+    // the owner's declared Nostr key from the pod profile card and return
+    // 404 ("no account claims this key", JSS behaviour) unless the queried
+    // key is the owner's — mirroring the NIP-05 owner-resolution path.
+    let owner_pubkey = match state.storage.get("/profile/card").await {
+        Ok((body, _)) => solid_pod_rs::webid::extract_nostr_pubkey(&body)
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    let owner_claims_key = owner_pubkey
+        .as_deref()
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(&pubkey));
+    if !owner_claims_key {
+        return HttpResponse::NotFound()
+            .insert_header(("Cache-Control", "no-store"))
+            .json(serde_json::json!({
+                "error": "no account on this pod claims this did:nostr pubkey"
             }));
     }
     let also = vec![format!(

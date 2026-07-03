@@ -69,8 +69,10 @@ mod tests {
         assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
         assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
         assert_eq!(doc["type"], "DIDNostr");
-        // service:[] is the canonical create-agent form; no top-level alsoKnownAs.
-        assert!(doc["service"].as_array().unwrap().is_empty());
+        // did:nostr CG omit-when-empty: a document with no service endpoints
+        // OMITS `service` entirely (no `service: []`), and carries no
+        // top-level alsoKnownAs.
+        assert!(doc.get("service").is_none());
         assert!(doc.get("alsoKnownAs").is_none());
 
         let vm = &doc["verificationMethod"][0];
@@ -129,7 +131,8 @@ mod tests {
         let doc = render_did_document_tier3(&pk, None, &[]);
         assert_eq!(doc, render_did_document(&pk));
         assert!(doc.get("alsoKnownAs").is_none());
-        assert!(doc["service"].as_array().unwrap().is_empty());
+        // Canonical did:nostr omits `service` when empty (no `service: []`).
+        assert!(doc.get("service").is_none());
     }
 
     #[test]

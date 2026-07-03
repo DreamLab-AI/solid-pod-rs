@@ -86,11 +86,15 @@ fn did_nostr_document_emits_canonical_schema() {
     assert_eq!(contexts[0], "https://www.w3.org/ns/cid/v1");
     assert_eq!(contexts[1], "https://w3id.org/nostr/context");
 
-    // Fragment-only auth/assertion; canonical service:[] (unset by extension
-    // here because alsoKnownAs is the only extension supplied).
+    // Fragment-only auth/assertion. The did:nostr CG spec uses an
+    // omit-when-empty field model, so a document with no service endpoints
+    // OMITS `service` entirely (no `service: []`) — it must be absent here.
     assert_eq!(doc["authentication"][0], "#key1");
     assert_eq!(doc["assertionMethod"][0], "#key1");
-    assert!(doc["service"].as_array().unwrap().is_empty());
+    assert!(
+        doc.get("service").is_none(),
+        "canonical did:nostr omits empty service (no `service: []`)"
+    );
 }
 
 // --- test-2b (D-1 regression) --------------------------------------------
@@ -131,7 +135,11 @@ fn did_nostr_document_rejects_keyless_multikey_for_malformed_hex() {
     // Auth/assertion references dropped in lockstep (no dangling #key1).
     assert!(doc["authentication"].as_array().unwrap().is_empty());
     assert!(doc["assertionMethod"].as_array().unwrap().is_empty());
-    assert!(doc["service"].as_array().unwrap().is_empty());
+    // Canonical did:nostr omits `service` when empty (no `service: []`).
+    assert!(
+        doc.get("service").is_none(),
+        "canonical did:nostr omits empty service (no `service: []`)"
+    );
 }
 
 // --- test-3 --------------------------------------------------------------

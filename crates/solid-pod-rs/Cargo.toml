@@ -165,6 +165,12 @@ acl-origin = ["jss-v04"]
 # Enables `oidc::replay` and pulls in `lru`.
 dpop-replay-cache = ["oidc", "jss-v04", "dep:lru", "tokio-runtime"]
 
+# TEST-ONLY: compile the HS256+oct symmetric-DPoP arm the replay tests use.
+# NON-DEFAULT and enabled by no production feature — a symmetric DPoP alg is
+# an RFC 9449 §5 alg-confusion vector that production must reject. Activated
+# for this crate's integration tests via the self dev-dependency below.
+dpop-symmetric-test = []
+
 # F6: JSS-compatible layered config loader. The `config` module is
 # always compiled (lightweight struct definitions); this feature flag
 # is the consumer-facing toggle for binary-layer wiring.
@@ -280,6 +286,11 @@ solid-pod-rs-server = { path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }
+# Activate the test-only `dpop-symmetric-test` feature for integration tests:
+# `tests/*.rs` link the library built WITHOUT `cfg(test)`, so a plain
+# `#[cfg(test)]` gate on the HS256+oct DPoP arm would not reach them. A self
+# path dev-dependency is the supported pattern for test-only feature enable.
+solid-pod-rs = { path = ".", features = ["dpop-symmetric-test"] }
 
 # Sprint 5 P0: real ES256 keypairs for DPoP / access-token JWT tests.
 # Not pulled into the main library — tests only.

@@ -212,6 +212,11 @@ fn build_owner_only_acl(webid: &str, resource_iri: &str) -> AclDocument {
     AclDocument {
         context: None,
         graph: Some(vec![owner]),
+        // A directly-authored owner ACL is authoritative, not inherited from
+        // an ancestor container. (Pre-existing `--all-features` build break:
+        // the `inherited` field was added to `AclDocument` without updating
+        // this `provision-keys`-gated literal.)
+        inherited: false,
     }
 }
 
