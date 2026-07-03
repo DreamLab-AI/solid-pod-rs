@@ -1,17 +1,24 @@
 # JSS ↔ solid-pod-rs Parity Checklist
 
-Exhaustive row-per-feature tracker against the **real**
-JavaScriptSolidServer (JSS), local clone at
-`/home/devuser/workspace/JavaScriptSolidServer/`. Canonical JSS
+Exhaustive row-per-feature tracker against JavaScriptSolidServer (JSS),
+local clone at `/home/devuser/workspace/JavaScriptSolidServer/` (checked
+out at `10bd60f` / package `0.0.197`). Canonical JSS
 surface: [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md).
 Prose companion (categorical summary, port tickets, architecture
 discussion): [`GAP-ANALYSIS.md`](./GAP-ANALYSIS.md). This document is the
 row-level tracker only — a machine-readable table of every JSS surface
 and our status against it.
 
+> **Verification method.** The `Rust file:line` entries and the
+> `crates/solid-pod-rs/tests/*_jss.rs` suites are self-contained Rust
+> assertions transcribing JSS's observed behaviour. They are **not** live
+> differential runs against a running JSS instance; there is no executable
+> JSS oracle in CI. Read the `_jss` suffix as "JSS-behaviour regression
+> test", not "diffed against JSS at runtime".
+
 ---
 
-## Current state (Sprint 16, JSS v0.0.204 sync, 2026-05-30, alpha.15)
+## Current state (Sprint 16, 2026-05-30, alpha.15 — JSS `10bd60f`/0.0.197 on disk, 0.0.204 delta tracked)
 
 **207 rows tracked** across 21 functional sections. §21 adds the JSS
 v0.0.197 → v0.0.204 delta: MCP server (#490), `install` CLI, NIP-98
@@ -28,6 +35,16 @@ listing (#531), and the mashlib audio pane.
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
+> **Authoritative figure.** The **~96% strict** value is the current gate
+> over all 207 tracked rows: 189 (present 164 + net-new 20 +
+> semantic-difference 5) ÷ 197 (excluding the 6 explicitly-deferred, 3
+> wontfix-in-crate, and 1 unclassified rows) = 0.959. It supersedes the
+> Sprint 12–14 headline figures (~98–99%), which were computed against the
+> smaller 132–137-row denominators before §19–§21 added rows and the
+> counts were reconciled — the strict percentage *dropped* only because the
+> denominator grew, not because parity regressed. `README.md` and
+> `GAP-ANALYSIS.md` are aligned to this ~96% figure.
+
 ### By status
 
 | Status | Count | Delta vs Sprint 13 |
@@ -40,7 +57,7 @@ listing (#531), and the mashlib audio pane.
 | explicitly-deferred | 6 | — |
 | wontfix-in-crate | 3 | — |
 | other/unclassified | 1 | — |
-| **Total** | **207** | JSS local comparator fast-forwarded to upstream `9d29167` / package `0.0.204` (+6 rows: §21 MCP/install/NIP-98-mint/getContentType/symlink-listing/audio-pane) |
+| **Total** | **207** | On-disk JSS comparator is `10bd60f` / package `0.0.197`; the §21 `0.0.197 → 0.0.204` delta (+6 rows: MCP/install/NIP-98-mint/getContentType/symlink-listing/audio-pane) was ported from the upstream commits, not from a checked-out `0.0.204` tree |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
