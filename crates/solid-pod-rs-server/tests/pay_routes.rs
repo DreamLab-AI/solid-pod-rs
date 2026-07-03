@@ -40,11 +40,25 @@ fn state() -> AppState {
 /// the test harness is `http://localhost:8080`. Mirrors that exactly so
 /// strict URL binding passes. Returns `(header_value, did:nostr)`.
 fn nip98_auth(method: &str, path: &str) -> (String, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    // Each token MUST be a distinct NIP-98 event: the server's single-use replay
+    // guard (`NIP98_REPLAY`, a process-global `LazyLock`) rejects a repeated
+    // event_id with 401, and tokens minted in the same second with the same
+    // key/url/method are otherwise identical. Anchor `created_at` to a base
+    // captured once (30s in the past) + a monotonic per-call counter — strictly
+    // unique regardless of wall-clock drift, within the ±60s tolerance window.
+    static BASE: OnceLock<u64> = OnceLock::new();
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let base = *BASE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(30)
+    });
+    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
     let token = nip98::mint(&url, method, SK_HEX, now)
         .expect("nip98-schnorr is enabled in the workspace test build");
     // Derive the did the server will compute from the same key.
