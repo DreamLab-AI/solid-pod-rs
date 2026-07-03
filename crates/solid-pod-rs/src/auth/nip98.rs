@@ -1,4 +1,4 @@
-//! NIP-98 HTTP authentication: structural verification.
+//! NIP-98 HTTP authentication: structural + cryptographic verification.
 //!
 //! Reference: <https://github.com/nostr-protocol/nips/blob/master/98.md>
 //!
@@ -6,9 +6,14 @@
 //! the event is a kind-27235 Nostr event with tags `u` (URL),
 //! `method`, and optional `payload` (SHA-256 of request body).
 //!
-//! This Phase 1 implementation performs all structural checks.
-//! Cryptographic signature verification (Schnorr over secp256k1) is
-//! the Phase 2 deliverable.
+//! Every `verify_*` entry point performs the structural checks (kind,
+//! pubkey shape, timestamp tolerance, URL/method/payload binding) **and**
+//! BIP-340 Schnorr signature verification. Signature verification is not
+//! optional: with the `nip98-schnorr` feature it runs for real; **without
+//! it the verifier fails CLOSED** (returns [`PodError::Unsupported`]) so a
+//! mis-configured build denies authentication rather than accepting any
+//! forged pubkey. See [`assert_schnorr_verification_enabled`] for the
+//! compile-time guard binaries use to refuse a fail-open build outright.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +47,15 @@ pub struct Nip98Verified {
     pub method: String,
     pub payload_hash: Option<String>,
     pub created_at: u64,
+    /// Canonical NIP-01 event id (lowercase hex sha256 over the
+    /// `[0, pubkey, created_at, kind, tags, content]` serialisation).
+    ///
+    /// Uniquely identifies this signed request and is the single-use
+    /// dedup key a replay guard keys on — two distinct requests (differing
+    /// URL, method, body, or `created_at`) always hash to different ids,
+    /// while a re-presented token hashes identically. See
+    /// [`crate::auth::replay::Nip98ReplayCache`].
+    pub event_id: String,
 }
 
 /// Verify a NIP-98 `Authorization` header against expected URL,
@@ -183,12 +197,20 @@ pub fn verify_at_with_policy(
         _ => payload_tag,
     };
 
-    // Schnorr signature verification is available under the
-    // `nip98-schnorr` feature. Structural checks always run.
-    #[cfg(feature = "nip98-schnorr")]
-    {
-        verify_schnorr_signature(&event)?;
-    }
+    // SECURITY (F3): BIP-340 Schnorr signature verification is
+    // UNCONDITIONAL. With the `nip98-schnorr` feature this checks the
+    // signature for real; without it `verify_schnorr_signature` is the
+    // fail-CLOSED stub that returns `PodError::Unsupported`, so a build
+    // that dropped the feature denies authentication instead of accepting
+    // a forged pubkey after structural checks alone. `verify_schnorr_...`
+    // also recomputes and binds the canonical event id, so on success the
+    // id below is signature-bound.
+    verify_schnorr_signature(&event)?;
+
+    // Canonical NIP-01 id — the single-use replay dedup key. Recomputed
+    // from the event content (not trusted from `event.id`), though under
+    // `nip98-schnorr` `verify_schnorr_signature` already proved they match.
+    let event_id = compute_event_id(&event);
 
     Ok(Nip98Verified {
         pubkey: event.pubkey,
@@ -196,8 +218,22 @@ pub fn verify_at_with_policy(
         method: token_method,
         payload_hash: verified_payload_hash,
         created_at: event.created_at,
+        event_id,
     })
 }
+
+/// Compile-time proof that BIP-340 Schnorr signature verification is
+/// compiled into this build of the NIP-98 verifier.
+///
+/// This item exists **only** under the `nip98-schnorr` feature. A binary
+/// that authenticates real NIP-98 requests references it in a
+/// `const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();`
+/// context so that a resolver change, a dropped dependency, or an
+/// accidental feature-unification regression which removed signature
+/// verification becomes a **compile error** rather than a silently
+/// fail-open (structural-only) auth path. See F3 in the closeout design.
+#[cfg(feature = "nip98-schnorr")]
+pub const fn assert_schnorr_verification_enabled() {}
 
 /// Canonical serialisation of a Nostr event per NIP-01 §"Serialization".
 /// Returns `sha256(json([0, pubkey, created_at, kind, tags, content]))`
@@ -703,6 +739,10 @@ mod tests {
         assert!(matches!(err, PodError::Nip98(_)));
     }
 
+    // Acceptance requires a valid BIP-340 signature (verification is
+    // unconditional; the no-feature path fails closed), so these positive
+    // cases only run when a real signer is available.
+    #[cfg(feature = "nip98-schnorr")]
     #[test]
     fn accepts_well_formed_event_no_body() {
         let ts = 1_700_000_000u64;
@@ -711,14 +751,29 @@ mod tests {
         let r = verify_at(&hdr, "https://api.example.com/x", "GET", None, ts).unwrap();
         assert_eq!(r.pubkey, test_pubkey());
         assert_eq!(r.url, "https://api.example.com/x");
+        assert_eq!(r.event_id.len(), 64);
     }
 
+    #[cfg(feature = "nip98-schnorr")]
     #[test]
     fn accepts_trailing_slash_variation() {
         let ts = 1_700_000_000u64;
         let ev = valid_event("https://api.example.com/x/", "GET", ts, None);
         let hdr = authorization_header(&encode_event(&ev));
         verify_at(&hdr, "https://api.example.com/x", "GET", None, ts).unwrap();
+    }
+
+    /// F3 fail-closed: without the signer feature the verifier must reject
+    /// even a structurally perfect event (no signature can be checked, so
+    /// authentication is denied rather than granted to a forged pubkey).
+    #[cfg(not(feature = "nip98-schnorr"))]
+    #[test]
+    fn fails_closed_without_schnorr_feature() {
+        let ts = 1_700_000_000u64;
+        let ev = valid_event("https://api.example.com/x", "GET", ts, None);
+        let hdr = authorization_header(&encode_event(&ev));
+        let err = verify_at(&hdr, "https://api.example.com/x", "GET", None, ts).unwrap_err();
+        assert!(matches!(err, PodError::Unsupported(_)));
     }
 
     #[test]

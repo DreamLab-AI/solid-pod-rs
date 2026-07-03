@@ -191,8 +191,9 @@ pub mod oidc;
 // (NRF, dreamlab-ai-website). The `export-jsonld` feature pulls
 // `tokio-runtime` and is therefore native-only — the wasm32 CF-Workers
 // pod build cannot compile or serve it. Only native `solid-pod-rs-server`
-// deployments can expose the export; there is no server route registered
-// yet, so consumers call `export_pod_jsonld` directly.
+// deployments expose the export: it is served (owner-WAC-gated) at
+// `GET /api/exports/all`, registered under the `export-jsonld` feature.
+// Library consumers can also call `export_pod_jsonld` directly.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "export-jsonld")]
 pub mod export;
