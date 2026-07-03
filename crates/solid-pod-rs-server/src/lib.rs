@@ -1571,14 +1571,41 @@ async fn handle_well_known_did_nostr(
     path: web::Path<String>,
 ) -> HttpResponse {
     let pubkey = path.into_inner();
+    // did:nostr Tier-1 resolution (https://nostrcg.github.io/did-nostr/): a
+    // malformed identifier is a client error that must never be cached; a
+    // valid 64-char lowercase-hex key yields a deterministic offline
+    // (Tier-2) document. Mirrors the JSS resolver's per-status header policy.
+    let pubkey_is_valid = pubkey.len() == 64
+        && pubkey
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !pubkey_is_valid {
+        return HttpResponse::BadRequest()
+            .insert_header(("Cache-Control", "no-store"))
+            .json(serde_json::json!({
+                "error": "invalid did:nostr pubkey (expected 64-char lowercase hex)"
+            }));
+    }
     let also = vec![format!(
         "{}/profile/card#me",
         state.nodeinfo.base_url.trim_end_matches('/')
     )];
     let doc = interop::did_nostr::did_nostr_document(&pubkey, &also);
+    let body = serde_json::to_string(&doc).unwrap_or_else(|_| "{}".to_string());
+    // Feature-match the JSS Tier-1 header policy: max-age=3600 (the DID doc
+    // seldom changes) + a weak ETag over the deterministic body. Last-Modified
+    // is intentionally omitted — the document is generated deterministically
+    // from the pubkey (Tier-2), so there is no underlying mutable resource to
+    // date; the ETag is the correct validator here.
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    let etag = format!("\"{:016x}\"", hasher.finish());
     HttpResponse::Ok()
         .content_type("application/did+json")
-        .json(doc)
+        .insert_header(("Cache-Control", "max-age=3600"))
+        .insert_header(("ETag", etag))
+        .body(body)
 }
 
 // ---------------------------------------------------------------------------
