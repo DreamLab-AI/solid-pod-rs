@@ -1,6 +1,6 @@
 # ADR-059: Block-trails and git-marks as first-class provenance primitives
 
-**Status**: Proposed — primitives partly built; status lags code (see Status detail)
+**Status**: Accepted — the Phase-5 composition and `_prov` API shipped in `182ed31` (see Status detail, corrected 2026-07-08); two residuals remain (default-off `git` feature, no pod-wide `_prov` enumeration index)
 **Date**: 2026-06-13
 **Supersedes**: none
 **Related**: ADR-058 (JSS drift analysis), the master plan in
@@ -16,12 +16,37 @@ verification (`verify_mrc20_anchor`), feature-gated behind
 `bip341-taproot` / `mrc20`. The `solid-pod-rs-git` smart-HTTP backend and
 the server's `git_mark_write` write hook (`--features git`) also exist.
 
-**Still Proposed / not built** (the *produce* half and the composition):
-D2 generalised `ProvenanceTrail` beyond tokens; D3 `bitcoin_tx.rs` +
-`mempool.rs` write side; D5 epoch Merkle anchoring; D6 WAC-gating of the
-git routes and the replay-protection wiring; D7 the `ProvenanceMark`
-PROV-O sidecar and `_prov` routes. The Phase-5 `ProvenanceLog::record`
-composition that the Accepted criteria (below) require has not landed.
+**Shipped since (corrected 2026-07-08, ADR-060 Decision 3).** The *produce*
+half and the composition landed in commit `182ed31` ("feat(provenance):
+ProvenanceLog composition + epoch anchoring + _prov API (ADR-059 Phase 5)",
+2026-06-13; `crates/solid-pod-rs/src/provenance.rs` +770,
+`crates/solid-pod-rs-server/src/handlers/prov.rs` +532), so the items below
+are no longer "not built":
+
+- **D3** `bitcoin_tx.rs` + `mempool.rs` write side — `MempoolBlockAnchorer`
+  (`solid-pod-rs-server/src/mempool.rs`) produces and broadcasts the taproot
+  anchor tx; `bitcoin_tx.rs` builds it byte-parity.
+- **D5** epoch Merkle anchoring — `EpochAccumulator` batches marks under an
+  `AnchorPolicy::Epoch` Merkle root (`handlers/prov.rs::epoch_push_and_maybe_anchor`).
+- **D7** the PROV-O `.prov.ttl` sidecar and the `_prov` routes —
+  `GET /{pod}/_prov/{commit_sha}` and `POST /{pod}/_prov/anchor`
+  (`handlers/prov.rs`).
+- The Phase-5 **`ProvenanceLog::record`** composition (git-mark always, anchor
+  per policy) is the single canonical write path
+  (`solid-pod-rs-server/src/lib.rs::git_mark_write` → `ProvenanceLog::record`).
+- **D6 (part)** the NIP-98 **replay-protection wiring** is live
+  (`NIP98_REPLAY`, `auth::replay`); WAC sidecar-enforcement and the
+  `did:nostr` backlink policy were unified in `cded64f`.
+
+**Still open.** D2 the fully generalised `ProvenanceTrail` beyond token
+balances, and the WAC-gating of the raw git smart-HTTP push route (distinct
+from the LDP write path, which is WAC-gated). Two residuals bound every
+git-mark claim: (1) the `git` feature is **off in the default build** (see the
+capability caveat below) — a default build records zero marks; and (2) there is
+**no pod-wide `_prov` enumeration index** — the `_prov` API is point-lookup by
+a known commit SHA plus per-resource sidecars, so "one queryable trace" over a
+whole pod is not yet delivered (the REC-11 gap; contract in
+[`docs/reference/provenance-trace-contract.md`](../reference/provenance-trace-contract.md)).
 
 **Capability caveat — git-marks are off by default.** D1 below describes
 the git-mark tier as "always-on", but the server's `git` feature is **off
