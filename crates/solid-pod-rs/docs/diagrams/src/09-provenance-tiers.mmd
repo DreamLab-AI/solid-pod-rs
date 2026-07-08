@@ -3,27 +3,27 @@
 %% src/provenance.rs, solid-pod-rs-git/src/mark.rs, src/bitcoin_tx.rs,
 %% solid-pod-rs-server/src/{mempool.rs,handlers/prov.rs}.
 flowchart TD
-    W["LDP write\nPUT / POST / PATCH\n(git-backed pod)"] --> PL{"ProvenanceLog::record\n(provenance.rs)"}
+    W["LDP write<br/>PUT / POST / PATCH<br/>(git-backed pod)"] --> PL{"ProvenanceLog::record<br/>(provenance.rs)"}
 
-    PL -->|"ALWAYS (cheap tier)"| GM["GitMarker::mark_write\nShellGitMarker → git add + commit\n(author = did:nostr of writer)"]
+    PL -->|"ALWAYS (cheap tier)"| GM["GitMarker::mark_write<br/>ShellGitMarker → git add + commit<br/>(author = did:nostr of writer)"]
     GM --> MARK["GitMark { commit_sha, parent, branch=main }"]
-    MARK --> SIDE["PROV-O sidecar\n&lt;resource&gt;.prov.ttl\n(emitted on Updates-via)"]
+    MARK --> SIDE["PROV-O sidecar<br/>&lt;resource&gt;.prov.ttl<br/>(emitted on Updates-via)"]
 
-    PL --> POL{"AnchorPolicy\nNever · Always · HighValue · Epoch\n(from acl:ProvenanceAnchor WAC condition)"}
+    PL --> POL{"AnchorPolicy<br/>Never · Always · HighValue · Epoch<br/>(from acl:ProvenanceAnchor WAC condition)"}
     POL -->|"Never"| ONLY["git-mark only"]
-    POL -->|"HighValue / Always\n(+ anchorer present)"| ANCH["BlockAnchorer::anchor\nstate_hash = commit_sha"]
-    POL -->|"Epoch"| EPOCH["EpochAccumulator\ncollect SHAs → Merkle root"]
-    EPOCH -->|"epoch close\n(JSS_PROV_EPOCH_SIZE)"| ANCH
+    POL -->|"HighValue / Always<br/>(+ anchorer present)"| ANCH["BlockAnchorer::anchor<br/>state_hash = commit_sha"]
+    POL -->|"Epoch"| EPOCH["EpochAccumulator<br/>collect SHAs → Merkle root"]
+    EPOCH -->|"epoch close<br/>(JSS_PROV_EPOCH_SIZE)"| ANCH
 
-    ANCH --> BTX["bitcoin_tx.rs\nP2TR + BIP-341 TapSighash\n+ BIP-340 schnorr sign\n(byte-parity with JSS token.js)"]
-    BTX --> MEM["MempoolBroadcast\nPOST /api/tx\n(mempool.space/testnet4)"]
-    MEM --> TRAIL["BlockTrailAnchor\n{ txid, vout, address(P2TR),\n  state_strings, blockheight? }"]
-    TRAIL --> SIDE2["ProvenanceMark.anchor\n(in &lt;resource&gt;.prov.ttl)"]
+    ANCH --> BTX["bitcoin_tx.rs<br/>P2TR + BIP-341 TapSighash<br/>+ BIP-340 schnorr sign<br/>(byte-parity with JSS token.js)"]
+    BTX --> MEM["MempoolBroadcast<br/>POST /api/tx<br/>(mempool.space/testnet4)"]
+    MEM --> TRAIL["BlockTrailAnchor<br/>{ txid, vout, address(P2TR),<br/>  state_strings, blockheight? }"]
+    TRAIL --> SIDE2["ProvenanceMark.anchor<br/>(in &lt;resource&gt;.prov.ttl)"]
 
-    SIDE -.-> API["_prov API\nGET /{pod}/_prov/{commit_sha}\nPOST /{pod}/_prov/anchor (NIP-98, 402-gated)"]
+    SIDE -.-> API["_prov API<br/>GET /{pod}/_prov/{commit_sha}<br/>POST /{pod}/_prov/anchor (NIP-98, 402-gated)"]
     SIDE2 -.-> API
 
-    VER["Independent verification\n(no pod trust): re-derive P2TR\nfrom pubkey + state_strings,\ncheck live UTXO via mempool"] -.-> TRAIL
+    VER["Independent verification<br/>(no pod trust): re-derive P2TR<br/>from pubkey + state_strings,<br/>check live UTXO via mempool"] -.-> TRAIL
 
     classDef cheap fill:#1A6B6B,stroke:#0d3535,color:#F7F4EA
     classDef expensive fill:#C85A2A,stroke:#7a341a,color:#F7F4EA

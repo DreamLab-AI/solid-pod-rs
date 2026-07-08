@@ -245,6 +245,23 @@ jobs:
         run: cargo test --workspace --all-targets
 
   # ---------------------------------------------------------------------------
+  # RES-c diagram staleness guard — fails when a docs/diagrams/src/*.mmd is
+  # newer than its rendered .svg/.png (or a render is missing). Pure git +
+  # coreutils; no browser, so it needs neither the Chrome sidecar nor the
+  # canon renderer at CI time. The verified re-render itself is gated by
+  # VisionFlow's RES-b render gate; this job only guards freshness.
+  # ---------------------------------------------------------------------------
+  diagrams:
+    name: diagrams (RES-c staleness guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # commit-time comparison needs full history
+      - name: check diagram staleness
+        run: bash scripts/check-diagram-staleness.sh
+
+  # ---------------------------------------------------------------------------
   # Single required status check aggregator — branch protection points here.
   # ---------------------------------------------------------------------------
   ci-required:
@@ -257,6 +274,7 @@ jobs:
       - wasm-check
       - cargo-deny
       - cargo-audit
+      - diagrams
     if: always()
     steps:
       - name: Verify dependent jobs succeeded
@@ -267,12 +285,14 @@ jobs:
           echo "wasm-check=${{ needs.wasm-check.result }}"
           echo "cargo-deny=${{ needs.cargo-deny.result }}"
           echo "cargo-audit=${{ needs.cargo-audit.result }}"
+          echo "diagrams=${{ needs.diagrams.result }}"
           if [[ "${{ needs.build-test.result }}" != "success" ]] \
              || [[ "${{ needs.workspace.result }}" != "success" ]] \
              || [[ "${{ needs.msrv.result }}" != "success" ]] \
              || [[ "${{ needs.wasm-check.result }}" != "success" ]] \
              || [[ "${{ needs.cargo-deny.result }}" != "success" ]] \
-             || [[ "${{ needs.cargo-audit.result }}" != "success" ]]; then
+             || [[ "${{ needs.cargo-audit.result }}" != "success" ]] \
+             || [[ "${{ needs.diagrams.result }}" != "success" ]]; then
             echo "One or more required jobs failed."
             exit 1
           fi

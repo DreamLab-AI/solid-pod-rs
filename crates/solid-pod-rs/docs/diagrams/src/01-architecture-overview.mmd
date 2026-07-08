@@ -13,31 +13,31 @@ flowchart TB
     H_POST["POST /{container}/"]:::svc
     H_PATCH["PATCH /{path}"]:::svc
     H_DEL["DELETE /{path}"]:::svc
-    H_WS["GET /.notifications&nbsp;(WS)\n(advertised via Updates-Via;\nWS endpoint is host-wired,\nnot mounted by the bundled server)"]:::svc
+    H_WS["GET /.notifications&nbsp;(WS)<br/>(advertised via Updates-Via;<br/>WS endpoint is host-wired,<br/>not mounted by the bundled server)"]:::svc
   end
 
   %% ───── AUTH GATE ─────
   subgraph AUTH["Auth Gate (governance)"]
     direction LR
-    NIP98["NIP-98 verify\n(auth::nip98)"]:::gov
-    OIDC["Solid-OIDC + DPoP\n(oidc feature — library lane\nfor embedders; not wired in the\nbundled server as of 2026-06-12)"]:::gov
+    NIP98["NIP-98 verify<br/>(auth::nip98)"]:::gov
+    OIDC["Solid-OIDC + DPoP<br/>(oidc feature — library lane<br/>for embedders; not wired in the<br/>bundled server as of 2026-06-12)"]:::gov
   end
 
   %% ───── SERVICE LAYER ─────
   subgraph SVC["Service Layer"]
     direction LR
-    LDP["ldp module\n(ldp.rs)\ncontainers · RDF · PATCH"]:::svc
-    WAC["wac::evaluate_access_ctx\n(wac/)\nStorageAclResolver walk-up"]:::gate
-    NOTIF["WebSocketChannelManager +\nWebhookChannelManager\n(notifications/)"]:::svc
-    WEBID["WebID profiles\n(webid.rs)"]:::svc
+    LDP["ldp module<br/>(ldp.rs)<br/>containers · RDF · PATCH"]:::svc
+    WAC["wac::evaluate_access_ctx<br/>(wac/)<br/>StorageAclResolver walk-up"]:::gate
+    NOTIF["WebSocketChannelManager +<br/>WebhookChannelManager<br/>(notifications/)"]:::svc
+    WEBID["WebID profiles<br/>(webid.rs)"]:::svc
   end
 
   %% ───── STORAGE LAYER ─────
   subgraph STORE["Storage Layer — trait Storage"]
     direction LR
-    FS["FsBackend\n(storage::fs)"]:::store
-    MEM["MemoryBackend\n(storage::memory)"]:::store
-    S3["s3-backend feature flag\n(aws-sdk-s3 dep declared;\nno backend impl ships yet)"]:::storeOpt
+    FS["FsBackend<br/>(storage::fs)"]:::store
+    MEM["MemoryBackend<br/>(storage::memory)"]:::store
+    S3["s3-backend feature flag<br/>(aws-sdk-s3 dep declared;<br/>no backend impl ships yet)"]:::storeOpt
   end
 
   %% ───── FLOW ─────
