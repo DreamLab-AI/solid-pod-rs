@@ -133,7 +133,10 @@ use futures_util::future::{ready, LocalBoxFuture, Ready};
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use solid_pod_rs::{
-    auth::nip98,
+    // `ReplayStore` is the seam the process-local replay cache implements
+    // (ADR-060 Decision 2); it must be in scope to call `check_and_record`
+    // through the trait rather than an inherent method.
+    auth::{nip98, replay::ReplayStore},
     config::sources::parse_size,
     interop,
     ldp::{self, LdpContainerOps, PatchCreateOutcome},

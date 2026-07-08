@@ -9,9 +9,17 @@
 pub mod nip98;
 pub mod self_signed;
 
-/// NIP-98 single-use replay guard (F3). Gated behind `nip98-replay`; the
-/// native single-process pod tier wires it into every request so a
-/// captured token cannot be replayed within the ~120s tolerance window.
+/// The `ReplayStore` seam (ADR-060 Decision 2): the single-use-nonce contract
+/// extracted from the reference cache so every tier consumes one named
+/// semantics rather than re-deriving replay handling. Carries no runtime
+/// dependency, so the pure-logic `core` surface (wasm32 / CF-Workers) can
+/// depend on it and supply its own implementor.
+pub mod replay_store;
+
+/// NIP-98 single-use replay guard (F3), the reference [`replay_store::ReplayStore`]
+/// implementor. Gated behind `nip98-replay`; the native single-process pod
+/// tier wires it into every request so a captured token cannot be replayed
+/// within the ~120s tolerance window.
 #[cfg(feature = "nip98-replay")]
 pub mod replay;
 

@@ -36,9 +36,15 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use lru::LruCache;
-use thiserror::Error;
 use tokio::sync::Mutex;
+
+// The single-use-nonce contract and its error live in the runtime-free seam
+// module so an out-of-repo tier can depend on them without pulling `lru` /
+// tokio (ADR-060 Decision 2). Re-exported here so the historical
+// `auth::replay::ReplayError` path keeps resolving.
+pub use super::replay_store::{ReplayError, ReplayStore};
 
 /// Default TTL for a remembered event id. Must be at least the NIP-98
 /// timestamp tolerance so an id can never expire from the cache while the
@@ -54,15 +60,6 @@ pub const DEFAULT_MAX_SIZE: usize = 10_000;
 /// Environment variables consumed by [`Nip98ReplayCache::from_env`].
 pub const ENV_TTL_SECS: &str = "SOLID_POD_NIP98_REPLAY_TTL_SECS";
 pub const ENV_MAX_SIZE: &str = "SOLID_POD_NIP98_REPLAY_MAX_SIZE";
-
-/// Error returned by [`Nip98ReplayCache::check_and_record`].
-#[derive(Debug, Error)]
-pub enum ReplayError {
-    /// The event id was already recorded within the TTL window — a client
-    /// re-presented a NIP-98 token. Fail closed (treat as unauthenticated).
-    #[error("NIP-98 token already used within replay window ({ttl:?})")]
-    Replayed { ttl: Duration },
-}
 
 /// Bounded LRU tracking recently-seen NIP-98 event ids.
 ///
@@ -133,31 +130,6 @@ impl Nip98ReplayCache {
         self.len().await == 0
     }
 
-    /// Check whether `event_id` has been seen within TTL; if not, record it
-    /// and return `Ok(())`. If already seen within TTL, return
-    /// [`ReplayError::Replayed`] **without** refreshing the entry (so a
-    /// flood of replays cannot keep an id pinned past its natural expiry).
-    ///
-    /// Entries whose first-seen is strictly older than `ttl` are expired
-    /// and overwritten as a fresh sighting.
-    pub async fn check_and_record(&self, event_id: &str) -> Result<(), ReplayError> {
-        let now = Instant::now();
-        let mut guard = self.inner.lock().await;
-
-        // `peek` does not promote LRU position — order reflects insertion
-        // age, not check age.
-        if let Some(first_seen) = guard.entries.peek(event_id).copied() {
-            if now.saturating_duration_since(first_seen) < self.ttl {
-                return Err(ReplayError::Replayed { ttl: self.ttl });
-            }
-            // Expired: fall through and overwrite as a fresh sighting.
-        }
-        // First sighting (or expired). `put` evicts the LRU entry at
-        // capacity.
-        guard.entries.put(event_id.to_string(), now);
-        Ok(())
-    }
-
     /// Evict all entries whose first-seen is strictly older than the TTL.
     /// Returns the number removed. Eviction is otherwise lazy (driven by
     /// [`Self::check_and_record`]); call periodically to bound idle memory.
@@ -194,6 +166,39 @@ impl Nip98ReplayCache {
                 let _ = self.evict_expired().await;
             }
         })
+    }
+}
+
+/// Reference implementor of the [`ReplayStore`] seam (ADR-060 Decision 2).
+/// Every in-repo tier drives the cache through this contract; the out-of-repo
+/// forum/CF tier is the documented edge-local exception (it supplies its own
+/// datastore-backed implementor). Callers must bring [`ReplayStore`] into
+/// scope to invoke [`Nip98ReplayCache::check_and_record`].
+#[async_trait]
+impl ReplayStore for Nip98ReplayCache {
+    /// Check whether `event_id` has been seen within TTL; if not, record it
+    /// and return `Ok(())`. If already seen within TTL, return
+    /// [`ReplayError::Replayed`] **without** refreshing the entry (so a
+    /// flood of replays cannot keep an id pinned past its natural expiry).
+    ///
+    /// Entries whose first-seen is strictly older than `ttl` are expired
+    /// and overwritten as a fresh sighting.
+    async fn check_and_record(&self, event_id: &str) -> Result<(), ReplayError> {
+        let now = Instant::now();
+        let mut guard = self.inner.lock().await;
+
+        // `peek` does not promote LRU position — order reflects insertion
+        // age, not check age.
+        if let Some(first_seen) = guard.entries.peek(event_id).copied() {
+            if now.saturating_duration_since(first_seen) < self.ttl {
+                return Err(ReplayError::Replayed { ttl: self.ttl });
+            }
+            // Expired: fall through and overwrite as a fresh sighting.
+        }
+        // First sighting (or expired). `put` evicts the LRU entry at
+        // capacity.
+        guard.entries.put(event_id.to_string(), now);
+        Ok(())
     }
 }
 
@@ -236,6 +241,21 @@ mod tests {
         assert!(a.check_and_record(&id).await.is_ok());
         // The clone sees the sighting recorded through `a`.
         assert!(b.check_and_record(&id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn trait_object_dispatch_rejects_replay() {
+        // The seam is consumed through `trait ReplayStore`, including as a
+        // trait object — an out-of-repo tier can hold `Arc<dyn ReplayStore>`
+        // over its own datastore-backed implementor (ADR-060 Decision 2).
+        let store: Arc<dyn ReplayStore> =
+            Arc::new(Nip98ReplayCache::with_config(Duration::from_secs(60), 8));
+        let id = "e".repeat(64);
+        assert!(store.check_and_record(&id).await.is_ok());
+        assert!(matches!(
+            store.check_and_record(&id).await.unwrap_err(),
+            ReplayError::Replayed { .. }
+        ));
     }
 
     #[tokio::test]
