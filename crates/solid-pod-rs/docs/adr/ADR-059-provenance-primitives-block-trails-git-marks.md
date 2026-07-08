@@ -1,11 +1,62 @@
 # ADR-059: Block-trails and git-marks as first-class provenance primitives
 
-**Status**: Proposed
+**Status**: Accepted — the Phase-5 composition and `_prov` API shipped in `182ed31` (see Status detail, corrected 2026-07-08); two residuals remain (default-off `git` feature, no pod-wide `_prov` enumeration index)
 **Date**: 2026-06-13
 **Supersedes**: none
 **Related**: ADR-058 (JSS drift analysis), the master plan in
 [`docs/design/provenance-upgrade-master-plan.md`](../design/provenance-upgrade-master-plan.md),
 agentbox PRD-015 v1.2 (Lightning-first economy) and ADR-032 (402 scheme grammar)
+
+## Status detail (open items, 2026-07-03)
+
+**Shipped in code** (the *verify* half): `mrc20.rs` carries RFC-8785 JCS,
+SHA-256 state-chain linking, BIP-341 taproot key-chaining
+(`bt_derive_chained_pubkey` / `bt_derive_chained_privkey`) and anchor
+verification (`verify_mrc20_anchor`), feature-gated behind
+`bip341-taproot` / `mrc20`. The `solid-pod-rs-git` smart-HTTP backend and
+the server's `git_mark_write` write hook (`--features git`) also exist.
+
+**Shipped since (corrected 2026-07-08, ADR-060 Decision 3).** The *produce*
+half and the composition landed in commit `182ed31` ("feat(provenance):
+ProvenanceLog composition + epoch anchoring + _prov API (ADR-059 Phase 5)",
+2026-06-13; `crates/solid-pod-rs/src/provenance.rs` +770,
+`crates/solid-pod-rs-server/src/handlers/prov.rs` +532), so the items below
+are no longer "not built":
+
+- **D3** `bitcoin_tx.rs` + `mempool.rs` write side — `MempoolBlockAnchorer`
+  (`solid-pod-rs-server/src/mempool.rs`) produces and broadcasts the taproot
+  anchor tx; `bitcoin_tx.rs` builds it byte-parity.
+- **D5** epoch Merkle anchoring — `EpochAccumulator` batches marks under an
+  `AnchorPolicy::Epoch` Merkle root (`handlers/prov.rs::epoch_push_and_maybe_anchor`).
+- **D7** the PROV-O `.prov.ttl` sidecar and the `_prov` routes —
+  `GET /{pod}/_prov/{commit_sha}` and `POST /{pod}/_prov/anchor`
+  (`handlers/prov.rs`).
+- The Phase-5 **`ProvenanceLog::record`** composition (git-mark always, anchor
+  per policy) is the single canonical write path
+  (`solid-pod-rs-server/src/lib.rs::git_mark_write` → `ProvenanceLog::record`).
+- **D6 (part)** the NIP-98 **replay-protection wiring** is live
+  (`NIP98_REPLAY`, `auth::replay`); WAC sidecar-enforcement and the
+  `did:nostr` backlink policy were unified in `cded64f`.
+
+**Still open.** D2 the fully generalised `ProvenanceTrail` beyond token
+balances, and the WAC-gating of the raw git smart-HTTP push route (distinct
+from the LDP write path, which is WAC-gated). Two residuals bound every
+git-mark claim: (1) the `git` feature is **off in the default build** (see the
+capability caveat below) — a default build records zero marks; and (2) there is
+**no pod-wide `_prov` enumeration index** — the `_prov` API is point-lookup by
+a known commit SHA plus per-resource sidecars, so "one queryable trace" over a
+whole pod is not yet delivered (the REC-11 gap; contract in
+[`docs/reference/provenance-trace-contract.md`](../reference/provenance-trace-contract.md)).
+
+**Capability caveat — git-marks are off by default.** D1 below describes
+the git-mark tier as "always-on", but the server's `git` feature is **off
+in the default build** (the server's default feature set is empty). In a
+default build `git_mark_write` is a no-op empty shim
+(`#[cfg(not(feature = "git"))]`), so **default builds record zero
+provenance marks**. Git-mark provenance requires building the server with
+`--features git`; only then is every LDP `PUT`/`POST`/`PATCH` committed.
+Read "always-on" as "on every write *when compiled with `git`*", not "on
+by default".
 
 ## Context
 
@@ -48,8 +99,10 @@ VisionClaw) inherits verifiable traceability without re-implementing crypto.
 
 ### D1 — Two tiers, composed
 
-- **git-mark** (cheap, always-on): every pod write becomes a git commit. The
-  commit SHA is captured and surfaced as a `GitMark` — content-addressed,
+- **git-mark** (cheap, on every write *when the server is built with
+  `--features git`* — see the capability caveat above; **not** enabled in
+  the default build): every pod write becomes a git commit. The commit SHA
+  is captured and surfaced as a `GitMark` — content-addressed,
   append-only, tamper-evident ordering for free.
 - **block-trail anchor** (expensive, opt-in): a Bitcoin-anchored MRC20 state
   whose taproot UTXO externally and irreversibly timestamps a record. Reserved

@@ -6,7 +6,8 @@
 //! 1. `agent.did.json` — the canonical `did:nostr` DID document
 //!    (ADR-125 / §1: two-context, top-level `DIDNostr`, single `Multikey`
 //!    verification method with `publicKeyMultibase: "fe70102<hex>"`,
-//!    `#key1`, `service: []`).
+//!    `#key1`; per the did:nostr CG omit-when-empty model, `service` is
+//!    omitted entirely when there are no endpoints).
 //! 2. `git config nostr.privkey <hex>` — the agent's BIP-340 secret key,
 //!    stored in the pod-repo's *local* git config (never committed).
 //!
@@ -161,7 +162,8 @@ mod tests {
         assert_eq!(vm["publicKeyMultibase"], format!("fe70102{PK_HEX}"));
         assert!(vm.get("publicKeyHex").is_none(), "2019 publicKeyHex dropped");
         assert_eq!(v["authentication"][0], "#key1");
-        assert!(v["service"].as_array().unwrap().is_empty());
+        // Canonical did:nostr omits `service` when empty (no `service: []`).
+        assert!(v.get("service").is_none());
     }
 
     #[tokio::test]

@@ -54,7 +54,11 @@ async fn resolver_maps_webid_to_nostr_via_also_known_as() {
 #[tokio::test]
 async fn resolver_maps_nostr_to_webid_via_did_document() {
     let server = MockServer::start().await;
-    let webid = "https://alice.example/profile#me";
+    // The WebID must be on a fetchable origin AND declare the pubkey back:
+    // `resolve_nostr_to_webid` refuses an unverified `alsoKnownAs` claim
+    // (bidirectional-binding / impersonation guard), so the WebID has to live
+    // on the mock and carry a `sameAs` backlink. Point it at the mock server.
+    let webid = format!("{}/profile#me", server.uri());
     let doc = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": format!("did:nostr:{PK}"),
@@ -69,6 +73,19 @@ async fn resolver_maps_nostr_to_webid_via_did_document() {
         )
         .mount(&server)
         .await;
+    // Backlink: the WebID profile declares the same pubkey via `sameAs`.
+    Mock::given(method("GET"))
+        .and(path("/profile"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/ld+json")
+                .set_body_json(&json!({
+                    "@id": format!("{}/profile#me", server.uri()),
+                    "sameAs": format!("did:nostr:{PK}")
+                })),
+        )
+        .mount(&server)
+        .await;
 
     let resolver = NostrWebIdResolver::with_ssrf(Arc::new(AllowAllSsrf));
     let pk = NostrPubkey::from_hex(PK).unwrap();
@@ -78,6 +95,51 @@ async fn resolver_maps_nostr_to_webid_via_did_document() {
         .expect("resolver succeeds")
         .expect("webid present");
     assert_eq!(resolved, webid);
+}
+
+#[tokio::test]
+async fn resolver_rejects_nostr_to_webid_without_backlink() {
+    // Impersonation guard (mirrors JSS `verifyWebIdBacklink`): a DID document
+    // whose `alsoKnownAs` points at a WebID that does NOT declare the pubkey
+    // back must NOT resolve — otherwise Mallory publishes a doc claiming
+    // Alice's WebID and impersonates her (same-origin != same-control).
+    let server = MockServer::start().await;
+    let webid = format!("{}/victim#me", server.uri());
+    let doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": format!("did:nostr:{PK}"),
+        "alsoKnownAs": [webid]
+    });
+    Mock::given(method("GET"))
+        .and(path(format!("/.well-known/did/nostr/{PK}.json")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/did+json")
+                .set_body_json(&doc),
+        )
+        .mount(&server)
+        .await;
+    // The victim WebID profile does NOT declare this pubkey (no backlink).
+    Mock::given(method("GET"))
+        .and(path("/victim"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/ld+json")
+                .set_body_json(&json!({ "@id": format!("{}/victim#me", server.uri()) })),
+        )
+        .mount(&server)
+        .await;
+
+    let resolver = NostrWebIdResolver::with_ssrf(Arc::new(AllowAllSsrf));
+    let pk = NostrPubkey::from_hex(PK).unwrap();
+    let resolved = resolver
+        .resolve_nostr_to_webid(&server.uri(), &pk)
+        .await
+        .expect("resolver succeeds");
+    assert!(
+        resolved.is_none(),
+        "an unverified alsoKnownAs must not resolve (impersonation guard)"
+    );
 }
 
 #[tokio::test]

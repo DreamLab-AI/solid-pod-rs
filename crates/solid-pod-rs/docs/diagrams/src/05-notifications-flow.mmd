@@ -10,15 +10,15 @@ flowchart LR
   end
 
   %% ─── Fan-out ───
-  BCAST{{"tokio::sync::broadcast\nChangeNotification channel"}}:::gate
+  BCAST{{"tokio::sync::broadcast<br/>ChangeNotification channel"}}:::gate
   EV --> |pump_from_storage| BCAST
 
   %% ─── WebSocket side ───
   subgraph WS["WebSocketChannelManager"]
     direction TB
-    WSSUB1["Subscription #1\n(broadcast::Receiver)\ntopic = /alice/notes/"]:::svc
-    WSSUB2["Subscription #2\n(broadcast::Receiver)\ntopic = /alice/"]:::svc
-    WSHB["heartbeat: Duration\n(default 30 s)"]:::svc
+    WSSUB1["Subscription #1<br/>(broadcast::Receiver)<br/>topic = /alice/notes/"]:::svc
+    WSSUB2["Subscription #2<br/>(broadcast::Receiver)<br/>topic = /alice/"]:::svc
+    WSHB["heartbeat: Duration<br/>(default 30 s)"]:::svc
   end
   BCAST -->|"fan-out recv()"| WSSUB1
   BCAST -->|"fan-out recv()"| WSSUB2
@@ -26,23 +26,23 @@ flowchart LR
   %% ─── Webhook side ───
   subgraph WH["WebhookChannelManager"]
     direction TB
-    WHDISP["deliver_one / deliver_all\n(reqwest::Client)"]:::svc
-    WHRETRY["Full-jitter exponential backoff\nbase 500 ms × 2^attempt, cap 1 h\nmax 3 retries on 5xx\n429 honours Retry-After"]:::gate
+    WHDISP["deliver_one / deliver_all<br/>(reqwest::Client)"]:::svc
+    WHRETRY["Full-jitter exponential backoff<br/>base 500 ms × 2^attempt, cap 1 h<br/>max 3 retries on 5xx<br/>429 honours Retry-After"]:::gate
   end
   BCAST -->|pump_from_storage| WHDISP
   WHDISP --> WHRETRY
 
   %% ─── Consumers ───
-  WSC["WebSocket client\n(Authorization: DPoP / NIP-98)"]:::gov
-  WEBHOOK["Target URL\nPOST application/ld+json"]:::gov
+  WSC["WebSocket client<br/>(Authorization: DPoP / NIP-98)"]:::gov
+  WEBHOOK["Target URL<br/>POST application/ld+json"]:::gov
 
   WSSUB1 --> WSC
   WSSUB2 --> WSC
   WHRETRY -->|HTTP 2xx| WEBHOOK
-  WHRETRY -.persistent failure.-> WHDEAD[["Circuit breaker opens after 10\nconsecutive failures →\nshort-circuits to TransientRetry\nuntil a delivery succeeds"]]:::deny
+  WHRETRY -.persistent failure.-> WHDEAD[["Circuit breaker opens after 10<br/>consecutive failures →<br/>short-circuits to TransientRetry<br/>until a delivery succeeds"]]:::deny
 
   %% ─── Payload envelope ───
-  ENV["AS 2.0 ChangeNotification envelope:\n{\n  '@context': 'https://www.w3.org/ns/activitystreams',\n  'id': 'urn:uuid:…',\n  'type': 'Create' | 'Update' | 'Delete',\n  'object': '&lt;pod-base&gt;/alice/notes/foo.ttl',\n  'published': '2026-04-20T10:12:30Z'\n}"]:::gov
+  ENV["AS 2.0 ChangeNotification envelope:<br/>{<br/>  '@context': 'https://www.w3.org/ns/<br/>activitystreams',<br/>  'id': 'urn:uuid:…',<br/>  'type': 'Create' | 'Update' | 'Delete',<br/>  'object': '&lt;pod-base&gt;/alice/notes/foo.ttl',<br/>  'published': '2026-04-20T10:12:30Z'<br/>}"]:::gov
 
   BCAST -.serialises as.-> ENV
 

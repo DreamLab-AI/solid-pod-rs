@@ -6,12 +6,12 @@
 flowchart TD
   START(["Request: mode M on /alice/notes/foo.ttl"]):::entry
   RACL{{"Does /alice/notes/foo.ttl.acl exist?"}}:::gate
-  RDOC["DIRECT ACL (inherited = false)\nHonours BOTH acl:accessTo and acl:default\nMatch agent / agentClass / agentGroup\nagainst requested mode M"]:::gov
+  RDOC["DIRECT ACL (inherited = false)<br/>Honours BOTH acl:accessTo and acl:default<br/>Match agent / agentClass / agentGroup<br/>against requested mode M"]:::gov
   RDEC{{"authorises M?"}}:::gate
 
   UP1["Walk up: container = /alice/notes/"]:::svc
   C1ACL{{"Does /alice/notes/.acl exist?"}}:::gate
-  C1DEF["INHERITED ACL (inherited = true)\nHonours ONLY acl:default —\nacl:accessTo is SKIPPED\n(honour_access_to = !inherited)"]:::gov
+  C1DEF["INHERITED ACL (inherited = true)<br/>Honours ONLY acl:default —<br/>acl:accessTo is SKIPPED<br/>(honour_access_to = !inherited)"]:::gov
   C1DEC{{"acl:default authorises M?"}}:::gate
 
   UP2["Walk up: container = /alice/"]:::svc
@@ -24,14 +24,14 @@ flowchart TD
   C3DEF["Root acl:default only → check M"]:::gov
   C3DEC{{"authorises M?"}}:::gate
 
-  ALLOW(["Allow M\n→ forward to LDP/storage"]):::allow
-  DENY(["Deny → 403 Forbidden + WAC-Allow\n(401 if anonymous)"]):::deny
+  ALLOW(["Allow M<br/>→ forward to LDP/storage"]):::allow
+  DENY(["Deny → 403 Forbidden + WAC-Allow<br/>(401 if anonymous)"]):::deny
 
   START --> RACL
   RACL -- yes --> RDOC --> RDEC
   RACL -- no --> UP1
   RDEC -- yes --> ALLOW
-  RDEC -- "no — NEAREST ACL WINS,\nno further walk-up" --> DENY
+  RDEC -- "no — NEAREST ACL WINS,<br/>no further walk-up" --> DENY
 
   UP1 --> C1ACL
   C1ACL -- yes --> C1DEF --> C1DEC
@@ -47,15 +47,15 @@ flowchart TD
 
   UP3 --> C3ACL
   C3ACL -- yes --> C3DEF --> C3DEC
-  C3ACL -- "no — no ACL anywhere\n= no access" --> DENY
+  C3ACL -- "no — no ACL anywhere<br/>= no access" --> DENY
   C3DEC -- yes --> ALLOW
   C3DEC -- no --> DENY
 
   %% Legend
   subgraph LEG["Legend — StorageAclResolver::find_effective_acl returns the FIRST .acl found; evaluation stops there"]
     direction LR
-    L1["acl:accessTo\n= authorises an EXACT resource\n(honoured only on a DIRECT ACL)"]:::gov
-    L2["acl:default\n= inherits to CHILDREN of the container\n(the only rule honoured on inherited ACLs)"]:::svc
+    L1["acl:accessTo<br/>= authorises an EXACT resource<br/>(honoured only on a DIRECT ACL)"]:::gov
+    L2["acl:default<br/>= inherits to CHILDREN of the container<br/>(the only rule honoured on inherited ACLs)"]:::svc
   end
 
   classDef entry fill:#00D4FF,stroke:#E8F4FC,stroke-width:1px,color:#0f172a

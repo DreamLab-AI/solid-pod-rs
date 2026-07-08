@@ -125,6 +125,13 @@ s3-backend = ["dep:aws-sdk-s3", "tokio-runtime"]
 oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]
 
+# F3: NIP-98 single-use replay guard. Process-local bounded LRU keyed on
+# the canonical event id, decoupled from the OIDC/DPoP replay cache so a
+# NIP-98-only pod still gets replay protection. Pulls `lru` + the tokio
+# runtime (async mutex). Wired into the default server build (unlike
+# `acl-origin`); see `solid_pod_rs::auth::replay::Nip98ReplayCache`.
+nip98-replay = ["dep:lru", "tokio-runtime"]
+
 # LWS 1.0 Controlled Identifier self-signed JWT verifier.
 # ES256K (secp256k1) is the primary algorithm; P-256 and Ed25519
 # are optional sub-features for broader CID method support.
@@ -157,6 +164,12 @@ acl-origin = ["jss-v04"]
 # F5: DPoP jti replay cache (Solid-OIDC §5.2 / RFC 9449).
 # Enables `oidc::replay` and pulls in `lru`.
 dpop-replay-cache = ["oidc", "jss-v04", "dep:lru", "tokio-runtime"]
+
+# TEST-ONLY: compile the HS256+oct symmetric-DPoP arm the replay tests use.
+# NON-DEFAULT and enabled by no production feature — a symmetric DPoP alg is
+# an RFC 9449 §5 alg-confusion vector that production must reject. Activated
+# for this crate's integration tests via the self dev-dependency below.
+dpop-symmetric-test = []
 
 # F6: JSS-compatible layered config loader. The `config` module is
 # always compiled (lightweight struct definitions); this feature flag
@@ -199,13 +212,15 @@ rate-limit = ["jss-v04", "dep:lru", "dep:parking_lot", "tokio-runtime"]
 quota = ["jss-v04", "config-loader", "tokio-runtime"]
 
 # ---------------------------------------------------------------------------
-# Sprint 13 / JSS v0.0.190 Phase 1 port (issue #437) — scaffolds.
+# Sprint 13 / JSS v0.0.190 Phase 1 port (issue #437).
 #
-# All three flags are default-off. Enabling them today exposes type
-# signatures + module skeletons + `pub use` lines, but the function
-# bodies are `todo!()`. They do NOT make the runtime behave like the
-# JSS v0.0.190 features — they only let downstream consumers compile
-# against stable type names while the port lands.
+# All three flags are default-off. The pure-logic bodies are IMPLEMENTED
+# (not `todo!()`): row 196 `provision_pod_keys` in `solid-pod-rs-idp`,
+# row 197 `interop::nip05_document`, row 198 `export::export_pod_jsonld`.
+# The flags gate the optional surfaces + the server routes that expose
+# them (nip05-endpoint and export-jsonld are routed in
+# `solid-pod-rs-server`; provision-keys remains a library surface — see
+# its note below).
 #
 # Parity rows: 196 (provision-keys lives in solid-pod-rs-idp; this
 # flag here gates the `ProvisionPlan::provision_keys` field), 197
@@ -215,19 +230,23 @@ quota = ["jss-v04", "config-loader", "tokio-runtime"]
 
 # Row 196 — marker flag that gates the optional `provision_keys` field
 # on `ProvisionPlan` (extension point for the IdP-side key provisioner
-# in `solid-pod-rs-idp`'s own `provision-keys` feature).
+# in `solid-pod-rs-idp`'s own `provision-keys` feature). The provisioner
+# itself (`solid_pod_rs_idp::provision_pod_keys`) is fully implemented; it
+# is a library surface only — no HTTP route mints keys, because returning a
+# freshly-generated `nsec` over HTTP is an owner-signoff security decision.
 provision-keys = ["tokio-runtime"]
 
 # Row 197 — pod-resident NIP-05 endpoint
 # (`/.well-known/nostr.json?name=<local>`). Implies `did-nostr` so the
 # resolver primitives are present; the actual server route is wired in
-# `solid-pod-rs-server` under the same feature name. Body is `todo!()`.
+# `solid-pod-rs-server` under the same feature name.
 nip05-endpoint = ["did-nostr"]
 
 # Row 198 — JSON-LD time-chain pod export
 # (`GET /api/exports/all`). Pulls the tokio runtime; consumers choose
 # their storage backend independently (`fs-backend` or `s3-backend`).
-# Body is `todo!()`.
+# `export::export_pod_jsonld` is implemented and the route is wired
+# (owner-WAC-gated) in `solid-pod-rs-server` under the same feature name.
 export-jsonld = ["tokio-runtime"]
 
 # Row 199 — git auto-init hook (JSS #466/#469/#471).
@@ -267,6 +286,11 @@ solid-pod-rs-server = { path = "../solid-pod-rs-server" }
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = { version = "0.8", features = ["small_rng"] }
+# Activate the test-only `dpop-symmetric-test` feature for integration tests:
+# `tests/*.rs` link the library built WITHOUT `cfg(test)`, so a plain
+# `#[cfg(test)]` gate on the HS256+oct DPoP arm would not reach them. A self
+# path dev-dependency is the supported pattern for test-only feature enable.
+solid-pod-rs = { path = ".", features = ["dpop-symmetric-test"] }
 
 # Sprint 5 P0: real ES256 keypairs for DPoP / access-token JWT tests.
 # Not pulled into the main library — tests only.

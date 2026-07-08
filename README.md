@@ -1,6 +1,6 @@
 # solid-pod-rs
 
-**A Rust-native port of [JavaScriptSolidServer](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer) (JSS)** — an extended implementation of the Solid Protocol. This crate delivers the full JSS feature surface (~98% strict parity) as a framework-agnostic Rust library and a drop-in server binary.
+**A Rust-native port of [JavaScriptSolidServer](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer) (JSS)** — an extended implementation of the Solid Protocol. This crate delivers the full JSS feature surface (~96% strict parity) as a framework-agnostic Rust library and a drop-in server binary.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![crates.io](https://img.shields.io/crates/v/solid-pod-rs.svg)](https://crates.io/crates/solid-pod-rs)
@@ -551,7 +551,7 @@ Feature flags keep the dependency surface tight. A minimal NIP-98-only build is 
 
 ## Parity with JSS
 
-solid-pod-rs has reached ~98% strict parity with JSS: 0 rows missing on the 132-row tracker, 5 explicitly deferred as legacy/P3, 4 wontfix-in-crate as consumer concerns. The Rust port adds runtime advantages on top of feature parity: no Node.js dependency, single static binary, lower memory footprint, deterministic RDF serialisation, and compile-time feature gating.
+solid-pod-rs has reached ~96% strict parity with JSS: on the 207-row tracker, 3 rows remain missing, 6 are explicitly deferred as legacy/P3, and 3 are wontfix-in-crate as consumer concerns. (This figure is derived from [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md)'s own row counts; the earlier "~98% on the 132-row tracker" headline predates the §19–§21 row additions and the denominator recount.) The Rust port adds runtime advantages on top of feature parity: no Node.js dependency, single static binary, lower memory footprint, deterministic RDF serialisation, and compile-time feature gating.
 
 ```mermaid
 timeline
@@ -568,6 +568,8 @@ timeline
                : LWS 1.0 + did:key + legacy notifications
     Sprint 12  : 98% strict
                : JSS v0.0.60-v0.0.71 delta closed
+    Sprint 16  : 96% strict
+               : §19-21 rows added; 207-row denominator recount
 ```
 
 See the full row-by-row accounting in [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md) and the prose gap analysis in [`GAP-ANALYSIS.md`](crates/solid-pod-rs/GAP-ANALYSIS.md).

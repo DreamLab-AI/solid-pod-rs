@@ -7,15 +7,15 @@ flowchart LR
   %% ─── Container resource ───
   subgraph C["&lt;/alice/notes/&gt; — ldp:BasicContainer"]
     direction TB
-    CTYPE["rdf:type\n  ldp:Resource\n  ldp:Container\n  ldp:BasicContainer"]:::gov
-    CSMT["Server-managed triples:\n  dc:modified  2026-04-20T10:12Z\n  stat:size    3\n  stat:mtime   1714... (ns: posix/stat#)\n  &nbsp;&nbsp;(added by ldp::server_managed_triples)"]:::svc
-    CMEM["ldp:contains\n  &lt;foo.ttl&gt;\n  &lt;bar.ttl&gt;\n  &lt;pics/&gt;"]:::gate
+    CTYPE["rdf:type<br/>  ldp:Resource<br/>  ldp:Container<br/>  ldp:BasicContainer"]:::gov
+    CSMT["Server-managed triples:<br/>  dc:modified  2026-04-20T10:12Z<br/>  stat:size    3<br/>  stat:mtime   1714... (ns: posix/stat#)<br/>  &nbsp;&nbsp;(added by ldp::server_managed_triples)"]:::svc
+    CMEM["ldp:contains<br/>  &lt;foo.ttl&gt;<br/>  &lt;bar.ttl&gt;<br/>  &lt;pics/&gt;"]:::gate
   end
 
   %% ─── Members ───
-  M1["&lt;/alice/notes/foo.ttl&gt;\nldp:Resource, ldp:RDFSource\ncontent-type: text/turtle\netag: W/&quot;abc123&quot;\nsize: 842 B"]:::store
-  M2["&lt;/alice/notes/bar.ttl&gt;\nldp:Resource, ldp:RDFSource\netag: W/&quot;def456&quot;\nsize: 1.2 KiB"]:::store
-  M3["&lt;/alice/notes/pics/&gt;\nldp:BasicContainer\n(sub-container — trailing '/')"]:::storeAlt
+  M1["&lt;/alice/notes/foo.ttl&gt;<br/>ldp:Resource, ldp:RDFSource<br/>content-type: text/turtle<br/>etag: W/&quot;abc123&quot;<br/>size: 842 B"]:::store
+  M2["&lt;/alice/notes/bar.ttl&gt;<br/>ldp:Resource, ldp:RDFSource<br/>etag: W/&quot;def456&quot;<br/>size: 1.2 KiB"]:::store
+  M3["&lt;/alice/notes/pics/&gt;<br/>ldp:BasicContainer<br/>(sub-container — trailing '/')"]:::storeAlt
 
   %% ─── Containment edges ───
   CMEM -- ldp:contains --> M1
@@ -23,12 +23,12 @@ flowchart LR
   CMEM -- ldp:contains --> M3
 
   %% ─── Link headers emitted on GET ───
-  LH["HTTP Link headers (ldp::link_headers):\n  &lt;http://www.w3.org/ns/ldp#Resource&gt;; rel=&quot;type&quot;\n  &lt;http://www.w3.org/ns/ldp#Container&gt;; rel=&quot;type&quot;\n  &lt;http://www.w3.org/ns/ldp#BasicContainer&gt;; rel=&quot;type&quot;\n  &lt;…/foo.ttl.acl&gt;; rel=&quot;acl&quot;\n  &lt;…/foo.ttl.meta&gt;; rel=&quot;describedby&quot;"]:::gov
+  LH["HTTP Link headers (ldp::link_headers):<br/>  &lt;http://www.w3.org/ns/ldp#Resource&gt;; rel=&quot;type&quot;<br/>  &lt;http://www.w3.org/ns/ldp#Container&gt;; rel=&quot;type&quot;<br/>  &lt;http://www.w3.org/ns/ldp#BasicContainer&gt;; rel=&quot;type&quot;<br/>  &lt;…/foo.ttl.acl&gt;; rel=&quot;acl&quot;<br/>  &lt;…/foo.ttl.meta&gt;; rel=&quot;describedby&quot;"]:::gov
 
   C -. emitted on GET .-> LH
 
   %% ─── Representation negotiation ───
-  REPR["ContainerRepresentation\n(serialised via ldp::negotiate_format)\n\n• text/turtle (default)\n• application/ld+json\n• application/n-triples\n• application/rdf+xml"]:::svc
+  REPR["ContainerRepresentation<br/>(serialised via ldp::negotiate_format)<br/><br/>• text/turtle (default)<br/>• application/ld+json<br/>• application/n-triples<br/>• application/rdf+xml"]:::svc
   C --> REPR
 
   classDef gov fill:#8B5CF6,stroke:#E8F4FC,stroke-width:1px,color:#E8F4FC

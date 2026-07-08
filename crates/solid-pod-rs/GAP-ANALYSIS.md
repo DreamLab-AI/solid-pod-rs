@@ -1,19 +1,30 @@
 # Gap Analysis — solid-pod-rs vs JavaScriptSolidServer (JSS)
 
-> Authoritative comparison against the **real** JSS. The row-per-feature
+> Comparison against JavaScriptSolidServer (JSS). The row-per-feature
 > table lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md); this
-> document is the categorical reasoning narrative. Current as of Sprint 16
-> sync (2026-05-30): local JSS is fast-forwarded to upstream `gh-pages`
-> commit `9d29167` (package `0.0.204`), and the raw checklist gate reports
-> **~93% strict parity, ~100% on the spec-normative surface, ~100%
-> protocol-visible**. The v0.0.197 → v0.0.204 delta (§21 of the checklist)
-> is fully ported: MCP server (#490), `install` CLI, NIP-98 minting + git
+> document is the categorical reasoning narrative. Current as of the
+> Sprint 16 sync (2026-05-30): the local JSS clone checked out on disk is
+> at `10bd60f` (`Bump version to 0.0.197`, package `0.0.197`). The
+> upstream `gh-pages` `9d29167` (`0.0.204`) fast-forward described in
+> earlier drafts was **not** applied to the working tree, so the on-disk
+> comparator is `0.0.197`. The v0.0.197 → v0.0.204 delta (§21 of the
+> checklist) was ported by reading the upstream commits directly, not by
+> diffing against a checked-out `0.0.204` tree. Derived from the
+> checklist's own row counts, the raw gate reports **~96% strict parity,
+> ~100% on the spec-normative surface, ~100% protocol-visible**. The §21
+> delta covers the MCP server (#490), `install` CLI, NIP-98 minting + git
 > push leniency, `getContentType` (#533), symlinked-dir listing (#531),
 > and the mashlib audio pane. Five sibling crates
 > (`solid-pod-rs-{activitypub,git,idp,nostr,didkey}`) are all functional
 > and shipping. Sprint 12 closed the JSS v0.0.60–v0.0.71 delta (ADR-058):
 > size-capped ACL parsing, `.account` dotfile, password-length validation,
 > AP outbox POST, Accept-negotiation, and actor caching.
+>
+> **Verification method.** The `*_jss.rs` parity tests are self-contained
+> Rust assertions that transcribe JSS's observed behaviour; they are
+> **not** live differential comparisons against a running JSS instance.
+> There is no executable JSS oracle in CI — read the `_jss` suffix as
+> "JSS-behaviour regression test", not "diffed against JSS at runtime".
 
 ## A. Scope and method
 
@@ -26,17 +37,20 @@
   `-nostr`, `-didkey`) are functional and covered by the workspace test
   suite.
 - **JavaScriptSolidServer**: local clone at
-  `/home/devuser/workspace/JavaScriptSolidServer/`, fast-forwarded to
-  `upstream/gh-pages` commit `9d29167` (`Bump version to 0.0.204`).
-  Licence `AGPL-3.0-only`. Node.js ≥ 18 ESM, Fastify-based server.
+  `/home/devuser/workspace/JavaScriptSolidServer/`, checked out at
+  `10bd60f` (`Bump version to 0.0.197`, package `0.0.197`). The
+  `upstream/gh-pages` `9d29167` (`0.0.204`) fast-forward was not applied
+  to the working tree; §21 tracks the `0.0.197 → 0.0.204` delta from the
+  upstream commits directly. Licence `AGPL-3.0-only`. Node.js ≥ 18 ESM,
+  Fastify-based server.
 
 ### Source paths
 
 | Side | Path |
 |---|---|
 | solid-pod-rs source | `crates/solid-pod-rs/src/` |
-| solid-pod-rs tests | `crates/solid-pod-rs/tests/` (7 integration test files, ~150 tests) |
-| solid-pod-rs examples | `crates/solid-pod-rs/examples/` (9 runnable examples) |
+| solid-pod-rs tests | `crates/solid-pod-rs/tests/` (54 integration test files; ~1,519 `#[test]`/`#[tokio::test]` annotations workspace-wide) |
+| solid-pod-rs examples | `crates/solid-pod-rs/examples/` (7 runnable examples) |
 | JSS source | `/home/devuser/workspace/JavaScriptSolidServer/src/` |
 | JSS tests | `/home/devuser/workspace/JavaScriptSolidServer/test/` |
 | JSS CLI | `/home/devuser/workspace/JavaScriptSolidServer/bin/jss.js` |
@@ -185,11 +199,12 @@ additionally accepts `Basic nostr:<token>` to serve git credential
 helpers — we don't, because we don't ship git HTTP backend (E.1).
 
 **C.3c did:nostr**: We derive the DID identity implicitly when NIP-98
-succeeds. JSS ships an explicit `.well-known/did/nostr/:pubkey.json`
-resolver (Tier 1/3 DID Document) and a normaliser that links did:nostr
-to a WebID via `alsoKnownAs`. **Gap**: we don't publish a DID Document
-endpoint or a cross-resolution normaliser. P2 port candidate — target
-crate `solid-pod-rs-nostr` (stub today).
+succeeds, and — since Sprint 10 — `solid-pod-rs-nostr` additionally ships
+the explicit `.well-known/did/nostr/:pubkey.json` resolver
+(`render_did_document_tier1` / `render_did_document_tier3`) and the
+bidirectional `NostrWebIdResolver` that links did:nostr to a WebID via
+`alsoKnownAs` (checklist rows 89 / 90 / 132). This former gap is closed;
+the crate is functional, not a stub.
 
 **C.3d Dispatch precedence**: JSS chains DPoP → Nostr → Bearer →
 WebID-TLS inside one auth middleware. We expose verification primitives
@@ -199,9 +214,10 @@ dictate order.
 
 **State**: Solid-OIDC and NIP-98 auth are at behavioural parity with
 Sprint 9 P0 closure (DPoP signature + jti replay + SSRF primitive).
-Remaining gaps: WebID-TLS (won't-fix, F.5), Simple Bearer (deprioritise,
-E.4), did:nostr DID Document publication (P2, `solid-pod-rs-nostr`
-stub), full IdP stack (E.3, `solid-pod-rs-idp` stub).
+Remaining gaps: WebID-TLS (won't-fix, F.5) and Simple Bearer
+(deprioritise, E.4). The did:nostr DID Document publication and the full
+IdP stack shipped in `solid-pod-rs-nostr` and `solid-pod-rs-idp`
+respectively (both functional, not stubs).
 
 ### C.4 Notifications
 
@@ -285,8 +301,11 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 
 **C.7a CLI**: Scope call — JSS is a full server; we are a library. The
 standalone example intentionally stays small. For feature-parity, the
-admin CLI belongs in a consumer crate. **Action**: formalise this as
-ADR-054 "library vs server separation".
+admin CLI belongs in a consumer crate — which now ships as the
+`solid-pod-rs-server` binary crate. The "library vs server separation"
+decision was never captured as a standalone ADR in this crate's
+`docs/adr/` set (which holds ADR-057, ADR-058, ADR-059 only); the split
+is implemented directly.
 
 ### C.8 Architecture
 
@@ -706,10 +725,11 @@ demonstration, not a production CLI.
 
 **Bug or feature?** Feature — scope call. Library vs server.
 
-**Compatibility impact**: operators cannot drop solid-pod-rs into a
-JSS-replacement slot without writing their own wrapper. **Action**: add
-ADR-054 documenting the library-vs-server split; ship
-`solid-pod-rs-server` as a future consumer crate.
+**Compatibility impact**: operators can drop the `solid-pod-rs-server`
+binary crate into a JSS-replacement slot. The library-vs-server split
+shipped; it was implemented directly rather than captured as a standalone
+ADR in this crate's `docs/adr/` set (which holds ADR-057, ADR-058,
+ADR-059 only).
 
 ### F.5 Default WAC stance
 
@@ -812,14 +832,14 @@ type indexes + public-read ACL (rows 14/164/166), atomic quota writes
 
 | Rank | Feature | Priority | Est. LOC | Tests | Target |
 |---|---|---|---|---|---|
-| 1 | ActivityPub integration (E.2) | **P1** | 1,200 | 40 unit + 15 integration | v0.5.0 (`solid-pod-rs-activitypub` stub today) |
+| 1 | ActivityPub integration (E.2) | **SHIPPED** Sprint 10 | — | ✓ rows 102-108, 131 present | `solid-pod-rs-activitypub` functional |
 | 2 | LWS 1.0 SSI-CID verifier (row 152) | **P1** | 400 | 15 unit | v0.5.0 |
 | 3 | LWS 1.0 OIDC delta audit (row 150) | **P1 verify** | 100 | 6 unit | v0.5.0 |
 | 4 | `solid-0.1` legacy notifications adapter (E.8) | **P1** | 300 | 10 unit + 3 integration | v0.4.0 |
 | 5 | LWS 1.0 SSI-did:key auth (row 153) | **P2** | 350 | 12 unit | v0.5.0 (new `solid-pod-rs-didkey` crate) |
-| 6 | did:nostr DID Document publication + normaliser (E.4) | **P2** | 150 | 6 unit | v0.5.0 (`solid-pod-rs-nostr` stub today) |
+| 6 | did:nostr DID Document publication + normaliser (E.4) | **SHIPPED** Sprint 10 | — | ✓ rows 89, 90, 132 present | `solid-pod-rs-nostr` functional |
 | 7 | Git HTTP backend (E.1) | **SHIPPED** alpha.14 | — | ✓ 13 unit (api.rs) + 8 integration | — |
-| 8 | Config loader + env var map (E.6) | **P2** | 250 | 12 unit | v0.5.0 |
+| 8 | Config loader + env var map (E.6) | **SHIPPED** Sprint 11 | — | ✓ rows 120-124 present | `config-loader` feature |
 | 9 | Subdomain multi-tenancy heuristic polish (E.10, row 162) | **P2** | 150 | 10 unit | v0.5.0 |
 | 10 | NodeInfo 2.1 + top-level 5xx middleware (rows 106, 158) | **P2** | 200 | 8 unit | v0.5.0 |
 
@@ -909,8 +929,10 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **~98% strict parity** and **~100% spec-normative
-parity** as of Sprint 12 close. All P0 CVE-class items are cleared
+solid-pod-rs has **~96% strict parity** (derived from the
+[`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) row counts) and **~100%
+spec-normative parity** as of the Sprint 16 sync (2026-05-30). All P0
+CVE-class items are cleared
 (DPoP signature verification, SSRF primitive, dotfile allowlist,
 size-capped ACL parsing). Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
@@ -921,7 +943,9 @@ ActivityPub federation, Git HTTP backend, embedded IdP, did:nostr,
 and did:key. Sprint 12 additionally closed the JSS v0.0.60–v0.0.71
 delta: size-capped ACL parsing (CWE-400), `.account` dotfile, password
 validation (CWE-521), AP outbox POST with Note→Create wrapping,
-Accept-negotiation, and actor caching. 702 workspace tests, 0 failing.
+Accept-negotiation, and actor caching. ~1,519 `#[test]`/`#[tokio::test]`
+annotations across the workspace (54 integration test files in the core
+crate alone).
 
 ---
 
@@ -930,8 +954,18 @@ Accept-negotiation, and actor caching. 702 workspace tests, 0 failing.
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
 - JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `9d29167` / `0.0.204`).
-- ADR-053 — backend boundary + extraction scope.
-- ADR-054 (pending) — library-vs-server separation.
+- **Referenced decision records not present in this crate's `docs/adr/`
+  set** (which holds ADR-057, ADR-058, ADR-059 only): ADR-053 (backend
+  boundary + extraction scope), ADR-054 (library-vs-server separation) and
+  ADR-056 §D3 (library-server split) are backlog record numbers that were
+  never authored in this repo. The decisions they name are nonetheless
+  **implemented** — the library-vs-server split ships as the
+  `solid-pod-rs-server` binary crate, the S3 backend ships gated behind
+  `s3-backend`, and WebID-TLS is a recorded won't-fix (E.5). Treat the
+  inline "ADR-053/054/056 §…" citations throughout this document and
+  [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) as backlog pointers, not
+  as extant authoritative documents. ADR-089 (referenced by §20 of the
+  checklist) is owned by the nostr-rust-forum (NRF) repo, not this one.
 - Solid Protocol 0.11: <https://solidproject.org/TR/protocol>
 - WAC: <https://solidproject.org/TR/wac>
 - Solid-OIDC 0.1: <https://solidproject.org/TR/oidc>

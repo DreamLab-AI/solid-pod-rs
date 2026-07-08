@@ -33,9 +33,10 @@
 //! | `s3-backend` | off | AWS S3 / S3-compatible object stores. |
 //! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
 //! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
-//! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. |
+//! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. Verification is **unconditional and fail-closed**: without this feature the verifier returns [`PodError::Unsupported`] rather than accepting a forged pubkey after structural checks alone. |
+//! | `nip98-replay` | off | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU keyed on the canonical event id; closes the ±120s replay window the stateless verifier leaves open. |
 //! | `jss-v04` | off | JSS-parity umbrella (ADR-056); no-op alone — sub-features below switch one bounded context each on. |
-//! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). |
+//! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). Wired into the request path in `solid-pod-rs-server` (the request `Origin` is threaded into the evaluator `RequestContext`). Note: `acl:origin` is the only WAC 2.0 condition satisfiable end-to-end today — `client_id`/`issuer` conditions still evaluate deny (no authenticated OIDC client_id/issuer is surfaced into the context yet). |
 //! | `security-primitives` | off | SSRF guard + dotfile allowlist (pulls `jss-v04`). |
 //! | `legacy-notifications` | off | `solid-0.1` WebSocket adapter (SolidOS). |
 //! | `config-loader` | off | Layered config loader with `JSS_*` env vars + YAML/TOML. |
@@ -73,7 +74,7 @@
 //! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
 //! | [`mashlib`] | SolidOS data-browser HTML wrapper + data-island embed.    |
-//! | [`auth`] | NIP-98 HTTP auth + LWS-CID self-signed JWT verifier. |
+//! | [`auth`] | NIP-98 HTTP auth (unconditional fail-closed Schnorr verify + single-use replay guard) + LWS-CID self-signed JWT verifier. |
 //! | [`payments`] | HTTP 402, Web Ledgers, multi-chain TXO, payment store. |
 //! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
 //! | [`provenance`] | git-mark / block-trail provenance primitives + PROV-O.  |
@@ -183,11 +184,17 @@ pub mod storage;
 pub mod oidc;
 
 // ---------------------------------------------------------------------------
-// JSS v0.0.190 Phase 1 port (issue #437) — scaffolds.
+// JSS v0.0.190 Phase 1 port (issue #437) — pod data export.
 //
-// Parity row 198. Default-off; function body is `todo!()`. Type
-// surface is stable for downstream consumers (NRF,
-// dreamlab-ai-website).
+// Parity row 198. Default-off (`export-jsonld`). `export_pod_jsonld` is
+// fully implemented and tested (bodies landed in 0.4.0-alpha.11; no
+// `todo!()`); the library surface is stable for downstream consumers
+// (NRF, dreamlab-ai-website). The `export-jsonld` feature pulls
+// `tokio-runtime` and is therefore native-only — the wasm32 CF-Workers
+// pod build cannot compile or serve it. Only native `solid-pod-rs-server`
+// deployments expose the export: it is served (owner-WAC-gated) at
+// `GET /api/exports/all`, registered under the `export-jsonld` feature.
+// Library consumers can also call `export_pod_jsonld` directly.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "export-jsonld")]
 pub mod export;
@@ -230,10 +237,10 @@ pub use provenance::{
 };
 pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
-    check_origin, evaluate_access, evaluate_access_with_groups, extract_origin_patterns,
-    method_to_mode, mode_name, parse_turtle_acl, serialize_turtle_acl, wac_allow_header,
-    AccessMode, AclDocument, GroupMembership, Origin, OriginDecision, OriginPattern,
-    StaticGroupMembership,
+    check_origin, effective_acl_target, evaluate_access, evaluate_access_with_groups,
+    extract_origin_patterns, method_to_mode, mode_name, parse_turtle_acl,
+    protected_resource_for_acl, serialize_turtle_acl, wac_allow_header, AccessMode, AclDocument,
+    GroupMembership, Origin, OriginDecision, OriginPattern, StaticGroupMembership,
 };
 pub use webid::{
     extract_nostr_pubkey, extract_oidc_issuer, generate_webid_html,
@@ -258,7 +265,7 @@ pub use security::{is_safe_url, resolve_and_check, IpClass, SsrfError, SsrfPolic
 pub use storage::{ResourceMeta, Storage, StorageEvent};
 
 // ---------------------------------------------------------------------------
-// JSS v0.0.190 Phase 1 port — re-exports (scaffolds).
+// JSS v0.0.190 Phase 1 port — export re-exports (implemented, not stubs).
 // ---------------------------------------------------------------------------
 #[cfg(feature = "export-jsonld")]
 pub use export::{

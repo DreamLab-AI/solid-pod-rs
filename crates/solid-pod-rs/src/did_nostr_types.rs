@@ -105,13 +105,16 @@ pub struct ServiceEntry {
 /// Fragment of the canonical verification method (`#key1`).
 const KEY_FRAGMENT: &str = "#key1";
 
-/// Render the canonical `did:nostr` DID document (ADR-125).
+/// Render the canonical minimal `did:nostr` DID document (ADR-125, fully
+/// aligned to the did:nostr CG spec, <https://nostrcg.github.io/did-nostr/>).
 ///
-/// This is THE single published form — it supersedes the 2019-suite /
-/// `publicKeyHex` shape (ADR-074 §D2/§D3/§D4/§D13). No dual-publish.
-///
-/// Shape (ground truth: melvincarvalho/create-agent `index.js`, did-nostr
-/// CG spec `nostrcg.github.io/did-nostr`):
+/// This is the minimal / offline (Tier-2) form: the six REQUIRED fields only.
+/// Per the spec's field model, the optional members (`alsoKnownAs`, `service`,
+/// `profile`, `follows`, `modified`) are OMITTED entirely when there is no
+/// data for them — an empty `service: []` is not emitted (that was the
+/// pre-alignment shape). Use [`render_did_document_tier3`] to attach
+/// `alsoKnownAs` identity links and `service` entries, or
+/// [`render_did_document_complete`] for the full profile/social-graph form.
 ///
 /// ```json
 /// {
@@ -125,8 +128,7 @@ const KEY_FRAGMENT: &str = "#key1";
 ///     "publicKeyMultibase": "fe70102<hex>"
 ///   }],
 ///   "authentication": ["#key1"],
-///   "assertionMethod": ["#key1"],
-///   "service": []
+///   "assertionMethod": ["#key1"]
 /// }
 /// ```
 ///
@@ -152,8 +154,7 @@ pub fn render_did_document(pk: &NostrPubkey) -> Value {
             "publicKeyMultibase": format_multibase_schnorr(&pk.0),
         }],
         "authentication": [KEY_FRAGMENT],
-        "assertionMethod": [KEY_FRAGMENT],
-        "service": []
+        "assertionMethod": [KEY_FRAGMENT]
     })
 }
 
@@ -166,13 +167,17 @@ pub fn render_did_document_tier1(pk: &NostrPubkey) -> Value {
     render_did_document(pk)
 }
 
-/// Render the canonical DID document, optionally extended with a WebID
-/// `alsoKnownAs` link and agentbox `service[]` entries.
+/// Render the enhanced DID document with a top-level `alsoKnownAs` identity
+/// link and `service[]` entries.
 ///
-/// The base document is the canonical [`render_did_document`] form. The
-/// `webid`/`services` additions are **agentbox extensions** (C4): the
-/// canonical create-agent form is `service: []` and carries no top-level
-/// `alsoKnownAs`. Populating them yields a conformant superset.
+/// Fully aligned to the did:nostr CG spec (<https://nostrcg.github.io/did-nostr/>):
+/// the WebID (and any other identity URIs) are surfaced as **top-level
+/// `alsoKnownAs`** — the spec's canonical location for cross-platform identity
+/// links (WebID, ActivityPub, AT-proto) — and `service[]` carries actual
+/// service endpoints (relays etc.; relay entries SHOULD use `type: "Relay"`
+/// and a `wss://…/` endpoint with a trailing slash). Both members are omitted
+/// when empty. This supersedes the ADR-125 §2.3 interim decision that routed
+/// the WebID through a `service[] SolidWebID` entry.
 pub fn render_did_document_tier3(
     pk: &NostrPubkey,
     webid: Option<&str>,
@@ -181,33 +186,74 @@ pub fn render_did_document_tier3(
     let mut doc = render_did_document(pk);
 
     if let Some(w) = webid {
-        // agentbox extension: surface the WebID binding via alsoKnownAs.
         doc["alsoKnownAs"] = json!([w]);
     }
-
     if !services.is_empty() {
-        let service_values: Vec<Value> = services
-            .iter()
-            .map(|s| {
-                let mut obj = serde_json::Map::new();
-                if let Some(Value::Object(extra)) = s.extra.clone() {
-                    for (k, v) in extra {
-                        obj.insert(k, v);
-                    }
-                }
-                obj.insert("id".to_string(), Value::String(s.id.clone()));
-                obj.insert("type".to_string(), Value::String(s.service_type.clone()));
-                obj.insert(
-                    "serviceEndpoint".to_string(),
-                    Value::String(s.service_endpoint.clone()),
-                );
-                Value::Object(obj)
-            })
-            .collect();
-        doc["service"] = Value::Array(service_values);
+        doc["service"] = render_service_entries(services);
     }
 
     doc
+}
+
+/// Render the complete DID document with the optional social/profile members
+/// from the spec's "complete" example: multi-URI top-level `alsoKnownAs`,
+/// `service[]`, `profile` (kind-0 metadata object), `follows` (an array of
+/// bare `did:nostr:<hex>` strings — SHOULD be bounded to a recent subset for
+/// large follow lists), and `modified` (`dcterms:modified`, ISO-8601 UTC).
+/// Every optional member is omitted when empty/absent, matching the spec's
+/// omit-when-empty field model.
+pub fn render_did_document_complete(
+    pk: &NostrPubkey,
+    also_known_as: &[String],
+    services: &[ServiceEntry],
+    profile: Option<&Value>,
+    follows: &[String],
+    modified: Option<&str>,
+) -> Value {
+    let mut doc = render_did_document(pk);
+
+    if !also_known_as.is_empty() {
+        doc["alsoKnownAs"] = json!(also_known_as);
+    }
+    if !services.is_empty() {
+        doc["service"] = render_service_entries(services);
+    }
+    if let Some(p) = profile {
+        doc["profile"] = p.clone();
+    }
+    if !follows.is_empty() {
+        doc["follows"] = json!(follows);
+    }
+    if let Some(m) = modified {
+        doc["modified"] = json!(m);
+    }
+
+    doc
+}
+
+/// Serialise `service[]` entries to their JSON-LD form, merging any
+/// vendor-specific `extra` fields under the canonical `id`/`type`/
+/// `serviceEndpoint` (the canonical trio always wins over `extra`).
+fn render_service_entries(services: &[ServiceEntry]) -> Value {
+    let service_values: Vec<Value> = services
+        .iter()
+        .map(|s| {
+            let mut obj = serde_json::Map::new();
+            if let Some(Value::Object(extra)) = s.extra.clone() {
+                for (k, v) in extra {
+                    obj.insert(k, v);
+                }
+            }
+            obj.insert("id".to_string(), Value::String(s.id.clone()));
+            obj.insert("type".to_string(), Value::String(s.service_type.clone()));
+            obj.insert(
+                "serviceEndpoint".to_string(),
+                Value::String(s.service_endpoint.clone()),
+            );
+            Value::Object(obj)
+        })
+        .collect();
+    Value::Array(service_values)
 }
 
 // ── Multibase encoding ───────────────────────────────────────────────
@@ -293,22 +339,91 @@ pub fn is_valid_hex_pubkey(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// Check whether `tag_value` matches the expected `did:nostr` URI for
-/// `pubkey`, or is a pod URL that embeds the pubkey hex.
+/// Check whether `tag_value` binds back to `pubkey` — the bidirectional
+/// `did:nostr` ↔ WebID backlink test.
 ///
-/// This supports two patterns:
-/// 1. Exact `did:nostr:<pubkey>` match.
-/// 2. A URL containing the pubkey hex (e.g.
-///    `https://pod.example/.well-known/did/nostr/<pubkey>.json`).
+/// Accepts exactly two forms and NOTHING ELSE (no bare-substring match):
+/// 1. An exact `did:nostr:<pubkey>` URI.
+/// 2. A URL whose PATH carries the pubkey as a full segment, optionally
+///    with a file extension — e.g.
+///    `https://pod.example/.well-known/did/nostr/<pubkey>.json`.
+///
+/// A value that merely *contains* the hex elsewhere — in a query string
+/// (`https://evil.example/?ref=<pubkey>`), a fragment, or a host label
+/// (`https://<pubkey>.evil.example/`) — is REJECTED. The previous
+/// `tag_value.contains(pubkey)` substring check accepted all of those,
+/// letting an attacker forge a backlink by parking the victim's key in a
+/// query parameter.
 pub fn verify_webid_tag(tag_value: &str, pubkey: &str) -> bool {
     if !is_valid_hex_pubkey(pubkey) {
         return false;
     }
-    let expected_did = format!("did:nostr:{pubkey}");
-    if tag_value == expected_did {
+    // 1. Exact `did:nostr:<pubkey>` match.
+    if tag_value == format!("did:nostr:{pubkey}") {
         return true;
     }
-    tag_value.contains(pubkey)
+    // 2. Validated pod-URL-path match (full path segment, not a substring).
+    url_path_declares_pubkey(tag_value, pubkey)
+}
+
+/// Whether `pubkey` appears as a full PATH SEGMENT of `tag_value`
+/// (optionally with a file extension, e.g. `<pubkey>.json`) — never as a
+/// bare substring, query-string value, fragment, or host label.
+///
+/// Isolates the URL path by dropping `scheme://authority` and any
+/// `?query` / `#fragment`, then requires an exact segment (or
+/// `<pubkey>.<ext>`) match. Pure and I/O-free (wasm-safe).
+fn url_path_declares_pubkey(tag_value: &str, pubkey: &str) -> bool {
+    let is_delim = |c: char| c == '/' || c == '?' || c == '#';
+    // Drop `scheme://authority` so a host-embedded key does not match.
+    let after_authority = match tag_value.find("://") {
+        Some(i) => {
+            let rest = &tag_value[i + 3..];
+            match rest.find(is_delim) {
+                // The authority ends at the first '/', which begins the path.
+                Some(j) if rest.as_bytes()[j] == b'/' => &rest[j..],
+                // A '?'/'#' before any '/', or no delimiter, => no path.
+                _ => return false,
+            }
+        }
+        // No scheme: treat the whole value as a (relative) path.
+        None => tag_value,
+    };
+    // Drop the query / fragment.
+    let path = match after_authority.find(|c: char| c == '?' || c == '#') {
+        Some(k) => &after_authority[..k],
+        None => after_authority,
+    };
+    path.split('/').any(|seg| {
+        seg == pubkey
+            || seg
+                .strip_prefix(pubkey)
+                .is_some_and(|ext| ext.starts_with('.'))
+    })
+}
+
+/// Bidirectional-binding verifier: does the fetched WebID profile document
+/// declare `pubkey_hex` back?
+///
+/// A `did:nostr` DID-Document may point at a WebID (`alsoKnownAs`); a
+/// trustworthy binding requires the WebID profile to point back at the same
+/// Nostr key. This function is the PURE half of that check: the runtime
+/// fetches the WebID over the network (I/O stays per-runtime), then hands
+/// the raw `profile` bytes here. It extracts the profile's advertised
+/// `nostr:pubkey` (via [`crate::webid::extract_nostr_pubkey`]) and confirms
+/// it binds to `pubkey_hex` under the tightened [`verify_webid_tag`] rule
+/// (exact `did:nostr:` / bare hex / validated pod-URL-path — never a
+/// substring). Returns `false` when `pubkey_hex` is not a valid key, the
+/// profile is unparseable, advertises no key, or advertises a different
+/// key. Pure and I/O-free (wasm-safe).
+pub fn webid_declares_pubkey(profile: &[u8], pubkey_hex: &str) -> bool {
+    if !is_valid_hex_pubkey(pubkey_hex) {
+        return false;
+    }
+    match crate::webid::extract_nostr_pubkey(profile) {
+        Ok(Some(declared)) => verify_webid_tag(&declared, pubkey_hex),
+        _ => false,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -361,9 +476,9 @@ mod tests {
         assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
         // Top-level type + canonical Multikey VM.
         assert_eq!(doc["type"], "DIDNostr");
-        // service:[] is the canonical create-agent form (C4).
-        assert!(doc["service"].is_array());
-        assert_eq!(doc["service"].as_array().unwrap().len(), 0);
+        // Minimal form omits optional members entirely (spec omit-when-empty):
+        // no empty `service: []`, no `alsoKnownAs`.
+        assert!(doc.get("service").is_none(), "minimal form omits service");
         // The 2019 suite + publicKeyHex are GONE (ADR-074 D2 superseded).
         assert!(doc.get("alsoKnownAs").is_none());
 
@@ -429,11 +544,53 @@ mod tests {
     fn tier3_without_webid_or_services_is_canonical_empty_service() {
         let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
         let doc = render_did_document_tier3(&pk, None, &[]);
-        // No extensions ⇒ byte-identical to the canonical form (service:[],
-        // no alsoKnownAs).
+        // No extensions ⇒ byte-identical to the minimal form: no service,
+        // no alsoKnownAs (both omitted, per the spec's omit-when-empty model).
         assert_eq!(doc, render_did_document(&pk));
         assert!(doc.get("alsoKnownAs").is_none());
-        assert!(doc["service"].as_array().unwrap().is_empty());
+        assert!(doc.get("service").is_none());
+    }
+
+    #[test]
+    fn complete_document_carries_spec_profile_social_members() {
+        let pk = NostrPubkey::from_hex(PK_HEX).unwrap();
+        let also = vec![
+            "https://alice.example.com/#me".to_string(),
+            "at://alice.bsky.social".to_string(),
+        ];
+        let relay = ServiceEntry {
+            id: format!("did:nostr:{PK_HEX}#relay1"),
+            service_type: "Relay".to_string(),
+            service_endpoint: "wss://relay.damus.io/".to_string(),
+            extra: None,
+        };
+        let profile = json!({
+            "name": "Alice",
+            "about": "Building the decentralized web",
+            "picture": "https://example.com/alice.jpg",
+            "created_at": 1737906600
+        });
+        let follows = vec![
+            format!("did:nostr:{}", "ab".repeat(32)),
+        ];
+        let doc = render_did_document_complete(
+            &pk, &also, &[relay], Some(&profile), &follows, Some("2025-01-26T15:50:00Z"),
+        );
+        // Canonical core unchanged (spec-aligned).
+        assert_eq!(doc["type"], "DIDNostr");
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
+        assert_eq!(doc["verificationMethod"][0]["type"], "Multikey");
+        assert_eq!(doc["authentication"][0], "#key1");
+        // Top-level alsoKnownAs (spec canonical, multi-URI).
+        assert_eq!(doc["alsoKnownAs"][1], "at://alice.bsky.social");
+        // Relay service with trailing-slash endpoint.
+        assert_eq!(doc["service"][0]["type"], "Relay");
+        assert_eq!(doc["service"][0]["serviceEndpoint"], "wss://relay.damus.io/");
+        // Complete-form members.
+        assert_eq!(doc["profile"]["name"], "Alice");
+        assert_eq!(doc["profile"]["created_at"], 1737906600);
+        assert!(doc["follows"][0].as_str().unwrap().starts_with("did:nostr:"));
+        assert_eq!(doc["modified"], "2025-01-26T15:50:00Z");
     }
 
     #[test]
@@ -541,5 +698,72 @@ mod tests {
     #[test]
     fn verify_webid_tag_rejects_invalid_pubkey() {
         assert!(!verify_webid_tag("did:nostr:abc", "abc"));
+    }
+
+    #[test]
+    fn verify_webid_tag_rejects_pubkey_in_query_string() {
+        // The pubkey parked in a query parameter must NOT be accepted as a
+        // backlink — the exact forgery the old substring `contains` allowed.
+        let evil = format!("https://evil.example/?ref={PK_HEX}");
+        assert!(!verify_webid_tag(&evil, PK_HEX));
+    }
+
+    #[test]
+    fn verify_webid_tag_rejects_pubkey_in_host_or_fragment() {
+        assert!(!verify_webid_tag(&format!("https://{PK_HEX}.evil.example/"), PK_HEX));
+        assert!(!verify_webid_tag(&format!("https://evil.example/x#{PK_HEX}"), PK_HEX));
+        // A longer segment that merely starts with the key (no '.' boundary).
+        assert!(!verify_webid_tag(
+            &format!("https://pod.example/{PK_HEX}deadbeef"),
+            PK_HEX
+        ));
+    }
+
+    #[test]
+    fn verify_webid_tag_accepts_bare_hex_segment() {
+        // A bare-hex path segment (no extension) still binds.
+        assert!(verify_webid_tag(
+            &format!("https://pod.example/keys/{PK_HEX}"),
+            PK_HEX
+        ));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_matches_profile_triple() {
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "{PK_HEX}" }}
+            </script></head></html>"#
+        );
+        assert!(webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_matches_did_uri_triple() {
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "did:nostr:{PK_HEX}" }}
+            </script></head></html>"#
+        );
+        assert!(webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+    }
+
+    #[test]
+    fn webid_declares_pubkey_rejects_absent_or_mismatched() {
+        // No nostr:pubkey triple.
+        let none = br#"<html><head><script type="application/ld+json">
+            { "name": "Alice" }
+            </script></head></html>"#;
+        assert!(!webid_declares_pubkey(none, PK_HEX));
+        // A different key declared.
+        let other = "1111111111111111111111111111111111111111111111111111111111111111";
+        let profile = format!(
+            r#"<html><head><script type="application/ld+json">
+            {{ "nostr:pubkey": "{other}" }}
+            </script></head></html>"#
+        );
+        assert!(!webid_declares_pubkey(profile.as_bytes(), PK_HEX));
+        // Invalid expected key.
+        assert!(!webid_declares_pubkey(profile.as_bytes(), "abc"));
     }
 }

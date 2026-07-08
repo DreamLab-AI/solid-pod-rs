@@ -87,12 +87,15 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
     };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups = wac::StaticGroupMembership::default();
+    // F4 `acl:origin`: thread the `/mcp` request Origin so an ACL that
+    // restricts origins gates cross-origin tool calls.
+    let request_origin = ctx.request_origin.as_deref().and_then(wac::Origin::parse);
     wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &rc,
         &check_path,
         mode,
-        None,
+        request_origin.as_ref(),
         &groups,
         &registry,
     )

@@ -33,11 +33,19 @@ path = "src/main.rs"
 # `MempoolLookup` trait the native `MempoolHttpClient` (mempool.rs)
 # implements for `/pay/.deposit` (MRC20) and `/pay/.address`
 # (provenance-upgrade Phase 3).
-solid-pod-rs = { version = "0.5.0-alpha.3", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20"] }
+# `nip98-schnorr` is enabled EXPLICITLY (not left to feature-unification
+# via solid-pod-rs-idp) so the deployed server always has BIP-340
+# signature verification compiled into the NIP-98 auth path. A compile
+# guard (`const _: () = …assert_schnorr_verification_enabled()` in lib.rs)
+# turns any regression here into a build failure rather than a silent
+# fail-open. `nip98-replay` wires the single-use replay guard into the
+# default build; `acl-origin` activates the WAC `acl:origin` gate (F4)
+# fed by the request Origin header threaded through the enforce_* paths.
+solid-pod-rs = { version = "0.5.0-alpha.4", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20", "nip98-schnorr", "nip98-replay", "acl-origin"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
-solid-pod-rs-idp = { version = "0.5.0-alpha.3", path = "../solid-pod-rs-idp" }
+solid-pod-rs-idp = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-idp" }
 
 # Sprint-11 CLI: `invite create` surfaces invite records with
 # absolute expiry timestamps. Kept here rather than transitively
@@ -100,7 +108,7 @@ rustls-pemfile = { version = "2", optional = true }
 # Optional git HTTP backend + auto-init (JSS #466/#469/#471).
 # Gated by `git` feature; not compiled for wasm32. Requires the
 # `git` binary + `git-http-backend` CGI on the server host.
-solid-pod-rs-git = { version = "0.5.0-alpha.3", path = "../solid-pod-rs-git", optional = true }
+solid-pod-rs-git = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-git", optional = true }
 
 [features]
 # Feature umbrella toggles for the server binary.
@@ -115,8 +123,12 @@ quota = ["solid-pod-rs/quota"]
 did-nostr = ["solid-pod-rs/did-nostr"]
 security-primitives = ["solid-pod-rs/security-primitives"]
 
-# JSS v0.0.190 Phase 1 port (issue #437) — scaffolds. Pass-through.
-# Default-off; handlers are `todo!()` stubs. Parity rows 196, 197, 198.
+# JSS v0.0.190 Phase 1 port (issue #437). Pass-through, default-off.
+# Bodies are implemented (not `todo!()`): `nip05-endpoint` routes
+# `/.well-known/nostr.json` and `export-jsonld` routes the owner-gated
+# `GET /api/exports/all`; `provision-keys` gates the IdP key provisioner,
+# which is a library surface only (no HTTP route mints secret keys).
+# Parity rows 196, 197, 198.
 provision-keys = [
     "solid-pod-rs/provision-keys",
     "solid-pod-rs-idp/provision-keys",

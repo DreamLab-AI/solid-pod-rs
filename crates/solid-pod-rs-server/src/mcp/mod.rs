@@ -40,6 +40,13 @@ pub struct McpCtx {
     pub web_id: Option<String>,
     pub origin: String,
     pub federation_depth: u32,
+    /// Raw HTTP `Origin` header of the `/mcp` request, if any. Threaded
+    /// into the WAC `acl:origin` gate (F4) at the tool eval site so an ACL
+    /// declaring `acl:origin` triples restricts cross-origin MCP tool
+    /// calls. `None` (no header) is rejected only for origin-restricted
+    /// ACLs; plain ACLs are unaffected. Distinct from [`Self::origin`],
+    /// which is the pod's own base URL used to build absolute WAC paths.
+    pub request_origin: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +186,7 @@ pub async fn handle_mcp(
         web_id,
         origin: origin_of(&req),
         federation_depth,
+        request_origin: crate::req_origin(&req).map(|s| s.to_string()),
     };
 
     // Streaming tool (subscribe)? Upgrade to SSE before normal dispatch.

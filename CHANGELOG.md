@@ -4,6 +4,73 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.4] - 2026-07-03
+
+The **closeout security release**. Four hardening fixes land on top of the
+`0.5.0-alpha.3` interop-convergence surface; the public API is unchanged, so
+this is a drop-in upgrade. All seven workspace crates are re-pinned to
+`0.5.0-alpha.4` and published together.
+
+### Security
+
+- **NIP-98 single-use replay guard (native tier)** — the stateless NIP-98
+  verifier accepts any token within its ±120s timestamp tolerance, so a
+  captured `Authorization` header could be replayed inside that window. The
+  new `auth::replay::Nip98ReplayCache` (feature `nip98-replay`, a bounded
+  process-local LRU keyed on the canonical NIP-01 event id) closes the window:
+  `Nip98Verified` now carries a signature-bound `event_id`, and
+  `solid-pod-rs-server` records every accepted id in a shared
+  `LazyLock<Nip98ReplayCache>` — a re-presented token is treated as
+  unauthenticated and the WAC gate returns 401. TTL and size are tunable via
+  `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`. The
+  cache is per-process; multi-replica deployments share no state.
+
+- **Schnorr signature verification is now unconditional (fail-closed)** —
+  previously BIP-340 signature verification ran only under the `nip98-schnorr`
+  feature; a build that dropped the feature silently degraded to structural
+  checks alone and would accept any forged pubkey. `verify_at_with_policy` now
+  calls `verify_schnorr_signature` on every path: with `nip98-schnorr` it
+  verifies for real, and without it the call is a fail-closed stub returning
+  `PodError::Unsupported`, so a mis-configured build denies authentication
+  rather than granting it. A new `const fn assert_schnorr_verification_enabled`
+  (present only under `nip98-schnorr`) is referenced in const context by
+  `solid-pod-rs-server`, turning any regression that removes signature
+  verification — a resolver change, a dropped dependency, a feature-unification
+  slip — into a compile error rather than a fail-open server.
+
+- **WAC `acl:origin` enforcement wired into the request path (F4)** — the
+  `acl-origin` evaluator support shipped previously but the server never fed it
+  a request Origin, so origin-restricted ACLs were inert. The server now threads
+  the HTTP `Origin` header through `enforce_read_ctx` / `enforce_write_ctx` into
+  the evaluator's `RequestContext`, so an ACL bearing `acl:origin` triples gates
+  cross-origin reads and writes (CSRF defence). Behaviour is conservative:
+  plain ACLs with no `acl:origin` triple are unaffected, origin-less requests
+  (server-to-server, git smart-HTTP, curl) are denied only where an ACL
+  explicitly restricts origins, and `acl:Control` bypasses the origin gate by
+  design so an owner can always repair a mis-configured ACL from any origin.
+  Note: `acl:origin` is the only WAC 2.0 condition satisfiable end-to-end today
+  — the `client_id` and `issuer` conditions remain unsatisfiable because the
+  server does not yet surface an authenticated OIDC client_id / issuer into the
+  `RequestContext`; those conditions therefore still evaluate deny.
+
+### Added
+
+- **`GET /api/exports/all` — JSON-LD time-chain pod export route (parity row
+  198)** — `solid-pod-rs-server` now exposes the previously library-only
+  `export::export_pod_jsonld` walker over HTTP under the `export-jsonld`
+  feature (default-off, native-only). The route is owner-gated: the caller must
+  hold `acl:Control` on the pod root, because the bundle can expose every
+  resource (including `/private/*` when `?include_private=true`), bypassing
+  per-resource ACLs. Emitted with the `export::EXPORT_CONTENT_TYPE` media type.
+
+### Changed
+
+- Documentation across the changed crates now reflects the hardened posture:
+  the NIP-98 verifier module doc states verification is unconditional and
+  fail-closed; the `provision.rs` / `solid-pod-rs-idp` key-provisioning docs
+  drop the stale "scaffold / `todo!()`" wording (the bodies are implemented and
+  tested); the core `lib.rs` export section notes the route is native-only.
+
 ## [0.5.0-alpha.3] - 2026-06-27
 
 The **interop-convergence release**. Also the release that finishes shipping

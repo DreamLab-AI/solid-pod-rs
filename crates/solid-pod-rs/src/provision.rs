@@ -54,17 +54,20 @@ pub struct ProvisionPlan {
     /// is strongly encouraged to set one).
     #[serde(default)]
     pub quota_bytes: Option<u64>,
-    /// **JSS v0.0.190 Phase 1 port (issue #437) — scaffolded only.**
+    /// **JSS v0.0.190 Phase 1 port (issue #437).**
     ///
-    /// When `true`, the multi-user provisioning path is expected to
-    /// generate a BIP-340 Schnorr secp256k1 keypair, NIP-19 bech32
-    /// encode it, write `/private/privkey.jsonld` (owner-only WAC),
-    /// and seed the WebID `nostr:pubkey` triple. Mirrors the JSS
+    /// When `true`, the multi-user provisioning path generates a BIP-340
+    /// Schnorr secp256k1 keypair, NIP-19 bech32 encodes it, writes
+    /// `/private/privkey.jsonld` (owner-only WAC), and seeds the WebID
+    /// `nostr:pubkey` triple. Mirrors the JSS
     /// `POST /.pods {provisionKeys: true}` body field.
     ///
-    /// **Not wired yet.** Setting this flag today is a no-op: the
-    /// invoking code path lives in `solid_pod_rs_idp::key_provisioning`
-    /// and its body is `todo!()`. Parity row 196.
+    /// The provisioning logic is implemented and tested in
+    /// `solid_pod_rs_idp::key_provisioning::provision_pod_keys` (no
+    /// `todo!()`). This flag is not yet consumed by a `solid-pod-rs-server`
+    /// HTTP route — the `POST /.pods {provisionKeys:true}` wiring is a
+    /// tracked follow-up — so callers must invoke `provision_pod_keys`
+    /// directly for now. Parity row 196.
     #[cfg(feature = "provision-keys")]
     #[serde(default)]
     pub provision_keys: bool,

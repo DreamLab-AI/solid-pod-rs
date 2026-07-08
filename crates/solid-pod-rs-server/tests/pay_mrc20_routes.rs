@@ -55,11 +55,28 @@ fn state_with_issuer(mempool_url: Option<String>) -> AppState {
 }
 
 fn nip98_auth(method: &str, path: &str) -> (String, String) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    // Each minted token MUST be a distinct NIP-98 event. The server's single-use
+    // replay guard (`NIP98_REPLAY`) is a process-global `LazyLock`, so two tokens
+    // sharing key/url/method/created_at collide on event_id and the second is
+    // replay-rejected (401) — a test-isolation flake across tests in one process.
+    // Anchor `created_at` to a base captured ONCE (30s in the past) and add a
+    // monotonic per-call counter: values are strictly increasing and unique
+    // regardless of wall-clock drift (so they never collide the way a
+    // `now - counter` scheme can when the clock advances), and stay comfortably
+    // inside the ±60s `TIMESTAMP_TOLERANCE` window.
+    static BASE: OnceLock<u64> = OnceLock::new();
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let base = *BASE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(30)
+    });
+    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
     let token = nip98::mint(&url, method, SK_HEX, now).expect("nip98 mint");
     let sk = hex::decode(SK_HEX).unwrap();
     let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();

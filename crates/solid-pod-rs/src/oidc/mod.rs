@@ -27,6 +27,8 @@ use base64::Engine;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+// `debug!` is referenced only from the test-only HS256+oct DPoP arm.
+#[cfg(any(test, feature = "dpop-symmetric-test"))]
 use tracing::debug;
 
 use crate::error::PodError;
@@ -548,15 +550,19 @@ fn verify_dpop_proof_core(
             // Asymmetric family — signature is verified against
             // `header.jwk` below. No further gating needed here.
         }
+        // TEST-ONLY: a `kty=oct` jwk is a symmetric key, unusable for
+        // authenticated DPoP and an RFC 9449 §5 alg-confusion vector if
+        // accepted in production. The replay-cache tests rely on HS256+oct,
+        // so the arm is compiled ONLY under `cfg(test)` (this crate's unit
+        // tests) or the non-default `dpop-symmetric-test` feature (its
+        // integration tests, which link the lib built without `cfg(test)`).
+        // No production feature enables it, so a release build has HS256 fall
+        // through to the `other =>` reject arm below — symmetric DPoP refused.
+        #[cfg(any(test, feature = "dpop-symmetric-test"))]
         Algorithm::HS256 if jwk.kty == "oct" => {
-            // Test/dev path only. A `kty=oct` jwk is a symmetric key
-            // and therefore not useful for authenticated DPoP in
-            // production — but the Sprint-4 replay-cache tests rely
-            // on HS256 + oct, so we keep the path alive while still
-            // verifying the signature below.
             debug!(
-                "DPoP proof using HS256+oct (test/dev path); \
-                not suitable for production"
+                "DPoP proof using HS256+oct (test-only path); \
+                not compiled into production builds"
             );
         }
         other => {

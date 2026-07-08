@@ -48,6 +48,7 @@
 //! | GET      | `/{pod}/{path}.prov.ttl`                 | PROV-O git-mark sidecar |
 //! | GET      | `/{pod}/_prov/{commit_sha}`              | Resolve a git-mark   |
 //! | POST     | `/{pod}/_prov/anchor`                    | Upgrade to Bitcoin anchor |
+//! | GET      | `/api/exports/all`                       | JSON-LD pod export (`export-jsonld`, `acl:Control`-gated) |
 //! | GET/POST | `/{pod}/info/refs` `…/git-{upload,receive}-pack` | Git smart-HTTP (WAC-gated) |
 //!
 //! The `/pay/*` HTTP-402 economy routes (`handlers::pay`) wire the
@@ -67,6 +68,24 @@
 //! 4. `PayloadConfig` -- enforces `JSS_MAX_REQUEST_BODY` body cap.
 //! 5. `ErrorLoggingMiddleware` -- structured 5xx logging.
 //! 6. WAC-on-write -- PUT/POST/PATCH/DELETE require a write/append grant.
+//!
+//! ## Security posture (closeout, 0.5.0-alpha.4)
+//!
+//! - **NIP-98 single-use replay guard** — every request runs through a
+//!   shared process-local `Nip98ReplayCache`, so a captured token cannot be
+//!   replayed within the ±120s NIP-98 tolerance window (`extract_pubkey`
+//!   returns `None` on a replayed id → the WAC gate denies with 401). TTL /
+//!   size via `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`.
+//!   The cache is per-process; multi-replica deployments share no state.
+//! - **Fail-open compile guard** — this binary references
+//!   `solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled` in const
+//!   context, so a build that ever dropped BIP-340 signature verification from
+//!   the NIP-98 verifier is a **compile error**, not a silently fail-open
+//!   server.
+//! - **WAC `acl:origin` gate** — the request `Origin` header is threaded into
+//!   the evaluator (`enforce_read_ctx` / `enforce_write_ctx`), so ACLs bearing
+//!   `acl:origin` triples gate cross-origin access. Plain ACLs are unaffected;
+//!   `acl:Control` bypasses the origin gate by design.
 
 #![doc = include_str!("../README.md")]
 #![deny(unsafe_code)]
@@ -114,7 +133,10 @@ use futures_util::future::{ready, LocalBoxFuture, Ready};
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use solid_pod_rs::{
-    auth::nip98,
+    // `ReplayStore` is the seam the process-local replay cache implements
+    // (ADR-060 Decision 2); it must be in scope to call `check_and_record`
+    // through the trait rather than an inherent method.
+    auth::{nip98, replay::ReplayStore},
     config::sources::parse_size,
     interop,
     ldp::{self, LdpContainerOps, PatchCreateOutcome},
@@ -123,10 +145,33 @@ use solid_pod_rs::{
     security::DotfileAllowlist,
     storage::Storage,
     wac::{
-        self, conditions::RequestContext, parse_jsonld_acl, parser::parse_turtle_acl, AccessMode,
+        self, conditions::RequestContext, effective_acl_target, parse_jsonld_acl,
+        parser::parse_turtle_acl, protected_resource_for_acl, AccessMode,
     },
     PodError,
 };
+
+// ---------------------------------------------------------------------------
+// F3 compile guard — refuse to build a fail-open NIP-98 auth path.
+// ---------------------------------------------------------------------------
+//
+// `assert_schnorr_verification_enabled` is a `const fn` that exists ONLY
+// under the core crate's `nip98-schnorr` feature. Referencing it in const
+// context here makes this binary impossible to build if BIP-340 signature
+// verification is ever dropped from the NIP-98 verifier — a dependency
+// change or a feature-unification regression that removed it becomes a
+// compile error rather than a server that silently accepts any forged
+// pubkey after structural checks alone.
+const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();
+
+/// Process-local NIP-98 single-use replay guard (F3). Shared across every
+/// request in this server process; a captured token cannot be replayed
+/// within the ~120s NIP-98 tolerance window. TTL/size are overridable via
+/// `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`.
+/// See `solid_pod_rs::auth::replay` for the tier persistence limit
+/// (process-local; multi-replica deployments share no state).
+static NIP98_REPLAY: std::sync::LazyLock<solid_pod_rs::auth::replay::Nip98ReplayCache> =
+    std::sync::LazyLock::new(solid_pod_rs::auth::replay::Nip98ReplayCache::from_env);
 
 // ---------------------------------------------------------------------------
 // Shared app state
@@ -289,6 +334,12 @@ pub(crate) fn to_actix(e: PodError) -> ActixError {
 // ---------------------------------------------------------------------------
 
 /// Attempt NIP-98 bearer verification; returns the pubkey on success.
+///
+/// Runs the full structural + BIP-340 signature check and then a
+/// **single-use replay check** on the canonical event id: a token whose id
+/// was already seen within the replay window is rejected (returns `None`,
+/// i.e. treated as unauthenticated → the WAC gate denies with 401). This
+/// closes the ~120s replay window the stateless verifier leaves open.
 pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     let header_val = req
         .headers()
@@ -303,13 +354,43 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     // elsewhere in this file (see `conn.scheme()` call sites).
     let conn = req.connection_info();
     let url = format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path());
-    nip98::verify(header_val, &url, req.method().as_str(), None)
-        .await
-        .ok()
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let verified = nip98::verify_at(header_val, &url, req.method().as_str(), None, now).ok()?;
+
+    // F3 replay guard: reject a re-presented token. The event id is the
+    // signature-bound single-use nonce; a hit means the same signed request
+    // was already accepted within the replay window. Fail closed.
+    if NIP98_REPLAY.check_and_record(&verified.event_id).await.is_err() {
+        tracing::warn!(
+            pubkey = %verified.pubkey,
+            method = %req.method(),
+            "NIP-98 replay rejected: token id already used within window"
+        );
+        return None;
+    }
+
+    Some(verified.pubkey)
 }
 
 pub(crate) fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     pubkey.map(|pk| format!("did:nostr:{pk}"))
+}
+
+/// The request `Origin` header value, if present and valid UTF-8.
+///
+/// Threaded into the WAC `acl:origin` gate (F4) via the `enforce_*_ctx`
+/// paths so an ACL that declares `acl:origin` triples can restrict
+/// cross-origin access (CSRF defence). Requests without an `Origin` header
+/// (server-to-server, git smart-protocol, curl) yield `None`, which the
+/// evaluator rejects only for resources whose ACL explicitly restricts
+/// origins — plain ACLs (no `acl:origin`) are unaffected.
+fn req_origin(req: &HttpRequest) -> Option<&str> {
+    req.headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
 }
 
 /// Canonical pod-relative path of the Web Ledger document. The
@@ -370,31 +451,12 @@ fn accept_includes_html(accept: &str) -> bool {
 // WAC enforcement for writes (PUT / POST / PATCH / DELETE)
 // ---------------------------------------------------------------------------
 
-/// Resolve the effective ACL and evaluate whether the given WebID may
-/// perform `mode` on `path`.
-///
-/// Returns `Ok(())` on grant. On deny, returns an `actix_web::Error`:
-/// * `401` when the request had no authenticated agent (so the client
-///   knows retrying with credentials might work);
-/// * `403` when authenticated but the ACL does not grant the mode.
-/// Strip a `.acl` / `.meta` suffix from `path`, returning the protected
-/// resource the sidecar governs. `/victim/.acl` → `/victim/`,
-/// `/a/b.acl` → `/a/b`, `/.acl` → `/`. Returns `None` when `path` is not
-/// an ACL/meta sidecar.
-fn protected_resource_for_acl(path: &str) -> Option<String> {
-    for suffix in [".acl", ".meta"] {
-        if let Some(stripped) = path.strip_suffix(suffix) {
-            // `/.acl` and `/dir/.acl` strip to `/` and `/dir/`
-            // respectively (container ACLs); `/a/b.acl` strips to the
-            // resource `/a/b`.
-            if stripped.is_empty() {
-                return Some("/".to_string());
-            }
-            return Some(stripped.to_string());
-        }
-    }
-    None
-}
+// `protected_resource_for_acl` and the sidecar-elevation decision now live
+// in wasm-safe core (`solid_pod_rs::wac::{protected_resource_for_acl,
+// effective_acl_target}`) so this server, the CF-Workers pod, and any
+// downstream consumer share one policy. Imported above via the `wac::{…}`
+// use; the lockout-guard call sites below and the enforcement functions
+// both route through it.
 
 /// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
 /// `.acl` document body and confirm at least one authorization still
@@ -412,8 +474,13 @@ fn proposed_acl_keeps_caller_control(body: &[u8], content_type: &str, caller: Op
             let looks_turtle = ct.starts_with("text/turtle")
                 || ct.starts_with("application/turtle")
                 || ct.starts_with("application/x-turtle")
+                || ct.starts_with("application/n-triples")
                 || text.contains("@prefix")
-                || text.contains("acl:Authorization");
+                || text.contains("acl:Authorization")
+                // N-Triples ACL bodies (e.g. the post-PATCH write-back form)
+                // carry no `@prefix`/`acl:` shorthand — they use the full
+                // ACL IRI. Recognise that so the lockout guard can parse them.
+                || text.contains("auth/acl#Authorization");
             if looks_turtle {
                 parse_turtle_acl(text).ok()
             } else {
@@ -469,54 +536,55 @@ fn ids_of_acl_field(field: &Option<wac::IdOrIds>) -> Vec<&str> {
     }
 }
 
+/// Origin-unaware convenience wrapper (used where no HTTP `Origin` is
+/// available — internal callers and unit tests). Delegates with
+/// `request_origin = None`; under `acl-origin` this denies only ACLs that
+/// explicitly restrict by origin, leaving plain ACLs (NoPolicySet) intact.
+/// Live request handlers call [`enforce_write_ctx`] directly, so in a
+/// non-test build this wrapper is exercised only by the test suite.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn enforce_write(
     state: &AppState,
     path: &str,
     mode: AccessMode,
     agent_uri: Option<&str>,
 ) -> Result<(), ActixError> {
-    // P0-2: an `.acl`/`.meta` sidecar governs *another* resource's
-    // permissions. Authorising its mutation as plain `Write` on the
-    // sidecar path lets any writer rewrite the ACL and self-escalate
+    enforce_write_ctx(state, path, mode, agent_uri, None).await
+}
+
+/// WAC write enforcement threading the request `Origin` (F4 `acl:origin`).
+///
+/// `request_origin` is the raw HTTP `Origin` header; it is parsed to a
+/// canonical [`wac::Origin`] and passed to the evaluator so an ACL bearing
+/// `acl:origin` triples gates cross-origin writes. `acl:Control` (the
+/// sidecar path below) bypasses the origin gate by design so an owner can
+/// always repair a mis-configured ACL from any origin.
+async fn enforce_write_ctx(
+    state: &AppState,
+    path: &str,
+    mode: AccessMode,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+) -> Result<(), ActixError> {
+    let origin = request_origin.and_then(wac::Origin::parse);
+    // P0-2 / P0-4: an `.acl`/`.meta` sidecar governs *another* resource's
+    // permissions. Authorising its mutation as plain `Write`/`Append` on
+    // the sidecar path lets any writer rewrite the ACL and self-escalate
     // (privilege escalation). WAC §4.3.5 requires `acl:Control` on the
-    // PROTECTED resource. Elevate the check accordingly, mirroring the
-    // MCP `write_acl` path (mcp/tools.rs:505), and apply the same
-    // lockout guard so a Control holder cannot strip every other
-    // principal's Control in a single write.
-    if let Some(protected) = protected_resource_for_acl(path) {
-        let control_acl = match find_effective_acl_dyn(&*state.storage, &protected).await {
-            Ok(doc) => doc,
-            Err(e) => return Err(to_actix(e)),
-        };
-        let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
-        let ctx = RequestContext {
-            web_id: agent_uri,
-            client_id: None,
-            issuer: None,
-            payment_balance_sats,
-        };
-        let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
-        let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
-        let has_control = wac::evaluate_access_ctx_with_registry(
-            control_acl.as_ref(),
-            &ctx,
-            &protected,
-            AccessMode::Control,
-            None,
-            &groups,
-            &registry,
-        );
-        if !has_control {
-            return Err(acl_denial(control_acl.as_ref(), agent_uri, &protected));
-        }
-        return Ok(());
-    }
+    // PROTECTED resource. That elevation is no longer hand-rolled here:
+    // `wac::effective_acl_target` is the single source of truth, shared
+    // with the read path (`enforce_read_ctx`) and any wasm runtime. For an
+    // ordinary resource it returns `(path, mode)` unchanged; for a sidecar
+    // it returns `(protected_resource, Control)`. The lockout guard
+    // (`proposed_acl_keeps_caller_control`) still runs at the PUT/POST/PATCH
+    // handler call sites, keyed on the same `protected_resource_for_acl`.
+    let (resource, eff_mode) = effective_acl_target(path, mode);
 
     // `StorageAclResolver` is generic over a concrete backend. `state`
-    // holds an `Arc<dyn Storage>`; wrap it in a trait-object-friendly
-    // adapter (`DynStorage`) that forwards each trait method so the
-    // resolver can be constructed with a concrete type.
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
+    // holds an `Arc<dyn Storage>`; `find_effective_acl_dyn` wraps it in a
+    // trait-object-friendly adapter so the resolver runs against the
+    // effective resource (the sidecar's governed resource, or `path`).
+    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
     };
@@ -538,30 +606,39 @@ async fn enforce_write(
     let granted = wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &ctx,
-        path,
-        mode,
-        None,
+        &resource,
+        eff_mode,
+        origin.as_ref(),
         &groups,
         &registry,
     );
-    if granted {
-        // Sat-gating consumption for the write path: identical to the
-        // read path (see `enforce_read`). A granted write whose
-        // authorising rule carried an `acl:PaymentCondition` debits the
-        // caller's Web Ledger by the matched rule's cost. The WAC gate
-        // above already proved `balance >= cost`, so a debit failure can
-        // only mean a concurrent spend raced the balance below cost —
-        // fail closed, never serve an unpaid write.
-        if let Err(e) =
-            charge_granted_payment(state, acl_doc.as_ref(), &ctx, path, mode, &groups, &registry)
-                .await
-        {
-            return Err(e);
-        }
-        return Ok(());
+    if !granted {
+        return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
     }
-
-    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+    // Sat-gating consumption applies only to a non-elevated (ordinary)
+    // write. A sidecar elevation demands `acl:Control` on the protected
+    // resource — the owner-repair path — and is never itself a metered
+    // write, matching the pre-unification behaviour where the Control
+    // pre-check returned `Ok` without a Web-Ledger debit. `resource ==
+    // path` iff `effective_acl_target` did NOT elevate a sidecar.
+    if resource.as_str() == path {
+        // A granted write whose authorising rule carried an
+        // `acl:PaymentCondition` debits the caller's Web Ledger by the
+        // matched rule's cost. The WAC gate above already proved `balance
+        // >= cost`, so a debit failure can only mean a concurrent spend
+        // raced the balance below cost — fail closed, never serve unpaid.
+        charge_granted_payment(
+            state,
+            acl_doc.as_ref(),
+            &ctx,
+            &resource,
+            eff_mode,
+            &groups,
+            &registry,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Apply the `acl:PaymentCondition` debit for a request the WAC gate has
@@ -639,12 +716,40 @@ fn acl_denial(
 /// resource body verbatim with no read-authz check, so every private
 /// resource was world-readable. Returns `Ok(())` on grant; on deny a
 /// `401`/`403` matching the write path's denial shape.
+/// Origin-unaware convenience wrapper (see [`enforce_write`]). Delegates
+/// with `request_origin = None`. Live handlers call [`enforce_read_ctx`]
+/// directly, so in a non-test build this is exercised only by tests.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn enforce_read(
     state: &AppState,
     path: &str,
     agent_uri: Option<&str>,
 ) -> Result<(), ActixError> {
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, path).await {
+    enforce_read_ctx(state, path, agent_uri, None).await
+}
+
+/// WAC read enforcement threading the request `Origin` (F4 `acl:origin`).
+/// See [`enforce_write_ctx`] for the origin-gate semantics.
+async fn enforce_read_ctx(
+    state: &AppState,
+    path: &str,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+) -> Result<(), ActixError> {
+    let origin = request_origin.and_then(wac::Origin::parse);
+    // P0-3: reading an `.acl`/`.meta` sidecar discloses the full
+    // authorization graph of the resource it governs — every WebID,
+    // `acl:agentGroup` IRI, `acl:origin`, and `acl:PaymentCondition`
+    // amount. WAC §4.3.5 requires `acl:Control` on the PROTECTED resource
+    // to read (as well as write) its ACL — the invariant a downstream
+    // forum previously got wrong on the READ side. This elevation is now
+    // the SAME shared `wac::effective_acl_target` the write path uses
+    // (base mode `Read`), so read and write can no longer drift: an
+    // ordinary resource stays `(path, Read)`; a sidecar becomes
+    // `(protected_resource, Control)`, gating ACL disclosure on Control
+    // exactly as JSS does (`auth/middleware.js:93`).
+    let (resource, eff_mode) = effective_acl_target(path, AccessMode::Read);
+    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
         Ok(doc) => doc,
         Err(e) => return Err(to_actix(e)),
     };
@@ -660,30 +765,35 @@ async fn enforce_read(
     let granted = wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &ctx,
-        path,
-        AccessMode::Read,
-        None,
+        &resource,
+        eff_mode,
+        origin.as_ref(),
         &groups,
         &registry,
     );
-    if granted {
-        // Sat-gating consumption: a granted read whose authorising rule
-        // carried an `acl:PaymentCondition` debits the caller's Web
-        // Ledger by the matched rule's cost (fail-closed on a raced
-        // balance). See `charge_granted_payment`.
+    if !granted {
+        return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
+    }
+    // Sat-gating consumption applies only to a non-elevated (ordinary)
+    // read; a sidecar Control elevation is never metered (see
+    // `enforce_write_ctx`). `resource == path` iff no elevation happened.
+    if resource.as_str() == path {
+        // A granted read whose authorising rule carried an
+        // `acl:PaymentCondition` debits the caller's Web Ledger by the
+        // matched rule's cost (fail-closed on a raced balance). See
+        // `charge_granted_payment`.
         charge_granted_payment(
             state,
             acl_doc.as_ref(),
             &ctx,
-            path,
-            AccessMode::Read,
+            &resource,
+            eff_mode,
             &groups,
             &registry,
         )
         .await?;
-        return Ok(());
     }
-    Err(acl_denial(acl_doc.as_ref(), agent_uri, path))
+    Ok(())
 }
 
 /// Debit `cost` satoshis from `did`'s Web Ledger entry and persist the
@@ -764,7 +874,7 @@ async fn handle_get(
     // both resource GETs and the RDF container listing below, and — since
     // HEAD is routed to this same handler — HEAD requests too. Without it
     // a private resource is world-readable.
-    enforce_read(&state, &path, agent.as_deref()).await?;
+    enforce_read_ctx(&state, &path, agent.as_deref(), req_origin(&req)).await?;
 
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
@@ -938,7 +1048,7 @@ async fn handle_put(
         if has_basic_container_link(&req) {
             let auth_pk = extract_pubkey(&req).await;
             let agent = agent_uri(auth_pk.as_ref());
-            enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+            enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -956,7 +1066,7 @@ async fn handle_put(
 
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let ct = req
         .headers()
@@ -994,6 +1104,35 @@ async fn handle_put(
     Ok(rsp)
 }
 
+/// P1-k: probe storage for `target` and, if it already exists, append
+/// `-1`, `-2`, … before the file extension (or at the end when there is no
+/// extension) until a free name is found — mirroring JSS
+/// `generateUniqueFilename` so an LDP POST never overwrites a sibling. The
+/// probe is bounded; on the practically-unreachable ceiling it falls back
+/// to a content-hash suffix so the write still lands on a fresh name.
+async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
+    if !storage.exists(target).await.unwrap_or(false) {
+        return target.to_string();
+    }
+    // Split stem/ext at the last '.' that falls after the last '/', so a
+    // leading-dot filename (e.g. `/c/.keep`) is treated as extension-less.
+    let seg_start = target.rfind('/').map(|s| s + 1).unwrap_or(0);
+    let (stem, ext) = match target.rfind('.') {
+        Some(dot) if dot > seg_start => (&target[..dot], &target[dot..]),
+        _ => (target, ""),
+    };
+    for n in 1..10_000u32 {
+        let candidate = format!("{stem}-{n}{ext}");
+        if !storage.exists(&candidate).await.unwrap_or(false) {
+            return candidate;
+        }
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    target.hash(&mut h);
+    format!("{stem}-{:x}{ext}", h.finish())
+}
+
 async fn handle_post(
     req: HttpRequest,
     body: web::Bytes,
@@ -1004,13 +1143,13 @@ async fn handle_post(
     // `POST /{tail:.*}/` registration.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Append, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Append, agent.as_deref(), req_origin(&req)).await?;
 
     let slug = req
         .headers()
         .get(header::HeaderName::from_static("slug"))
         .and_then(|v| v.to_str().ok());
-    let target = match ldp::resolve_slug(&path, slug) {
+    let mut target = match ldp::resolve_slug(&path, slug) {
         Ok(p) => p,
         Err(e) => return Err(to_actix(e)),
     };
@@ -1019,6 +1158,39 @@ async fn handle_post(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
+
+    // P0-4: POST authorised only `Append` on the container. If the client's
+    // Slug resolves to an `.acl`/`.meta` sidecar, that sidecar governs
+    // ANOTHER resource's permissions — minting it from Append-only rights is
+    // privilege escalation (an attacker self-grants Control on a sibling).
+    // Elevate exactly as the PUT path does: require `acl:Control` on the
+    // protected resource AND run the lockout guard on the proposed body.
+    // (This gap is shared with JSS, which keys its Control guard on the
+    // container path, not the resolved `.acl` — candidate upstream PR.)
+    if protected_resource_for_acl(&target).is_some() {
+        enforce_write_ctx(
+            &state,
+            &target,
+            AccessMode::Write,
+            agent.as_deref(),
+            req_origin(&req),
+        )
+        .await?;
+        if !proposed_acl_keeps_caller_control(&body, ct, agent.as_deref()) {
+            return Ok(HttpResponse::Conflict().body(
+                "refused: the proposed ACL would not grant Control to the caller \
+                 (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+            ));
+        }
+    } else {
+        // P1-k: LDP POST must CREATE a new resource, never overwrite one.
+        // `resolve_slug` joins the Slug verbatim, so a repeated `Slug: note`
+        // would clobber the first note (silent data loss). Mint a unique
+        // target by probing existence and appending `-1`, `-2`, … exactly as
+        // JSS `generateUniqueFilename` does.
+        target = mint_unique_target(&*state.storage, &target).await;
+    }
+
     let meta = state
         .storage
         .put(&target, Bytes::from(body.to_vec()), ct)
@@ -1054,7 +1226,7 @@ async fn handle_patch(
     // (which creates new child resources in a container) is allowed with
     // Append-only permission. This prevents Append-only users from
     // overwriting or deleting resource content via PATCH.
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let ct = req
         .headers()
@@ -1121,6 +1293,23 @@ async fn handle_patch(
             // Round-trip the updated graph back to Turtle so the next
             // GET reflects the mutation.
             let serialised = graph_to_turtle(&outcome.graph);
+            // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
+            // (enforced above), but — unlike PUT — the POST-patch result was
+            // never checked against the lockout guard, so a Control holder
+            // could strip every principal's Control in one patch. Apply the
+            // same guard PUT uses, on the serialised post-patch ACL.
+            if protected_resource_for_acl(&path).is_some()
+                && !proposed_acl_keeps_caller_control(
+                    serialised.as_bytes(),
+                    "application/n-triples",
+                    agent.as_deref(),
+                )
+            {
+                return Ok(HttpResponse::Conflict().body(
+                    "refused: the patched ACL would not grant Control to the caller \
+                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                ));
+            }
             let _ = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
@@ -1138,6 +1327,19 @@ async fn handle_patch(
                 )));
             };
             let serialised = graph_to_turtle(&graph);
+            // F7: same lockout guard on the create-via-PATCH `.acl` path.
+            if protected_resource_for_acl(&path).is_some()
+                && !proposed_acl_keeps_caller_control(
+                    serialised.as_bytes(),
+                    "application/n-triples",
+                    agent.as_deref(),
+                )
+            {
+                return Ok(HttpResponse::Conflict().body(
+                    "refused: the patched ACL would not grant Control to the caller \
+                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                ));
+            }
             let _ = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
@@ -1348,7 +1550,7 @@ async fn handle_delete(
     let path = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &path, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     match state.storage.delete(&path).await {
         Ok(()) => Ok(HttpResponse::NoContent().finish()),
@@ -1453,14 +1655,64 @@ async fn handle_well_known_did_nostr(
     path: web::Path<String>,
 ) -> HttpResponse {
     let pubkey = path.into_inner();
+    // did:nostr Tier-1 resolution (https://nostrcg.github.io/did-nostr/): a
+    // malformed identifier is a client error that must never be cached; a
+    // valid 64-char lowercase-hex key yields a deterministic offline
+    // (Tier-2) document. Mirrors the JSS resolver's per-status header policy.
+    let pubkey_is_valid = pubkey.len() == 64
+        && pubkey
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !pubkey_is_valid {
+        return HttpResponse::BadRequest()
+            .insert_header(("Cache-Control", "no-store"))
+            .json(serde_json::json!({
+                "error": "invalid did:nostr pubkey (expected 64-char lowercase hex)"
+            }));
+    }
+    // P1-l: this endpoint asserts an identity binding (did:nostr:<pubkey> ⇒
+    // this pod's WebID via `alsoKnownAs`). Returning a document for ANY
+    // well-formed pubkey asserted a FALSE binding for every key the pod
+    // owner does not hold (and is flatly wrong on a multi-user pod). Resolve
+    // the owner's declared Nostr key from the pod profile card and return
+    // 404 ("no account claims this key", JSS behaviour) unless the queried
+    // key is the owner's — mirroring the NIP-05 owner-resolution path.
+    let owner_pubkey = match state.storage.get("/profile/card").await {
+        Ok((body, _)) => solid_pod_rs::webid::extract_nostr_pubkey(&body)
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    let owner_claims_key = owner_pubkey
+        .as_deref()
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(&pubkey));
+    if !owner_claims_key {
+        return HttpResponse::NotFound()
+            .insert_header(("Cache-Control", "no-store"))
+            .json(serde_json::json!({
+                "error": "no account on this pod claims this did:nostr pubkey"
+            }));
+    }
     let also = vec![format!(
         "{}/profile/card#me",
         state.nodeinfo.base_url.trim_end_matches('/')
     )];
     let doc = interop::did_nostr::did_nostr_document(&pubkey, &also);
+    let body = serde_json::to_string(&doc).unwrap_or_else(|_| "{}".to_string());
+    // Feature-match the JSS Tier-1 header policy: max-age=3600 (the DID doc
+    // seldom changes) + a weak ETag over the deterministic body. Last-Modified
+    // is intentionally omitted — the document is generated deterministically
+    // from the pubkey (Tier-2), so there is no underlying mutable resource to
+    // date; the ETag is the correct validator here.
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    let etag = format!("\"{:016x}\"", hasher.finish());
     HttpResponse::Ok()
         .content_type("application/did+json")
-        .json(doc)
+        .insert_header(("Cache-Control", "max-age=3600"))
+        .insert_header(("ETag", etag))
+        .body(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,6 +1795,61 @@ fn nip05_empty_response() -> HttpResponse {
         .insert_header(("Access-Control-Allow-Origin", "*"))
         .content_type("application/json")
         .json(serde_json::json!({ "names": {} }))
+}
+
+// ---------------------------------------------------------------------------
+// JSS v0.0.190 Phase 1 port (issue #437), parity row 198.
+// JSON-LD time-chain pod export (`GET /api/exports/all`). NATIVE-ONLY:
+// gated behind `export-jsonld` (default-off); the CF-Workers pod tier does
+// not walk a local storage tree. `solid_pod_rs::export::export_pod_jsonld`
+// is the pure-logic walker — this handler adds the HTTP surface + WAC gate.
+// ---------------------------------------------------------------------------
+
+/// `GET /api/exports/all` — export the whole pod as a JSON-LD time-chain
+/// bundle. Owner-gated: the caller must hold `acl:Control` on the pod root
+/// (`/`), because the bundle can expose every resource — including
+/// `/private/*` when `?include_private=true` — bypassing per-resource ACLs.
+/// A Control credential is therefore the correct (highest) authorisation.
+#[cfg(feature = "export-jsonld")]
+async fn handle_export_all(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<HttpResponse, ActixError> {
+    let auth_pk = extract_pubkey(&req).await;
+    let agent = agent_uri(auth_pk.as_ref());
+
+    // Owner gate: require `acl:Control` on the pod root. `enforce_write_ctx`
+    // evaluates the passed mode against the root ACL and returns the shared
+    // 401/403 WAC denial; `Control` bypasses the origin gate by design so an
+    // owner can always export from any origin.
+    enforce_write_ctx(&state, "/", AccessMode::Control, agent.as_deref(), req_origin(&req)).await?;
+
+    // `include_private=true` is honoured only for this Control-authorised
+    // caller (the export function itself is unauthenticated — the gate above
+    // is the credential the docs require before flipping the flag).
+    let include_private = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .ok()
+        .and_then(|q| q.get("include_private").map(|v| v == "true"))
+        .unwrap_or(false);
+
+    // Pod base URL stamped into the bundle envelope: the externally-visible
+    // scheme + host (honours `X-Forwarded-Proto`), matching the URL agents
+    // sign over elsewhere in this file.
+    let conn = req.connection_info();
+    let pod_base = format!("{}://{}/", conn.scheme(), conn.host());
+    drop(conn);
+
+    let options = solid_pod_rs::ExportOptions { include_private };
+    let bundle = solid_pod_rs::export::export_pod_jsonld(&*state.storage, &pod_base, options)
+        .await
+        .map_err(to_actix)?;
+
+    let body = serde_json::to_vec(&bundle).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("export serialise: {e}"))
+    })?;
+    Ok(HttpResponse::Ok()
+        .content_type(solid_pod_rs::export::EXPORT_CONTENT_TYPE)
+        .body(body))
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,7 +2033,7 @@ async fn handle_copy(
     let dest = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write(&state, &dest, AccessMode::Write, agent.as_deref()).await?;
+    enforce_write_ctx(&state, &dest, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
 
     let source = req
         .headers()
@@ -1794,7 +2101,7 @@ async fn handle_glob_get(
     // read-authz check applied to plain container GETs.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_read(&state, &folder, agent.as_deref()).await?;
+    enforce_read_ctx(&state, &folder, agent.as_deref(), req_origin(&req)).await?;
 
     let children = state.storage.list(&folder).await.map_err(to_actix)?;
     let mut merged = String::new();
@@ -3309,10 +3616,11 @@ async fn handle_git(
         Err(_) => None,
     };
     let wac_path = format!("/{pod_name}/");
+    let origin = req_origin(&req);
     let wac = if is_write {
-        enforce_write(&state, &wac_path, AccessMode::Write, agent.as_deref()).await
+        enforce_write_ctx(&state, &wac_path, AccessMode::Write, agent.as_deref(), origin).await
     } else {
-        enforce_read(&state, &wac_path, agent.as_deref()).await
+        enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin).await
     };
     if let Err(e) = wac {
         return e.error_response();
@@ -3412,14 +3720,24 @@ pub fn build_app(
     }
 
     // JSS v0.0.190 Phase 1 port (issue #437), parity row 197.
-    // Pod-resident NIP-05 endpoint. Scaffold only — handler body
-    // is `todo!()`. Feature `nip05-endpoint` (default-off).
+    // Pod-resident NIP-05 endpoint. `handle_well_known_nip05` is
+    // implemented and routed (bodies landed in 0.4.0-alpha.11; no
+    // `todo!()`). Feature `nip05-endpoint` (default-off).
     #[cfg(feature = "nip05-endpoint")]
     {
         app = app.route(
             "/.well-known/nostr.json",
             web::get().to(handle_well_known_nip05),
         );
+    }
+
+    // JSS v0.0.190 Phase 1 port (issue #437), parity row 198. JSON-LD
+    // time-chain pod export. Native-only (`export-jsonld`, default-off);
+    // owner-WAC-gated inside the handler. Registered before the LDP
+    // catch-all so `/api/exports/all` is never treated as a pod resource.
+    #[cfg(feature = "export-jsonld")]
+    {
+        app = app.route("/api/exports/all", web::get().to(handle_export_all));
     }
 
     // App discovery endpoint (JSS #464 Phase 2 — public, no auth required).

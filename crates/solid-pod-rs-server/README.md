@@ -111,6 +111,29 @@ On an unauthenticated write the `WWW-Authenticate` challenge advertises
 discovers the NIP-98 scheme the write path actually accepts. WAC denial of an
 authenticated caller returns `403`; a missing credential returns `401`.
 
+Verification is hardened three ways (closeout 0.5.0-alpha.4):
+
+- **Single-use replay guard** — every accepted NIP-98 token id is recorded in
+  a shared process-local `Nip98ReplayCache`; a re-presented token is treated as
+  unauthenticated (`extract_pubkey` returns `None`) so the WAC gate denies with
+  `401`, closing the ±120s replay window the stateless verifier leaves open.
+  Tunable via `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`;
+  per-process (multi-replica deployments share no state).
+- **Fail-open compile guard** — the binary references a `const fn` that exists
+  only when BIP-340 Schnorr verification is compiled in, so a build that ever
+  dropped signature verification fails to compile rather than silently
+  accepting any forged pubkey.
+- **`acl:origin` gate** — the request `Origin` header is threaded into the WAC
+  evaluator, so ACLs declaring `acl:origin` triples gate cross-origin access.
+  Plain ACLs are unaffected; `acl:Control` bypasses the origin gate so an owner
+  can always repair a mis-configured ACL. `acl:origin` is the only WAC 2.0
+  condition satisfiable end-to-end today — `client_id` / `issuer` conditions
+  still evaluate deny (no authenticated OIDC client_id / issuer is surfaced
+  yet).
+
+The optional `export-jsonld` build adds `GET /api/exports/all`, an
+`acl:Control`-gated JSON-LD time-chain export of the whole pod (native-only).
+
 ## Admin API and Native Pod Mesh (alpha.15+)
 
 ### Provision endpoint

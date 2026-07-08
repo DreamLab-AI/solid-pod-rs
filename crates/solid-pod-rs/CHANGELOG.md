@@ -4,6 +4,44 @@ All notable changes to this crate are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-alpha.4] - 2026-07-03 (closeout security release)
+
+Four hardening fixes on top of `0.5.0-alpha.3`. Public API unchanged;
+drop-in upgrade. The core-crate surface below is complemented by the
+server-side wiring described in the workspace `CHANGELOG.md`.
+
+### Security
+
+- **`Nip98Verified::event_id` + `auth::replay::Nip98ReplayCache`
+  (feature `nip98-replay`)** — the verifier now recomputes and returns
+  the canonical NIP-01 event id, and a new bounded process-local LRU
+  (`Nip98ReplayCache`, `from_env` / `check_and_record`) provides
+  single-use replay rejection so a captured token cannot be replayed
+  within the ±120s tolerance window. `solid-pod-rs-server` wires it into
+  every request.
+- **Unconditional Schnorr verification (fail-closed)** —
+  `verify_at_with_policy` now runs `verify_schnorr_signature` on every
+  path. Without the `nip98-schnorr` feature the call fails closed with
+  `PodError::Unsupported` instead of degrading to structural-only checks
+  that would accept a forged pubkey. New
+  `const fn assert_schnorr_verification_enabled` (only under
+  `nip98-schnorr`) lets a binary make a fail-open build a compile error.
+  Positive NIP-98 acceptance tests are now gated behind `nip98-schnorr`
+  (they need a real signer); a new `fails_closed_without_schnorr_feature`
+  test asserts the deny path.
+
+### Changed
+
+- **`export-jsonld` doc** — `export::export_pod_jsonld` is documented as
+  fully implemented (not a `todo!()` scaffold) and native-only; the HTTP
+  route (`GET /api/exports/all`) lives in `solid-pod-rs-server` under the
+  same feature.
+- **`ProvisionPlan::provision_keys` doc** — corrected to state the
+  provisioning logic in `solid_pod_rs_idp::key_provisioning::provision_pod_keys`
+  is implemented and tested; the field is not yet consumed by a server
+  route (`POST /.pods {provisionKeys:true}` wiring is a tracked
+  follow-up), so callers invoke `provision_pod_keys` directly for now.
+
 ## [0.4.0-alpha.15] - 2026-05-30 (JSS v0.0.204 sync — MCP server, `install` CLI, NIP-98 minting)
 
 Integrates the upstream JSS changes from `0.0.197` (`10bd60f`) through
