@@ -117,7 +117,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.0", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.4", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run

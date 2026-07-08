@@ -138,7 +138,7 @@ registration, and credentials pre-wired:
 
 ```toml
 [dependencies]
-solid-pod-rs-idp = { version = "0.4", features = ["axum-binder"] }
+solid-pod-rs-idp = { version = "0.5.0-alpha.4", features = ["axum-binder"] }
 ```
 
 `/idp/auth` and `/idp/token` are NOT on the binder — their request

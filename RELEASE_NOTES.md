@@ -1,3 +1,6 @@
+> **Note:** Release notes from `0.5.0-alpha.3` onward are maintained in
+> [`CHANGELOG.md`](CHANGELOG.md). This file covers `≤ 0.4.0-alpha.17` only.
+
 ## v0.4.0-alpha.17 (2026-06-10)
 
 First registry release that includes `solid-pod-rs-server`. The server's MCP
