@@ -67,7 +67,7 @@ impl PodResolver for PathResolver {
 /// domain tree fall back to path-based semantics.
 pub struct SubdomainResolver {
     /// Authoritative base domain (e.g. `"example.org"`). Port is
-    /// ignored at match time; see [`strip_port`].
+    /// ignored at match time; see the private `strip_port` helper.
     pub base_domain: String,
 }
 

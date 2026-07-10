@@ -33,9 +33,30 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # comment above the id. Unmaintained crates are also denied unless explicitly
 # ignored.
 yanked = "deny"
+# Dated, justified exceptions — mirrored in ../../.cargo/audit.toml so both
+# gates agree. NO blanket ignores: advisories with an in-semver fix are resolved
+# via `cargo update` (anyhow 1.0.103, lru 0.16, crossbeam-epoch 0.9.20,
+# quinn-proto 0.11.16). Each entry below has no reachable in-semver fix.
+# Reviewed 2026-07-10 — revisit by 2026-10-08.
 ignore = [
-    # No active ignores. Add entries below with a dated rationale:
-    # "RUSTSEC-YYYY-NNNN", # <date> <reason> — reviewed by <handle>
+    # `rsa` 0.9.x Marvin timing sidechannel — no patched release exists. Pulled
+    # by `openidconnect` (oidc) + activitypub for RSA signature *verification*
+    # (public-key ops); the attack targets private-key decryption timing, which
+    # this codebase never performs. Revisit when openidconnect drops `rsa`.
+    "RUSTSEC-2023-0071",
+    # `rustls-webpki` 0.101.7 name-constraint / CRL-panic advisories. Pinned by
+    # rustls 0.21 via aws-smithy-http-client's default TLS connector (aws-sdk-s3),
+    # reachable ONLY under the `s3-backend` feature and only against a malicious
+    # cert from the operator's own configured S3 endpoint. Fix lives in webpki
+    # 0.103, unreachable until the AWS SDK migrates off rustls 0.21.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+    # NOTE: `rustls-pemfile` unmaintained (RUSTSEC-2025-0134) is a transitive
+    # DEV-dependency of solid-pod-rs-server and is NOT reachable from this
+    # crate's own dependency graph, so cargo-deny (manifest = solid-pod-rs)
+    # never encounters it. It is ignored in ../../.cargo/audit.toml instead,
+    # where the whole-workspace cargo-audit scan does see it.
 ]
 
 # -----------------------------------------------------------------------------
@@ -63,6 +84,11 @@ allow = [
     "MPL-2.0",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    # webpki-roots bundles the Mozilla CA certificate set, licensed under the
+    # Linux Foundation's Community Data License Agreement — Permissive 2.0.
+    # It is a permissive data licence (use + redistribution granted) and is the
+    # standard licence for CA-root data across the rustls ecosystem.
+    "CDLA-Permissive-2.0",
 ]
 # AGPL is explicitly allowed (the crate inherits it from JSS). Other
 # copyleft / commercial / source-available licences (e.g. BUSL, SSPL,
@@ -83,6 +109,10 @@ license-files = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path dependencies (e.g. the `solid-pod-rs-server`
+# dev-dependency used for round-trip integration tests) carry no version req
+# and would otherwise trip the wildcard ban. Registry wildcards remain denied.
+allow-wildcard-paths = true
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

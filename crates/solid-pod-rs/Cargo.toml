@@ -73,7 +73,7 @@ p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
 # F5 (Sprint 4): DPoP jti replay cache — Solid-OIDC §5.2 / RFC 9449.
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
-lru = { version = "0.12", optional = true }
+lru = { version = "0.16", optional = true }
 
 # Sprint 7 A: rate-limit primitive — parking_lot for the LRU bucket
 # mutex (low contention, Send + Sync, already in dep tree via reqwest).

@@ -284,7 +284,7 @@ mod tests {
 /// `did:nostr:<pubkey>`. Only a verified WebID is returned.
 ///
 /// Defence-in-depth: every outbound request (DID Doc + each WebID
-/// candidate) runs through the configured [`SsrfPolicy`] before
+/// candidate) runs through the configured [`SsrfPolicy`](crate::security::ssrf::SsrfPolicy) before
 /// network I/O. A small in-memory TTL cache covers both success and
 /// negative results so a dark origin does not hammer the downstream.
 #[cfg(feature = "did-nostr")]

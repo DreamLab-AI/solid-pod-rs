@@ -18,7 +18,7 @@ repository = "https://github.com/dreamlab-ai/solid-pod-rs"
 homepage = "https://github.com/dreamlab-ai/solid-pod-rs"
 documentation = "https://docs.rs/solid-pod-rs"
 authors = ["DreamLab-AI contributors"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 # Shared lints kept deliberately minimal; each crate may tighten.
 # `priority = -1` keeps the group warning-level while individual lints

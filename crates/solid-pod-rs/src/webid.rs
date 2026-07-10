@@ -226,7 +226,7 @@ pub fn extract_oidc_issuer(data: &[u8]) -> Result<Option<String>, String> {
 /// JSS v0.0.190 Phase 1 (issue #437): the pod-resident NIP-05 endpoint
 /// and the `did-nostr` resolver both look up this predicate to map a
 /// WebID to its Nostr identity. Seeded into the profile by
-/// [`solid_pod_rs_idp::key_provisioning::provision_pod_keys`] (parity
+/// `solid_pod_rs_idp::key_provisioning::provision_pod_keys` (parity
 /// row 196). Parity row **128** / **197**.
 pub fn extract_nostr_pubkey(data: &[u8]) -> Result<Option<String>, String> {
     let value = match parse_json_ld(data)? {

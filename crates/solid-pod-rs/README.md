@@ -249,6 +249,6 @@ cryptographic verification matrix.
 ## Licence
 
 AGPL-3.0-only — see [`../../LICENSE`](../../LICENSE) and
-[`NOTICE`](NOTICE).
+[`NOTICE`](./NOTICE).
 
 [Solid Protocol 0.11]: https://solidproject.org/TR/protocol

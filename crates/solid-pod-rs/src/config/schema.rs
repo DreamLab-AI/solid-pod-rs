@@ -1,7 +1,7 @@
 //! `ServerConfig` root + value objects.
 //!
 //! See the bounded-context doc
-//! [`docs/design/jss-parity/05-config-platform-context.md`] for the
+//! `docs/design/jss-parity/05-config-platform-context.md` for the
 //! aggregate model. In short: `ServerConfig` is the root, loaded by
 //! [`crate::config::loader::ConfigLoader`] from a precedence-ordered
 //! list of sources, and validated once at the end of the load.

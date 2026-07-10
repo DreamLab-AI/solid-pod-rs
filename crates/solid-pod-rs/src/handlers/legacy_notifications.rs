@@ -8,11 +8,12 @@
 //!
 //! 1. Performing the HTTP → WebSocket upgrade in their framework
 //!    (actix-ws, axum::extract::ws, tokio-tungstenite, …).
-//! 2. Forwarding inbound text frames to [`LegacyWsDriver::handle_line`].
-//! 3. Forwarding outbound frames from the driver's `outbound`
-//!    receiver to the WebSocket.
-//! 4. Calling [`LegacyWsDriver::run`] as a background task for the
-//!    connection's lifetime.
+//! 2. Forwarding inbound text frames into the inbound `Sender<String>`
+//!    returned by [`LegacyWsDriver::split`].
+//! 3. Forwarding outbound frames from the driver's outbound receiver
+//!    (also returned by [`LegacyWsDriver::split`]) to the WebSocket.
+//! 4. Driving the background-task future returned by
+//!    [`LegacyWsDriver::split`] for the connection's lifetime.
 //!
 //! Recommended mount path: `/ws/solid-0.1` or
 //! `/.well-known/solid/notifications-legacy`. SolidOS mashlib defaults
@@ -34,14 +35,19 @@
 //! ) -> Result<HttpResponse, Error> {
 //!     let (resp, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 //!     let driver = LegacyWsDriver::new(events.subscribe());
-//!     actix_web::rt::spawn(async move { driver.run(session, msg_stream).await });
+//!     // `split` yields the inbound sender, the outbound receiver and the
+//!     // background-task future. Pump `msg_stream` -> `inbound`, drain
+//!     // `outbound` -> `session`, and spawn `task` for the connection.
+//!     let (inbound, mut outbound, task) = driver.split();
+//!     actix_web::rt::spawn(task);
 //!     Ok(resp)
 //! }
 //! ```
 //!
-//! The [`LegacyWsDriver::run`] adapter above is a convenience that
-//! works with any transport exposing the `LegacySocket` trait; see
-//! this module's trait definition.
+//! The [`LegacyWsDriver::split`] entry point above hands back the
+//! inbound sender, the outbound receiver and the background-task
+//! future, so it works with any transport that can pump those three
+//! channels.
 //!
 //! # Coexistence
 //!

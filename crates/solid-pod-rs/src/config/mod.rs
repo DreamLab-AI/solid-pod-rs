@@ -1,7 +1,7 @@
 //! # JSS-compatible server config
 //!
 //! PRD §F6 / Sprint 4 — bounded context
-//! [`docs/design/jss-parity/05-config-platform-context.md`].
+//! `docs/design/jss-parity/05-config-platform-context.md`.
 //!
 //! This module provides a layered config loader that mirrors JSS's
 //! three-layer model (CLI > env > file > default; the CLI overlay

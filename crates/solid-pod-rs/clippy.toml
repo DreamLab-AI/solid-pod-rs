@@ -2,8 +2,10 @@
 # Docs: https://rust-lang.github.io/rust-clippy/master/index.html
 
 # Minimum supported Rust version. Any lint that requires a newer feature will
-# be silenced below this version.
-msrv = "1.85"
+# be silenced below this version. Kept in lockstep with the workspace
+# `rust-version` (Cargo.toml) and the `msrv` CI job. The committed Cargo.lock
+# floor is 1.88 (actix-web 4.13, serde_with 3.18, darling 0.23 all require it).
+msrv = "1.88"
 
 # Complexity thresholds — kept close to defaults but tightened where it makes
 # sense for a server-side library that favours small, auditable functions.

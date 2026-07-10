@@ -132,7 +132,7 @@ pub enum DenyReason {
     /// WAC evaluation denied read access to the target resource.
     Forbidden,
     /// The target's origin did not match the server origin. Reported
-    /// separately from [`Forbidden`] so callers can log or meter
+    /// separately from [`DenyReason::Forbidden`] so callers can log or meter
     /// cross-origin attack traffic distinctly.
     CrossOrigin,
 }

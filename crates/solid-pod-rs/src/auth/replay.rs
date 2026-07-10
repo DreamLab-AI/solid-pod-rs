@@ -2,12 +2,12 @@
 //!
 //! A NIP-98 `Authorization` token is a signed, time-boxed, one-shot
 //! credential: it authorises exactly one HTTP request. The structural
-//! verifier in [`super::nip98`] proves the token is well-formed, in-window
-//! (±[`super::nip98`] `TIMESTAMP_TOLERANCE`) and correctly signed, but it
+//! verifier in [`crate::auth::nip98`] proves the token is well-formed, in-window
+//! (±[`crate::auth::nip98`] `TIMESTAMP_TOLERANCE`) and correctly signed, but it
 //! holds no state — so a captured token can be **replayed** for the whole
 //! ~120s tolerance window. This module closes that window with a
 //! single-use nonce store keyed on the canonical NIP-01 event id
-//! ([`super::nip98::Nip98Verified::event_id`]).
+//! ([`crate::auth::nip98::Nip98Verified::event_id`]).
 //!
 //! It mirrors the DPoP `jti` replay cache ([`crate::oidc::replay`]) but is
 //! deliberately decoupled from the OIDC feature: a NIP-98-only pod (no

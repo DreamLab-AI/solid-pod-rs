@@ -4,15 +4,17 @@
 //! (lines 117-174): a from-scratch BIP-341 key-path taproot transaction
 //! builder with BIP-340 Schnorr signing. It produces broadcastable raw
 //! transactions for MRC20 mint/transfer and for anchoring an arbitrary
-//! block-trail state, plus the high-level [`mint_token`], [`transfer_token`]
-//! and [`anchor_state`] composers that the server's `BlockAnchorer::anchor`
+//! block-trail state, plus the high-level [`mint_token`](crate::bitcoin_tx::mint_token),
+//! [`transfer_token_with_key`](crate::bitcoin_tx::transfer_token_with_key)
+//! and [`anchor_state`](crate::bitcoin_tx::anchor_state) composers that the server's `BlockAnchorer::anchor`
 //! and the `/pay/.buy` / `/pay/.withdraw` routes call.
 //!
 //! # Crypto provenance — no re-derivation
 //!
 //! The chained-key derivation, JCS, SHA-256 and bech32m all live in
-//! [`crate::mrc20`] and are reused verbatim ([`bt_derive_chained_pubkey`],
-//! [`bt_derive_chained_privkey`], [`bt_address`], [`jcs`], [`sha256_hex`]).
+//! [`crate::mrc20`] and are reused verbatim (`bt_derive_chained_pubkey`,
+//! `bt_derive_chained_privkey`, `bt_address`, [`jcs`](crate::mrc20::jcs),
+//! [`sha256_hex`](crate::mrc20::sha256_hex)).
 //! Only the *missing edges* are added here: P2TR script construction, the
 //! BIP-341 TapSighash, key-path Schnorr signing (with the optional default
 //! TapTweak for externally-funded inputs), and witness assembly.
@@ -39,9 +41,9 @@
 //! could compile to wasm — but it is gated `#[cfg(not(target_arch = "wasm32"))]`
 //! (and behind feature `mrc20`) per ADR-059 D4: the write-side is a native,
 //! server-only concern and must **not** leak into the wasm `core` surface. The
-//! [`MempoolBroadcast`] trait itself is pure (`?Send`, no I/O) — the concrete
+//! [`MempoolBroadcast`](crate::bitcoin_tx::MempoolBroadcast) trait itself is pure (`?Send`, no I/O) — the concrete
 //! reqwest implementation lives server-side in `solid-pod-rs-server::mempool`,
-//! mirroring Phase 3's [`MempoolLookup`].
+//! mirroring Phase 3's [`MempoolLookup`](crate::mrc20::MempoolLookup).
 
 #![cfg(all(feature = "mrc20", not(target_arch = "wasm32")))]
 

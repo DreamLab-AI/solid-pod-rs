@@ -1,13 +1,13 @@
 //! The `ReplayStore` seam (ADR-060 Decision 2).
 //!
 //! A NIP-98 `Authorization` token is a signed, time-boxed, one-shot
-//! credential. The structural verifier in [`super::nip98`] proves a token is
+//! credential. The structural verifier in [`crate::auth::nip98`] proves a token is
 //! well-formed, in-window and correctly signed, but holds no state — so a
 //! captured token can be **replayed** for the whole tolerance window. Closing
 //! that window needs a single-use nonce store keyed on the canonical NIP-01
 //! event id. `trait ReplayStore` is that store's contract, extracted from the
 //! process-local reference implementation
-//! ([`super::replay::Nip98ReplayCache`]) so the nonce semantics are named once
+//! ([`crate::auth::replay::Nip98ReplayCache`]) so the nonce semantics are named once
 //! and reused rather than re-derived per tier.
 //!
 //! # Why the trait lives here, not inside the reference cache
@@ -25,16 +25,16 @@
 //! # Edge-local exception (ADR-060 Decision 2)
 //!
 //! In THIS repository every tier consumes the trait: the native
-//! single-process server drives [`super::replay::Nip98ReplayCache`] through
+//! single-process server drives [`crate::auth::replay::Nip98ReplayCache`] through
 //! it. The out-of-repo forum/CF tier keeps a different datastore
-//! ([`super::replay`] "Tier persistence limit") and lives in a sibling
+//! ([`crate::auth::replay`] "Tier persistence limit") and lives in a sibling
 //! repository, so it cannot be consolidated or verified from here. It is the
 //! documented **edge-local exception**: it would implement `ReplayStore`
 //! against its own store if and when it is wired, and only then does the
 //! cross-tier seam reach `integrated`. Until a second tier consumes the
 //! trait, the seam is `standalone` — a published contract with one reference
 //! implementor — and the per-replica replay-window caveat
-//! ([`super::replay`]) holds, so no cross-ecosystem claim may assume one
+//! ([`crate::auth::replay`]) holds, so no cross-ecosystem claim may assume one
 //! shared verification boundary.
 
 use std::time::Duration;
@@ -57,7 +57,7 @@ pub enum ReplayError {
 ///
 /// An implementor remembers a credential id (the canonical NIP-01 event id
 /// for NIP-98) for a bounded window and rejects a second sighting of the same
-/// id inside that window. [`super::replay::Nip98ReplayCache`] is the reference
+/// id inside that window. [`crate::auth::replay::Nip98ReplayCache`] is the reference
 /// implementor: a process-local bounded LRU with per-entry TTL. Other tiers
 /// (a KV/Redis-backed edge tier) implement the same contract over shared
 /// storage.

@@ -1,0 +1,41 @@
+# cargo-audit configuration (RustSec advisory database)
+#
+# Runs at the repo root so the whole-workspace Cargo.lock is audited. Every
+# entry below is a deliberate, dated exception with a concrete rationale and a
+# revisit date — there are NO blanket ignores. Advisories with an in-semver fix
+# are resolved by `cargo update`, not ignored (see CHANGELOG). An entry stays
+# here only while (a) no fixed release exists within our semver range, or (b)
+# the vulnerable code path is not reachable in our usage.
+#
+# Reviewed: 2026-07-10 — revisit by 2026-10-08.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa` 0.9.x Marvin timing sidechannel.
+    # No fixed upgrade exists (the RSA crate has shipped no patched release).
+    # Pulled transitively by `openidconnect` (oidc feature) and the activitypub
+    # crate for RSA *signature verification* (public-key ops). The Marvin
+    # attack targets RSA *decryption/private-key* timing, which this crate does
+    # not perform. Revisit 2026-10-08 or when `openidconnect` drops `rsa`.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0098 / -0099 / -0104 — `rustls-webpki` 0.101.7
+    # (name-constraint acceptance for wildcard + URI names; reachable panic in
+    # CRL parsing). Pinned by `rustls` 0.21 which is dragged in only by
+    # `aws-smithy-http-client`'s default TLS connector (aws-sdk-s3), active
+    # ONLY under the `s3-backend` feature. No in-semver fix: the fix lives in
+    # webpki 0.103, unreachable until the AWS SDK migrates off rustls 0.21.
+    # Exploitation needs a malicious certificate presented by the operator's
+    # own configured S3 endpoint. Revisit 2026-10-08 or when aws-sdk-s3 bumps
+    # its rustls/webpki stack.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+
+    # RUSTSEC-2025-0134 — `rustls-pemfile` 2.2.0 unmaintained. No security
+    # defect; the crate's functionality was folded into `rustls-pki-types` and
+    # it publishes no further releases. Reachable only as a DEV-dependency of
+    # `solid-pod-rs-server`'s test harness (never in shipped code). Revisit
+    # 2026-10-08 or when the test harness migrates to rustls-pki-types.
+    "RUSTSEC-2025-0134",
+]

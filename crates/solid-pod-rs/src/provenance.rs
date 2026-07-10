@@ -178,7 +178,7 @@ pub struct BlockTrailAnchor {
     /// Issuer's compressed pubkey (66-char hex). Together with
     /// `state_strings` it re-derives the taproot `address` via
     /// `mrc20::bt_address` — the read-side check
-    /// ([`BlockAnchorer::verify`](crate::provenance::BlockAnchorer::verify))
+    /// ([`BlockAnchorer::verify`])
     /// needs it to confirm `address` was not forged. `None` on legacy /
     /// partially-populated anchors (verify then has nothing to re-derive
     /// against and reports `false`).
@@ -731,14 +731,14 @@ impl EpochAccumulator {
         let mut idx = index;
         let mut siblings: Vec<(String, bool)> = Vec::new();
         while level.len() > 1 {
-            let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+            let sibling_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
             // On an odd level the rightmost node is paired with itself.
             let sib = if sibling_idx < level.len() {
                 level[sibling_idx]
             } else {
                 level[idx]
             };
-            let sibling_is_right = idx % 2 == 0;
+            let sibling_is_right = idx.is_multiple_of(2);
             siblings.push((hex::encode(sib), sibling_is_right));
 
             // Build the next level.
