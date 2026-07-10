@@ -412,7 +412,9 @@ mod tests {
         };
         let id = skeleton.canonical_id();
         let id_bytes = hex::decode(&id).unwrap();
-        let sig = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("schnorr sign_raw");
+        let sig = sk
+            .sign_raw(&id_bytes, &[0u8; 32])
+            .expect("schnorr sign_raw");
         Event {
             id,
             pubkey: pubkey_hex,

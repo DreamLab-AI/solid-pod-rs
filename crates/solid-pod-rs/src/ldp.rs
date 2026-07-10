@@ -468,7 +468,10 @@ mod guess_content_type_tests {
 
     #[test]
     fn unknown_extension_falls_back_to_octet_stream() {
-        assert_eq!(guess_content_type("/blob.xyzzy"), "application/octet-stream");
+        assert_eq!(
+            guess_content_type("/blob.xyzzy"),
+            "application/octet-stream"
+        );
         assert_eq!(guess_content_type("/noext"), "application/octet-stream");
     }
 }
@@ -765,9 +768,7 @@ impl Graph {
             if let Term::Iri(p) = &t.predicate {
                 if p == RDF_TYPE {
                     if let Some(type_ref) = node_ref(&t.object) {
-                        if let Some(serde_json::Value::String(id)) =
-                            type_ref.get("@id").cloned()
-                        {
+                        if let Some(serde_json::Value::String(id)) = type_ref.get("@id").cloned() {
                             node.entry("@type")
                                 .or_insert_with(|| serde_json::Value::Array(Vec::new()))
                                 .as_array_mut()

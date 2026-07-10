@@ -185,7 +185,7 @@ async fn rejects_url_over_2kib() {
     // 2049 bytes total URI — over the 2048 cap.
     let long_uri: String = "https://p/"
         .chars()
-        .chain(std::iter::repeat('a').take(2049 - 10))
+        .chain(std::iter::repeat_n('a', 2049 - 10))
         .collect();
     assert_eq!(long_uri.len(), 2049);
 

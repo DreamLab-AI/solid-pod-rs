@@ -261,12 +261,7 @@ pub fn compute_event_id(event: &Nip98Event) -> String {
 ///
 /// `privkey_hex` is the 32-byte secret key as 64 hex chars.
 #[cfg(feature = "nip98-schnorr")]
-pub fn mint(
-    url: &str,
-    method: &str,
-    privkey_hex: &str,
-    now: u64,
-) -> Result<String, PodError> {
+pub fn mint(url: &str, method: &str, privkey_hex: &str, now: u64) -> Result<String, PodError> {
     mint_with_payload(url, method, None, privkey_hex, now)
 }
 
@@ -331,12 +326,7 @@ pub fn mint_with_payload(
 
 /// No-op stub when `nip98-schnorr` is disabled — minting needs the signer.
 #[cfg(not(feature = "nip98-schnorr"))]
-pub fn mint(
-    _url: &str,
-    _method: &str,
-    _privkey_hex: &str,
-    _now: u64,
-) -> Result<String, PodError> {
+pub fn mint(_url: &str, _method: &str, _privkey_hex: &str, _now: u64) -> Result<String, PodError> {
     Err(PodError::Unsupported(
         "nip98-schnorr feature not enabled (required to mint tokens)".into(),
     ))
@@ -843,9 +833,14 @@ mod tests {
         let privkey_hex = hex::encode([0x42u8; 32]);
         let body = b"hello world";
 
-        let token =
-            mint_with_payload("https://pod.example/x", "POST", Some(body), &privkey_hex, ts)
-                .unwrap();
+        let token = mint_with_payload(
+            "https://pod.example/x",
+            "POST",
+            Some(body),
+            &privkey_hex,
+            ts,
+        )
+        .unwrap();
         let hdr = authorization_header(&token);
         verify_at(&hdr, "https://pod.example/x", "POST", Some(body), ts).unwrap();
         // Tampered body must fail.

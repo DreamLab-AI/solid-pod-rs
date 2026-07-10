@@ -261,15 +261,12 @@ impl GitHttpService {
                 crate::init::GitAutoInit::new()
                     .init_repo_at(&repo_abs)
                     .await
-                    .map_err(|e| {
-                        GitError::BackendFailed {
-                            exit_code: None,
-                            stderr: format!("auto-init {}: {e}", repo_abs.display()),
-                        }
+                    .map_err(|e| GitError::BackendFailed {
+                        exit_code: None,
+                        stderr: format!("auto-init {}: {e}", repo_abs.display()),
                     })?;
                 // Re-resolve after init; the `.git` dir must now exist.
-                find_git_dir(&repo_abs)?
-                    .ok_or_else(|| GitError::NotARepository(slug.clone()))?
+                find_git_dir(&repo_abs)?.ok_or_else(|| GitError::NotARepository(slug.clone()))?
             }
             None => {
                 return Err(GitError::NotARepository(slug));

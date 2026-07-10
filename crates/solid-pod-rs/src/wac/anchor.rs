@@ -72,9 +72,11 @@ impl ProvenanceAnchorBody {
     #[must_use]
     pub fn mode(&self) -> AnchorMode {
         match self.anchor_mode.as_deref().map(str::trim) {
-            Some(m) if m.eq_ignore_ascii_case("always") || m.eq_ignore_ascii_case("inline")
-                || m.eq_ignore_ascii_case("highvalue")
-                || m.eq_ignore_ascii_case("high-value") =>
+            Some(m)
+                if m.eq_ignore_ascii_case("always")
+                    || m.eq_ignore_ascii_case("inline")
+                    || m.eq_ignore_ascii_case("highvalue")
+                    || m.eq_ignore_ascii_case("high-value") =>
             {
                 AnchorMode::Inline
             }
@@ -165,7 +167,14 @@ mod tests {
 
     #[test]
     fn mode_inline_synonyms() {
-        for s in ["always", "ALWAYS", "inline", "Inline", "highValue", "high-value"] {
+        for s in [
+            "always",
+            "ALWAYS",
+            "inline",
+            "Inline",
+            "highValue",
+            "high-value",
+        ] {
             let b = ProvenanceAnchorBody {
                 anchor_mode: Some(s.into()),
                 ticker: None,

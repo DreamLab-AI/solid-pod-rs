@@ -118,7 +118,10 @@ async fn dispatch(msg: &Value, state: &AppState, ctx: &McpCtx) -> Option<Value> 
         )),
         // Notifications carry no id; nothing to return.
         "initialized" | "notifications/initialized" => None,
-        "tools/list" => Some(rpc_result(&id, json!({ "tools": tools::list_tools_for_rpc() }))),
+        "tools/list" => Some(rpc_result(
+            &id,
+            json!({ "tools": tools::list_tools_for_rpc() }),
+        )),
         "tools/call" => {
             let name = msg
                 .get("params")
@@ -162,8 +165,11 @@ pub async fn handle_mcp(
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => {
-            return HttpResponse::BadRequest()
-                .json(rpc_error(&Value::Null, RPC_INVALID_REQUEST, "expected JSON-RPC body"));
+            return HttpResponse::BadRequest().json(rpc_error(
+                &Value::Null,
+                RPC_INVALID_REQUEST,
+                "expected JSON-RPC body",
+            ));
         }
     };
 

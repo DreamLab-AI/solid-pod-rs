@@ -480,7 +480,8 @@ mod anchor_condition_tests {
     fn provenance_anchor_is_recognised_no_422() {
         // A `.acl` carrying a ProvenanceAnchor must NOT trip the
         // unknown-condition 422 path (it is a recognised type).
-        let doc = doc_with_condition(r#"{"@type":"acl:ProvenanceAnchor","acl:anchorMode":"epoch"}"#);
+        let doc =
+            doc_with_condition(r#"{"@type":"acl:ProvenanceAnchor","acl:anchorMode":"epoch"}"#);
         // The condition parsed as the known variant, not Unknown.
         let conds = doc.graph.as_ref().unwrap()[0].condition.as_ref().unwrap();
         assert!(matches!(conds[0], Condition::ProvenanceAnchor(_)));
@@ -488,11 +489,9 @@ mod anchor_condition_tests {
             validate_acl_document(&doc).is_ok(),
             "ProvenanceAnchor is recognised — fail-closed 422 must NOT fire"
         );
-        assert!(
-            ConditionRegistry::default_with_client_and_issuer()
-                .supported_iris()
-                .contains(&"acl:ProvenanceAnchor")
-        );
+        assert!(ConditionRegistry::default_with_client_and_issuer()
+            .supported_iris()
+            .contains(&"acl:ProvenanceAnchor"));
     }
 
     #[test]

@@ -229,6 +229,6 @@ fn stripped_headers_include_sensitive_names() {
     // handler's behaviour through its implementation: the constant is
     // documented to include set-cookie, authorization, www-authenticate.
     // This test serves as a compile-time reminder that the list exists.
-    // The actual stripping is tested via the handler.
-    assert!(true, "header stripping is enforced by the proxy handler");
+    // The actual stripping is tested via the handler; there is no observable
+    // assertion to make here without reaching into the private constant.
 }

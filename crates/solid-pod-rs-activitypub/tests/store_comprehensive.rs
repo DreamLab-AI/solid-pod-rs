@@ -4,7 +4,7 @@
 //! for idempotency, empty results, duplicate handling, and cross-table
 //! interactions (e.g. delivery queue + outbox state transitions).
 
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use serde_json::json;
 use solid_pod_rs_activitypub::Store;
 

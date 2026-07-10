@@ -352,8 +352,13 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     // signs that URL. Hardcoding `http://` would break URL matching for
     // every TLS-fronted deployment. Mirrors the base-URI construction used
     // elsewhere in this file (see `conn.scheme()` call sites).
-    let conn = req.connection_info();
-    let url = format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path());
+    // Scope the actix `Ref<ConnectionInfo>` guard to a block so it is dropped
+    // before the `.await` below (clippy::await_holding_refcell_ref keys on
+    // lexical scope, not liveness, so an explicit `drop` does not suffice).
+    let url = {
+        let conn = req.connection_info();
+        format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path())
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -363,7 +368,11 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     // F3 replay guard: reject a re-presented token. The event id is the
     // signature-bound single-use nonce; a hit means the same signed request
     // was already accepted within the replay window. Fail closed.
-    if NIP98_REPLAY.check_and_record(&verified.event_id).await.is_err() {
+    if NIP98_REPLAY
+        .check_and_record(&verified.event_id)
+        .await
+        .is_err()
+    {
         tracing::warn!(
             pubkey = %verified.pubkey,
             method = %req.method(),
@@ -465,7 +474,11 @@ fn accept_includes_html(accept: &str) -> bool {
 /// `true` when the proposed ACL is unparseable (the storage layer will
 /// reject malformed bodies; the guard only fires on a parseable ACL that
 /// would strip the caller's Control) or when Control is preserved.
-fn proposed_acl_keeps_caller_control(body: &[u8], content_type: &str, caller: Option<&str>) -> bool {
+fn proposed_acl_keeps_caller_control(
+    body: &[u8],
+    content_type: &str,
+    caller: Option<&str>,
+) -> bool {
     let doc = match parse_jsonld_acl(body) {
         Ok(d) => Some(d),
         Err(_) => {
@@ -504,7 +517,7 @@ fn proposed_acl_keeps_caller_control(body: &[u8], content_type: &str, caller: Op
         }
         let agents = ids_of_acl_field(&auth.agent);
         if let Some(web_id) = caller {
-            if agents.iter().any(|a| *a == web_id) {
+            if agents.contains(&web_id) {
                 return true;
             }
         }
@@ -1048,7 +1061,14 @@ async fn handle_put(
         if has_basic_container_link(&req) {
             let auth_pk = extract_pubkey(&req).await;
             let agent = agent_uri(auth_pk.as_ref());
-            enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
+            enforce_write_ctx(
+                &state,
+                &path,
+                AccessMode::Write,
+                agent.as_deref(),
+                req_origin(&req),
+            )
+            .await?;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -1066,7 +1086,14 @@ async fn handle_put(
 
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        &path,
+        AccessMode::Write,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     let ct = req
         .headers()
@@ -1143,7 +1170,14 @@ async fn handle_post(
     // `POST /{tail:.*}/` registration.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write_ctx(&state, &path, AccessMode::Append, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        &path,
+        AccessMode::Append,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     let slug = req
         .headers()
@@ -1226,7 +1260,14 @@ async fn handle_patch(
     // (which creates new child resources in a container) is allowed with
     // Append-only permission. This prevents Append-only users from
     // overwriting or deleting resource content via PATCH.
-    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        &path,
+        AccessMode::Write,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     let ct = req
         .headers()
@@ -1443,9 +1484,10 @@ fn rdf_content_negotiate(
     match target {
         // N-Triples is a syntactic subset of Turtle; the canonical
         // serialiser emits N-Triples, which is valid Turtle.
-        ldp::RdfFormat::Turtle => {
-            Some((graph.to_ntriples().into_bytes(), ldp::RdfFormat::Turtle.mime()))
-        }
+        ldp::RdfFormat::Turtle => Some((
+            graph.to_ntriples().into_bytes(),
+            ldp::RdfFormat::Turtle.mime(),
+        )),
         ldp::RdfFormat::NTriples => Some((
             graph.to_ntriples().into_bytes(),
             ldp::RdfFormat::NTriples.mime(),
@@ -1550,7 +1592,14 @@ async fn handle_delete(
     let path = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write_ctx(&state, &path, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        &path,
+        AccessMode::Write,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     match state.storage.delete(&path).await {
         Ok(()) => Ok(HttpResponse::NoContent().finish()),
@@ -1822,7 +1871,14 @@ async fn handle_export_all(
     // evaluates the passed mode against the root ACL and returns the shared
     // 401/403 WAC denial; `Control` bypasses the origin gate by design so an
     // owner can always export from any origin.
-    enforce_write_ctx(&state, "/", AccessMode::Control, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        "/",
+        AccessMode::Control,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     // `include_private=true` is honoured only for this Control-authorised
     // caller (the export function itself is unauthenticated — the gate above
@@ -1835,9 +1891,10 @@ async fn handle_export_all(
     // Pod base URL stamped into the bundle envelope: the externally-visible
     // scheme + host (honours `X-Forwarded-Proto`), matching the URL agents
     // sign over elsewhere in this file.
-    let conn = req.connection_info();
-    let pod_base = format!("{}://{}/", conn.scheme(), conn.host());
-    drop(conn);
+    let pod_base = {
+        let conn = req.connection_info();
+        format!("{}://{}/", conn.scheme(), conn.host())
+    };
 
     let options = solid_pod_rs::ExportOptions { include_private };
     let bundle = solid_pod_rs::export::export_pod_jsonld(&*state.storage, &pod_base, options)
@@ -1979,8 +2036,10 @@ async fn handle_create_pod(
         );
     }
 
-    let conn = req.connection_info();
-    let base_uri = format!("{}://{}", conn.scheme(), conn.host());
+    let base_uri = {
+        let conn = req.connection_info();
+        format!("{}://{}", conn.scheme(), conn.host())
+    };
     let pod_uri = format!("{}/{}/", base_uri.trim_end_matches('/'), body.name);
 
     for container in [
@@ -2033,7 +2092,14 @@ async fn handle_copy(
     let dest = req.uri().path().to_string();
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_write_ctx(&state, &dest, AccessMode::Write, agent.as_deref(), req_origin(&req)).await?;
+    enforce_write_ctx(
+        &state,
+        &dest,
+        AccessMode::Write,
+        agent.as_deref(),
+        req_origin(&req),
+    )
+    .await?;
 
     let source = req
         .headers()
@@ -2905,7 +2971,11 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
             network.clone(),
         ),
         // No anchorer available (or policy Never): git-mark-only log.
-        None => (ProvenanceLog::new(marker.clone()), String::new(), String::new()),
+        None => (
+            ProvenanceLog::new(marker.clone()),
+            String::new(),
+            String::new(),
+        ),
     };
 
     // `record()` anchors INLINE only for HighValue (high_value=true). Epoch
@@ -3007,7 +3077,13 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
 /// call `git_mark_write(...)` unconditionally without per-call-site `cfg`.
 #[cfg(not(feature = "git"))]
 #[inline]
-async fn git_mark_write(_state: &AppState, _resource_path: &str, _agent: Option<&str>, _message: &str) {}
+async fn git_mark_write(
+    _state: &AppState,
+    _resource_path: &str,
+    _agent: Option<&str>,
+    _message: &str,
+) {
+}
 
 #[cfg(feature = "git")]
 pub(crate) async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {
@@ -3020,11 +3096,9 @@ pub(crate) async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Op
 
 #[cfg(feature = "git")]
 fn git_json_err(msg: &str, status: u16) -> HttpResponse {
-    HttpResponse::build(
-        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-    )
-    .content_type("application/json")
-    .body(format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\"")))
+    HttpResponse::build(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+        .content_type("application/json")
+        .body(format!(r#"{{"error":"{}"}}"#, msg.replace('"', "\\\"")))
 }
 
 // Request body types for git control panel endpoints.
@@ -3118,9 +3192,7 @@ async fn handle_git_diff(
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
     match solid_pod_rs_git::api::git_diff(&repo, file_path, staged).await {
-        Ok(diff) => HttpResponse::Ok()
-            .content_type("text/plain")
-            .body(diff),
+        Ok(diff) => HttpResponse::Ok().content_type("text/plain").body(diff),
         Err(e) => git_json_err(&e.to_string(), e.status_code()),
     }
 }
@@ -3204,8 +3276,7 @@ async fn handle_git_commit(
         .author_email
         .as_deref()
         .unwrap_or("pod@dreamlab-ai.com");
-    match solid_pod_rs_git::api::git_commit(&repo, &parsed.message, author_name, author_email)
-        .await
+    match solid_pod_rs_git::api::git_commit(&repo, &parsed.message, author_name, author_email).await
     {
         Ok(result) => HttpResponse::Ok()
             .content_type("application/json")
@@ -3295,10 +3366,7 @@ async fn handle_git_discard(
 /// Handles CORS preflight (OPTIONS) requests for the `/_git/` REST API
 /// namespace. Returns 204 with full CORS headers, respecting the
 /// `allowed_origins` allowlist from `AppState`.
-async fn handle_git_panel_options(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-) -> HttpResponse {
+async fn handle_git_panel_options(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse {
     let origin = req
         .headers()
         .get(header::ORIGIN)
@@ -3346,8 +3414,7 @@ async fn handle_admin_provision(
     use subtle::ConstantTimeEq;
     let key_match = provided.as_bytes().ct_eq(expected.as_bytes());
     if !bool::from(key_match) {
-        return HttpResponse::Forbidden()
-            .json(serde_json::json!({"error": "invalid admin key"}));
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "invalid admin key"}));
     }
 
     // --- Pubkey validation -----------------------------------------------
@@ -3402,12 +3469,7 @@ async fn handle_admin_provision(
         // Only init if .git does not yet exist (idempotent).
         if !pod_dir.join(".git").exists() {
             let init_out = Command::new("git")
-                .args([
-                    "init",
-                    "-b",
-                    "main",
-                    pod_dir.to_str().unwrap_or("."),
-                ])
+                .args(["init", "-b", "main", pod_dir.to_str().unwrap_or(".")])
                 .output()
                 .await;
 
@@ -3595,7 +3657,7 @@ async fn handle_git(
         path,
         query,
         headers,
-        body: body.into(),
+        body,
         host_url,
     };
 
@@ -3618,7 +3680,14 @@ async fn handle_git(
     let wac_path = format!("/{pod_name}/");
     let origin = req_origin(&req);
     let wac = if is_write {
-        enforce_write_ctx(&state, &wac_path, AccessMode::Write, agent.as_deref(), origin).await
+        enforce_write_ctx(
+            &state,
+            &wac_path,
+            AccessMode::Write,
+            agent.as_deref(),
+            origin,
+        )
+        .await
     } else {
         enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin).await
     };
@@ -3759,9 +3828,10 @@ pub fn build_app(
     // agents (JSS #490). Registered before the LDP catch-all so `/mcp` is
     // never treated as a pod resource. OFF unless `--mcp` / `JSS_MCP`.
     if state.mcp_enabled {
-        app = app
-            .route("/mcp", web::post().to(mcp::handle_mcp))
-            .route("/mcp", web::method(actix_web::http::Method::OPTIONS).to(mcp::handle_mcp_options));
+        app = app.route("/mcp", web::post().to(mcp::handle_mcp)).route(
+            "/mcp",
+            web::method(actix_web::http::Method::OPTIONS).to(mcp::handle_mcp_options),
+        );
     }
 
     // Admin provisioning endpoint (alpha.15). Must be before the LDP
@@ -3830,14 +3900,8 @@ pub fn build_app(
                 "/pods/{pubkey}/_git/status",
                 web::get().to(handle_git_status),
             )
-            .route(
-                "/pods/{pubkey}/_git/log",
-                web::get().to(handle_git_log),
-            )
-            .route(
-                "/pods/{pubkey}/_git/diff",
-                web::get().to(handle_git_diff),
-            )
+            .route("/pods/{pubkey}/_git/log", web::get().to(handle_git_log))
+            .route("/pods/{pubkey}/_git/diff", web::get().to(handle_git_diff))
             .route(
                 "/pods/{pubkey}/_git/stage",
                 web::post().to(handle_git_stage),
@@ -3971,7 +4035,10 @@ mod payment_gating_tests {
     async fn resolve_balance_zero_when_no_entry() {
         let storage = MemoryBackend::new();
         seed_ledger(&storage, "did:nostr:bob", 500).await;
-        assert_eq!(resolve_balance_sats(&storage, Some(PRINCIPAL)).await, Some(0));
+        assert_eq!(
+            resolve_balance_sats(&storage, Some(PRINCIPAL)).await,
+            Some(0)
+        );
     }
 
     /// Anonymous (no principal) → `None`, so a PaymentCondition fails closed.
@@ -4123,7 +4190,11 @@ mod payment_gating_tests {
 "#;
         let storage = Arc::new(MemoryBackend::new());
         storage
-            .put("/premium/feed.acl", Bytes::from(PAID_READ_ACL), "text/turtle")
+            .put(
+                "/premium/feed.acl",
+                Bytes::from(PAID_READ_ACL),
+                "text/turtle",
+            )
             .await
             .unwrap();
         seed_ledger(storage.as_ref(), PRINCIPAL, 100).await;
@@ -4273,8 +4344,13 @@ mod payment_gating_tests {
         // The request path is the `.acl` sidecar; before the fix this was
         // checked as Write on the sidecar (granted). Now it requires
         // Control on `/shared/`.
-        let result =
-            enforce_write(&state, "/shared/.acl", AccessMode::Write, Some("did:nostr:writer")).await;
+        let result = enforce_write(
+            &state,
+            "/shared/.acl",
+            AccessMode::Write,
+            Some("did:nostr:writer"),
+        )
+        .await;
         assert!(
             result.is_err(),
             "writer lacks Control — must not be able to PUT /shared/.acl"
@@ -4317,10 +4393,19 @@ mod payment_gating_tests {
     /// Unit cover for the suffix-stripping helper.
     #[test]
     fn protected_resource_for_acl_strips_suffixes() {
-        assert_eq!(protected_resource_for_acl("/victim/.acl").as_deref(), Some("/victim/"));
-        assert_eq!(protected_resource_for_acl("/a/b.acl").as_deref(), Some("/a/b"));
+        assert_eq!(
+            protected_resource_for_acl("/victim/.acl").as_deref(),
+            Some("/victim/")
+        );
+        assert_eq!(
+            protected_resource_for_acl("/a/b.acl").as_deref(),
+            Some("/a/b")
+        );
         assert_eq!(protected_resource_for_acl("/.acl").as_deref(), Some("/"));
-        assert_eq!(protected_resource_for_acl("/a/b.meta").as_deref(), Some("/a/b"));
+        assert_eq!(
+            protected_resource_for_acl("/a/b.meta").as_deref(),
+            Some("/a/b")
+        );
         assert_eq!(protected_resource_for_acl("/a/b").as_deref(), None);
     }
 }

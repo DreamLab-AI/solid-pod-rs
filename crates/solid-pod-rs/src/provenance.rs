@@ -445,7 +445,10 @@ impl std::fmt::Debug for ProvenanceLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProvenanceLog")
             .field("marker", &"Arc<dyn GitMarker>")
-            .field("anchorer", &self.anchorer.as_ref().map(|_| "Arc<dyn BlockAnchorer>"))
+            .field(
+                "anchorer",
+                &self.anchorer.as_ref().map(|_| "Arc<dyn BlockAnchorer>"),
+            )
             .finish()
     }
 }
@@ -484,7 +487,10 @@ impl ProvenanceLog {
     /// ordinary pods and the only shape available on wasm.
     #[must_use]
     pub fn new(marker: Arc<dyn GitMarker>) -> Self {
-        Self { marker, anchorer: None }
+        Self {
+            marker,
+            anchorer: None,
+        }
     }
 
     /// Construct a log with both tiers wired.
@@ -578,7 +584,11 @@ fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         while i < level.len() {
             let left = level[i];
             // Duplicate the last node when the level is odd.
-            let right = if i + 1 < level.len() { level[i + 1] } else { left };
+            let right = if i + 1 < level.len() {
+                level[i + 1]
+            } else {
+                left
+            };
             let mut h = Sha256::new();
             h.update(left);
             h.update(right);
@@ -736,7 +746,11 @@ impl EpochAccumulator {
             let mut i = 0;
             while i < level.len() {
                 let left = level[i];
-                let right = if i + 1 < level.len() { level[i + 1] } else { left };
+                let right = if i + 1 < level.len() {
+                    level[i + 1]
+                } else {
+                    left
+                };
                 let mut h = Sha256::new();
                 h.update(left);
                 h.update(right);
@@ -860,7 +874,9 @@ pub fn prov_ttl(mark: &ProvenanceMark) -> String {
     ttl.push_str(&format!("<urn:git:commit:{sha}> a prov:Activity ;\n"));
     ttl.push_str(&format!("    prov:generated <{resource}> ;\n"));
     ttl.push_str(&format!("    prov:wasAssociatedWith <{agent}> ;\n"));
-    ttl.push_str(&format!("    prov:endedAtTime \"{when}\"^^xsd:dateTime ;\n"));
+    ttl.push_str(&format!(
+        "    prov:endedAtTime \"{when}\"^^xsd:dateTime ;\n"
+    ));
     ttl.push_str(&format!("    git:commit \"{sha}\" ;\n"));
     ttl.push_str(&format!("    git:branch \"{branch}\" ;\n"));
     ttl.push_str(&format!("    git:repo \"{repo}\" "));
@@ -877,9 +893,7 @@ pub fn prov_ttl(mark: &ProvenanceMark) -> String {
     ttl.push_str(&format!(
         "    prov:wasGeneratedBy <urn:git:commit:{sha}> ;\n"
     ));
-    ttl.push_str(&format!(
-        "    prov:wasAttributedTo <{agent}> .\n"
-    ));
+    ttl.push_str(&format!("    prov:wasAttributedTo <{agent}> .\n"));
 
     // Agent.
     ttl.push('\n');
@@ -991,7 +1005,9 @@ mod tests {
     fn gitmark_json_matches_carvalho_shape() {
         // Mirrors microfed/gitmark.json key set + ordering-agnostic shape.
         let g = sample_git();
-        let json = g.to_gitmark_json(0, &g.commit_sha, "gitmark", "./package.json").unwrap();
+        let json = g
+            .to_gitmark_json(0, &g.commit_sha, "gitmark", "./package.json")
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["@id"], format!("gitmark:{}:0", g.commit_sha));
         assert_eq!(v["nick"], "gitmark");
@@ -1008,11 +1024,8 @@ mod tests {
             outpoint: format!("{}:0", "ab".repeat(32)),
             blockheight: Some(840_000),
         }];
-        let bt = BlocktrailEnvelope::new_gitmark_profile(
-            &g.commit_sha,
-            vec![g.commit_sha.clone()],
-            txo,
-        );
+        let bt =
+            BlocktrailEnvelope::new_gitmark_profile(&g.commit_sha, vec![g.commit_sha.clone()], txo);
         assert_eq!(bt.type_, "Blocktrail");
         assert_eq!(bt.profile, "gitmark");
         assert_eq!(bt.id, format!("gitmark:{}:0", g.commit_sha));
@@ -1021,7 +1034,8 @@ mod tests {
         assert_eq!(bt.txo.len(), 1);
 
         // JSON shape: @type / profile / states / txo present.
-        let v: serde_json::Value = serde_json::from_str(&bt.to_blocktrails_json().unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&bt.to_blocktrails_json().unwrap()).unwrap();
         assert_eq!(v["@type"], "Blocktrail");
         assert_eq!(v["profile"], "gitmark");
         assert!(v["states"].is_array());
@@ -1035,8 +1049,14 @@ mod tests {
             &"cd".repeat(20),
             vec!["aa".repeat(20), "bb".repeat(20)],
             vec![
-                BlocktrailTxo { outpoint: "t0:0".into(), blockheight: None },
-                BlocktrailTxo { outpoint: "t1:0".into(), blockheight: Some(1) },
+                BlocktrailTxo {
+                    outpoint: "t0:0".into(),
+                    blockheight: None,
+                },
+                BlocktrailTxo {
+                    outpoint: "t1:0".into(),
+                    blockheight: Some(1),
+                },
             ],
         );
         let json = serde_json::to_string(&bt).unwrap();
@@ -1099,7 +1119,8 @@ mod tests {
         assert!(ttl.contains("git:branch \"main\""));
         assert!(ttl.contains("git:parent \"00112233445566778899aabbccddeeff00112233\""));
         // The generated entity is the resource.
-        assert!(ttl.contains("<urn:git:commit:a1b2c3d4e5f60718293a4b5c6d7e8f9001122334> a prov:Activity"));
+        assert!(ttl
+            .contains("<urn:git:commit:a1b2c3d4e5f60718293a4b5c6d7e8f9001122334> a prov:Activity"));
         assert!(ttl.contains("prov:generated </notes/hello.ttl>"));
     }
 
@@ -1187,7 +1208,8 @@ mod tests {
         ) -> Result<GitMark, ProvenanceError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             // 40-hex deterministic SHA derived from the call ordinal + path.
-            let sha = hex::encode(Sha256::digest(format!("{n}:{path}").as_bytes()))[..40].to_string();
+            let sha =
+                hex::encode(Sha256::digest(format!("{n}:{path}").as_bytes()))[..40].to_string();
             Ok(GitMark {
                 commit_sha: sha,
                 repo: "mockpod".into(),
@@ -1278,13 +1300,26 @@ mod tests {
         let anchorer = Arc::new(MockAnchorer::default());
         let log = ProvenanceLog::with_anchorer(marker.clone(), anchorer.clone());
         let mark = log
-            .record(rec("notes/a.ttl", AnchorPolicy::Never, false, 1_750_000_000))
+            .record(rec(
+                "notes/a.ttl",
+                AnchorPolicy::Never,
+                false,
+                1_750_000_000,
+            ))
             .await
             .unwrap();
         assert!(mark.anchor.is_none(), "cheap write must carry no anchor");
         assert_eq!(mark.resource, "/notes/a.ttl");
-        assert_eq!(marker.calls.load(Ordering::SeqCst), 1, "git-mark always runs");
-        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 0, "anchorer must NOT be called");
+        assert_eq!(
+            marker.calls.load(Ordering::SeqCst),
+            1,
+            "git-mark always runs"
+        );
+        assert_eq!(
+            anchorer.calls.load(Ordering::SeqCst),
+            0,
+            "anchorer must NOT be called"
+        );
     }
 
     #[tokio::test]
@@ -1295,7 +1330,12 @@ mod tests {
         let anchorer = Arc::new(MockAnchorer::default());
         let log = ProvenanceLog::with_anchorer(marker.clone(), anchorer.clone());
         let mark = log
-            .record(rec("receipts/r1.ttl", AnchorPolicy::HighValue, true, 1_750_000_000))
+            .record(rec(
+                "receipts/r1.ttl",
+                AnchorPolicy::HighValue,
+                true,
+                1_750_000_000,
+            ))
             .await
             .unwrap();
         let anchor = mark.anchor.expect("high-value write must carry an anchor");
@@ -1350,7 +1390,10 @@ mod tests {
             .record(rec("notes/a.ttl", AnchorPolicy::Always, true, 1))
             .await
             .unwrap();
-        assert!(mark.anchor.is_none(), "no anchorer ⇒ no anchor regardless of policy");
+        assert!(
+            mark.anchor.is_none(),
+            "no anchorer ⇒ no anchor regardless of policy"
+        );
         assert_eq!(marker.calls.load(Ordering::SeqCst), 1);
     }
 
@@ -1380,8 +1423,15 @@ mod tests {
         assert!(epoch.is_full());
         let closed = epoch.close().expect("non-empty epoch closes");
         assert_eq!(closed.commits, shas);
-        let anchor = anchorer.anchor("PROV", &closed.root, "testnet4").await.unwrap();
-        assert_eq!(anchorer.calls.load(Ordering::SeqCst), 1, "ONE anchor notarises N commits");
+        let anchor = anchorer
+            .anchor("PROV", &closed.root, "testnet4")
+            .await
+            .unwrap();
+        assert_eq!(
+            anchorer.calls.load(Ordering::SeqCst),
+            1,
+            "ONE anchor notarises N commits"
+        );
         assert_eq!(anchor.state_hash, closed.root);
         // Epoch drained — a fresh epoch begins.
         assert!(epoch.is_empty());
@@ -1448,7 +1498,10 @@ mod tests {
         let root = e.root().unwrap();
         let mut proof = e.inclusion_proof(1).unwrap();
         // Wrong root → reject.
-        assert!(!EpochAccumulator::verify_inclusion(&proof, &"00".repeat(32)));
+        assert!(!EpochAccumulator::verify_inclusion(
+            &proof,
+            &"00".repeat(32)
+        ));
         // Tampered leaf → reject against the genuine root.
         proof.leaf = hex::encode(merkle_leaf("forged"));
         assert!(!EpochAccumulator::verify_inclusion(&proof, &root));
@@ -1488,7 +1541,12 @@ mod tests {
 
     #[test]
     fn anchor_policy_round_trips() {
-        for p in [AnchorPolicy::Never, AnchorPolicy::Always, AnchorPolicy::HighValue, AnchorPolicy::Epoch] {
+        for p in [
+            AnchorPolicy::Never,
+            AnchorPolicy::Always,
+            AnchorPolicy::HighValue,
+            AnchorPolicy::Epoch,
+        ] {
             let json = serde_json::to_string(&p).unwrap();
             let back: AnchorPolicy = serde_json::from_str(&json).unwrap();
             assert_eq!(p, back);

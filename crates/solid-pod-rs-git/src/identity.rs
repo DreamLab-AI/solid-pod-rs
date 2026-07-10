@@ -142,9 +142,7 @@ mod tests {
     #[tokio::test]
     async fn writes_canonical_agent_did_json() {
         let td = TempDir::new().unwrap();
-        let out = write_agent_identity(td.path(), PK_HEX, None)
-            .await
-            .unwrap();
+        let out = write_agent_identity(td.path(), PK_HEX, None).await.unwrap();
 
         // I1: did string unchanged.
         assert_eq!(out.did, format!("did:nostr:{PK_HEX}"));
@@ -160,7 +158,10 @@ mod tests {
         assert_eq!(vm["type"], "Multikey");
         // I2: publicKeyMultibase == fe70102 + same x-only hex.
         assert_eq!(vm["publicKeyMultibase"], format!("fe70102{PK_HEX}"));
-        assert!(vm.get("publicKeyHex").is_none(), "2019 publicKeyHex dropped");
+        assert!(
+            vm.get("publicKeyHex").is_none(),
+            "2019 publicKeyHex dropped"
+        );
         assert_eq!(v["authentication"][0], "#key1");
         // Canonical did:nostr omits `service` when empty (no `service: []`).
         assert!(v.get("service").is_none());
@@ -170,7 +171,10 @@ mod tests {
     async fn rejects_malformed_pubkey() {
         let td = TempDir::new().unwrap();
         let res = write_agent_identity(td.path(), "not-hex", None).await;
-        assert!(res.is_err(), "malformed pubkey must be refused, not written");
+        assert!(
+            res.is_err(),
+            "malformed pubkey must be refused, not written"
+        );
         // No file leaked.
         assert!(!td.path().join(AGENT_DID_FILE).exists());
     }
@@ -181,11 +185,7 @@ mod tests {
     async fn configures_nostr_privkey_in_repo() {
         let td = TempDir::new().unwrap();
         let repo = td.path();
-        let status = Command::new("git")
-            .arg("init")
-            .arg(repo)
-            .output()
-            .await;
+        let status = Command::new("git").arg("init").arg(repo).output().await;
         let status = match status {
             Ok(o) => o.status,
             Err(_) => return, // no git binary — skip.
@@ -196,7 +196,10 @@ mod tests {
         let out = write_agent_identity(repo, PK_HEX, Some(sk_hex))
             .await
             .unwrap();
-        assert!(out.privkey_configured, "privkey must be git-configured in a repo");
+        assert!(
+            out.privkey_configured,
+            "privkey must be git-configured in a repo"
+        );
 
         // Read it back — and confirm it is NOT in the committed doc.
         let gd = find_git_dir(repo).unwrap().unwrap();

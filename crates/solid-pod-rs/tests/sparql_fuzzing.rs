@@ -38,14 +38,13 @@ fn sparql_update_accepts_input_at_exact_limit() {
     let result = apply_sparql_patch(Graph::new(), &at_limit);
     // The parser will reject this as invalid SPARQL, but the size guard
     // should not trigger.
-    match result {
-        Err(PodError::BadRequest(msg)) => {
-            assert!(
-                !msg.contains("exceeds"),
-                "at-limit input should not trigger size guard: {msg}"
-            );
-        }
-        _ => {} // Either Ok or some other parse error — both acceptable.
+    // Either Ok or some other parse error is acceptable; only the size guard
+    // must not fire on at-limit input.
+    if let Err(PodError::BadRequest(msg)) = result {
+        assert!(
+            !msg.contains("exceeds"),
+            "at-limit input should not trigger size guard: {msg}"
+        );
     }
 }
 
@@ -69,7 +68,7 @@ fn sparql_random_ascii_does_not_panic() {
             .map(|i| {
                 let byte = ((state.wrapping_mul(i as u64 + 1)) % 128) as u8;
                 // Ensure printable ASCII or common whitespace.
-                if byte >= 32 && byte < 127 {
+                if (32..127).contains(&byte) {
                     byte as char
                 } else {
                     ' '

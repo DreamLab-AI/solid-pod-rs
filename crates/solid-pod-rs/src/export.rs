@@ -208,7 +208,7 @@ pub async fn export_pod_jsonld<S: Storage + ?Sized>(
     // Time-chain ordering: ascending by `created`. Stable sort keeps
     // ties (same timestamp) in walker-discovery order, which is
     // deterministic across runs for a given storage backend.
-    entries.sort_by(|a, b| a.created.cmp(&b.created));
+    entries.sort_by_key(|a| a.created);
 
     Ok(PodExportBundle {
         context: EXPORT_JSONLD_CONTEXT.to_string(),

@@ -257,16 +257,15 @@ pub fn parse_status_output(raw: &str) -> Result<StatusReport, GitError> {
         //   `R  newpath -> oldpath`
         // Actually porcelain=v1 uses: `R  dest\toriginal` on a single line
         // separated by `\0` in -z mode. Without -z it is `dest -> origin`.
-        let (path, old_path) = if (x == 'R' || x == 'C' || y == 'R' || y == 'C')
-            && rest.contains(" -> ")
-        {
-            let mut parts = rest.splitn(2, " -> ");
-            let dest = parts.next().unwrap_or(rest).to_string();
-            let orig = parts.next().map(str::to_string);
-            (dest, orig)
-        } else {
-            (rest.to_string(), None)
-        };
+        let (path, old_path) =
+            if (x == 'R' || x == 'C' || y == 'R' || y == 'C') && rest.contains(" -> ") {
+                let mut parts = rest.splitn(2, " -> ");
+                let dest = parts.next().unwrap_or(rest).to_string();
+                let orig = parts.next().map(str::to_string);
+                (dest, orig)
+            } else {
+                (rest.to_string(), None)
+            };
 
         if let Some(ct) = staged_change {
             staged.push(FileStatus {
@@ -309,7 +308,11 @@ pub async fn git_log(repo: &Path, limit: u32) -> Result<Vec<CommitEntry>, GitErr
     .await
     {
         Ok(v) => v,
-        Err(GitError::BackendFailed { ref stderr, .. }) if stderr.contains("does not have any commits") || stderr.contains("bad default revision") || stderr.contains("fatal: your current branch") => {
+        Err(GitError::BackendFailed { ref stderr, .. })
+            if stderr.contains("does not have any commits")
+                || stderr.contains("bad default revision")
+                || stderr.contains("fatal: your current branch") =>
+        {
             return Ok(Vec::new());
         }
         Err(e) => return Err(e),
@@ -370,17 +373,19 @@ pub struct ResolvedCommit {
 pub async fn resolve_commit(repo: &Path, sha: &str) -> Result<ResolvedCommit, GitError> {
     // Reject obviously-malformed revs early (defence-in-depth; the route also
     // validates). A commit-ish is hex; refuse anything with shell/path metachars.
-    if sha.is_empty()
-        || sha.len() > 64
-        || !sha.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if sha.is_empty() || sha.len() > 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(GitError::PathTraversal(format!("invalid commit id: {sha}")));
     }
 
     // Metadata: full-hash, author-email, author-name, subject, author-unixtime,
     // parent-hashes — unit-separated, one record.
     let fmt = "%H\x1F%ae\x1F%an\x1F%s\x1F%at\x1F%P";
-    let meta = match git_run(&["show", "--no-patch", &format!("--format={fmt}"), sha], repo).await {
+    let meta = match git_run(
+        &["show", "--no-patch", &format!("--format={fmt}"), sha],
+        repo,
+    )
+    .await
+    {
         Ok(v) => v,
         Err(GitError::BackendFailed { ref stderr, .. })
             if stderr.contains("unknown revision")
@@ -396,7 +401,9 @@ pub async fn resolve_commit(repo: &Path, sha: &str) -> Result<ResolvedCommit, Gi
     let line = meta.lines().next().unwrap_or("");
     let parts: Vec<&str> = line.splitn(6, '\x1F').collect();
     if parts.len() < 5 {
-        return Err(GitError::MalformedCgi(format!("git show metadata for {sha}")));
+        return Err(GitError::MalformedCgi(format!(
+            "git show metadata for {sha}"
+        )));
     }
     let committed_at = parts[4].trim().parse::<u64>().unwrap_or(0);
     let parent = parts
@@ -498,11 +505,7 @@ pub async fn git_commit(
     author_email: &str,
 ) -> Result<CommitResult, GitError> {
     let author_str = format!("{author_name} <{author_email}>");
-    git_run(
-        &["commit", "-m", message, "--author", &author_str],
-        repo,
-    )
-    .await?;
+    git_run(&["commit", "-m", message, "--author", &author_str], repo).await?;
 
     let hash = git_run(&["rev-parse", "HEAD"], repo).await?;
     let hash = hash.trim().to_string();
@@ -527,12 +530,7 @@ pub async fn git_commit(
 
 /// Return the list of local branches and identify the current one.
 pub async fn git_branches(repo: &Path) -> Result<BranchInfo, GitError> {
-    let raw = match git_run(
-        &["branch", "--format=%(HEAD) %(refname:short)"],
-        repo,
-    )
-    .await
-    {
+    let raw = match git_run(&["branch", "--format=%(HEAD) %(refname:short)"], repo).await {
         Ok(v) => v,
         Err(GitError::BackendFailed { ref stderr, .. })
             if stderr.contains("does not have any commits")
@@ -559,7 +557,10 @@ pub async fn git_branches(repo: &Path) -> Result<BranchInfo, GitError> {
     for line in raw.lines() {
         // Format: `* main` or `  feature-x`
         let is_current = line.starts_with("* ");
-        let name = line.trim_start_matches("* ").trim_start_matches("  ").trim();
+        let name = line
+            .trim_start_matches("* ")
+            .trim_start_matches("  ")
+            .trim();
         if name.is_empty() {
             continue;
         }
@@ -730,7 +731,13 @@ mod tests {
         // Defence-in-depth: a non-hex / over-long / empty rev is rejected
         // before ever shelling to git (no path/shell metachars reach `git`).
         let repo = std::path::Path::new("/nonexistent");
-        for bad in ["", "../etc", "deadbeef; rm -rf /", &"a".repeat(65), "g00dbeef"] {
+        for bad in [
+            "",
+            "../etc",
+            "deadbeef; rm -rf /",
+            &"a".repeat(65),
+            "g00dbeef",
+        ] {
             assert!(
                 matches!(
                     resolve_commit(repo, bad).await,

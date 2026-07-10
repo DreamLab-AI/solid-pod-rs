@@ -70,12 +70,18 @@ fn nip98_auth(method: &str, path: &str) -> (String, String) {
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
     let token = nip98::mint(&url, method, USER_SK, now).expect("nip98 mint");
-    (format!("Nostr {token}"), format!("did:nostr:{}", user_pubkey()))
+    (
+        format!("Nostr {token}"),
+        format!("did:nostr:{}", user_pubkey()),
+    )
 }
 
 /// `AppState` with a configured pay-token (the issuer's) + a sat balance for
 /// the user, and a minted trail persisted at `/.well-known/token/test.json`.
-async fn state_with_minted_trail(mempool_url: String, user_balance: u64) -> (AppState, Arc<dyn Storage>) {
+async fn state_with_minted_trail(
+    mempool_url: String,
+    user_balance: u64,
+) -> (AppState, Arc<dyn Storage>) {
     let st = AppState::new(Arc::new(MemoryBackend::new()));
     let storage = st.storage.clone();
 
@@ -160,12 +166,18 @@ async fn spawn_fixture(genesis_spk_hex: String) -> (String, actix_web::dev::Serv
                         "vout": [ { "value": 50000, "scriptpubkey": spk.get_ref() } ],
                         "status": { "confirmed": true, "block_height": 42000 }
                     });
-                    HttpResponse::Ok().content_type("application/json").body(body.to_string())
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .body(body.to_string())
                 }),
             )
             .route(
                 "/api/address/{addr}/utxo",
-                web::get().to(|_p: web::Path<String>| async { HttpResponse::Ok().content_type("application/json").body("[]") }),
+                web::get().to(|_p: web::Path<String>| async {
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .body("[]")
+                }),
             )
             .route(
                 "/api/tx",
@@ -335,7 +347,9 @@ async fn withdraw_sats_mints_a_voucher() {
                         "vout": [ { "value": 20000, "scriptpubkey": spk.get_ref() } ],
                         "status": { "confirmed": true, "block_height": 42000 }
                     });
-                    HttpResponse::Ok().content_type("application/json").body(body.to_string())
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .body(body.to_string())
                 }),
             )
             .route(
@@ -363,7 +377,9 @@ async fn withdraw_sats_mints_a_voucher() {
         .uri("/pay/.withdraw-sats")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string())
+        .set_payload(
+            json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string(),
+        )
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200, "withdraw-sats must mint a voucher");
@@ -402,7 +418,9 @@ async fn withdraw_sats_rejects_insufficient_funding() {
                     "vout": [ { "value": 500, "scriptpubkey": spk.get_ref() } ],
                     "status": { "confirmed": true, "block_height": 42000 }
                 });
-                HttpResponse::Ok().content_type("application/json").body(body.to_string())
+                HttpResponse::Ok()
+                    .content_type("application/json")
+                    .body(body.to_string())
             }),
         )
     })
@@ -424,7 +442,9 @@ async fn withdraw_sats_rejects_insufficient_funding() {
         .uri("/pay/.withdraw-sats")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string())
+        .set_payload(
+            json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string(),
+        )
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 400, "insufficient funding ⇒ 400");

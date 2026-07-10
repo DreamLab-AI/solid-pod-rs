@@ -38,7 +38,11 @@ async fn seed(storage: &dyn Storage, resource_body: &str, resource_ct: &str) {
         .await
         .unwrap();
     storage
-        .put(RESOURCE, Bytes::from(resource_body.to_string()), resource_ct)
+        .put(
+            RESOURCE,
+            Bytes::from(resource_body.to_string()),
+            resource_ct,
+        )
         .await
         .unwrap();
 }
@@ -81,7 +85,10 @@ async fn get_transcodes_ntriples_to_jsonld() {
     let body = test::read_body(resp).await;
     let json: serde_json::Value =
         serde_json::from_slice(&body).expect("negotiated body must be valid JSON-LD");
-    assert!(json.is_array(), "JSON-LD expanded form is an array of nodes");
+    assert!(
+        json.is_array(),
+        "JSON-LD expanded form is an array of nodes"
+    );
     let text = json.to_string();
     assert!(
         text.contains("http://example.org/bob"),

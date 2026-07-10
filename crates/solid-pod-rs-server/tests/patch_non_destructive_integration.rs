@@ -149,8 +149,7 @@ async fn patch_refuses_unparseable_body_rather_than_destroying_it() {
     let state = AppState::new(storage.clone());
     let app = test::init_service(build_app(state)).await;
 
-    let update =
-        r#"INSERT DATA { <http://example.org/alice> <http://example.org/knows> <http://example.org/eve> . }"#;
+    let update = r#"INSERT DATA { <http://example.org/alice> <http://example.org/knows> <http://example.org/eve> . }"#;
     let req = test::TestRequest::patch()
         .uri(RESOURCE)
         .insert_header(("content-type", "application/sparql-update"))

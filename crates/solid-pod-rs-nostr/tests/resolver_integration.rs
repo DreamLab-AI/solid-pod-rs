@@ -79,7 +79,7 @@ async fn resolver_maps_nostr_to_webid_via_did_document() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/ld+json")
-                .set_body_json(&json!({
+                .set_body_json(json!({
                     "@id": format!("{}/profile#me", server.uri()),
                     "sameAs": format!("did:nostr:{PK}")
                 })),
@@ -125,7 +125,7 @@ async fn resolver_rejects_nostr_to_webid_without_backlink() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/ld+json")
-                .set_body_json(&json!({ "@id": format!("{}/victim#me", server.uri()) })),
+                .set_body_json(json!({ "@id": format!("{}/victim#me", server.uri()) })),
         )
         .mount(&server)
         .await;

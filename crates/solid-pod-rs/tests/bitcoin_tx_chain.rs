@@ -74,13 +74,16 @@ impl FixtureMempool {
 
     /// Seed a UTXO at `address` so `verify_mrc20_anchor` finds it.
     fn add_utxo_at(&mut self, address: &str, value: u64) {
-        self.utxos.entry(address.to_string()).or_default().push(Utxo {
-            txid: "00".repeat(32),
-            vout: 0,
-            value,
-            confirmed: true,
-            block_height: Some(840_000),
-        });
+        self.utxos
+            .entry(address.to_string())
+            .or_default()
+            .push(Utxo {
+                txid: "00".repeat(32),
+                vout: 0,
+                value,
+                confirmed: true,
+                block_height: Some(840_000),
+            });
     }
 }
 
@@ -150,19 +153,36 @@ async fn mint_then_transfer_twice_is_a_valid_hash_chained_trail() {
     let voucher = issuer_voucher(&mut mempool, &voucher_txid, 100_000);
 
     // ── MINT ──
-    let mint = mint_token("PROV", Some("Provenance Token"), 1_000, &voucher, network, 300, &mempool)
-        .await
-        .expect("mint must build");
+    let mint = mint_token(
+        "PROV",
+        Some("Provenance Token"),
+        1_000,
+        &voucher,
+        network,
+        300,
+        &mempool,
+    )
+    .await
+    .expect("mint must build");
     // Genesis state is seq 0, prev all-zero.
     assert_eq!(mint.state.seq, 0);
     assert_eq!(mint.state.prev, "0".repeat(64));
     // The genesis output pays the genesis chained-key address.
-    let genesis_addr = bt_address(&issuer_pubkey_hex(), &[mint.state_jcs.clone()], network).unwrap();
+    let genesis_addr = bt_address(
+        &issuer_pubkey_hex(),
+        std::slice::from_ref(&mint.state_jcs),
+        network,
+    )
+    .unwrap();
     assert_eq!(mint.address, genesis_addr);
     // The mint tx's single sig verifies offline.
     assert!(
-        verify_keypath_signature(&mint.tx.signing_xonly, &mint.tx.sighashes[0], &mint.tx.signatures[0])
-            .unwrap(),
+        verify_keypath_signature(
+            &mint.tx.signing_xonly,
+            &mint.tx.sighashes[0],
+            &mint.tx.signatures[0]
+        )
+        .unwrap(),
         "mint signature must verify"
     );
 
@@ -178,7 +198,7 @@ async fn mint_then_transfer_twice_is_a_valid_hash_chained_trail() {
         // by re-deriving the chained pubkey for the scriptPubKey.
         let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
             &issuer_pubkey_hex(),
-            &[mint.state_jcs.clone()],
+            std::slice::from_ref(&mint.state_jcs),
         )
         .unwrap();
         hex::encode(&chained[1..])
@@ -187,17 +207,29 @@ async fn mint_then_transfer_twice_is_a_valid_hash_chained_trail() {
 
     // ── TRANSFER #1: issuer → recipientA, 100 ──
     let recipient_a = "aa".repeat(32); // arbitrary recipient pubkey hex
-    let t1 = transfer_token_with_key(&trail, ISSUER_PRIVKEY, None, &recipient_a, 100, 300, &mempool)
-        .await
-        .expect("transfer 1 must build");
+    let t1 = transfer_token_with_key(
+        &trail,
+        ISSUER_PRIVKEY,
+        None,
+        &recipient_a,
+        100,
+        300,
+        &mempool,
+    )
+    .await
+    .expect("transfer 1 must build");
     assert_eq!(t1.state.seq, 1);
     // Chain link: state1.prev == sha256(jcs(genesis)).
     assert_eq!(t1.state.prev, sha256_hex(&mint.state_jcs));
     // verify_state_link (Phase 1/2 invariant) accepts genesis → state1.
     verify_state_link(&t1.state, &mint.state).expect("state link genesis→1 must verify");
     assert!(
-        verify_keypath_signature(&t1.tx.signing_xonly, &t1.tx.sighashes[0], &t1.tx.signatures[0])
-            .unwrap(),
+        verify_keypath_signature(
+            &t1.tx.signing_xonly,
+            &t1.tx.sighashes[0],
+            &t1.tx.signatures[0]
+        )
+        .unwrap(),
         "transfer 1 signature must verify"
     );
 
@@ -206,24 +238,38 @@ async fn mint_then_transfer_twice_is_a_valid_hash_chained_trail() {
     let mut trail = t1.trail.clone();
     trail.current_txid = t1_txid.clone();
     let t1_xonly = {
-        let chained =
-            solid_pod_rs::mrc20::bt_derive_chained_pubkey(&issuer_pubkey_hex(), &trail.state_strings)
-                .unwrap();
+        let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
+            &issuer_pubkey_hex(),
+            &trail.state_strings,
+        )
+        .unwrap();
         hex::encode(&chained[1..])
     };
     mempool.add_output(&t1_txid, 0, &format!("5120{t1_xonly}"));
 
     // ── TRANSFER #2: issuer → recipientB, 50 ──
     let recipient_b = "bb".repeat(32);
-    let t2 = transfer_token_with_key(&trail, ISSUER_PRIVKEY, None, &recipient_b, 50, 300, &mempool)
-        .await
-        .expect("transfer 2 must build");
+    let t2 = transfer_token_with_key(
+        &trail,
+        ISSUER_PRIVKEY,
+        None,
+        &recipient_b,
+        50,
+        300,
+        &mempool,
+    )
+    .await
+    .expect("transfer 2 must build");
     assert_eq!(t2.state.seq, 2);
     assert_eq!(t2.state.prev, sha256_hex(&t1.state_jcs));
     verify_state_link(&t2.state, &t1.state).expect("state link 1→2 must verify");
     assert!(
-        verify_keypath_signature(&t2.tx.signing_xonly, &t2.tx.sighashes[0], &t2.tx.signatures[0])
-            .unwrap(),
+        verify_keypath_signature(
+            &t2.tx.signing_xonly,
+            &t2.tx.sighashes[0],
+            &t2.tx.signatures[0]
+        )
+        .unwrap(),
         "transfer 2 signature must verify"
     );
 
@@ -266,7 +312,7 @@ async fn verify_mrc20_anchor_accepts_a_produced_transfer_state() {
     let genesis_xonly = {
         let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
             &issuer_pubkey_hex(),
-            &[mint.state_jcs.clone()],
+            std::slice::from_ref(&mint.state_jcs),
         )
         .unwrap();
         hex::encode(&chained[1..])
@@ -321,7 +367,7 @@ async fn anchor_state_notarises_a_state_hash() {
     let genesis_xonly = {
         let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
             &issuer_pubkey_hex(),
-            &[mint.state_jcs.clone()],
+            std::slice::from_ref(&mint.state_jcs),
         )
         .unwrap();
         hex::encode(&chained[1..])
@@ -330,8 +376,9 @@ async fn anchor_state_notarises_a_state_hash() {
 
     // Anchor a git commit SHA (40-hex). The state binds it via `anchor`.
     let commit_sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334";
-    let anchored =
-        anchor_state(&trail, ISSUER_PRIVKEY, commit_sha, 300, &mempool).await.unwrap();
+    let anchored = anchor_state(&trail, ISSUER_PRIVKEY, commit_sha, 300, &mempool)
+        .await
+        .unwrap();
 
     assert_eq!(anchored.state.seq, 1);
     assert_eq!(anchored.state.prev, sha256_hex(&mint.state_jcs));
@@ -340,7 +387,13 @@ async fn anchor_state_notarises_a_state_hash() {
     assert_eq!(anchored.state.ops[0].op, "urn:mono:op:anchor");
     // Balances carried forward unchanged (anchor doesn't move tokens).
     assert_eq!(
-        anchored.state.balances.clone().unwrap().get(&issuer_pubkey_hex()).copied(),
+        anchored
+            .state
+            .balances
+            .clone()
+            .unwrap()
+            .get(&issuer_pubkey_hex())
+            .copied(),
         Some(1_000)
     );
     verify_state_link(&anchored.state, &mint.state).expect("anchor state links to genesis");

@@ -95,9 +95,13 @@ struct VmEntry {
     controller: Option<String>,
     #[serde(default)]
     public_key_jwk: Option<JwkKey>,
+    // Deserialised for shape completeness of a DID verification-method entry;
+    // resolution keys off `public_key_jwk`, so these are captured but unread.
     #[serde(default)]
+    #[allow(dead_code)]
     public_key_multibase: Option<String>,
     #[serde(default, alias = "@type")]
+    #[allow(dead_code)]
     r#type: Option<serde_json::Value>,
 }
 
@@ -150,7 +154,7 @@ impl SelfSignedVerifier for LwsCidVerifier {
 
         // Parse header to check if this is an LWS-CID token (kid is a URL#fragment).
         let (hdr_b64, payload_b64, sig_b64) =
-            split_jws(envelope.proof).map_err(|e| SelfSignedError::Malformed(e))?;
+            split_jws(envelope.proof).map_err(SelfSignedError::Malformed)?;
 
         let header: JwtHeader = decode_segment(&hdr_b64)
             .map_err(|e| SelfSignedError::Malformed(format!("header: {e}")))?;
@@ -646,7 +650,6 @@ mod tests {
     }
 
     fn vk_to_jwk(vk: &k256::ecdsa::VerifyingKey) -> serde_json::Value {
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
         let point = vk.to_encoded_point(false);
         let x = B64URL.encode(point.x().unwrap());
         let y = B64URL.encode(point.y().unwrap());

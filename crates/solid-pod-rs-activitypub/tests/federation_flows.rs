@@ -235,7 +235,7 @@ async fn outbox_post_follow_passes_through() {
 
 #[tokio::test]
 async fn outbox_post_all_supported_activity_types_pass_through() {
-    let store = fresh_store().await;
+    let _store = fresh_store().await;
     let actor = sample_actor();
     let types = [
         "Update", "Delete", "Announce", "Like", "Undo", "Accept", "Reject", "Add", "Remove",

@@ -63,11 +63,7 @@ async fn git_backed_state() -> (AppState, tempfile::TempDir) {
 
     // Pod container dir + sibling ACL (the resolver reads `/{pod}.acl`).
     std::fs::create_dir_all(root.join("alice")).expect("create pod dir");
-    std::fs::write(
-        root.join("alice.acl"),
-        public_write_acl("/alice/"),
-    )
-    .expect("write acl");
+    std::fs::write(root.join("alice.acl"), public_write_acl("/alice/")).expect("write acl");
 
     // Initialise the pod git repo so the git-mark hook recognises it as
     // git-backed (`data_root/alice/.git` must be a dir).
@@ -130,8 +126,14 @@ async fn put_to_git_backed_pod_commits_and_writes_prov_sidecar() {
     let sidecar = repo.join("notes/hello.ttl.prov.ttl");
     assert!(sidecar.is_file(), "provenance sidecar must be written");
     let ttl = std::fs::read_to_string(&sidecar).expect("read sidecar");
-    assert!(ttl.contains("a prov:Activity"), "PROV-O activity missing:\n{ttl}");
-    assert!(ttl.contains("prov:wasGeneratedBy"), "wasGeneratedBy missing");
+    assert!(
+        ttl.contains("a prov:Activity"),
+        "PROV-O activity missing:\n{ttl}"
+    );
+    assert!(
+        ttl.contains("prov:wasGeneratedBy"),
+        "wasGeneratedBy missing"
+    );
     assert!(ttl.contains("git:commit"), "git:commit literal missing");
     assert!(
         ttl.contains("prov:generated </alice/notes/hello.ttl>"),
@@ -235,7 +237,11 @@ async fn non_git_pod_write_is_unaffected() {
         .set_payload(web::Bytes::from_static(b"<#a> <#b> <#c> ."))
         .to_request();
     let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 201, "non-git pod write must still succeed");
+    assert_eq!(
+        rsp.status().as_u16(),
+        201,
+        "non-git pod write must still succeed"
+    );
 
     assert!(
         !tmp.path().join("bob/note.ttl.prov.ttl").exists(),

@@ -174,8 +174,9 @@ async fn load_order_book(
     storage: &dyn Storage,
 ) -> Result<solid_pod_rs::trading::OrderBook, ActixError> {
     match storage.get(OFFERS_PATH).await {
-        Ok((bytes, _meta)) => serde_json::from_slice(&bytes)
-            .map_err(|e| actix_web::error::ErrorInternalServerError(format!("malformed offers: {e}"))),
+        Ok((bytes, _meta)) => serde_json::from_slice(&bytes).map_err(|e| {
+            actix_web::error::ErrorInternalServerError(format!("malformed offers: {e}"))
+        }),
         Err(_) => Ok(solid_pod_rs::trading::OrderBook::new()),
     }
 }
@@ -184,8 +185,9 @@ async fn save_order_book(
     storage: &dyn Storage,
     book: &solid_pod_rs::trading::OrderBook,
 ) -> Result<(), ActixError> {
-    let body = serde_json::to_vec(book)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("serialise offers: {e}")))?;
+    let body = serde_json::to_vec(book).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("serialise offers: {e}"))
+    })?;
     storage
         .put(OFFERS_PATH, Bytes::from(body), "application/json")
         .await
@@ -196,8 +198,9 @@ async fn save_order_book(
 /// Load the AMM pool registry from [`POOL_PATH`], or a fresh one if absent.
 async fn load_exchange(storage: &dyn Storage) -> Result<Exchange, ActixError> {
     match storage.get(POOL_PATH).await {
-        Ok((bytes, _meta)) => serde_json::from_slice(&bytes)
-            .map_err(|e| actix_web::error::ErrorInternalServerError(format!("malformed pool: {e}"))),
+        Ok((bytes, _meta)) => serde_json::from_slice(&bytes).map_err(|e| {
+            actix_web::error::ErrorInternalServerError(format!("malformed pool: {e}"))
+        }),
         Err(_) => Ok(Exchange::new()),
     }
 }
@@ -231,11 +234,11 @@ async fn require_did(req: &HttpRequest) -> Result<String, HttpResponse> {
 /// Map a [`PaymentError`] onto a JSS-shaped 4xx JSON response.
 fn payment_error_response(err: PaymentError) -> HttpResponse {
     match err {
-        PaymentError::InsufficientBalance { balance, cost } => HttpResponse::PaymentRequired()
-            .json(payment_required_body(balance, cost)),
-        PaymentError::Replay(msg) => {
-            HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Replay: {msg}") }))
+        PaymentError::InsufficientBalance { balance, cost } => {
+            HttpResponse::PaymentRequired().json(payment_required_body(balance, cost))
         }
+        PaymentError::Replay(msg) => HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("Replay: {msg}") })),
         PaymentError::InvalidTxo(msg) | PaymentError::InvalidState(msg) => {
             HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }))
         }
@@ -381,14 +384,16 @@ async fn handle_deposit(
     }
 
     let balance = ledger.get_balance(&did);
-    Ok(HttpResponse::Ok().content_type("application/json").json(serde_json::json!({
-        "did": did,
-        "deposited": amount,
-        "balance": balance,
-        "unit": "sat",
-        "txid": txo.txid,
-        "vout": txo.vout,
-    })))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "did": did,
+            "deposited": amount,
+            "balance": balance,
+            "unit": "sat",
+            "txid": txo.txid,
+            "vout": txo.vout,
+        })))
 }
 
 // ---------------------------------------------------------------------------
@@ -527,14 +532,16 @@ async fn handle_mrc20_deposit(
     }
 
     let balance = ledger.get_balance(did);
-    Ok(HttpResponse::Ok().content_type("application/json").json(serde_json::json!({
-        "did": did,
-        "deposited": result.amount,
-        "ticker": result.ticker,
-        "balance": balance,
-        "unit": "token",
-        "anchor": result.address,
-    })))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "did": did,
+            "deposited": result.amount,
+            "ticker": result.ticker,
+            "balance": balance,
+            "unit": "token",
+            "anchor": result.address,
+        })))
 }
 
 // ---------------------------------------------------------------------------
@@ -576,10 +583,14 @@ async fn handle_address(
         .unwrap_or_else(|| "tbtc4".to_string());
 
     // If chains are configured, the requested chain must be among them.
-    if !state.pay_config.chains.is_empty()
-        && !state.pay_config.chains.iter().any(|c| c.id == chain)
+    if !state.pay_config.chains.is_empty() && !state.pay_config.chains.iter().any(|c| c.id == chain)
     {
-        let enabled: Vec<&str> = state.pay_config.chains.iter().map(|c| c.id.as_str()).collect();
+        let enabled: Vec<&str> = state
+            .pay_config
+            .chains
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
             "error": format!("Chain not enabled: {chain}"),
             "enabledChains": enabled,
@@ -615,13 +626,18 @@ async fn handle_address(
     if let Some(u) = &user {
         response["user"] = serde_json::Value::String(u.clone());
     }
-    Ok(HttpResponse::Ok().content_type("application/json").json(response))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(response))
 }
 
 /// JSS parity (`pay.js:297`): `^did:nostr:[0-9a-f]{64}$`.
 fn is_valid_did_nostr(did: &str) -> bool {
     if let Some(hex) = did.strip_prefix("did:nostr:") {
-        hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     } else {
         false
     }
@@ -694,7 +710,9 @@ async fn handle_sell(
     );
     save_order_book(&*state.storage, &book).await?;
 
-    Ok(HttpResponse::Ok().content_type("application/json").json(order))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(order))
 }
 
 // ---------------------------------------------------------------------------
@@ -734,14 +752,16 @@ async fn handle_swap(
     }
     save_order_book(&*state.storage, &book).await?;
 
-    Ok(HttpResponse::Ok().content_type("application/json").json(serde_json::json!({
-        "swapped": result.amount_out,
-        "paid": result.amount_in,
-        "fee": result.fee,
-        "buyer": buyer,
-        "new_balance_in": result.new_balance_in,
-        "new_balance_out": result.new_balance_out,
-    })))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "swapped": result.amount_out,
+            "paid": result.amount_in,
+            "fee": result.fee,
+            "buyer": buyer,
+            "new_balance_in": result.new_balance_in,
+            "new_balance_out": result.new_balance_out,
+        })))
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,9 +1094,11 @@ async fn handle_buy(
     };
     let buyer_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
-        None => return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "NIP-98 authentication required"
-        }))),
+        None => {
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "NIP-98 authentication required"
+            })))
+        }
     };
 
     let token_cfg = match &state.pay_config.token {
@@ -1128,8 +1150,15 @@ async fn handle_buy(
         })));
     }
 
-    match execute_token_transfer(&state, &pay_token, &buyer_pubkey, &did, token_amount, sat_cost)
-        .await
+    match execute_token_transfer(
+        &state,
+        &pay_token,
+        &buyer_pubkey,
+        &did,
+        token_amount,
+        sat_cost,
+    )
+    .await
     {
         Ok((txid, proof, new_balance)) => Ok(HttpResponse::Ok().json(serde_json::json!({
             "bought": token_amount, "ticker": pay_token, "cost": sat_cost,
@@ -1153,9 +1182,11 @@ async fn handle_withdraw(
     };
     let user_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
-        None => return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "NIP-98 authentication required"
-        }))),
+        None => {
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "NIP-98 authentication required"
+            })))
+        }
     };
 
     let token_cfg = match &state.pay_config.token {
@@ -1202,8 +1233,15 @@ async fn handle_withdraw(
         })));
     }
 
-    match execute_token_transfer(&state, &pay_token, &user_pubkey, &did, token_amount, sat_cost)
-        .await
+    match execute_token_transfer(
+        &state,
+        &pay_token,
+        &user_pubkey,
+        &did,
+        token_amount,
+        sat_cost,
+    )
+    .await
     {
         Ok((txid, proof, new_balance)) => Ok(HttpResponse::Ok().json(serde_json::json!({
             "withdrawn": token_amount, "ticker": pay_token, "cost": sat_cost,
@@ -1248,8 +1286,9 @@ async fn handle_withdraw_sats(
     let req_body: WithdrawSatsBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
         Err(_) => {
-            return Ok(HttpResponse::BadRequest()
-                .json(serde_json::json!({"error": "Invalid JSON body"})));
+            return Ok(
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid JSON body"}))
+            );
         }
     };
     if req_body.amount == 0 {
@@ -1294,7 +1333,11 @@ async fn handle_withdraw_sats(
     let mempool = mempool_client(&state);
     use solid_pod_rs::mrc20::MempoolLookup;
     let funding_spk_hex = match mempool.tx(&funding.txid).await {
-        Ok(tx) => match tx.vout.get(funding.vout as usize).and_then(|o| o.scriptpubkey.clone()) {
+        Ok(tx) => match tx
+            .vout
+            .get(funding.vout as usize)
+            .and_then(|o| o.scriptpubkey.clone())
+        {
             Some(spk) => spk,
             None => {
                 return Ok(HttpResponse::BadRequest()
@@ -1306,7 +1349,12 @@ async fn handle_withdraw_sats(
 
     // Build the voucher tx (fresh-key voucher output + change) — the crypto
     // lives in `bitcoin_tx::build_withdraw_voucher` (JSS `pay.js:842-869`).
-    let voucher = match build_withdraw_voucher(&funding, &funding_spk_hex, req_body.amount, DEFAULT_FEE_SATS) {
+    let voucher = match build_withdraw_voucher(
+        &funding,
+        &funding_spk_hex,
+        req_body.amount,
+        DEFAULT_FEE_SATS,
+    ) {
         Ok(v) => v,
         Err(PaymentError::InvalidState(m)) if m.contains("funding") && m.contains("needed") => {
             return Ok(HttpResponse::BadRequest().json(serde_json::json!({

@@ -206,7 +206,9 @@ fn xonly_of(privkey: &[u8]) -> Result<[u8; 32], PaymentError> {
         .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
     let compressed = sk.public_key().to_sec1_bytes();
     if compressed.len() != 33 {
-        return Err(PaymentError::InvalidState("expected compressed pubkey".into()));
+        return Err(PaymentError::InvalidState(
+            "expected compressed pubkey".into(),
+        ));
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&compressed[1..]);
@@ -292,7 +294,9 @@ pub fn build_transaction(
     privkey: &[u8],
 ) -> Result<BuiltTx, PaymentError> {
     if inputs.is_empty() {
-        return Err(PaymentError::InvalidState("transaction has no inputs".into()));
+        return Err(PaymentError::InvalidState(
+            "transaction has no inputs".into(),
+        ));
     }
 
     // ── Determine the effective signing scalar (token.js:118-129) ──
@@ -526,7 +530,9 @@ pub fn parse_txo_voucher(uri: &str) -> Result<TxoVoucher, PaymentError> {
         .ok_or_else(|| PaymentError::InvalidTxo("voucher: missing '?amount='".into()))?;
 
     if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(PaymentError::InvalidTxo("voucher: txid must be 64 hex chars".into()));
+        return Err(PaymentError::InvalidTxo(
+            "voucher: txid must be 64 hex chars".into(),
+        ));
     }
     let vout: u32 = vout_str
         .parse()
@@ -554,8 +560,7 @@ pub fn parse_txo_voucher(uri: &str) -> Result<TxoVoucher, PaymentError> {
         txid: txid.to_string(),
         vout,
         amount: amount.ok_or_else(|| PaymentError::InvalidTxo("voucher: missing amount".into()))?,
-        privkey: privkey
-            .ok_or_else(|| PaymentError::InvalidTxo("voucher: missing key".into()))?,
+        privkey: privkey.ok_or_else(|| PaymentError::InvalidTxo("voucher: missing key".into()))?,
     })
 }
 
@@ -765,8 +770,7 @@ pub async fn transfer_token_with_key(
     let new_script = p2tr_script(&new_xonly)?;
     let new_addr = bt_address(&trail.pubkey_base, &all_strings, &trail.network)?;
 
-    let script_pubkey =
-        fetch_output_spk(mempool, &trail.current_txid, trail.current_vout).await?;
+    let script_pubkey = fetch_output_spk(mempool, &trail.current_txid, trail.current_vout).await?;
 
     // Chained privkey controlling the *current* UTXO chains over the strings
     // BEFORE the new state (token.js:366).
@@ -860,8 +864,7 @@ pub async fn anchor_state(
     let new_script = p2tr_script(&new_xonly)?;
     let new_addr = bt_address(&trail.pubkey_base, &all_strings, &trail.network)?;
 
-    let script_pubkey =
-        fetch_output_spk(mempool, &trail.current_txid, trail.current_vout).await?;
+    let script_pubkey = fetch_output_spk(mempool, &trail.current_txid, trail.current_vout).await?;
     let chained_priv = bt_derive_chained_privkey(issuer_privkey_hex, &trail.state_strings)?;
 
     let output_amount = checked_output(trail.current_amount, fee_sats)?;
@@ -904,7 +907,10 @@ fn serde_err(e: serde_json::Error) -> PaymentError {
 
 /// Derive the x-only pubkey at the end of a chained-key derivation (reuses
 /// `mrc20::bt_derive_chained_pubkey`, then drops the compressed prefix byte).
-fn chained_xonly(pubkey_base_hex: &str, state_strings: &[String]) -> Result<[u8; 32], PaymentError> {
+fn chained_xonly(
+    pubkey_base_hex: &str,
+    state_strings: &[String],
+) -> Result<[u8; 32], PaymentError> {
     let chained = bt_derive_chained_pubkey(pubkey_base_hex, state_strings)?;
     if chained.len() != 33 {
         return Err(PaymentError::InvalidState(format!(
@@ -946,7 +952,8 @@ async fn fetch_output_spk(
         .scriptpubkey
         .as_ref()
         .ok_or_else(|| PaymentError::InvalidState("output missing scriptpubkey".into()))?;
-    hex::decode(spk_hex).map_err(|e| PaymentError::InvalidState(format!("bad scriptpubkey hex: {e}")))
+    hex::decode(spk_hex)
+        .map_err(|e| PaymentError::InvalidState(format!("bad scriptpubkey hex: {e}")))
 }
 
 /// Result of [`build_withdraw_voucher`]: the broadcastable tx plus the
@@ -1186,11 +1193,18 @@ mod tests {
         let privkey = hex::decode(c["priv"].as_str().unwrap()).unwrap();
         let built = build_transaction(&inputs, &outputs, &privkey).unwrap();
 
-        assert_eq!(built.raw_hex, c["raw"].as_str().unwrap(), "case C raw tx hex must match JSS");
-        assert_eq!(built.sighashes, vec![
-            c["sighashes"][0].as_str().unwrap().to_string(),
-            c["sighashes"][1].as_str().unwrap().to_string(),
-        ]);
+        assert_eq!(
+            built.raw_hex,
+            c["raw"].as_str().unwrap(),
+            "case C raw tx hex must match JSS"
+        );
+        assert_eq!(
+            built.sighashes,
+            vec![
+                c["sighashes"][0].as_str().unwrap().to_string(),
+                c["sighashes"][1].as_str().unwrap().to_string(),
+            ]
+        );
     }
 
     // ── OFFLINE SIGNATURE VERIFICATION (every sig must verify) ───────────
@@ -1350,9 +1364,7 @@ mod tests {
         let internal = hex::decode(internal_hex).unwrap();
         // TapTweak over ONLY the internal key (key-path spend, empty merkle).
         let tweak = tagged_hash("TapTweak", &[&internal]);
-        let t = Scalar::from(
-            k256::elliptic_curve::ScalarPrimitive::from_slice(&tweak).unwrap(),
-        );
+        let t = Scalar::from(k256::elliptic_curve::ScalarPrimitive::from_slice(&tweak).unwrap());
 
         // lift_x(internal) with even Y (BIP-340 convention).
         let lifted = PublicKey::from_sec1_bytes(&{

@@ -229,10 +229,7 @@ mod tests {
             .arg("receive.denyCurrentBranch")
             .output()
             .unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout).trim(),
-            "updateInstead",
-        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "updateInstead",);
     }
 
     #[tokio::test]

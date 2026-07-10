@@ -274,7 +274,10 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> MempoolBlockAnchorer<M> 
     /// is unavailable (no storage) and returns an error explaining that
     /// [`with_storage`](Self::with_storage) is required.
     pub fn new(lookup: M) -> Self {
-        Self { lookup, storage: None }
+        Self {
+            lookup,
+            storage: None,
+        }
     }
 
     /// Wrap a transport + pod storage as a **fully-capable** [`BlockAnchorer`]
@@ -327,7 +330,9 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
         let mut stored = load_trail(storage, ticker)
             .await
             .map_err(|e| ProvenanceError::Anchor(format!("load trail {ticker}: {e}")))?
-            .ok_or_else(|| ProvenanceError::Anchor(format!("trail {ticker} not minted on this pod")))?;
+            .ok_or_else(|| {
+                ProvenanceError::Anchor(format!("trail {ticker} not minted on this pod"))
+            })?;
 
         if stored.network != network {
             return Err(ProvenanceError::Anchor(format!(
@@ -338,9 +343,15 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
 
         // Build the anchoring tx (appends a state notarising `state_hash`).
         let public = stored.to_public();
-        let update = anchor_state(&public, &stored.privkey, state_hash, DEFAULT_FEE_SATS, &self.lookup)
-            .await
-            .map_err(|e| ProvenanceError::Anchor(format!("build anchoring tx: {e}")))?;
+        let update = anchor_state(
+            &public,
+            &stored.privkey,
+            state_hash,
+            DEFAULT_FEE_SATS,
+            &self.lookup,
+        )
+        .await
+        .map_err(|e| ProvenanceError::Anchor(format!("build anchoring tx: {e}")))?;
 
         // Broadcast (JSS `broadcastTx`). The returned txid IS the anchoring tx.
         let txid = self
@@ -425,7 +436,10 @@ mod tests {
         assert_eq!(utxos.len(), 1);
         assert_eq!(utxos[0].vout, 0);
         assert_eq!(utxos[0].value, 9700);
-        assert!(utxos[0].confirmed, "status.confirmed must flatten onto Utxo");
+        assert!(
+            utxos[0].confirmed,
+            "status.confirmed must flatten onto Utxo"
+        );
         assert_eq!(utxos[0].block_height, Some(42_000));
     }
 
@@ -520,7 +534,11 @@ mod tests {
             let mut txs = self.txs.lock().unwrap();
             let outs = txs.entry(txid.to_string()).or_default();
             while outs.len() <= vout as usize {
-                outs.push(TxOut { value: 0, scriptpubkey: None, scriptpubkey_address: None });
+                outs.push(TxOut {
+                    value: 0,
+                    scriptpubkey: None,
+                    scriptpubkey_address: None,
+                });
             }
             outs[vout as usize] = TxOut {
                 value: 0,
@@ -532,12 +550,24 @@ mod tests {
     #[async_trait(?Send)]
     impl MempoolLookup for FixtureMempool {
         async fn address_utxos(&self, address: &str) -> Result<Vec<Utxo>, PaymentError> {
-            Ok(self.utxos.lock().unwrap().get(address).cloned().unwrap_or_default())
+            Ok(self
+                .utxos
+                .lock()
+                .unwrap()
+                .get(address)
+                .cloned()
+                .unwrap_or_default())
         }
         async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError> {
             Ok(TxInfo {
                 txid: txid.to_string(),
-                vout: self.txs.lock().unwrap().get(txid).cloned().unwrap_or_default(),
+                vout: self
+                    .txs
+                    .lock()
+                    .unwrap()
+                    .get(txid)
+                    .cloned()
+                    .unwrap_or_default(),
                 confirmed: true,
                 block_height: Some(42_000),
             })
@@ -555,8 +585,7 @@ mod tests {
     }
 
     // Issuer keypair (arbitrary) for deriving real anchor addresses.
-    const ISSUER_PRIVKEY: &str =
-        "0000000000000000000000000000000000000000000000000000000000000001";
+    const ISSUER_PRIVKEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
     fn issuer_pubkey() -> String {
         let sk = k256::SecretKey::from_slice(&hex::decode(ISSUER_PRIVKEY).unwrap()).unwrap();
         hex::encode(sk.public_key().to_sec1_bytes())
@@ -585,14 +614,20 @@ mod tests {
     async fn block_anchorer_verify_true_when_utxo_present() {
         let anchor = consistent_anchor();
         let anchorer = MempoolBlockAnchorer::new(FixtureMempool::with_utxo_at(&anchor.address));
-        assert!(anchorer.verify(&anchor).await.unwrap(), "present UTXO ⇒ verify true");
+        assert!(
+            anchorer.verify(&anchor).await.unwrap(),
+            "present UTXO ⇒ verify true"
+        );
     }
 
     #[tokio::test]
     async fn block_anchorer_verify_false_when_utxo_absent() {
         let anchor = consistent_anchor();
         let anchorer = MempoolBlockAnchorer::new(FixtureMempool::empty());
-        assert!(!anchorer.verify(&anchor).await.unwrap(), "absent UTXO ⇒ verify false");
+        assert!(
+            !anchorer.verify(&anchor).await.unwrap(),
+            "absent UTXO ⇒ verify false"
+        );
     }
 
     #[tokio::test]
@@ -623,7 +658,10 @@ mod tests {
         // The verify-only constructor leaves storage None ⇒ anchor() errors
         // with a clear message rather than panicking.
         let anchorer = MempoolBlockAnchorer::new(FixtureMempool::empty());
-        let err = anchorer.anchor("PROV", "deadbeef", "testnet4").await.unwrap_err();
+        let err = anchorer
+            .anchor("PROV", "deadbeef", "testnet4")
+            .await
+            .unwrap_err();
         match err {
             ProvenanceError::Anchor(m) => assert!(m.contains("with_storage")),
             other => panic!("expected Anchor(requires storage), got {other:?}"),
@@ -640,9 +678,7 @@ mod tests {
     /// Mint a genesis trail through the write-side, persist it (with the
     /// issuer secret), and register the genesis UTXO's scriptPubKey so a
     /// subsequent anchor can spend it. Returns `(storage, mempool, ticker)`.
-    async fn mint_and_store(
-        ticker: &str,
-    ) -> (std::sync::Arc<dyn Storage>, FixtureMempool, String) {
+    async fn mint_and_store(ticker: &str) -> (std::sync::Arc<dyn Storage>, FixtureMempool, String) {
         let mempool = FixtureMempool::empty();
         let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryBackend::new());
 
@@ -686,7 +722,7 @@ mod tests {
         let genesis_xonly = {
             let chained = solid_pod_rs::mrc20::bt_derive_chained_pubkey(
                 &issuer_pubkey(),
-                &[mint.state_jcs.clone()],
+                std::slice::from_ref(&mint.state_jcs),
             )
             .unwrap();
             hex::encode(&chained[1..])
@@ -752,7 +788,10 @@ mod tests {
     async fn block_anchorer_anchor_rejects_unminted_ticker() {
         let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryBackend::new());
         let anchorer = MempoolBlockAnchorer::with_storage(FixtureMempool::empty(), storage);
-        let err = anchorer.anchor("GHOST", "deadbeef", "testnet4").await.unwrap_err();
+        let err = anchorer
+            .anchor("GHOST", "deadbeef", "testnet4")
+            .await
+            .unwrap_err();
         match err {
             ProvenanceError::Anchor(m) => assert!(m.contains("not minted")),
             other => panic!("expected not-minted error, got {other:?}"),

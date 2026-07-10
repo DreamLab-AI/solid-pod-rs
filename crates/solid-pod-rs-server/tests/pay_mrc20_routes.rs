@@ -91,7 +91,9 @@ fn nip98_auth(method: &str, path: &str) -> (String, String) {
 /// Spawn a local HTTP server that answers `GET /api/address/{addr}/utxo`.
 /// If `addr == utxo_address` it returns a one-element UTXO list; otherwise
 /// (and for any other address) an empty list `[]`. Returns the base URL.
-async fn spawn_fixture_mempool(utxo_address: Option<String>) -> (String, actix_web::dev::ServerHandle) {
+async fn spawn_fixture_mempool(
+    utxo_address: Option<String>,
+) -> (String, actix_web::dev::ServerHandle) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let utxo_address = web::Data::new(utxo_address);
@@ -182,14 +184,16 @@ fn build_mrc20_fixture(amount: u64) -> (Mrc20State, Mrc20State, Vec<String>, Str
     // Where the anchoring UTXO must live (full chain → derived address).
     let anchor_address = bt_address(&issuer, &state_strings, NETWORK).unwrap();
 
-    (genesis, transfer, state_strings, anchor_address, pod_address)
+    (
+        genesis,
+        transfer,
+        state_strings,
+        anchor_address,
+        pod_address,
+    )
 }
 
-fn mrc20_deposit_body(
-    state: &Mrc20State,
-    prev: &Mrc20State,
-    state_strings: &[String],
-) -> Value {
+fn mrc20_deposit_body(state: &Mrc20State, prev: &Mrc20State, state_strings: &[String]) -> Value {
     json!({
         "type": "mrc20",
         "state": state,
@@ -226,7 +230,11 @@ async fn mrc20_deposit_credits_when_utxo_present() {
         .set_payload(serde_json::to_vec(&body).unwrap())
         .to_request();
     let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 200, "anchor with present UTXO should credit");
+    assert_eq!(
+        rsp.status().as_u16(),
+        200,
+        "anchor with present UTXO should credit"
+    );
     let j: Value = test::read_body_json(rsp).await;
     assert_eq!(j["deposited"], 100);
     assert_eq!(j["balance"], 100);
@@ -272,10 +280,7 @@ async fn mrc20_deposit_rejected_when_no_utxo() {
     );
 
     // No ledger was written (nothing credited).
-    let credited = match storage
-        .get("/.well-known/webledgers/webledgers.json")
-        .await
-    {
+    let credited = match storage.get("/.well-known/webledgers/webledgers.json").await {
         Ok((bytes, _)) => {
             let l: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
             l.get_balance(&did)
@@ -319,7 +324,11 @@ async fn mrc20_deposit_replay_is_rejected() {
         .set_payload(payload)
         .to_request();
     let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 400, "replayed state must be rejected");
+    assert_eq!(
+        rsp.status().as_u16(),
+        400,
+        "replayed state must be rejected"
+    );
     let j: Value = test::read_body_json(rsp).await;
     assert!(j["error"].as_str().unwrap_or("").contains("Replay"));
 
@@ -328,7 +337,11 @@ async fn mrc20_deposit_replay_is_rejected() {
         .await
         .unwrap();
     let ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ledger.get_balance(&did), 100, "replay must not double-credit");
+    assert_eq!(
+        ledger.get_balance(&did),
+        100,
+        "replay must not double-credit"
+    );
 
     handle.stop(false).await;
 }
@@ -350,7 +363,10 @@ async fn address_generic_and_per_user_are_deterministic_and_distinct() {
     assert_eq!(rsp.status().as_u16(), 200);
     let generic: Value = test::read_body_json(rsp).await;
     let generic_addr = generic["address"].as_str().unwrap().to_string();
-    assert!(generic_addr.starts_with("tb1p"), "testnet4 P2TR, got {generic_addr}");
+    assert!(
+        generic_addr.starts_with("tb1p"),
+        "testnet4 P2TR, got {generic_addr}"
+    );
     assert_eq!(generic["pubkey"], issuer_pubkey());
     assert!(generic.get("user").is_none());
 
@@ -367,7 +383,10 @@ async fn address_generic_and_per_user_are_deterministic_and_distinct() {
 
     // Distinct from the generic address, and determinism: a second call
     // yields the identical address.
-    assert_ne!(user_addr, generic_addr, "tweaked address must differ from generic");
+    assert_ne!(
+        user_addr, generic_addr,
+        "tweaked address must differ from generic"
+    );
 
     let req = test::TestRequest::get()
         .uri(&format!("/pay/.address?chain=tbtc4&user={user}"))
@@ -381,7 +400,7 @@ async fn address_generic_and_per_user_are_deterministic_and_distinct() {
     );
 
     // Cross-check the server's derivation against the library directly.
-    let expected = bt_address(&issuer_pubkey(), &[user.clone()], "testnet4").unwrap();
+    let expected = bt_address(&issuer_pubkey(), std::slice::from_ref(&user), "testnet4").unwrap();
     assert_eq!(user_addr, expected);
 }
 
@@ -396,7 +415,10 @@ async fn address_rejects_malformed_did() {
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 400, "malformed DID must be rejected");
     let j: Value = test::read_body_json(rsp).await;
-    assert!(j["error"].as_str().unwrap_or("").contains("Invalid user DID"));
+    assert!(j["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Invalid user DID"));
 }
 
 #[actix_web::test]

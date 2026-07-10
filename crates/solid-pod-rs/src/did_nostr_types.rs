@@ -390,7 +390,7 @@ fn url_path_declares_pubkey(tag_value: &str, pubkey: &str) -> bool {
         None => tag_value,
     };
     // Drop the query / fragment.
-    let path = match after_authority.find(|c: char| c == '?' || c == '#') {
+    let path = match after_authority.find(['?', '#']) {
         Some(k) => &after_authority[..k],
         None => after_authority,
     };
@@ -486,7 +486,10 @@ mod tests {
         assert_eq!(vm["id"], format!("{did}#key1"));
         assert_eq!(vm["type"], "Multikey");
         assert_eq!(vm["controller"], did);
-        assert!(vm.get("publicKeyHex").is_none(), "publicKeyHex must be dropped (I2)");
+        assert!(
+            vm.get("publicKeyHex").is_none(),
+            "publicKeyHex must be dropped (I2)"
+        );
         assert_eq!(
             vm["publicKeyMultibase"],
             format!("fe70102{PK_HEX}"),
@@ -570,11 +573,14 @@ mod tests {
             "picture": "https://example.com/alice.jpg",
             "created_at": 1737906600
         });
-        let follows = vec![
-            format!("did:nostr:{}", "ab".repeat(32)),
-        ];
+        let follows = vec![format!("did:nostr:{}", "ab".repeat(32))];
         let doc = render_did_document_complete(
-            &pk, &also, &[relay], Some(&profile), &follows, Some("2025-01-26T15:50:00Z"),
+            &pk,
+            &also,
+            &[relay],
+            Some(&profile),
+            &follows,
+            Some("2025-01-26T15:50:00Z"),
         );
         // Canonical core unchanged (spec-aligned).
         assert_eq!(doc["type"], "DIDNostr");
@@ -585,11 +591,17 @@ mod tests {
         assert_eq!(doc["alsoKnownAs"][1], "at://alice.bsky.social");
         // Relay service with trailing-slash endpoint.
         assert_eq!(doc["service"][0]["type"], "Relay");
-        assert_eq!(doc["service"][0]["serviceEndpoint"], "wss://relay.damus.io/");
+        assert_eq!(
+            doc["service"][0]["serviceEndpoint"],
+            "wss://relay.damus.io/"
+        );
         // Complete-form members.
         assert_eq!(doc["profile"]["name"], "Alice");
         assert_eq!(doc["profile"]["created_at"], 1737906600);
-        assert!(doc["follows"][0].as_str().unwrap().starts_with("did:nostr:"));
+        assert!(doc["follows"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("did:nostr:"));
         assert_eq!(doc["modified"], "2025-01-26T15:50:00Z");
     }
 
@@ -600,7 +612,10 @@ mod tests {
         let b = format_multibase_schnorr(&pk.0);
         assert_eq!(a, b, "deterministic");
         // C2: `f` + base16, NOT `z` + base58.
-        assert!(a.starts_with("fe70102"), "must be fe70102 prefix, not z-base58");
+        assert!(
+            a.starts_with("fe70102"),
+            "must be fe70102 prefix, not z-base58"
+        );
         // C1: fixed 71-char length (fe70102 + 64 hex).
         assert_eq!(a.len(), MULTIKEY_LEN);
         // C3: explicit lowercase-hex assertion + exact literal.
@@ -639,7 +654,9 @@ mod tests {
     #[test]
     fn parse_multibase_rejects_base58btc() {
         // The pre-ADR-125 `z`+base58 form must be rejected.
-        assert!(parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err());
+        assert!(
+            parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err()
+        );
     }
 
     #[test]
@@ -710,8 +727,14 @@ mod tests {
 
     #[test]
     fn verify_webid_tag_rejects_pubkey_in_host_or_fragment() {
-        assert!(!verify_webid_tag(&format!("https://{PK_HEX}.evil.example/"), PK_HEX));
-        assert!(!verify_webid_tag(&format!("https://evil.example/x#{PK_HEX}"), PK_HEX));
+        assert!(!verify_webid_tag(
+            &format!("https://{PK_HEX}.evil.example/"),
+            PK_HEX
+        ));
+        assert!(!verify_webid_tag(
+            &format!("https://evil.example/x#{PK_HEX}"),
+            PK_HEX
+        ));
         // A longer segment that merely starts with the key (no '.' boundary).
         assert!(!verify_webid_tag(
             &format!("https://pod.example/{PK_HEX}deadbeef"),

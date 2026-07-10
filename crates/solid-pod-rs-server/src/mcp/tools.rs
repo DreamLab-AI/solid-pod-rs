@@ -12,8 +12,8 @@ use std::time::Duration;
 use actix_web::HttpResponse;
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
-use solid_pod_rs::include_dir::Dir;
 use serde_json::{json, Value};
+use solid_pod_rs::include_dir::Dir;
 
 use super::skills;
 use super::{tool_error, tool_json, tool_text, McpCtx};
@@ -64,14 +64,12 @@ fn parent_path(p: &str) -> String {
 /// as `enforce_write`), so MCP tools and REST endpoints agree.
 async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode) -> bool {
     let is_write = matches!(mode, AccessMode::Write | AccessMode::Append);
-    let check_path = if is_write
-        && !path.ends_with('/')
-        && !state.storage.exists(path).await.unwrap_or(false)
-    {
-        parent_path(path)
-    } else {
-        path.to_string()
-    };
+    let check_path =
+        if is_write && !path.ends_with('/') && !state.storage.exists(path).await.unwrap_or(false) {
+            parent_path(path)
+        } else {
+            path.to_string()
+        };
 
     let acl_doc = match crate::find_effective_acl_dyn(&*state.storage, &check_path).await {
         Ok(doc) => doc,
@@ -486,7 +484,11 @@ fn build_acl_jsonld(path: &str, authorizations: &[Value]) -> Value {
                     );
                 }
             }
-            if auth.get("isDefault").and_then(Value::as_bool).unwrap_or(false) {
+            if auth
+                .get("isDefault")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 node["acl:default"] = json!({ "@id": path });
             }
             node
@@ -521,32 +523,37 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         Ok(d) => d,
         Err(e) => return tool_error(format!("internal: proposed ACL did not parse: {e}")),
     };
-    let caller_has_control = proposed.graph.as_deref().unwrap_or_default().iter().any(|a| {
-        let grants_control = ids_of(&a.mode)
-            .iter()
-            .any(|m| short_mode(m).eq_ignore_ascii_case("Control"));
-        if !grants_control {
-            return false;
-        }
-        let agents = ids_of(&a.agent);
-        if let Some(web_id) = ctx.web_id.as_deref() {
-            if agents.iter().any(|x| x == web_id) {
+    let caller_has_control = proposed
+        .graph
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|a| {
+            let grants_control = ids_of(&a.mode)
+                .iter()
+                .any(|m| short_mode(m).eq_ignore_ascii_case("Control"));
+            if !grants_control {
+                return false;
+            }
+            let agents = ids_of(&a.agent);
+            if let Some(web_id) = ctx.web_id.as_deref() {
+                if agents.iter().any(|x| x == web_id) {
+                    return true;
+                }
+            }
+            let classes = ids_of(&a.agent_class);
+            if classes.iter().any(|c| c == FOAF_AGENT || c == "foaf:Agent") {
                 return true;
             }
-        }
-        let classes = ids_of(&a.agent_class);
-        if classes.iter().any(|c| c == FOAF_AGENT || c == "foaf:Agent") {
-            return true;
-        }
-        if ctx.web_id.is_some()
-            && classes
-                .iter()
-                .any(|c| c == ACL_AUTH_AGENT || c == "acl:AuthenticatedAgent")
-        {
-            return true;
-        }
-        false
-    });
+            if ctx.web_id.is_some()
+                && classes
+                    .iter()
+                    .any(|c| c == ACL_AUTH_AGENT || c == "acl:AuthenticatedAgent")
+            {
+                return true;
+            }
+            false
+        });
     if !caller_has_control {
         return tool_error(format!(
             "write_acl refused: the proposed ACL would not grant Control to the caller ({}). \
@@ -618,7 +625,9 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
 
     let depth = ctx.federation_depth + 1;
     if depth > MAX_FEDERATION_DEPTH {
-        return tool_error(format!("federation depth exceeded (max {MAX_FEDERATION_DEPTH})"));
+        return tool_error(format!(
+            "federation depth exceeded (max {MAX_FEDERATION_DEPTH})"
+        ));
     }
 
     let remote_endpoint = format!("{}/mcp", pod_url.trim_end_matches('/'));
@@ -825,8 +834,8 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
         "identity": ctx.web_id.clone().map(Value::from).unwrap_or(Value::Null),
     }));
 
-    let body_stream = stream::once(async move { Ok::<Bytes, std::io::Error>(initial) }).chain(
-        stream::unfold(
+    let body_stream =
+        stream::once(async move { Ok::<Bytes, std::io::Error>(initial) }).chain(stream::unfold(
             (receiver, state, ctx, scope),
             |(mut rx, state, ctx, scope)| async move {
                 loop {
@@ -856,8 +865,7 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
                     return Some((Ok(chunk), (rx, state, ctx, scope)));
                 }
             },
-        ),
-    );
+        ));
 
     HttpResponse::Ok()
         .insert_header(("Content-Type", "text/event-stream"))

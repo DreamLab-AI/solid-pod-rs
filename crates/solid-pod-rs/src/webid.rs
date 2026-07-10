@@ -27,7 +27,11 @@ pub fn pod_root_url(pod_base: &str, pubkey: &str) -> String {
 /// Document URL of a user's WebID profile card:
 /// `{pod_base}/pods/{pubkey}/profile/card`.
 pub fn webid_document_url(pod_base: &str, pubkey: &str) -> String {
-    format!("{}/pods/{}/profile/card", pod_base.trim_end_matches('/'), pubkey)
+    format!(
+        "{}/pods/{}/profile/card",
+        pod_base.trim_end_matches('/'),
+        pubkey
+    )
 }
 
 /// WebID URI (the `#me` fragment): `{pod_base}/pods/{pubkey}/profile/card#me`.

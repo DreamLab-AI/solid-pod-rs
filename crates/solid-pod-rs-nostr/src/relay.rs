@@ -384,6 +384,10 @@ impl Relay {
     /// Returns `Ok(receiver_count)` on success or `Err(event)` if there
     /// are no active receivers. The error is non-fatal — callers
     /// typically ignore it.
+    // The `Err` carries the full un-sent `Event` (tokio's broadcast contract).
+    // It is deliberately not boxed: this is the documented public signature and
+    // the error is non-fatal, so keep the ergonomic `SendError<Event>`.
+    #[allow(clippy::result_large_err)]
     pub fn broadcast(&self, event: &Event) -> Result<usize, broadcast::error::SendError<Event>> {
         self.events_tx.send(event.clone())
     }
@@ -510,7 +514,9 @@ mod tests {
         let id = skeleton.canonical_id();
         let id_bytes = hex::decode(&id).unwrap();
         // Sign over the raw 32-byte id, exactly as a NIP-01 client does.
-        let sig = sk.sign_raw(&id_bytes, &[0u8; 32]).expect("schnorr sign_raw");
+        let sig = sk
+            .sign_raw(&id_bytes, &[0u8; 32])
+            .expect("schnorr sign_raw");
         Event {
             id,
             pubkey: pubkey_hex,

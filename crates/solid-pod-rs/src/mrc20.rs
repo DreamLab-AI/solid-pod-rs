@@ -178,7 +178,7 @@ pub fn extract_transfers_to<'a>(state: &'a Mrc20State, to_address: &str) -> Vec<
         .filter(|op| {
             op.op == TRANSFER_OP
                 && op.to.as_deref() == Some(to_address)
-                && op.amt.map_or(false, |a| a > 0)
+                && op.amt.is_some_and(|a| a > 0)
         })
         .collect()
 }
@@ -314,8 +314,8 @@ mod anchor {
     fn tagged_hash(tag: &str, msgs: &[&[u8]]) -> [u8; 32] {
         let tag_hash = Sha256::digest(tag.as_bytes());
         let mut hasher = Sha256::new();
-        hasher.update(&tag_hash);
-        hasher.update(&tag_hash);
+        hasher.update(tag_hash);
+        hasher.update(tag_hash);
         for msg in msgs {
             hasher.update(msg);
         }
@@ -323,8 +323,9 @@ mod anchor {
     }
 
     fn bytes_to_scalar(bytes: &[u8; 32]) -> Option<Scalar> {
-        let wide = k256::FieldBytes::from_slice(bytes);
-        Option::from(Scalar::from_repr(*wide))
+        let mut wide = k256::FieldBytes::default();
+        wide.copy_from_slice(bytes);
+        Option::from(Scalar::from_repr(wide))
     }
 
     /// Compute the BIP-341 TapTweak scalar for a compressed pubkey and state string.
@@ -355,13 +356,13 @@ mod anchor {
 
         let point = k256::PublicKey::from_sec1_bytes(&pubkey_bytes)
             .map_err(|e| PaymentError::InvalidState(format!("bad pubkey: {e}")))?;
-        let mut p = ProjectivePoint::from(point.as_affine().clone());
+        let mut p = ProjectivePoint::from(*point.as_affine());
         let mut current_compressed = pubkey_bytes;
 
         for state_jcs in state_strings {
             let t = bt_scalar(&current_compressed, state_jcs)
                 .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
-            p = p + (ProjectivePoint::GENERATOR * t);
+            p += ProjectivePoint::GENERATOR * t;
             let affine = p.to_affine();
             let encoded = k256::PublicKey::from_affine(affine)
                 .map_err(|e| PaymentError::InvalidState(format!("point at infinity: {e}")))?;
@@ -389,7 +390,7 @@ mod anchor {
         for state_jcs in state_strings {
             let t = bt_scalar(&current_compressed, state_jcs)
                 .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
-            d = d + t;
+            d += t;
             let new_sk = SecretKey::new(d.into());
             current_compressed = new_sk.public_key().to_sec1_bytes().to_vec();
         }
@@ -434,9 +435,9 @@ mod anchor {
         for &v in values {
             let b = chk >> 25;
             chk = ((chk & 0x1ffffff) << 5) ^ (v as u32);
-            for i in 0..5 {
+            for (i, &g) in GEN.iter().enumerate() {
                 if (b >> i) & 1 != 0 {
-                    chk ^= GEN[i];
+                    chk ^= g;
                 }
             }
         }
@@ -864,7 +865,7 @@ mod tests {
             supply: 1000,
             pubkey_base: "02".to_string() + &"ab".repeat(32),
             states: vec![genesis_state()],
-            state_strings: vec![jcs(&serde_json::to_value(&genesis_state()).unwrap())],
+            state_strings: vec![jcs(&serde_json::to_value(genesis_state()).unwrap())],
             current_txid: "a".repeat(64),
             current_vout: 0,
             current_amount: 9700,
@@ -912,7 +913,9 @@ mod tests {
         }
         impl FixtureMempool {
             fn empty() -> Self {
-                Self { utxos: HashMap::new() }
+                Self {
+                    utxos: HashMap::new(),
+                }
             }
             /// Register one UTXO at `address` (value/vout arbitrary but plausible).
             fn with_utxo_at(address: &str) -> Self {
@@ -1067,7 +1070,13 @@ mod tests {
             let mp = FixtureMempool::empty();
 
             let result = block_on(verify_mrc20_anchor(
-                &next, &genesis, "recipient", &pubkey, &[], "testnet4", &mp,
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &[],
+                "testnet4",
+                &mp,
             ));
             assert!(result.is_err());
         }
@@ -1163,7 +1172,10 @@ mod tests {
                 "testnet4",
                 &mp,
             ));
-            assert!(result.is_err(), "UTXO at a non-derived address must not verify");
+            assert!(
+                result.is_err(),
+                "UTXO at a non-derived address must not verify"
+            );
         }
     }
 }

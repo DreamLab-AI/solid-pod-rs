@@ -517,10 +517,19 @@ mod tests {
             protected_resource_for_acl("/victim/.acl").as_deref(),
             Some("/victim/")
         );
-        assert_eq!(protected_resource_for_acl("/a/b.acl").as_deref(), Some("/a/b"));
+        assert_eq!(
+            protected_resource_for_acl("/a/b.acl").as_deref(),
+            Some("/a/b")
+        );
         assert_eq!(protected_resource_for_acl("/.acl").as_deref(), Some("/"));
-        assert_eq!(protected_resource_for_acl("/a/b.meta").as_deref(), Some("/a/b"));
-        assert_eq!(protected_resource_for_acl("/dir/.meta").as_deref(), Some("/dir/"));
+        assert_eq!(
+            protected_resource_for_acl("/a/b.meta").as_deref(),
+            Some("/a/b")
+        );
+        assert_eq!(
+            protected_resource_for_acl("/dir/.meta").as_deref(),
+            Some("/dir/")
+        );
         assert_eq!(protected_resource_for_acl("/.meta").as_deref(), Some("/"));
         assert_eq!(protected_resource_for_acl(".acl").as_deref(), Some("/"));
         // Not a sidecar.

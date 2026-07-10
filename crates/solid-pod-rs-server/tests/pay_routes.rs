@@ -269,8 +269,7 @@ async fn offers_sell_swap_round_trip() {
         .get("/.well-known/webledgers/webledgers.json")
         .await
         .unwrap();
-    let mut ledger: solid_pod_rs::payments::WebLedger =
-        serde_json::from_slice(&bytes).unwrap();
+    let mut ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
     ledger.credit_currency(&seller_did, "tbtc3", 1_000);
     storage
         .put(

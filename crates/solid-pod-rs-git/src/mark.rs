@@ -175,15 +175,7 @@ impl GitMarker for ShellGitMarker {
         let email_cfg = format!("user.email={agent_did}");
         let commit_res = git(
             repo,
-            &[
-                "-c",
-                &name_cfg,
-                "-c",
-                &email_cfg,
-                "commit",
-                "-m",
-                message,
-            ],
+            &["-c", &name_cfg, "-c", &email_cfg, "commit", "-m", message],
         )
         .await;
 
@@ -304,7 +296,12 @@ mod tests {
 
         write_file(td.path(), "notes/hello.ttl", "<a> <b> <c> .").await;
         let mark = marker
-            .mark_write(td.path(), "notes/hello.ttl", "did:nostr:abcd", "PUT /notes/hello.ttl")
+            .mark_write(
+                td.path(),
+                "notes/hello.ttl",
+                "did:nostr:abcd",
+                "PUT /notes/hello.ttl",
+            )
             .await
             .unwrap();
 
@@ -320,9 +317,13 @@ mod tests {
         assert_eq!(head, mark.commit_sha);
 
         // The agent did:nostr is the author email on the commit.
-        let email = git(td.path(), &["log", "-1", "--format=%ae"]).await.unwrap();
+        let email = git(td.path(), &["log", "-1", "--format=%ae"])
+            .await
+            .unwrap();
         assert_eq!(email, "did:nostr:abcd");
-        let name = git(td.path(), &["log", "-1", "--format=%an"]).await.unwrap();
+        let name = git(td.path(), &["log", "-1", "--format=%an"])
+            .await
+            .unwrap();
         assert_eq!(name, "solid-pod-rs");
     }
 

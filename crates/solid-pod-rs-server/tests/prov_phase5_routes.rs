@@ -152,13 +152,17 @@ async fn spawn_fixture() -> (String, actix_web::dev::ServerHandle) {
                         "vout": [ { "value": 50000, "scriptpubkey": spk.get_ref() } ],
                         "status": { "confirmed": true, "block_height": 42000 }
                     });
-                    HttpResponse::Ok().content_type("application/json").body(body.to_string())
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .body(body.to_string())
                 }),
             )
             .route(
                 "/api/address/{addr}/utxo",
                 web::get().to(|_p: web::Path<String>| async {
-                    HttpResponse::Ok().content_type("application/json").body("[]")
+                    HttpResponse::Ok()
+                        .content_type("application/json")
+                        .body("[]")
                 }),
             )
             .route(
@@ -278,8 +282,13 @@ async fn high_value_write_records_both_tiers() {
     }
     let (mempool_url, handle) = spawn_fixture().await;
     // Container `/{pod}/hi/` carries ProvenanceAnchor "always" ⇒ inline anchor.
-    let (state, tmp, pod) =
-        git_pod_with_trail(mempool_url, &format!("/{}/hi/", owner_xonly()), Some("always"), 100).await;
+    let (state, tmp, pod) = git_pod_with_trail(
+        mempool_url,
+        &format!("/{}/hi/", owner_xonly()),
+        Some("always"),
+        100,
+    )
+    .await;
     let repo = tmp.path().join(&pod);
     let app = test::init_service(build_app(state)).await;
 
@@ -296,8 +305,14 @@ async fn high_value_write_records_both_tiers() {
     // anchor (bt:txid) — the two tiers composed.
     let ttl = read_sidecar(&repo, "hi/receipt.ttl").expect("sidecar written");
     assert!(ttl.contains("git:commit"), "git-mark tier missing:\n{ttl}");
-    assert!(ttl.contains("bt:txid"), "anchor tier missing (HighValue):\n{ttl}");
-    assert!(ttl.contains("prov:wasDerivedFrom"), "anchor↔commit binding missing");
+    assert!(
+        ttl.contains("bt:txid"),
+        "anchor tier missing (HighValue):\n{ttl}"
+    );
+    assert!(
+        ttl.contains("prov:wasDerivedFrom"),
+        "anchor↔commit binding missing"
+    );
 
     handle.stop(false).await;
 }
@@ -368,7 +383,11 @@ async fn prov_resolve_maps_commit_to_resource() {
     let body: Value = test::read_body_json(rsp).await;
     assert_eq!(body["resource"], json!(format!("/{pod}/r/doc.ttl")));
     assert_eq!(body["commit"]["sha"], json!(sha));
-    assert_eq!(body["anchored"], json!(false), "git-only mark is not anchored");
+    assert_eq!(
+        body["anchored"],
+        json!(false),
+        "git-only mark is not anchored"
+    );
     assert!(body["prov_ttl"].as_str().unwrap().contains("git:commit"));
 
     // An unknown commit → 404.
@@ -383,7 +402,11 @@ async fn prov_resolve_maps_commit_to_resource() {
         .uri(&format!("/{pod}/r/doc.ttl.prov.ttl"))
         .to_request();
     let sc = test::call_service(&app, sidecar_get).await;
-    assert_eq!(sc.status().as_u16(), 200, "the .prov.ttl sidecar must be GETtable");
+    assert_eq!(
+        sc.status().as_u16(),
+        200,
+        "the .prov.ttl sidecar must be GETtable"
+    );
     let sc_body = test::read_body(sc).await;
     assert!(
         String::from_utf8_lossy(&sc_body).contains("a prov:Activity"),
@@ -418,7 +441,9 @@ async fn prov_anchor_upgrade_is_payment_gated_and_owner_only() {
         .to_request();
     assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
     let sha = last_commit_sha(&repo);
-    assert!(!read_sidecar(&repo, "up/settle.ttl").unwrap().contains("bt:txid"));
+    assert!(!read_sidecar(&repo, "up/settle.ttl")
+        .unwrap()
+        .contains("bt:txid"));
 
     let anchor_path = format!("/{pod}/_prov/anchor");
     let body = json!({"commit_sha": sha}).to_string();
@@ -442,12 +467,19 @@ async fn prov_anchor_upgrade_is_payment_gated_and_owner_only() {
     assert_eq!(rsp.status().as_u16(), 200, "owner anchor upgrade must 200");
     let out: Value = test::read_body_json(rsp).await;
     assert_eq!(out["commit_sha"], json!(sha));
-    assert_eq!(out["anchor"]["state_hash"], json!(sha), "anchor commits to the git SHA");
+    assert_eq!(
+        out["anchor"]["state_hash"],
+        json!(sha),
+        "anchor commits to the git SHA"
+    );
     assert_eq!(out["charged_sats"], json!(5));
 
     // The sidecar now carries the anchor.
     let ttl = read_sidecar(&repo, "up/settle.ttl").unwrap();
-    assert!(ttl.contains("bt:txid"), "sidecar must be upgraded with the anchor:\n{ttl}");
+    assert!(
+        ttl.contains("bt:txid"),
+        "sidecar must be upgraded with the anchor:\n{ttl}"
+    );
 
     // And `_prov/{sha}` now reports anchored=true.
     let resolve = test::TestRequest::get()
@@ -491,7 +523,9 @@ async fn prov_anchor_upgrade_402_on_insufficient_balance() {
     assert_eq!(rsp.status().as_u16(), 402, "insufficient balance must 402");
 
     // No anchor was written (the gate ran before the on-chain action).
-    assert!(!read_sidecar(&repo, "poor/x.ttl").unwrap().contains("bt:txid"));
+    assert!(!read_sidecar(&repo, "poor/x.ttl")
+        .unwrap()
+        .contains("bt:txid"));
 
     handle.stop(false).await;
 }
@@ -509,8 +543,13 @@ async fn epoch_policy_batches_then_anchors_once() {
     std::env::set_var("JSS_PROV_EPOCH_SIZE", "3");
 
     let (mempool_url, handle) = spawn_fixture().await;
-    let (state, tmp, pod) =
-        git_pod_with_trail(mempool_url, &format!("/{}/ep/", owner_xonly()), Some("epoch"), 100).await;
+    let (state, tmp, pod) = git_pod_with_trail(
+        mempool_url,
+        &format!("/{}/ep/", owner_xonly()),
+        Some("epoch"),
+        100,
+    )
+    .await;
     let repo = tmp.path().join(&pod);
     let storage = state.storage.clone();
     let app = test::init_service(build_app(state)).await;
@@ -526,7 +565,10 @@ async fn epoch_policy_batches_then_anchors_once() {
         assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
         // Per-write sidecars are git-only (epoch defers anchoring).
         let ttl = read_sidecar(&repo, &format!("ep/n{i}.ttl")).unwrap();
-        assert!(!ttl.contains("bt:txid"), "epoch write {i} must not anchor inline");
+        assert!(
+            !ttl.contains("bt:txid"),
+            "epoch write {i} must not anchor inline"
+        );
     }
     // The pending epoch batch holds the two commit SHAs.
     let (pending, _) = storage.get("/.well-known/prov/epoch.json").await.unwrap();
@@ -544,16 +586,26 @@ async fn epoch_policy_batches_then_anchors_once() {
 
     let (pending2, _) = storage.get("/.well-known/prov/epoch.json").await.unwrap();
     let batch2: Vec<String> = serde_json::from_slice(&pending2).unwrap();
-    assert!(batch2.is_empty(), "epoch must reset after anchoring the batch root");
+    assert!(
+        batch2.is_empty(),
+        "epoch must reset after anchoring the batch root"
+    );
 
     // The trail advanced by exactly one state (the single batch anchor) —
     // proving ONE Bitcoin tx notarised all three commits.
     let (trail_bytes, _) = storage.get("/.well-known/token/prov.json").await.unwrap();
     let trail: Value = serde_json::from_slice(&trail_bytes).unwrap();
     let states = trail["states"].as_array().unwrap();
-    assert_eq!(states.len(), 2, "genesis + ONE epoch anchor (not one per commit)");
+    assert_eq!(
+        states.len(),
+        2,
+        "genesis + ONE epoch anchor (not one per commit)"
+    );
     // The anchor's state notarises the epoch Merkle root, not a single SHA.
-    assert!(states[1]["anchor"].is_string(), "the appended state carries the batch-root anchor");
+    assert!(
+        states[1]["anchor"].is_string(),
+        "the appended state carries the batch-root anchor"
+    );
 
     std::env::remove_var("JSS_PROV_EPOCH_SIZE");
     handle.stop(false).await;

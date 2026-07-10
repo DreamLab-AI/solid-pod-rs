@@ -227,7 +227,10 @@ async fn handle_resolve(
     let (pod, commit_sha) = path.into_inner();
 
     let Some(repo) = pod_repo_path(&state, &pod) else {
-        return Ok(prov_err("git provenance not available (no FS backend / invalid pod)", 501));
+        return Ok(prov_err(
+            "git provenance not available (no FS backend / invalid pod)",
+            501,
+        ));
     };
     if !repo.join(".git").is_dir() {
         return Ok(prov_err("pod is not git-backed", 404));
@@ -237,18 +240,17 @@ async fn handle_resolve(
         Ok(r) => r,
         Err(e) => {
             let code = e.status_code();
-            return Ok(prov_err(&format!("commit not found: {e}"), if code == 404 { 404 } else { 400 }));
+            return Ok(prov_err(
+                &format!("commit not found: {e}"),
+                if code == 404 { 404 } else { 400 },
+            ));
         }
     };
 
     // Pick the resource the write targeted: the first non-sidecar file the
     // commit touched. (A git-mark commits exactly one content file + nothing
     // else; ACL/meta/prov writes are never marked, see `git_mark_write`.)
-    let resource_rel = resolved
-        .files
-        .iter()
-        .find(|f| !is_sidecar(f))
-        .cloned();
+    let resource_rel = resolved.files.iter().find(|f| !is_sidecar(f)).cloned();
     let Some(resource_rel) = resource_rel else {
         return Ok(prov_err("commit touched no content resource", 404));
     };
@@ -283,7 +285,9 @@ async fn handle_resolve(
         "anchored": sidecar_ttl.as_deref().map(|t| t.contains("bt:txid")).unwrap_or(false),
     });
 
-    Ok(HttpResponse::Ok().content_type("application/json").json(body))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(body))
 }
 
 // ---------------------------------------------------------------------------
@@ -420,20 +424,22 @@ async fn handle_anchor(
         );
     }
 
-    Ok(HttpResponse::Ok().content_type("application/json").json(serde_json::json!({
-        "pod": pod,
-        "resource": resource,
-        "commit_sha": resolved.hash,
-        "anchor": {
-            "ticker": anchor.ticker,
-            "txid": anchor.txid,
-            "vout": anchor.vout,
-            "address": anchor.address,
-            "network": anchor.network,
-            "state_hash": anchor.state_hash,
-        },
-        "charged_sats": price,
-    })))
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "pod": pod,
+            "resource": resource,
+            "commit_sha": resolved.hash,
+            "anchor": {
+                "ticker": anchor.ticker,
+                "txid": anchor.txid,
+                "vout": anchor.vout,
+                "address": anchor.address,
+                "network": anchor.network,
+                "state_hash": anchor.state_hash,
+            },
+            "charged_sats": price,
+        })))
 }
 
 // ---------------------------------------------------------------------------
@@ -521,12 +527,6 @@ fn prov_err(msg: &str, status: u16) -> HttpResponse {
 /// `_prov` path segments are never treated as pod resources (mirrors the
 /// `/pods/{pk}/_git/*` ordering).
 pub fn register(app: &mut web::ServiceConfig) {
-    app.route(
-        "/{pod}/_prov/anchor",
-        web::post().to(handle_anchor),
-    )
-    .route(
-        "/{pod}/_prov/{commit_sha}",
-        web::get().to(handle_resolve),
-    );
+    app.route("/{pod}/_prov/anchor", web::post().to(handle_anchor))
+        .route("/{pod}/_prov/{commit_sha}", web::get().to(handle_resolve));
 }

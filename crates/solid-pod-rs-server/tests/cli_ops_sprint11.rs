@@ -11,9 +11,14 @@ use solid_pod_rs_idp::{
     InMemoryInviteStore, InMemoryUserStore, InviteStore, User, UserStore, UserStoreError,
 };
 use solid_pod_rs_server::cli::{
-    run_account_delete, run_invite_create, run_quota_reconcile, AccountDeleteArgs,
-    InviteCreateArgs, Prompt, QuotaReconcileArgs,
+    run_account_delete, run_invite_create, AccountDeleteArgs, InviteCreateArgs, Prompt,
 };
+// Quota-reconcile CLI surface and its temp-dir fixtures are exercised only by
+// the `#[cfg(feature = "quota")]` tests below; gate the imports so a
+// default-feature build does not flag them as unused (CI runs `-D warnings`).
+#[cfg(feature = "quota")]
+use solid_pod_rs_server::cli::{run_quota_reconcile, QuotaReconcileArgs};
+#[cfg(feature = "quota")]
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------

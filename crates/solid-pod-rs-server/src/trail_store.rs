@@ -102,11 +102,18 @@ pub async fn load_trail(
 
 /// Persist a trail (JSS `saveTrail`, `token.js:205-208`). Pretty-printed to
 /// match the JSS `JSON.stringify(trail, null, 2)` file format.
-pub async fn save_trail(storage: &Arc<dyn Storage>, trail: &StoredTrail) -> Result<(), PaymentError> {
+pub async fn save_trail(
+    storage: &Arc<dyn Storage>,
+    trail: &StoredTrail,
+) -> Result<(), PaymentError> {
     let body = serde_json::to_vec_pretty(trail)
         .map_err(|e| PaymentError::Store(format!("serialise trail: {e}")))?;
     storage
-        .put(&trail_path(&trail.ticker), Bytes::from(body), "application/json")
+        .put(
+            &trail_path(&trail.ticker),
+            Bytes::from(body),
+            "application/json",
+        )
         .await
         .map_err(|e| PaymentError::Store(format!("save trail: {e}")))?;
     Ok(())
@@ -163,7 +170,10 @@ mod tests {
         // The public type has no privkey field; round-trip its JSON and assert
         // the secret is absent.
         let json = serde_json::to_string(&public).unwrap();
-        assert!(!json.contains(&t.privkey), "privkey must not appear in public trail");
+        assert!(
+            !json.contains(&t.privkey),
+            "privkey must not appear in public trail"
+        );
         assert_eq!(public.ticker, "PROV");
         assert_eq!(public.current_amount, 9700);
     }
@@ -189,7 +199,10 @@ mod tests {
     async fn save_then_load_round_trips() {
         let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
         save_trail(&storage, &sample()).await.unwrap();
-        let got = load_trail(&storage, "PROV").await.unwrap().expect("trail present");
+        let got = load_trail(&storage, "PROV")
+            .await
+            .unwrap()
+            .expect("trail present");
         assert_eq!(got.ticker, "PROV");
         assert_eq!(got.privkey, "07".repeat(32));
         assert_eq!(got.states.len(), 1);

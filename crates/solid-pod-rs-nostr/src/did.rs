@@ -146,6 +146,8 @@ mod tests {
         // ACCEPT path: round-trips to the identical key (I2).
         assert_eq!(parse_multibase_schnorr(&a).unwrap(), pk);
         // Reject the pre-pivot z-base58 form.
-        assert!(parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err());
+        assert!(
+            parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err()
+        );
     }
 }

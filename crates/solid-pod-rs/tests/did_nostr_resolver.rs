@@ -73,9 +73,18 @@ fn did_nostr_document_emits_canonical_schema() {
     assert_eq!(vm["controller"], did);
     assert_eq!(vm["id"], format!("{did}#key1"));
     // The 2019 suite + publicKeyHex are GONE; publicKeyMultibase is canonical.
-    assert!(vm.get("publicKeyHex").is_none(), "publicKeyHex must be dropped");
-    let mb = vm["publicKeyMultibase"].as_str().expect("publicKeyMultibase");
-    assert_eq!(mb, format!("fe70102{TEST_PUBKEY}"), "fe70102 + x-only hex (I2)");
+    assert!(
+        vm.get("publicKeyHex").is_none(),
+        "publicKeyHex must be dropped"
+    );
+    let mb = vm["publicKeyMultibase"]
+        .as_str()
+        .expect("publicKeyMultibase");
+    assert_eq!(
+        mb,
+        format!("fe70102{TEST_PUBKEY}"),
+        "fe70102 + x-only hex (I2)"
+    );
     assert_eq!(mb.len(), 71);
     assert_eq!(mb, mb.to_lowercase(), "lowercase hex (C3)");
     // I2: multibase body round-trips to the DID body.

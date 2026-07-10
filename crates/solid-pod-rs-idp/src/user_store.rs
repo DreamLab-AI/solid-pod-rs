@@ -180,6 +180,7 @@ impl InMemoryUserStore {
 
     /// Create a user with username and optional Nostr pubkey for
     /// Schnorr SSO typed-username fallback testing.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_user_with_nostr(
         &self,
         id: impl Into<String>,

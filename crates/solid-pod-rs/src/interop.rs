@@ -199,6 +199,11 @@ pub fn dev_session(webid: impl Into<String>, is_admin: bool) -> DevSession {
 // Tests
 // ---------------------------------------------------------------------------
 
+// These unit tests sit next to the interop functions they cover; the
+// did:nostr resolver and NodeInfo surfaces below were appended later. When
+// `did-nostr` is cfg'd out (e.g. the oidc/s3 CI feature cells) this becomes a
+// test module followed by items, which is intentional here.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

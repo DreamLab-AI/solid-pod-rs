@@ -67,9 +67,7 @@ pub use auth::{AuthError, BasicNostrExtractor, GitAuth};
 pub use config::{find_git_dir, GitDir};
 pub use error::GitError;
 pub use guard::{extract_repo_slug, path_safe};
-pub use identity::{
-    write_agent_identity, AgentIdentityWritten, AGENT_DID_FILE, NOSTR_PRIVKEY_KEY,
-};
+pub use identity::{write_agent_identity, AgentIdentityWritten, AGENT_DID_FILE, NOSTR_PRIVKEY_KEY};
 pub use init::GitAutoInit;
 pub use mark::ShellGitMarker;
 pub use service::{GitHttpService, GitRequest, GitResponse, DEFAULT_GIT_HTTP_BACKEND};
