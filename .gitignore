@@ -1,6 +1,8 @@
 # Rust
 /target
-Cargo.lock
+# Cargo.lock is committed: this workspace ships a binary/server
+# (solid-pod-rs-server), so the lockfile is the audited, reproducible
+# dependency surface. Un-ignoring it keeps CI resolving the pinned versions.
 **/*.rs.bk
 
 # Editors / IDEs
