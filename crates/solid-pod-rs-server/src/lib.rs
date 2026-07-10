@@ -904,7 +904,7 @@ async fn handle_get(
         // standard HTTP content negotiation — browsers get HTML, Solid
         // clients get RDF.
         if accept_includes_html(accept) {
-            let index_path = format!("{}index.html", &path);
+            let index_path = format!("{path}index.html");
             if let Ok((body, _meta)) = state.storage.get(&index_path).await {
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
