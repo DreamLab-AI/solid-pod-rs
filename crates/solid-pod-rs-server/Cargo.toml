@@ -110,6 +110,11 @@ rustls-pemfile = { version = "2", optional = true }
 # `git` binary + `git-http-backend` CGI on the server host.
 solid-pod-rs-git = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-git", optional = true }
 
+# Optional Git forge (Gogs/Gitea slice) — issues/PRs, forge push tokens,
+# hosted did:nostr bodies, Blocktrails anchoring. Gated by `forge`
+# (default-off); implies `git` for the smart-HTTP CGI. Native-only.
+solid-pod-rs-forge = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-forge", optional = true }
+
 [features]
 # Feature umbrella toggles for the server binary.
 default = []
@@ -140,6 +145,13 @@ export-jsonld = ["solid-pod-rs/export-jsonld"]
 # Activates solid-pod-rs/git-auto-init (the trait + provision_pod_ext) and
 # links solid-pod-rs-git for the CGI handler and GitAutoInit implementor.
 git = ["dep:solid-pod-rs-git", "solid-pod-rs/git-auto-init"]
+
+# Git forge surface (JSS `forge` plugin port). Default-off; implies `git`
+# (the forge reuses the smart-HTTP CGI). `forge-anchoring` adds the
+# Blocktrails tier; `forge-announce` adds NIP-34 discovery publication.
+forge = ["dep:solid-pod-rs-forge", "git"]
+forge-anchoring = ["forge", "solid-pod-rs-forge/anchoring", "solid-pod-rs/mrc20"]
+forge-announce = ["forge", "solid-pod-rs-forge/announce"]
 
 # `install` subcommand NIP-98 signing (JSS `src/cli/install.js`). Pulls
 # the schnorr signer so `--nostr-privkey` can mint push tokens. The

@@ -4444,6 +4444,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "solid-pod-rs-forge"
+version = "0.5.0-alpha.4"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "hex",
+ "hmac",
+ "k256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solid-pod-rs",
+ "solid-pod-rs-git",
+ "solid-pod-rs-nostr",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "solid-pod-rs-git"
 version = "0.5.0-alpha.4"
 dependencies = [
@@ -4537,6 +4560,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solid-pod-rs",
+ "solid-pod-rs-forge",
  "solid-pod-rs-git",
  "solid-pod-rs-idp",
  "subtle",

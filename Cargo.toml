@@ -4,6 +4,7 @@ members = [
     "crates/solid-pod-rs-server",
     "crates/solid-pod-rs-activitypub",
     "crates/solid-pod-rs-git",
+    "crates/solid-pod-rs-forge",
     "crates/solid-pod-rs-idp",
     "crates/solid-pod-rs-nostr",
     "crates/solid-pod-rs-didkey",

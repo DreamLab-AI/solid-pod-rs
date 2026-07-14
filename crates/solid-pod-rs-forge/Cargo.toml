@@ -1,0 +1,56 @@
+[package]
+name = "solid-pod-rs-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+description = "Clean-room Rust Git forge (Gogs/Gitea slice) composed on solid-pod-rs primitives: pod-native issues/PRs, forge push tokens, hosted did:nostr bodies, and Blocktrails anchoring. Cites JavaScriptSolidServer `forge` behaviour by function name only; all code original."
+keywords = ["solid", "git", "forge", "nostr", "pod"]
+categories = ["web-programming::http-server"]
+readme = "README.md"
+
+[dependencies]
+# Core library at default (native) features — the forge is native-only and
+# never enters a wasm/core build. Provides provenance, NIP-98, did:nostr,
+# WAC, mrc20 (opt-in via the `anchoring` feature).
+solid-pod-rs = { version = "0.5.0-alpha.4", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init", "did-nostr-types"] }
+# Git smart-HTTP CGI + porcelain reuse.
+solid-pod-rs-git = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-git" }
+# Nostr Event/Relay for NIP-34 discovery (build/sign always compiled; the
+# outbound WS publish path is gated by `announce`).
+solid-pod-rs-nostr = { version = "0.5.0-alpha.4", path = "../solid-pod-rs-nostr", optional = true }
+
+tokio = { version = "1", features = ["process", "fs", "io-util", "rt", "sync", "macros", "time"] }
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+async-trait = "0.1"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+# Schnorr signing for the NIP-34 instance key — only pulled by `anchoring`
+# (mark address derivation) and `announce` (event signing).
+k256 = { version = "0.13", features = ["schnorr"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+default = []
+# The anchoring tier is opt-in and pulls the server-only Bitcoin stack.
+anchoring = ["solid-pod-rs/mrc20", "dep:k256"]
+# NIP-34 discovery publication (WS to relays). The builder/signer always
+# compiles when `announce` is on; the feature also links the nostr crate.
+announce = ["dep:solid-pod-rs-nostr", "dep:k256"]
+
+[lints]
+workspace = true

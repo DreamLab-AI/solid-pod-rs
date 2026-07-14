@@ -3719,6 +3719,146 @@ async fn handle_git(
 }
 
 // ---------------------------------------------------------------------------
+// Git forge (JSS `forge` plugin port) — mounted behind `feature = "forge"`.
+// ---------------------------------------------------------------------------
+
+/// Derive the forge plugin data directory from the pod storage root. The
+/// forge keeps its repos/spine/hosted/marks under a `.forge` sibling dir
+/// so it never mixes with pod containers. Returns `None` when no
+/// filesystem `data_root` is configured (in-memory/cloud storage).
+#[cfg(feature = "forge")]
+fn forge_plugin_dir(state: &AppState) -> Option<PathBuf> {
+    state.data_root.as_ref().map(|r| r.join(".forge"))
+}
+
+/// Reqwest-backed [`LoopbackFetch`](solid_pod_rs_forge::LoopbackFetch) for
+/// verifying/re-fetching pod-hosted forge bodies. The forge's own-area URL
+/// guard pins every fetch to the request's own origin, so this only ever
+/// performs a same-origin loopback GET — the SSRF surface is closed at the
+/// guard, not here.
+#[cfg(feature = "forge")]
+struct ServerLoopback {
+    client: reqwest::Client,
+}
+
+#[cfg(feature = "forge")]
+#[async_trait::async_trait]
+impl solid_pod_rs_forge::LoopbackFetch for ServerLoopback {
+    async fn get(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        timeout_secs: u64,
+    ) -> solid_pod_rs_forge::bodies::FetchResult {
+        use solid_pod_rs_forge::bodies::FetchResult;
+        let resp = match self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(timeout_secs.max(1)))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return FetchResult::Error(e.to_string()),
+        };
+        let code = resp.status().as_u16();
+        if code == 404 || code == 410 {
+            return FetchResult::Removed;
+        }
+        if !resp.status().is_success() {
+            return FetchResult::Error(format!("status {code}"));
+        }
+        match resp.bytes().await {
+            Ok(b) if b.len() > max_bytes => FetchResult::TooLarge,
+            Ok(b) => FetchResult::Body(b.to_vec()),
+            Err(e) => FetchResult::Error(e.to_string()),
+        }
+    }
+}
+
+/// Single actix handler for every `/forge/*` path. Translates actix →
+/// `ForgeRequest`, resolves the caller identity, and dispatches to the
+/// forge service. WAC/namespace authorization is enforced inside the
+/// service (namespace-write guard) and, for git push, by the git CGI's
+/// own auth provider (wired in the tokens phase).
+#[cfg(feature = "forge")]
+async fn handle_forge(
+    req: HttpRequest,
+    body: web::Bytes,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    use solid_pod_rs_forge::{ForgeConfig, ForgeRequest, ForgeService};
+
+    let Some(plugin_dir) = forge_plugin_dir(&state) else {
+        return HttpResponse::NotImplemented().json(serde_json::json!({
+            "error": "forge requires fs-backend storage",
+            "reason": "data_root_not_configured"
+        }));
+    };
+
+    // The forge service is cheap to construct (idempotent mkdirs + a git
+    // CGI wrapper). Building it per-request keeps `AppState` untouched.
+    // The reqwest-backed loopback lets pod-hosted body verification work
+    // (own-area guard pins it to our own origin).
+    let loopback: Arc<dyn solid_pod_rs_forge::LoopbackFetch> = Arc::new(ServerLoopback {
+        client: reqwest::Client::new(),
+    });
+    let service = match ForgeService::new(ForgeConfig::default(), plugin_dir) {
+        Ok(s) => s.with_loopback(loopback),
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    };
+
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
+    let host_url = {
+        let conn = req.connection_info();
+        Some(format!("{}://{}", conn.scheme(), conn.host()))
+    };
+    let headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let forge_req = ForgeRequest {
+        method: req.method().as_str().to_string(),
+        path,
+        query,
+        headers,
+        raw_body: body,
+        host_url,
+    };
+
+    // Identity resolution: the forge's own resolver handles the forge push
+    // token (`Bearer f1.…`) and NIP-98 (`Nostr …`). An unresolved caller
+    // is Anonymous and the service's guards decide, fail-closed. (A pod
+    // session, when present, would be injected as a `Pod` agent instead.)
+    let agent = service.resolve_agent(&forge_req);
+
+    match service.handle(forge_req, agent).await {
+        Ok(resp) => {
+            let mut builder = HttpResponse::build(
+                StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            );
+            for (k, v) in &resp.headers {
+                builder.insert_header((k.as_str(), v.as_str()));
+            }
+            builder.body(resp.body)
+        }
+        Err(e) => {
+            let status = e.status_code();
+            HttpResponse::build(
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            )
+            .json(serde_json::json!({"error": e.to_string()}))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public app builder
 // ---------------------------------------------------------------------------
 
@@ -3855,6 +3995,17 @@ pub fn build_app(
             "/account/password/change",
             web::post().to(handle_password_change),
         );
+
+    // Git forge routes (JSS `forge` plugin port). Registered BEFORE the
+    // pod-git smart-HTTP catch-all so `/forge/<o>/<n>.git/info/refs` is
+    // handled by the forge (which forwards to its own CGI service) rather
+    // than the pod-git handler. Gated by `feature = "forge"`.
+    #[cfg(feature = "forge")]
+    {
+        app = app
+            .route("/forge", web::route().to(handle_forge))
+            .route("/forge/{tail:.*}", web::route().to(handle_forge));
+    }
 
     // Git smart-HTTP protocol routes (JSS #466/#469/#471).
     // Must be registered before the LDP catch-all. Direct .git/ access is
