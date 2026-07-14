@@ -50,6 +50,7 @@
 //! | POST     | `/{pod}/_prov/anchor`                    | Upgrade to Bitcoin anchor |
 //! | GET      | `/api/exports/all`                       | JSON-LD pod export (`export-jsonld`, `acl:Control`-gated) |
 //! | GET/POST | `/{pod}/info/refs` `…/git-{upload,receive}-pack` | Git smart-HTTP (WAC-gated) |
+//! | GET/POST | `/forge` `/forge/{tail:.*}`               | Git forge — browse, issues, push tokens (`forge` feature, namespace-scoped, not WAC-gated) |
 //!
 //! The `/pay/*` HTTP-402 economy routes (`handlers::pay`) wire the
 //! `solid-pod-rs` Web-Ledger / order-book / AMM core onto actix; the `_prov`
@@ -59,6 +60,21 @@
 //! by default), with trail persistence via [`trail_store`]. Every LDP
 //! `PUT`/`POST`/`PATCH` to a git-backed pod additionally fires the always-on
 //! git-mark write hook (`git_mark_write`, when built with `--features git`).
+//!
+//! The `/forge/*` git forge (JSS `forge` plugin port; `solid_pod_rs_forge`)
+//! is mounted under `--features forge`, which implies `git` (the forge
+//! reuses the smart-HTTP CGI). `forge-anchoring` adds the Blocktrails tier
+//! (`solid_pod_rs::mrc20`); `forge-announce` adds NIP-34 discovery
+//! publication over `solid-pod-rs-nostr`. Forge routes are registered
+//! *before* the pod-git smart-HTTP catch-all so
+//! `/forge/<owner>/<repo>.git/info/refs` resolves to the forge's own CGI
+//! forwarding rather than the pod-git handler. Unlike `handle_git`, the
+//! forge does **not** go through the pod's WAC ACL evaluator: it enforces
+//! its own fail-closed namespace-ownership guard (an agent may only
+//! push/comment into the namespace matching its own `did:nostr` pubkey or
+//! pod username; see `solid_pod_rs_forge::ownership`) plus an own-area SSRF
+//! check on pod-hosted issue/PR bodies. Repository browsing (tree/blob/
+//! commits/issues list) is unauthenticated-public by design.
 //!
 //! ## Middleware stack (applied in order)
 //!
