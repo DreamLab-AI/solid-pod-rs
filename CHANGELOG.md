@@ -4,6 +4,41 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.5] - 2026-07-15
+
+Ships the new **`solid-pod-rs-forge`** crate and clears the supply-chain audit
+gate that was holding the release. All eight workspace crates are re-pinned to
+`0.5.0-alpha.5`; the core / wasm surface is untouched (the forge is a default-off
+sibling, absent from the core dependency tree), so this is a drop-in upgrade for
+existing consumers.
+
+### Added
+
+- **`solid-pod-rs-forge` — a Solid-hosted git forge (Phases 0–3)**, a
+  clean-room Rust reimplementation of the JSS forge plugin built entirely on
+  solid-pod-rs's own primitives (git smart-HTTP, provenance, NIP-98, did:nostr,
+  WAC). Wired into `solid-pod-rs-server` behind the default-off `forge` feature;
+  the core and wasm surfaces gain zero new dependencies. Complete and
+  test-green (95 tests): the XSS-by-content-type spine, Tier-1 git hosting +
+  browse porcelain (tree/blob/raw/commits/branches/tags), Tier-2 issues over an
+  atomic `FsSpineStore` with a two-phase pod-write coordinator, and the Tier-2.5
+  `f1.*` HMAC push-token path for podless did:nostr identities. Phases 4–7
+  (forks/PRs, polish, Bitcoin anchors, NIP-34) are feature-scaffolded and
+  compiling, not yet implemented. The forge enforces its **own** namespace
+  guard and own-area SSRF check rather than the pod WAC ACL evaluator — see the
+  `/forge` route notes added to the `solid-pod-rs-server` crate `//!` docs.
+
+### Fixed
+
+- **Supply-chain: two yanked `spin` versions cleared (CI/audit gate)** — the
+  transitive `spin` crate appeared twice in the lockfile (`0.9.8` via
+  `flume`/`lazy_static`, `0.10.0` via `crc-fast`), and both were yanked from
+  crates.io, which failed `cargo-deny` (`error[yanked]`) and `cargo-audit`
+  (2 denied warnings) and blocked the release. Resolved per this repo's own
+  audit policy — *in-semver fixes are applied by `cargo update`, not ignored* —
+  by pinning the lockfile to the non-yanked in-semver successors `spin 0.9.9`
+  and `spin 0.10.1`. No source or API change; lockfile only.
+
 ## [0.5.0-alpha.4] - 2026-07-03
 
 The **closeout security release**. Four hardening fixes land on top of the

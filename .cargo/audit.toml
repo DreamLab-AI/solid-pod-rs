@@ -7,7 +7,10 @@
 # here only while (a) no fixed release exists within our semver range, or (b)
 # the vulnerable code path is not reachable in our usage.
 #
-# Reviewed: 2026-07-10 — revisit by 2026-10-08.
+# Reviewed: 2026-07-15 — revisit by 2026-10-08.
+# 2026-07-15: cleared two yanked `spin` versions (0.9.8→0.9.9, 0.10.0→0.10.1)
+# by `cargo update` — an in-semver fix, so NOT added to the ignore list below.
+# The four ignored advisories are unchanged from the 2026-07-10 review.
 
 [advisories]
 ignore = [
