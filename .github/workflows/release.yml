@@ -44,6 +44,14 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           TAG_NO_V="${TAG#v}"
           CARGO_VERSION=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n1)
+          # The crate inherits its version from the workspace root
+          # (`version.workspace = true`), so a per-crate read yields nothing.
+          # Fall back to the workspace [workspace.package] version — the single
+          # source of truth that the `chore(release)` bump commit edits.
+          if [[ -z "${CARGO_VERSION}" ]]; then
+            CARGO_VERSION=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' ../../Cargo.toml | head -n1)
+            echo "Crate inherits version.workspace; read workspace root: ${CARGO_VERSION}"
+          fi
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "version=${CARGO_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Tag (no v): ${TAG_NO_V}"
