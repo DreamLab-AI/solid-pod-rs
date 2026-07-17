@@ -63,6 +63,106 @@ async fn turtle_acl_resolver_reads_ttl_sidecar() {
     ));
 }
 
+// ---------------------------------------------------------------------------
+// Admin-provision namespace regression (fix/admin-provision-pod-namespace).
+//
+// `/_admin/provision/{pk}` provisions a pod into the `/pods/{pk}/` URL
+// namespace and returns `podUrl = {base}/pods/{pk}/`. Two bugs made every
+// authenticated write to a fresh pod 403:
+//   BUG 1 — the pod was written to `data_root/{pk}` (bare), invisible to the
+//           `/pods/{pk}/…` storage keys the LDP handlers serve.
+//   BUG 2 — the owner ACL was written INSIDE the pod at `{pod}/.acl`
+//           (storage key `/pods/{pk}/.acl`), which the walk-up resolver never
+//           reads. The resolver probes the SIBLING sidecar `/pods/{pk}.acl`.
+//
+// These tests pin BUG 2 at the resolver layer: the owner grant must be found
+// (and grant Write) for a deep pod path when the ACL is the sibling, and must
+// be invisible when only the inner copy exists.
+// ---------------------------------------------------------------------------
+
+/// Owner ACL exactly as `handle_admin_provision` now writes it.
+fn owner_pod_acl(pubkey: &str) -> String {
+    format!(
+        "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         <#owner> a acl:Authorization ;\n\
+             acl:agent <did:nostr:{pubkey}> ;\n\
+             acl:accessTo </pods/{pubkey}/> ;\n\
+             acl:default </pods/{pubkey}/> ;\n\
+             acl:mode acl:Read, acl:Write, acl:Control .\n"
+    )
+}
+
+#[tokio::test]
+async fn provision_sibling_acl_grants_owner_write_on_deep_pod_path() {
+    let pk = "1111111111111111111111111111111111111111111111111111111111111111";
+    let owner = format!("did:nostr:{pk}");
+    let deep = format!("/pods/{pk}/media/public/x");
+
+    let pod = std::sync::Arc::new(MemoryBackend::new());
+    // BUG 2 fix: the ACL is the SIBLING sidecar `/pods/{pk}.acl`.
+    pod.put(
+        &format!("/pods/{pk}.acl"),
+        Bytes::copy_from_slice(owner_pod_acl(pk).as_bytes()),
+        "text/turtle",
+    )
+    .await
+    .unwrap();
+
+    let resolver = StorageAclResolver::new(pod.clone());
+    let doc = resolver
+        .find_effective_acl(&deep)
+        .await
+        .unwrap()
+        .expect("owner sibling ACL must be resolved for a deep pod path");
+
+    // Owner is granted Write (and Control) over the deep descendant via
+    // `acl:default`; a stranger is denied.
+    assert!(
+        evaluate_access(Some(&doc), Some(&owner), &deep, AccessMode::Write, None),
+        "provisioned owner must be granted Write on /pods/{{pk}}/media/public/x"
+    );
+    assert!(
+        evaluate_access(Some(&doc), Some(&owner), &deep, AccessMode::Control, None),
+        "provisioned owner must be granted Control on the pod subtree"
+    );
+    assert!(
+        !evaluate_access(
+            Some(&doc),
+            Some("did:nostr:deadbeef"),
+            &deep,
+            AccessMode::Write,
+            None
+        ),
+        "a non-owner agent must NOT be granted Write on the pod"
+    );
+}
+
+#[tokio::test]
+async fn provision_inner_only_acl_is_invisible_to_resolver() {
+    // Regression proof for BUG 2: the OLD layout wrote the ACL INSIDE the pod
+    // at `/pods/{pk}/.acl`. The walk-up resolver never probes that key, so the
+    // grant is invisible and the pod is deny-by-default (→ 403 on every write).
+    let pk = "2222222222222222222222222222222222222222222222222222222222222222";
+    let deep = format!("/pods/{pk}/media/public/x");
+
+    let pod = std::sync::Arc::new(MemoryBackend::new());
+    pod.put(
+        &format!("/pods/{pk}/.acl"),
+        Bytes::copy_from_slice(owner_pod_acl(pk).as_bytes()),
+        "text/turtle",
+    )
+    .await
+    .unwrap();
+
+    let resolver = StorageAclResolver::new(pod.clone());
+    let resolved = resolver.find_effective_acl(&deep).await.unwrap();
+    assert!(
+        resolved.is_none(),
+        "an inner-only /pods/{{pk}}/.acl must be invisible to the walk-up \
+         resolver (this is the bug the sibling-ACL fix corrects)"
+    );
+}
+
 #[test]
 fn turtle_acl_round_trip_preserves_modes() {
     let ttl = r#"

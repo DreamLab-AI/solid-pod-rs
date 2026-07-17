@@ -3398,9 +3398,15 @@ async fn handle_git_panel_options(req: HttpRequest, state: web::Data<AppState>) 
 // POST /_admin/provision/{pubkey} — alpha.15
 // ---------------------------------------------------------------------------
 
-/// PSK-gated endpoint that provisions a bare pod directory for a given
-/// Nostr pubkey. Used by the forum auth-worker to create native pods on
-/// behalf of users when the "native pods" admin panel action is triggered.
+/// PSK-gated endpoint that provisions a pod for a given Nostr pubkey. Used by
+/// the forum auth-worker to create native pods on behalf of users when the
+/// "native pods" admin panel action is triggered.
+///
+/// On-disk layout (must match the `/pods/{pk}/` URL namespace the LDP
+/// handlers serve, and the `podUrl` this endpoint returns):
+/// * pod container: `data_root/pods/{pk}/`
+/// * owner WAC ACL (sibling, the location the resolver reads):
+///   `data_root/pods/{pk}.acl` (plus a courtesy inner `pods/{pk}/.acl`)
 ///
 /// Protection: `X-Pod-Admin-Key` header must match `state.admin_key`.
 /// When `state.admin_key` is `None` the endpoint always returns 403.
@@ -3450,7 +3456,20 @@ async fn handle_admin_provision(
         }
     };
 
-    let pod_dir = data_root.join(&pubkey);
+    // --- BUG 1: pod must live in the `/pods/{pk}/` URL namespace ----------
+    // The LDP handlers (`handle_get`/`handle_put`) use `req.uri().path()`
+    // verbatim as the storage key, and the FS backend maps that key under
+    // `data_root` (stripping the leading '/'). A pod served at
+    // `/pods/{pk}/…` therefore lives on disk at `data_root/pods/{pk}/…`, and
+    // the `podUrl` this endpoint returns is `{base}/pods/{pk}/`. Provisioning
+    // previously wrote the pod to `data_root/{pk}` (bare, no `pods/` segment),
+    // so the freshly-provisioned pod was invisible to its own advertised URL:
+    // every authenticated write to `/pods/{pk}/…` 403'd because no resource
+    // (and, per BUG 2, no resolvable ACL) existed under that key. Provision
+    // into `data_root/pods/{pk}` so the on-disk layout matches the contract
+    // the response returns. `create_dir_all` creates the `pods/` parent too.
+    let pods_root = data_root.join("pods");
+    let pod_dir = pods_root.join(&pubkey);
 
     // --- Create directory (idempotent) -----------------------------------
     if let Err(e) = tokio::fs::create_dir_all(&pod_dir).await {
@@ -3460,20 +3479,51 @@ async fn handle_admin_provision(
     }
 
     // --- Write owner-only WAC ACL ----------------------------------------
+    // Grant the pod owner (`did:nostr:{pubkey}`) full Read/Write/Control over
+    // the pod container and its whole subtree. Use the CONCRETE container
+    // path `/pods/{pk}/` rather than a relative `<./>`: the WAC evaluator
+    // normalises `./` to `/` (the server root), which — while incidentally
+    // scoped by the resolver's walk-up — is semantically an over-grant. The
+    // absolute path matches both `acl:accessTo` (container + direct children)
+    // and `acl:default` (deep descendants) precisely, and mirrors the ACL
+    // convention every other authz path/test in this crate uses.
     let acl_content = format!(
         "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
          <#owner> a acl:Authorization ;\n\
              acl:agent <did:nostr:{pubkey}> ;\n\
-             acl:accessTo <./> ;\n\
-             acl:default <./> ;\n\
+             acl:accessTo </pods/{pubkey}/> ;\n\
+             acl:default </pods/{pubkey}/> ;\n\
              acl:mode acl:Read, acl:Write, acl:Control .\n"
     );
-    let acl_path = pod_dir.join(".acl");
-    if !acl_path.exists() {
-        if let Err(e) = tokio::fs::write(&acl_path, acl_content.as_bytes()).await {
-            tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: write .acl failed");
+
+    // --- BUG 2: write the ACL where the resolver actually reads it --------
+    // `wac::resolver::find_effective_acl` walks a resource path up to the
+    // root probing SIBLING sidecars: for container `/pods/{pk}/` it reads
+    // `/pods/{pk}.acl` (trailing slash trimmed, then `.acl` appended), and
+    // any descendant `/pods/{pk}/…` reaches the same sibling as the walk
+    // climbs. It NEVER reads an inner `/pods/{pk}/.acl`. Provisioning
+    // previously wrote ONLY that inner copy, so the owner grant was never
+    // resolved and authenticated writes 403'd. Write the authoritative ACL
+    // to the sibling location the resolver reads: `data_root/pods/{pk}.acl`.
+    let sibling_acl_path = pods_root.join(format!("{pubkey}.acl"));
+    if !sibling_acl_path.exists() {
+        if let Err(e) = tokio::fs::write(&sibling_acl_path, acl_content.as_bytes()).await {
+            tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: write sibling .acl failed");
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": format!("failed to write .acl: {e}")}));
+        }
+    }
+
+    // Courtesy inner copy at `{pod_dir}/.acl`. This server's walk-up resolver
+    // never reads it (it probes the sibling `{container}.acl`), but the
+    // node-solid-server (NSS) convention stores a container's ACL INSIDE the
+    // container as `<container>/.acl`; writing both keeps interop with tooling
+    // that expects the inner convention. Harmless here — the sibling above is
+    // authoritative — so a failure to write it is non-fatal.
+    let inner_acl_path = pod_dir.join(".acl");
+    if !inner_acl_path.exists() {
+        if let Err(e) = tokio::fs::write(&inner_acl_path, acl_content.as_bytes()).await {
+            tracing::warn!(pubkey = %pubkey, error = %e, "/_admin/provision: write inner .acl failed (non-fatal; sibling ACL governs)");
         }
     }
 
