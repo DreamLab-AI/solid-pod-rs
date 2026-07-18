@@ -33,9 +33,12 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # On workflow_dispatch the default ref is the default branch — check
+          # out the REQUESTED tag so re-releases build the tag's content.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Extract tag and Cargo.toml version
         id: extract
@@ -72,7 +75,9 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -91,9 +96,10 @@ jobs:
     outputs:
       body-path: ${{ steps.write.outputs.path }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Build changelog excerpt
         id: write
@@ -124,7 +130,7 @@ jobs:
           cat "${BODY_FILE}"
 
       - name: Upload changelog artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: release-body
           path: ${{ steps.write.outputs.path }}
@@ -136,13 +142,17 @@ jobs:
   # ---------------------------------------------------------------------------
   github-release:
     name: Create GitHub release
+    # Runs AFTER the crates.io publish succeeds: the GitHub release is the
+    # cheap, updatable artifact — the registry upload is the irreversible one.
+    # (The v0.5.0-alpha.5 attempt showed the old ordering leaves a GitHub
+    # release with no crate behind it when publish fails.)
     runs-on: ubuntu-latest
-    needs: [verify-tag, publish-dry-run, changelog]
+    needs: [verify-tag, changelog, cargo-publish]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download changelog body
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-body
           path: ./release-body
@@ -176,7 +186,7 @@ jobs:
   cargo-publish:
     name: cargo publish (crates.io)
     runs-on: ubuntu-latest
-    needs: [verify-tag, publish-dry-run, github-release]
+    needs: [verify-tag, publish-dry-run]
     environment:
       name: crates-io-publish
       url: https://crates.io/crates/solid-pod-rs
@@ -184,7 +194,20 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
+      - name: Preflight — registry token must be configured
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is empty. Add it to the crates-io-publish environment:"
+            echo "::error::  gh secret set CARGO_REGISTRY_TOKEN --env crates-io-publish --repo DreamLab-AI/solid-pod-rs"
+            echo "::error::(Mint the token at https://crates.io/settings/tokens with publish-update scope.)"
+            exit 1
+          fi
+          echo "token present."
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
