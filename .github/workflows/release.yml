@@ -195,6 +195,10 @@ jobs:
         working-directory: crates/solid-pod-rs
     steps:
       - name: Preflight — registry token must be configured
+        # Runs BEFORE checkout, so the job-default working-directory
+        # (crates/solid-pod-rs) does not exist yet — override to the runner
+        # workspace root, which always exists.
+        working-directory: ${{ github.workspace }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
