@@ -217,7 +217,16 @@ jobs:
         with:
           workspaces: crates/solid-pod-rs -> target
           key: release-publish
-      - name: cargo publish
+      - name: cargo publish (skip if version already on the index)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --all-features
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          # Idempotency: a re-dispatched tag whose version already sits on the
+          # sparse index is a no-op success, not a failure — re-runs after a
+          # partially-failed release (or a manual publish) stay green.
+          if curl -fsSL "https://index.crates.io/so/li/solid-pod-rs"              | grep -q "\"vers\":\"${VERSION}\""; then
+            echo "::notice::solid-pod-rs ${VERSION} already on crates.io — skipping publish."
+            exit 0
+          fi
+          cargo publish --all-features
