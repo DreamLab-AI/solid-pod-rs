@@ -308,8 +308,10 @@ mod tests {
 
     #[tokio::test]
     async fn render_thread_honours_thread_cap() {
-        let lb: Arc<dyn LoopbackFetch> =
-            Arc::new(MockLoopback::new(&[("u", FetchResult::Body(b"x".to_vec()))]));
+        let lb: Arc<dyn LoopbackFetch> = Arc::new(MockLoopback::new(&[(
+            "u",
+            FetchResult::Body(b"x".to_vec()),
+        )]));
         let cfg = ForgeConfig {
             thread_cap: 2,
             ..Default::default()

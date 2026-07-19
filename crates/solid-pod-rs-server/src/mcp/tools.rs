@@ -30,6 +30,24 @@ const ACL_AUTH_AGENT: &str = "http://www.w3.org/ns/auth/acl#AuthenticatedAgent";
 const MAX_READ_BYTES: usize = 200_000;
 const MAX_FEDERATION_DEPTH: u32 = 3;
 
+/// Safe allowlist of header names the `call_remote_pod` `header` auth mode may
+/// forward to a remote pod. Deliberately narrow: only credential-carrying
+/// headers, never hop/routing/identity headers (`Host`, `Cookie`,
+/// `X-Forwarded-*`, `MCP-Federation-Depth`, …). Matched case-insensitively.
+const FORWARDABLE_AUTH_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "x-pod-admin-key",
+    "x-auth-token",
+];
+
+/// Case-insensitive membership test for [`FORWARDABLE_AUTH_HEADERS`].
+fn is_forwardable_auth_header(name: &str) -> bool {
+    FORWARDABLE_AUTH_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Built-in docs tree, embedded at compile time so `list_docs` / `read_docs`
 /// work from a self-contained binary (JSS ships a `docs/` directory). The
 /// embedding lives in the owning crate (`solid_pod_rs::DOCS_DIR`, feature
@@ -603,9 +621,35 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         Some(t) if !t.is_empty() => t,
         _ => return tool_error("tool required"),
     };
-    if url::Url::parse(pod_url).is_err() {
-        return tool_error(format!("pod_url is not a valid URL: {pod_url}"));
+    // Parse + SSRF-validate the target. A bare `Url::parse` (the previous
+    // check) accepts `http://127.0.0.1`, `http://169.254.169.254` (cloud
+    // metadata), and hostnames that resolve into private space — a federation
+    // SSRF. Enforce an http(s) scheme, the literal-host blocklist, and a
+    // DNS-resolving check whose resolved IP is pinned on the outbound client
+    // (below) so the socket cannot be rebound to an internal address.
+    let parsed_pod_url = match url::Url::parse(pod_url) {
+        Ok(u) => u,
+        Err(_) => return tool_error(format!("pod_url is not a valid URL: {pod_url}")),
+    };
+    match parsed_pod_url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return tool_error(format!(
+                "pod_url scheme not allowed: {scheme} (use http/https)"
+            ))
+        }
     }
+    if solid_pod_rs::security::is_safe_url(pod_url).is_err() {
+        return tool_error("pod_url blocked by SSRF policy");
+    }
+    let pod_host = match parsed_pod_url.host_str() {
+        Some(h) => h.to_string(),
+        None => return tool_error("pod_url has no host"),
+    };
+    let pinned_ip = match solid_pod_rs::security::resolve_and_check(&pod_host).await {
+        Ok(ip) => ip,
+        Err(_) => return tool_error("pod_url blocked by SSRF policy"),
+    };
 
     let gate = match federation_gate_path(ctx.web_id.as_deref()) {
         Some(g) => g,
@@ -639,7 +683,23 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         "params": { "name": tool, "arguments": remote_args }
     });
 
-    let client = reqwest::Client::new();
+    // Pin DNS to the vetted IP and disable redirect-following so the request
+    // can't be bounced to an internal target after the SSRF check (port 0 ⇒
+    // reqwest keeps the URL's port).
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(
+            &pod_host,
+            std::net::SocketAddr::new(
+                pinned_ip,
+                parsed_pod_url.port_or_known_default().unwrap_or(0),
+            ),
+        )
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return tool_error(format!("federation client build failed: {e}")),
+    };
     let mut request = client
         .post(&remote_endpoint)
         .timeout(Duration::from_secs(30))
@@ -657,7 +717,18 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
                     auth.get("name").and_then(Value::as_str),
                     auth.get("value").and_then(Value::as_str),
                 ) {
-                    request = request.header(name, value);
+                    // Only forward a conservative allowlist of auth header
+                    // names — never arbitrary attacker-chosen headers (which
+                    // could smuggle Host/Cookie/X-Forwarded-* or other
+                    // sensitive fields to the remote pod).
+                    if is_forwardable_auth_header(name) {
+                        request = request.header(name, value);
+                    } else {
+                        return tool_error(format!(
+                            "auth header '{name}' is not forwardable (allowed: {})",
+                            FORWARDABLE_AUTH_HEADERS.join(", ")
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -872,4 +943,37 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
         .insert_header(("Cache-Control", "no-cache, no-transform"))
         .insert_header(("X-Accel-Buffering", "no"))
         .streaming(body_stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwardable_auth_header_allowlist_is_case_insensitive() {
+        assert!(is_forwardable_auth_header("Authorization"));
+        assert!(is_forwardable_auth_header("authorization"));
+        assert!(is_forwardable_auth_header("X-API-Key"));
+        assert!(is_forwardable_auth_header("x-pod-admin-key"));
+        assert!(is_forwardable_auth_header("X-Auth-Token"));
+    }
+
+    #[test]
+    fn forwardable_auth_header_rejects_dangerous_names() {
+        // Routing / identity / hop headers must never be forwardable.
+        for bad in [
+            "Host",
+            "Cookie",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "MCP-Federation-Depth",
+            "Content-Length",
+            "",
+        ] {
+            assert!(
+                !is_forwardable_auth_header(bad),
+                "{bad} must not be forwardable"
+            );
+        }
+    }
 }

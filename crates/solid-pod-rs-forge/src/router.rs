@@ -186,7 +186,11 @@ pub fn parse_route(rel: &str) -> Route {
         }
     }
 
-    let segs: Vec<&str> = rel.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let segs: Vec<&str> = rel
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     if segs.is_empty() {
         return Route::Index;
     }
@@ -220,9 +224,24 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
             let rev = rest[0].to_string();
             let path = rest[1..].join("/");
             match verb {
-                "tree" => Route::Tree { owner, repo, rev, path },
-                "blob" => Route::Blob { owner, repo, rev, path },
-                _ => Route::Raw { owner, repo, rev, path },
+                "tree" => Route::Tree {
+                    owner,
+                    repo,
+                    rev,
+                    path,
+                },
+                "blob" => Route::Blob {
+                    owner,
+                    repo,
+                    rev,
+                    path,
+                },
+                _ => Route::Raw {
+                    owner,
+                    repo,
+                    rev,
+                    path,
+                },
             }
         }
         "commits" => {
@@ -245,7 +264,11 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
             [] => Route::Issues { owner, repo },
             ["new"] => Route::IssueNew { owner, repo },
             [num] => match num.parse::<u64>() {
-                Ok(n) => Route::IssueDetail { owner, repo, num: n },
+                Ok(n) => Route::IssueDetail {
+                    owner,
+                    repo,
+                    num: n,
+                },
                 Err(_) => Route::NotFound,
             },
             _ => Route::NotFound,
@@ -291,7 +314,10 @@ mod tests {
         assert_eq!(strip_prefix("/forge", "/forgery").as_deref(), None);
         assert_eq!(strip_prefix("/forge", "/other").as_deref(), None);
         // Empty prefix (root mount) passes everything through.
-        assert_eq!(strip_prefix("", "/alice/repo").as_deref(), Some("/alice/repo"));
+        assert_eq!(
+            strip_prefix("", "/alice/repo").as_deref(),
+            Some("/alice/repo")
+        );
     }
 
     #[test]
@@ -320,7 +346,9 @@ mod tests {
     fn owner_and_repo_overview() {
         assert_eq!(
             parse_route("/alice"),
-            Route::OwnerIndex { owner: "alice".into() }
+            Route::OwnerIndex {
+                owner: "alice".into()
+            }
         );
         assert_eq!(
             parse_route("/alice/myrepo"),

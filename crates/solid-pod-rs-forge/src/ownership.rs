@@ -108,9 +108,8 @@ pub fn valid_name_segment(seg: &str) -> bool {
     if seg.contains("..") {
         return false;
     }
-    seg.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
-    })
+    seg.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 #[cfg(test)]

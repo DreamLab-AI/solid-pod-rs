@@ -106,11 +106,7 @@ impl ForgeResponse {
     /// interpolated value.
     #[must_use]
     pub fn html(status: u16, body: impl Into<String>) -> Self {
-        Self::with_type(
-            status,
-            "text/html; charset=utf-8",
-            Bytes::from(body.into()),
-        )
+        Self::with_type(status, "text/html; charset=utf-8", Bytes::from(body.into()))
     }
 
     /// JSON response. `value` is any `serde_json::Value` or serialisable.
@@ -287,10 +283,7 @@ mod tests {
         let out = esc(raw);
         assert!(!out.contains('<'));
         assert!(!out.contains('>'));
-        assert_eq!(
-            out,
-            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
-        );
+        assert_eq!(out, "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
     }
 
     #[test]

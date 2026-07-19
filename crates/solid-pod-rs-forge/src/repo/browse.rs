@@ -108,9 +108,8 @@ pub fn valid_rev(rev: &str) -> bool {
     if rev.contains("..") || rev.contains("//") {
         return false;
     }
-    rev.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')
-    })
+    rev.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
 /// Validate a repo-relative path used inside a `<rev>:<path>` object spec.
@@ -334,7 +333,11 @@ pub async fn list_tags(git_dir: &Path) -> Result<Vec<String>, ForgeError> {
         ],
     )
     .await?;
-    Ok(raw.lines().map(str::to_string).filter(|s| !s.is_empty()).collect())
+    Ok(raw
+        .lines()
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 #[cfg(test)]

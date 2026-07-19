@@ -20,7 +20,7 @@
 //!
 //! See [`solid_pod_rs::security::ssrf`] for the canonical implementation.
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 use solid_pod_rs::security::ssrf::{IpClass, SsrfPolicy};
 
@@ -44,6 +44,25 @@ fn is_private_ip(ip: IpAddr) -> bool {
 /// [`solid_pod_rs::security::ssrf`], adding AP-specific scheme
 /// restriction and error mapping.
 pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
+    resolve_ssrf_safe(url).map(|_| ())
+}
+
+/// Like [`assert_ssrf_safe`], but returns the validated host and the
+/// first resolved socket address so the caller can **pin** the outbound
+/// connection to that exact IP.
+///
+/// Pinning is what closes the TOCTOU / DNS-rebinding gap: without it, the
+/// hostname is resolved once here (public IP) and then a *second* time by
+/// the HTTP client at connect (attacker swaps in `169.254.169.254`).
+/// Feeding the returned [`SocketAddr`] into
+/// `reqwest::ClientBuilder::resolve(host, addr)` — together with
+/// `redirect::Policy::none()` — guarantees the fetch connects only to the
+/// address that was actually classified as routable.
+///
+/// Returns `Err(SigError::SsrfBlocked(..))` if the scheme is not
+/// http/https, the URL has no host, DNS fails, or any resolved address is
+/// in a private/reserved range.
+pub fn resolve_ssrf_safe(url: &str) -> Result<(String, SocketAddr), SigError> {
     let parsed = url::Url::parse(url).map_err(|e| SigError::Url(e.to_string()))?;
 
     // Only allow http/https schemes (AP-specific restriction).
@@ -59,14 +78,15 @@ pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
 
     let host = parsed
         .host_str()
-        .ok_or_else(|| SigError::SsrfBlocked("URL has no host".into()))?;
+        .ok_or_else(|| SigError::SsrfBlocked("URL has no host".into()))?
+        .to_string();
 
     // Default port for the scheme.
     let port = parsed.port_or_known_default().unwrap_or(443);
     let addr_str = format!("{host}:{port}");
 
     // Resolve hostname to IP addresses.
-    let addrs: Vec<std::net::SocketAddr> = addr_str
+    let addrs: Vec<SocketAddr> = addr_str
         .to_socket_addrs()
         .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{}': {}", host, e)))?
         .collect();
@@ -89,7 +109,8 @@ pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
         }
     }
 
-    Ok(())
+    // Pin the connection to the first validated address.
+    Ok((host, addrs[0]))
 }
 
 // ---------------------------------------------------------------------------
@@ -271,5 +292,32 @@ mod tests {
     fn assert_ssrf_safe_rejects_file_scheme() {
         let result = assert_ssrf_safe("file:///etc/passwd");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
+    }
+
+    // ----- resolve_ssrf_safe: returns a pin address for callers --------------
+
+    #[test]
+    fn resolve_ssrf_safe_returns_pinned_addr_for_public_ip() {
+        // IP-literal host: `to_socket_addrs` parses it without network I/O,
+        // so this is deterministic. The pin must carry the scheme port.
+        let (host, addr) = resolve_ssrf_safe("http://8.8.8.8/actor").unwrap();
+        assert_eq!(host, "8.8.8.8");
+        assert_eq!(addr, "8.8.8.8:80".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn resolve_ssrf_safe_rejects_private() {
+        assert!(matches!(
+            resolve_ssrf_safe("http://10.0.0.1/actor"),
+            Err(SigError::SsrfBlocked(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_ssrf_safe_rejects_bad_scheme() {
+        assert!(matches!(
+            resolve_ssrf_safe("ftp://example.com/x"),
+            Err(SigError::SsrfBlocked(_))
+        ));
     }
 }

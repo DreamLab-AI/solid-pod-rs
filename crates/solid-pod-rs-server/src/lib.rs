@@ -237,6 +237,19 @@ pub struct AppState {
     /// Tests point this at a local fixture server so they never reach
     /// mempool.space; production leaves it `None`.
     pub mempool_url: Option<String>,
+    /// Gate for the **unverified** `POST /pay/.deposit` TXO stand-in branch
+    /// (`(vout + 1) * 1000` sats credited with NO chain/UTXO verification —
+    /// only a replay guard on the `txid:vout` pair). OFF by default: this is
+    /// a free-money oracle unless the operator opts in behind a real UTXO
+    /// existence+value+ownership check. When `false`, the TXO branch returns
+    /// 501 Not Implemented; the genuinely-verified MRC20 deposit path stays
+    /// live regardless.
+    ///
+    /// Configured via `--deposit-txo-standin` / `DEPOSIT_TXO_STANDIN_ENABLED`.
+    /// Enabling in production is UNSAFE until the stand-in valuation is
+    /// replaced with a live UTXO check (mempool read of the referenced
+    /// output's value + scriptPubKey ownership).
+    pub deposit_txo_standin_enabled: bool,
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -294,6 +307,9 @@ impl AppState {
             admin_key: None,
             mcp_enabled: false,
             mempool_url: None,
+            // OFF by default — the unverified TXO deposit branch is a
+            // free-money oracle until backed by a real UTXO check.
+            deposit_txo_standin_enabled: false,
         }
     }
 }
@@ -2223,10 +2239,16 @@ struct LoginPasswordRequest {
     password: String,
 }
 
+/// Password login is **not implemented** in this build. Returning a synthetic
+/// `200 { "message": "login endpoint active" }` (the previous behaviour) is a
+/// security hazard: a client cannot distinguish it from a genuine successful
+/// authentication and may treat the caller as logged in. Until a real
+/// credential verifier is wired to the IdP crate, this returns
+/// `501 Not Implemented` so no caller mistakes the stub for success.
 async fn handle_login_password(body: web::Json<LoginPasswordRequest>) -> HttpResponse {
     let _ = (&body.username, &body.password);
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": "login endpoint active"
+    HttpResponse::NotImplemented().json(serde_json::json!({
+        "error": "password login is not implemented on this pod"
     }))
 }
 
@@ -2235,10 +2257,13 @@ struct PasswordResetRequest {
     username: String,
 }
 
+/// Password reset is **not implemented**. The prior stub returned a plausible
+/// "a reset link has been sent" success; that falsely signals a working reset
+/// flow. Return `501 Not Implemented` instead of faking success.
 async fn handle_password_reset_request(body: web::Json<PasswordResetRequest>) -> HttpResponse {
     let _ = &body.username;
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": "if an account with that username exists, a reset link has been sent"
+    HttpResponse::NotImplemented().json(serde_json::json!({
+        "error": "password reset is not implemented on this pod"
     }))
 }
 
@@ -2248,10 +2273,14 @@ struct PasswordChangeRequest {
     new_password: String,
 }
 
+/// Password change is **not implemented**. The prior stub returned
+/// `200 { "message": "password changed" }` without changing anything — a
+/// caller could believe a new password is in effect. Return
+/// `501 Not Implemented` rather than fake success.
 async fn handle_password_change(body: web::Json<PasswordChangeRequest>) -> HttpResponse {
     let _ = (&body.token, &body.new_password);
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": "password changed"
+    HttpResponse::NotImplemented().json(serde_json::json!({
+        "error": "password change is not implemented on this pod"
     }))
 }
 
@@ -2298,12 +2327,22 @@ const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
     "proxy-authorization",
 ];
 
-/// Validate that a URL target is safe for proxying (SSRF protection).
+/// Validate that a URL target is safe for proxying (SSRF protection) and
+/// return the URL together with the **resolved** IP the connection must be
+/// pinned to.
 ///
-/// Checks the URL against the SSRF blocklist without DNS resolution.
-/// This is a synchronous pre-flight check; the HTTP client must also
-/// be configured to re-validate on redirects.
-fn validate_proxy_target(target: &str) -> Result<url::Url, HttpResponse> {
+/// Layered defence, in order:
+///   1. scheme allowlist (`http`/`https` only);
+///   2. literal-host fast reject (IP literals + known cloud-metadata names) —
+///      [`solid_pod_rs::security::is_safe_url`];
+///   3. textual `localhost` / unspecified-address variants;
+///   4. **DNS resolution** via [`solid_pod_rs::security::resolve_and_check`],
+///      which rejects any hostname resolving to private/loopback/link-local/
+///      reserved space. The returned `IpAddr` MUST be pinned on the outbound
+///      client (`ClientBuilder::resolve`) so the socket connects to exactly
+///      the address that was vetted — closing the DNS-rebinding window between
+///      this check and the connect, and re-checked on every redirect hop.
+async fn validate_proxy_target(target: &str) -> Result<(url::Url, IpAddr), HttpResponse> {
     let parsed = match url::Url::parse(target) {
         Ok(u) => u,
         Err(_) => {
@@ -2322,32 +2361,56 @@ fn validate_proxy_target(target: &str) -> Result<url::Url, HttpResponse> {
         }
     }
 
-    // SSRF guard: reject URLs with private/loopback/link-local IP hosts.
-    if let Err(_e) = solid_pod_rs::security::is_safe_url(target) {
+    // SSRF guard: reject URLs with private/loopback/link-local IP hosts
+    // (literal-host + metadata-hostname fast path, no DNS).
+    if solid_pod_rs::security::is_safe_url(target).is_err() {
         return Err(HttpResponse::Forbidden()
             .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
     }
 
     // Additional hostname-based checks for common SSRF bypass patterns.
-    if let Some(host) = parsed.host_str() {
-        let host_lower = host.to_ascii_lowercase();
-        // Block localhost variants.
-        if host_lower == "localhost"
-            || host_lower.ends_with(".localhost")
-            || host_lower == "0.0.0.0"
-            || host_lower == "[::1]"
-            || host_lower == "[::0]"
-        {
-            return Err(HttpResponse::Forbidden()
-                .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
+    let host = match parsed.host_str() {
+        Some(h) => h.to_string(),
+        None => {
+            return Err(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "target URL has no host"})))
         }
-    } else {
-        return Err(
-            HttpResponse::BadRequest().json(serde_json::json!({"error": "target URL has no host"}))
-        );
+    };
+    let host_lower = host.to_ascii_lowercase();
+    if host_lower == "localhost"
+        || host_lower.ends_with(".localhost")
+        || host_lower == "0.0.0.0"
+        || host_lower == "[::1]"
+        || host_lower == "[::0]"
+    {
+        return Err(HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "target URL blocked by SSRF policy"})));
     }
 
-    Ok(parsed)
+    // DNS-resolving check (rebinding guard): resolve the host and reject if
+    // ANY resolved address is in blocked space. Returns the pinned IP.
+    match solid_pod_rs::security::resolve_and_check(&host).await {
+        Ok(ip) => Ok((parsed, ip)),
+        Err(_) => Err(HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "target URL blocked by SSRF policy"}))),
+    }
+}
+
+/// Build an outbound proxy client with redirects disabled and DNS pinned to
+/// `ip` for `url`'s host — the connection targets exactly the vetted address.
+fn build_pinned_proxy_client(url: &url::Url, ip: IpAddr) -> Result<reqwest::Client, ActixError> {
+    let mut builder = reqwest::Client::builder()
+        // Never follow redirects automatically — each hop is re-validated and
+        // re-pinned by the caller.
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(host) = url.host_str() {
+        // Port 0 ⇒ reqwest uses the URL's port (per its `resolve` docs).
+        let port = url.port_or_known_default().unwrap_or(0);
+        builder = builder.resolve(host, std::net::SocketAddr::new(ip, port));
+    }
+    builder
+        .build()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("proxy client: {e}")))
 }
 
 async fn handle_proxy(
@@ -2363,20 +2426,6 @@ async fn handle_proxy(
             .json(serde_json::json!({"error": "authentication required"})));
     }
 
-    // 2. Validate the target URL against SSRF policy.
-    let _target_url = match validate_proxy_target(&query.url) {
-        Ok(u) => u,
-        Err(rsp) => return Ok(rsp),
-    };
-
-    // 3. Build the proxied request.
-    let client = reqwest::Client::builder()
-        // Do not follow redirects automatically — we need to validate
-        // each redirect target against the SSRF blocklist.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("proxy client: {e}")))?;
-
     let mut current_url = query.url.clone();
     let mut redirect_count = 0u8;
     const MAX_REDIRECTS: u8 = 5;
@@ -2391,13 +2440,14 @@ async fn handle_proxy(
         .unwrap_or(DEFAULT_PROXY_BYTE_CAP);
 
     loop {
-        // Re-validate SSRF on each redirect hop.
-        if redirect_count > 0 {
-            match validate_proxy_target(&current_url) {
-                Ok(_) => {}
-                Err(rsp) => return Ok(rsp),
-            }
-        }
+        // Validate + DNS-resolve EVERY hop (initial request and each redirect
+        // target), then pin the outbound client to the resolved IP so the
+        // socket connects to exactly the vetted address (DNS-rebinding guard).
+        let (target_url, pinned_ip) = match validate_proxy_target(&current_url).await {
+            Ok(pair) => pair,
+            Err(rsp) => return Ok(rsp),
+        };
+        let client = build_pinned_proxy_client(&target_url, pinned_ip)?;
 
         let mut upstream_req = client.get(&current_url);
 
@@ -2639,26 +2689,29 @@ where
 }
 
 fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allowed: &[String]) {
-    // Determine the effective ACAO value, respecting the allowlist.
-    let effective_origin: Option<String> = if allowed.is_empty() {
-        // No allowlist — echo back the request origin or fall back to "*".
-        Some(origin.unwrap_or("*").to_string())
+    // Determine the effective ACAO value and whether credentials may be
+    // allowed. The web platform forbids combining a credentialed response
+    // (`Access-Control-Allow-Credentials: true`) with a reflected/wildcard
+    // origin — doing so lets *any* site read authenticated responses. So:
+    //
+    //   * allowlist configured + origin in it  → reflect the origin AND allow
+    //     credentials (the safe, intended cross-origin case);
+    //   * allowlist configured + origin absent → emit no CORS headers (block);
+    //   * no allowlist (dev/wildcard mode)      → emit `*` and DO NOT allow
+    //     credentials — never reflect an arbitrary origin with credentials.
+    let (origin_value, allow_credentials): (String, bool) = if allowed.is_empty() {
+        ("*".to_string(), false)
     } else {
-        // Allowlist set — only reflect recognised origins.
-        origin
-            .filter(|o| allowed.iter().any(|a| a == *o))
-            .map(str::to_string)
+        match origin.filter(|o| allowed.iter().any(|a| a == *o)) {
+            Some(o) => (o.to_string(), true),
+            // Origin not in the allowlist — skip all CORS headers so the
+            // browser's CORS check fails.
+            None => return,
+        }
     };
 
-    // If the origin is blocked (allowlist non-empty and origin not in list),
-    // skip setting any CORS headers so the browser's CORS preflight fails.
-    let origin_value = match effective_origin {
-        Some(ref v) => v.as_str(),
-        None => return,
-    };
-
-    let pairs = [
-        ("access-control-allow-origin", origin_value),
+    let mut pairs = vec![
+        ("access-control-allow-origin", origin_value.as_str()),
         (
             "access-control-allow-methods",
             "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS",
@@ -2671,9 +2724,13 @@ fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allow
             "access-control-expose-headers",
             "Accept-Patch, Accept-Post, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Link, Location, Updates-Via, WAC-Allow, X-Cost, X-Balance, X-Pay-Currency",
         ),
-        ("access-control-allow-credentials", "true"),
         ("access-control-max-age", "86400"),
     ];
+    // Only advertise credentials support for an allowlisted, non-wildcard
+    // origin. Never with `*`.
+    if allow_credentials {
+        pairs.push(("access-control-allow-credentials", "true"));
+    }
 
     for (name, value) in pairs {
         if let (Ok(name), Ok(value)) = (

@@ -316,11 +316,15 @@ struct Mrc20DepositBody {
 ///   [`verify_mrc20_anchor`] + [`MempoolHttpClient`], replay-guard on the
 ///   `JCS(state)` hash, then credit the verified transfer amount (Phase 3,
 ///   JSS `pay.js:384-438`).
-/// * **TXO** (text/plain or `{"txo":…}`) — the Phase-0 path, unchanged.
+/// * **TXO** (text/plain or `{"txo":…}`) — the Phase-0 stand-in path. It is
+///   UNVERIFIED (credits `(vout + 1) * 1000` sats with only a replay guard),
+///   so it is **off by default** and returns 501 unless the operator sets
+///   `deposit_txo_standin_enabled` (`DEPOSIT_TXO_STANDIN_ENABLED`).
 ///
 /// The TXO path remains a deterministic stand-in for the mempool-read sat
-/// value (`(vout + 1) * 1000`); its real mempool valuation is a later step.
-/// The MRC20 path is the one that genuinely round-trips to the chain here.
+/// value (`(vout + 1) * 1000`); its real mempool valuation is a later step,
+/// which is why it must not be active in a default/production build. The MRC20
+/// path is the one that genuinely round-trips to the chain here.
 async fn handle_deposit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -336,6 +340,22 @@ async fn handle_deposit(
     // (`{"txo":…}`) still falls through to the Phase-0 path.
     if body_is_mrc20(&body) {
         return handle_mrc20_deposit(&did, &state, &body).await;
+    }
+
+    // TXO stand-in path (Phase 0): OFF by default. The branch below credits
+    // `(vout + 1) * 1000` sats for any client-supplied `txid:vout` with NO
+    // chain/UTXO verification — only a replay guard on the exact pair. That is
+    // a free-money oracle, so it is gated behind an explicit opt-in
+    // (`--deposit-txo-standin` / `DEPOSIT_TXO_STANDIN_ENABLED`). Enabling it
+    // requires a real UTXO existence+value+ownership check first. The verified
+    // MRC20 path above stays live regardless of this flag.
+    if !state.deposit_txo_standin_enabled {
+        return Ok(HttpResponse::NotImplemented().json(serde_json::json!({
+            "error": "Unverified TXO deposits are disabled on this pod. Use the verified \
+                      MRC20 deposit path (POST a `{\"type\":\"mrc20\", …}` body), or ask the \
+                      operator to enable the stand-in (DEPOSIT_TXO_STANDIN_ENABLED) — which \
+                      is only safe once backed by a live UTXO existence/value/ownership check."
+        })));
     }
 
     // Accept either a bare TXO URI (text/plain) or {"txo": "..."} (JSON).
@@ -1365,15 +1385,11 @@ async fn handle_withdraw_sats(
         Err(e) => return Ok(payment_error_response(e)),
     };
 
-    let txid = match mempool.broadcast_tx(&voucher.tx.raw_hex).await {
-        Ok(t) => t,
-        Err(e) => {
-            return Ok(HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
-        }
-    };
-
-    // Debit the user's balance only after a successful broadcast.
+    // Reserve (debit) the balance BEFORE broadcasting. Broadcasting first
+    // (the previous order) is a TOCTOU: a broadcast could hand out a spendable
+    // voucher while the subsequent debit races/fails, letting the balance be
+    // spent twice. Debit up front; if the broadcast then fails, compensate by
+    // re-crediting the reserved amount.
     let mut ledger = match store.read_ledger().await {
         Ok(l) => l,
         Err(e) => return Ok(payment_error_response(e)),
@@ -1384,6 +1400,28 @@ async fn handle_withdraw_sats(
     if let Err(e) = store.write_ledger(&ledger).await {
         return Ok(payment_error_response(e));
     }
+
+    let txid = match mempool.broadcast_tx(&voucher.tx.raw_hex).await {
+        Ok(t) => t,
+        Err(e) => {
+            // Compensating action: broadcast failed, so restore the reserved
+            // balance. Re-read so a concurrent writer's changes are preserved,
+            // falling back to the in-memory (debited) ledger on read failure.
+            let mut comp = store.read_ledger().await.unwrap_or_else(|_| ledger.clone());
+            comp.credit(&did, req_body.amount);
+            if let Err(werr) = store.write_ledger(&comp).await {
+                tracing::error!(
+                    error = %werr,
+                    did = %did,
+                    amount = req_body.amount,
+                    "withdraw-sats: broadcast failed and compensation write failed; \
+                     balance may be over-debited and requires operator reconciliation"
+                );
+            }
+            return Ok(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
+        }
+    };
 
     // Return the new voucher URI (JSS `pay.js:890-892`).
     let voucher_uri = format!(

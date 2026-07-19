@@ -24,8 +24,12 @@ use crate::ownership::valid_name_segment;
 pub trait SpineStore: Send + Sync {
     /// Load the raw JSON bytes for `(kind, owner, repo)`, or `None` when
     /// no index has been written yet.
-    async fn load(&self, kind: &str, owner: &str, repo: &str)
-        -> Result<Option<Vec<u8>>, ForgeError>;
+    async fn load(
+        &self,
+        kind: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Option<Vec<u8>>, ForgeError>;
 
     /// Atomically persist `bytes` for `(kind, owner, repo)`.
     async fn store(
@@ -64,7 +68,11 @@ impl FsSpineStore {
         if !valid_name_segment(repo) {
             return Err(ForgeError::PathTraversal(format!("repo: {repo}")));
         }
-        Ok(self.root.join(kind).join(owner).join(format!("{repo}.json")))
+        Ok(self
+            .root
+            .join(kind)
+            .join(owner)
+            .join(format!("{repo}.json")))
     }
 }
 
@@ -156,7 +164,11 @@ mod tests {
             .store("issues", "alice", "repo", b"{\"x\":1}")
             .await
             .unwrap();
-        let got = store.load("issues", "alice", "repo").await.unwrap().unwrap();
+        let got = store
+            .load("issues", "alice", "repo")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got, b"{\"x\":1}");
         // The file lives where we expect and no temp files leaked.
         let dir = td.path().join("issues/alice");
@@ -182,7 +194,10 @@ mod tests {
         let td = TempDir::new().unwrap();
         let store = FsSpineStore::new(td.path());
         store.store("issues", "a", "r", b"first").await.unwrap();
-        store.store("issues", "a", "r", b"second-longer").await.unwrap();
+        store
+            .store("issues", "a", "r", b"second-longer")
+            .await
+            .unwrap();
         let got = store.load("issues", "a", "r").await.unwrap().unwrap();
         assert_eq!(got, b"second-longer");
     }

@@ -86,7 +86,10 @@ mod tests {
 
     #[test]
     fn no_header_is_anonymous() {
-        assert_eq!(resolve_agent(&req_with_auth(None), KEY, 0), ForgeAgent::Anonymous);
+        assert_eq!(
+            resolve_agent(&req_with_auth(None), KEY, 0),
+            ForgeAgent::Anonymous
+        );
     }
 
     #[test]
@@ -109,7 +112,10 @@ mod tests {
         // Expired.
         assert_eq!(resolve_agent(&req, KEY, 9999), ForgeAgent::Anonymous);
         // Wrong key.
-        assert_eq!(resolve_agent(&req, b"different-key-abcdefghijklmn", 1500), ForgeAgent::Anonymous);
+        assert_eq!(
+            resolve_agent(&req, b"different-key-abcdefghijklmn", 1500),
+            ForgeAgent::Anonymous
+        );
     }
 
     #[test]

@@ -26,7 +26,10 @@ pub fn repo_git_dir(repo_root: &Path, owner: &str, name: &str) -> Result<PathBuf
 /// `true` when a bare repo directory exists for `<owner>/<name>`.
 pub async fn repo_exists(repo_root: &Path, owner: &str, name: &str) -> bool {
     match repo_git_dir(repo_root, owner, name) {
-        Ok(p) => tokio::fs::metadata(&p).await.map(|m| m.is_dir()).unwrap_or(false),
+        Ok(p) => tokio::fs::metadata(&p)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false),
         Err(_) => false,
     }
 }
@@ -104,11 +107,19 @@ mod tests {
     async fn list_all_scans_two_levels() {
         let td = TempDir::new().unwrap();
         let root = td.path();
-        tokio::fs::create_dir_all(root.join("alice/r1.git")).await.unwrap();
-        tokio::fs::create_dir_all(root.join("alice/r2.git")).await.unwrap();
-        tokio::fs::create_dir_all(root.join("bob/proj.git")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("alice/r1.git"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(root.join("alice/r2.git"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(root.join("bob/proj.git"))
+            .await
+            .unwrap();
         // A non-.git dir is ignored.
-        tokio::fs::create_dir_all(root.join("alice/notarepo")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("alice/notarepo"))
+            .await
+            .unwrap();
 
         let all = list_all(root).await;
         assert_eq!(

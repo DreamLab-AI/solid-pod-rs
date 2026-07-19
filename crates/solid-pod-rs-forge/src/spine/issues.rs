@@ -109,11 +109,7 @@ impl IssueIndex {
     /// Issues filtered by state, newest-number first.
     #[must_use]
     pub fn by_state(&self, state: IssueState) -> Vec<&IssueEntry> {
-        let mut v: Vec<&IssueEntry> = self
-            .issues
-            .values()
-            .filter(|e| e.state == state)
-            .collect();
+        let mut v: Vec<&IssueEntry> = self.issues.values().filter(|e| e.state == state).collect();
         v.sort_by_key(|e| std::cmp::Reverse(e.number));
         v
     }
@@ -144,9 +140,8 @@ pub async fn load_issue_index(
     repo: &str,
 ) -> Result<IssueIndex, ForgeError> {
     match store.load(KIND, owner, repo).await? {
-        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-            ForgeError::Backend(format!("corrupt issue index {owner}/{repo}: {e}"))
-        }),
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| ForgeError::Backend(format!("corrupt issue index {owner}/{repo}: {e}"))),
         None => Ok(IssueIndex::default()),
     }
 }
@@ -240,7 +235,9 @@ mod tests {
         let store = FsSpineStore::new(td.path());
         let mut idx = IssueIndex::default();
         idx.allocate(entry("hello"));
-        save_issue_index(&store, "alice", "demo", &idx).await.unwrap();
+        save_issue_index(&store, "alice", "demo", &idx)
+            .await
+            .unwrap();
 
         let loaded = load_issue_index(&store, "alice", "demo").await.unwrap();
         assert_eq!(loaded, idx);

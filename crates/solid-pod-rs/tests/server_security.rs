@@ -48,6 +48,7 @@ async fn public_read_state() -> AppState {
         .unwrap();
 
     AppState {
+        deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap: 16, // tiny so we can provoke 413 easily
@@ -88,6 +89,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         .unwrap();
 
     AppState {
+        deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap,
@@ -249,6 +251,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         .unwrap();
 
     let state = AppState {
+        deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap: 1024,

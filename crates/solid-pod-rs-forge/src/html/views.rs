@@ -32,10 +32,7 @@ pub fn index_page(prefix: &str, repos: &[(String, String)]) -> String {
 /// A single owner's repo list.
 #[must_use]
 pub fn owner_page(prefix: &str, owner: &str, repos: &[String]) -> String {
-    let mut body = crumbs(&[
-        ("forge", Some(prefix.to_string())),
-        (owner, None),
-    ]);
+    let mut body = crumbs(&[("forge", Some(prefix.to_string())), (owner, None)]);
     body.push_str(&format!("<h1>{}</h1>", esc(owner)));
     if repos.is_empty() {
         body.push_str("<p class=\"muted\">No repositories.</p>");
@@ -127,10 +124,7 @@ fn tree_table(
             EntryKind::Symlink => ("blob", "\u{1f517}"),
             EntryKind::File => ("blob", "\u{1f4c4}"),
         };
-        let size = e
-            .size
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+        let size = e.size.map(|s| s.to_string()).unwrap_or_default();
         out.push_str(&format!(
             "<tr><td>{} <a href=\"{}/{}/{}/{}\">{}</a></td><td class=\"muted\">{}</td></tr>",
             glyph,

@@ -105,6 +105,15 @@ struct Cli {
     #[arg(long)]
     no_mcp: bool,
 
+    /// Enable the UNVERIFIED `POST /pay/.deposit` TXO stand-in branch, which
+    /// credits `(vout + 1) * 1000` sats for any `txid:vout` with no chain/UTXO
+    /// verification (only a replay guard). OFF by default — it is a free-money
+    /// oracle. Do NOT enable in production until the stand-in is backed by a
+    /// live UTXO existence/value/ownership check. The verified MRC20 deposit
+    /// path is unaffected by this flag.
+    #[arg(long, env = "DEPOSIT_TXO_STANDIN_ENABLED")]
+    deposit_txo_standin: bool,
+
     /// Operator subcommands (Sprint 11): `quota reconcile`,
     /// `account delete`, `invite create`. When absent the binary runs
     /// the HTTP server (default / existing behaviour).
@@ -231,6 +240,15 @@ async fn main() -> anyhow::Result<()> {
     state.mcp_enabled = cli.mcp && !cli.no_mcp;
     if state.mcp_enabled {
         info!("MCP server enabled — POST /mcp is live (agent tool surface, #490)");
+    }
+    // Unverified TXO deposit stand-in — off unless explicitly opted in.
+    state.deposit_txo_standin_enabled = cli.deposit_txo_standin;
+    if state.deposit_txo_standin_enabled {
+        warn!(
+            "DEPOSIT_TXO_STANDIN_ENABLED is set — POST /pay/.deposit credits UNVERIFIED TXO \
+             vouchers with no chain/UTXO check. This is a free-money oracle unless backed by a \
+             real UTXO existence/value/ownership check. Do not run this in production."
+        );
     }
     state.nodeinfo = NodeInfoMeta {
         software_name: "solid-pod-rs-server".into(),

@@ -19,8 +19,10 @@ struct AllowAllSsrf;
 
 #[async_trait]
 impl SsrfCheck for AllowAllSsrf {
-    async fn verify_host(&self, _host: &str) -> Result<(), String> {
-        Ok(())
+    // Permit without pinning (`Ok(None)`) so the resolver falls back to its
+    // shared client and can reach the loopback-bound wiremock server.
+    async fn verify_host(&self, _host: &str) -> Result<Option<std::net::IpAddr>, String> {
+        Ok(None)
     }
 }
 
@@ -168,6 +170,33 @@ async fn resolver_returns_malformed_when_did_id_mismatches() {
         .expect_err("should be malformed");
     let msg = err.to_string();
     assert!(msg.contains("id mismatch") || msg.contains("malformed"));
+}
+
+#[tokio::test]
+async fn resolver_does_not_follow_redirects() {
+    // A public WebID URL that 302-redirects to the metadata endpoint must
+    // NOT be followed — that is the redirect leg of the SSRF chain. With
+    // redirects disabled the 302 surfaces as a non-success HTTP status.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/profile"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", "http://169.254.169.254/latest/meta-data"),
+        )
+        .mount(&server)
+        .await;
+
+    let resolver = NostrWebIdResolver::with_ssrf(Arc::new(AllowAllSsrf));
+    let webid = format!("{}/profile", server.uri());
+    let err = resolver
+        .resolve_webid_to_nostr(&webid)
+        .await
+        .expect_err("redirect must not be followed");
+    assert!(
+        err.to_string().contains("302"),
+        "expected a non-success status error, got {err}"
+    );
 }
 
 #[tokio::test]

@@ -66,9 +66,7 @@ pub enum TokenError {
 pub fn mint(key: &[u8], agent: &ForgeAgent, iat: u64, ttl: u64) -> Option<String> {
     let (sub, own) = match agent {
         ForgeAgent::Pod { webid, username } => (webid.clone(), username.clone()),
-        ForgeAgent::Nostr { pubkey_hex } => {
-            (format!("did:nostr:{pubkey_hex}"), pubkey_hex.clone())
-        }
+        ForgeAgent::Nostr { pubkey_hex } => (format!("did:nostr:{pubkey_hex}"), pubkey_hex.clone()),
         ForgeAgent::Anonymous => return None,
     };
     let claims = Claims {
@@ -98,7 +96,8 @@ pub fn verify(key: &[u8], token: &str, now: u64) -> Result<ForgeAgent, TokenErro
     let provided = B64.decode(mac_b64).map_err(|_| TokenError::Malformed)?;
     let mut mac = HmacSha256::new_from_slice(key).map_err(|_| TokenError::Key)?;
     mac.update(signing_input.as_bytes());
-    mac.verify_slice(&provided).map_err(|_| TokenError::BadMac)?;
+    mac.verify_slice(&provided)
+        .map_err(|_| TokenError::BadMac)?;
 
     // MAC is valid → decode and check the claims.
     let claims_json = B64.decode(claims_b64).map_err(|_| TokenError::Malformed)?;
@@ -110,18 +109,18 @@ pub fn verify(key: &[u8], token: &str, now: u64) -> Result<ForgeAgent, TokenErro
         return Err(TokenError::Expired);
     }
 
-    Ok(if crate::ownership::classify_owner(&claims.own)
-        == crate::ownership::OwnerKind::NostrHex
-    {
-        ForgeAgent::Nostr {
-            pubkey_hex: claims.own,
-        }
-    } else {
-        ForgeAgent::Pod {
-            webid: claims.sub,
-            username: claims.own,
-        }
-    })
+    Ok(
+        if crate::ownership::classify_owner(&claims.own) == crate::ownership::OwnerKind::NostrHex {
+            ForgeAgent::Nostr {
+                pubkey_hex: claims.own,
+            }
+        } else {
+            ForgeAgent::Pod {
+                webid: claims.sub,
+                username: claims.own,
+            }
+        },
+    )
 }
 
 fn mac_tag(key: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
@@ -182,10 +181,7 @@ mod tests {
         let (claims, mac) = tail.split_once('.').unwrap();
         let mut cb = claims.as_bytes().to_vec();
         cb[0] ^= 0x01;
-        let tampered = format!(
-            "{head}.{}.{mac}",
-            String::from_utf8_lossy(&cb)
-        );
+        let tampered = format!("{head}.{}.{mac}", String::from_utf8_lossy(&cb));
         assert!(matches!(
             verify(KEY, &tampered, 1500),
             Err(TokenError::BadMac) | Err(TokenError::Malformed)
@@ -195,7 +191,10 @@ mod tests {
     #[test]
     fn wrong_key_fails_mac() {
         let t = mint(KEY, &nostr(), 1000, 3600).unwrap();
-        assert_eq!(verify(b"another-key-entirely-different!!", &t, 1500), Err(TokenError::BadMac));
+        assert_eq!(
+            verify(b"another-key-entirely-different!!", &t, 1500),
+            Err(TokenError::BadMac)
+        );
     }
 
     #[test]

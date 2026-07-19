@@ -189,7 +189,11 @@ async fn provisioned_owner_can_put_into_pod() {
         .insert_header((header::AUTHORIZATION, auth))
         .to_request();
     let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 200, "owner GET of own resource → 200");
+    assert_eq!(
+        rsp.status().as_u16(),
+        200,
+        "owner GET of own resource → 200"
+    );
     let body = test::read_body(rsp).await;
     assert_eq!(&body[..], b"hello");
 }
@@ -205,10 +209,7 @@ async fn stranger_cannot_put_into_provisioned_pod() {
         .uri(&format!("/_admin/provision/{pk}"))
         .insert_header(("x-pod-admin-key", ADMIN_KEY))
         .to_request();
-    assert_eq!(
-        test::call_service(&app, req).await.status().as_u16(),
-        200
-    );
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
 
     // A DIFFERENT authenticated agent must be denied (the owner ACL grants
     // only `did:nostr:{owner}`) — proves the sibling ACL is enforced, not

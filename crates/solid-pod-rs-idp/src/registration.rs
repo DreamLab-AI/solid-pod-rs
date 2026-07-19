@@ -19,6 +19,7 @@
 //!    [`CLIENT_CACHE_TTL`].
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use solid_pod_rs::security::ssrf::is_safe_url;
+use solid_pod_rs::security::ssrf::resolve_and_check;
 
 /// JSS mirrors this with `CLIENT_CACHE_TTL = 5 * 60 * 1000` in
 /// `src/idp/provider.js:14`.
@@ -170,7 +171,11 @@ impl ClientStore {
             inner: Arc::new(RwLock::new(ClientStoreInner::default())),
             http: HttpClient::builder()
                 .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::limited(3))
+                // CID documents are terminal JSON-LD resources — never a
+                // redirect. Disabling redirects closes the SSRF hole where
+                // a 3xx to an internal target is auto-followed past the
+                // resolve-and-pin guard in `fetch_client_document`.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .ok(),
             allow_unsafe_urls: false,
@@ -233,23 +238,15 @@ impl ClientStore {
     }
 
     async fn fetch_client_document(&self, url: &str) -> Result<ClientDocument, RegError> {
-        // SSRF pre-flight — mirrors JSS's `validateExternalUrl` call
-        // (provider.js:32). The DNS-level check in core is
-        // stricter than JSS's IP-literal-only guard. Tests may
-        // disable this via `allow_unsafe_urls_for_testing`.
-        if !self.allow_unsafe_urls {
-            is_safe_url(url).map_err(|e| RegError::Ssrf(e.to_string()))?;
-        }
-
-        // Parse the URL so we can assert it's a valid HTTPS target
-        // before spending any bytes on the wire.
+        // Parse first so we can validate the scheme and pull the host/port
+        // for the SSRF pre-flight. JSS's `validateExternalUrl` enforces
+        // `requireHttps:true`; we accept http-or-https since the DNS-level
+        // SSRF check below catches the internal-address case anyway and
+        // some Solid test rigs use plain HTTP for localhost fixtures. A
+        // guard for host-less / exotic schemes (`file:`, `gopher:`, …)
+        // stays regardless.
         let parsed =
             Url::parse(url).map_err(|e| RegError::InvalidDocument(format!("URL parse: {e}")))?;
-        // JSS's `validateExternalUrl` also enforces `requireHttps:true`;
-        // we drop that to http-or-https since the SSRF check catches
-        // the RFC1918 case anyway, and some Solid test rigs use plain
-        // HTTP for localhost fixtures. Still keep a guard for weird
-        // schemes.
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(RegError::InvalidDocument(format!(
                 "unsupported scheme: {}",
@@ -257,16 +254,49 @@ impl ClientStore {
             )));
         }
 
-        let http = self
-            .http
-            .as_ref()
-            .ok_or_else(|| RegError::Fetch("no HTTP client configured".into()))?;
-        let resp = http
-            .get(url)
-            .header("Accept", "application/ld+json, application/json")
-            .send()
-            .await
-            .map_err(|e| RegError::Fetch(e.to_string()))?;
+        let resp = if self.allow_unsafe_urls {
+            // Test / local-dev path: no SSRF pre-flight and no IP pin, so
+            // wiremock fixtures on `http://127.0.0.1:PORT/...` resolve. The
+            // store's client still has redirects disabled. Production MUST
+            // NOT enable this (`allow_unsafe_urls_for_testing`).
+            let http = self
+                .http
+                .as_ref()
+                .ok_or_else(|| RegError::Fetch("no HTTP client configured".into()))?;
+            http.get(url)
+                .header("Accept", "application/ld+json, application/json")
+                .send()
+                .await
+                .map_err(|e| RegError::Fetch(e.to_string()))?
+        } else {
+            // Production path: resolve the host via DNS and enforce the
+            // SSRF policy on *every* resolved address (unlike the previous
+            // host-only `is_safe_url`, which did NO DNS resolution and so
+            // let a hostname pointing at an internal IP through). Then PIN
+            // the connection to the validated IP so a rebinding DNS record
+            // cannot swap in an internal address between this check and the
+            // socket connect, and disable redirects so a 3xx to an internal
+            // target cannot be auto-followed past the guard.
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| RegError::Ssrf("URL has no host".into()))?;
+            let port = parsed.port_or_known_default().unwrap_or(443);
+            let ip = resolve_and_check(host)
+                .await
+                .map_err(|e| RegError::Ssrf(e.to_string()))?;
+            let client = HttpClient::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve(host, SocketAddr::new(ip, port))
+                .build()
+                .map_err(|e| RegError::Fetch(e.to_string()))?;
+            client
+                .get(url)
+                .header("Accept", "application/ld+json, application/json")
+                .send()
+                .await
+                .map_err(|e| RegError::Fetch(e.to_string()))?
+        };
 
         if !resp.status().is_success() {
             return Err(RegError::Fetch(format!(
@@ -528,6 +558,28 @@ mod tests {
         let store = ClientStore::new().allow_unsafe_urls_for_testing();
         let err = store.find(&cid_url).await.unwrap_err();
         assert!(matches!(err, RegError::InvalidDocument(_)));
+    }
+
+    #[tokio::test]
+    async fn client_identifier_document_does_not_follow_redirects() {
+        // A CID fetch that receives a 3xx MUST NOT auto-follow it — that
+        // is the redirect leg of the SSRF chain (a public URL 302-ing to
+        // the metadata endpoint). With redirects disabled the 302 surfaces
+        // as a fetch failure instead of a metadata-endpoint hit.
+        let server = MockServer::start().await;
+        let cid_url = format!("{}/client", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/client"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", "http://169.254.169.254/latest/meta-data"),
+            )
+            .mount(&server)
+            .await;
+
+        let store = ClientStore::new().allow_unsafe_urls_for_testing();
+        let err = store.find(&cid_url).await.unwrap_err();
+        assert!(matches!(err, RegError::Fetch(_)), "got {err:?}");
     }
 
     #[tokio::test]

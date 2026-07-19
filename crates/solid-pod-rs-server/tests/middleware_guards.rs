@@ -102,9 +102,44 @@ async fn traversal_guard_allows_root() {
     );
 }
 
+/// No allowlist configured (dev/wildcard mode): the response must NOT reflect
+/// an arbitrary origin while allowing credentials (that lets any site read
+/// authenticated responses). It emits `*` and omits the credentials header.
 #[actix_web::test]
-async fn cors_headers_match_jss_global_envelope() {
+async fn cors_wildcard_mode_does_not_reflect_origin_with_credentials() {
     let app = actix_web::test::init_service(build_app(make_state())).await;
+    let req = actix_web::test::TestRequest::get()
+        .uri("/")
+        .insert_header(("origin", "https://app.example"))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    let headers = rsp.headers();
+    assert_eq!(
+        headers
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+        "wildcard mode must not reflect the request origin"
+    );
+    assert!(
+        headers.get("access-control-allow-credentials").is_none(),
+        "credentials must not be advertised with a wildcard origin"
+    );
+    let expose = headers
+        .get("access-control-expose-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(expose.contains("Updates-Via"), "Expose-Headers = {expose}");
+    assert!(expose.contains("WAC-Allow"), "Expose-Headers = {expose}");
+}
+
+/// Allowlist configured + origin present in it: the response reflects that
+/// exact origin AND may allow credentials (the intended cross-origin case).
+#[actix_web::test]
+async fn cors_allowlisted_origin_gets_reflection_and_credentials() {
+    let mut state = make_state();
+    state.allowed_origins = vec!["https://app.example".to_string()];
+    let app = actix_web::test::init_service(build_app(state)).await;
     let req = actix_web::test::TestRequest::get()
         .uri("/")
         .insert_header(("origin", "https://app.example"))
@@ -121,14 +156,28 @@ async fn cors_headers_match_jss_global_envelope() {
         headers
             .get("access-control-allow-credentials")
             .and_then(|v| v.to_str().ok()),
-        Some("true")
+        Some("true"),
+        "an allowlisted origin may carry credentials"
     );
-    let expose = headers
-        .get("access-control-expose-headers")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert!(expose.contains("Updates-Via"), "Expose-Headers = {expose}");
-    assert!(expose.contains("WAC-Allow"), "Expose-Headers = {expose}");
+}
+
+/// Allowlist configured + origin NOT in it: no CORS headers at all (blocked).
+#[actix_web::test]
+async fn cors_non_allowlisted_origin_gets_no_headers() {
+    let mut state = make_state();
+    state.allowed_origins = vec!["https://app.example".to_string()];
+    let app = actix_web::test::init_service(build_app(state)).await;
+    let req = actix_web::test::TestRequest::get()
+        .uri("/")
+        .insert_header(("origin", "https://evil.example"))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    let headers = rsp.headers();
+    assert!(
+        headers.get("access-control-allow-origin").is_none(),
+        "a non-allowlisted origin must receive no ACAO header"
+    );
+    assert!(headers.get("access-control-allow-credentials").is_none());
 }
 
 // ---------------------------------------------------------------------------

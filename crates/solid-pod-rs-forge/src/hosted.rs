@@ -36,9 +36,7 @@ impl HostedStore {
     /// Validate a uuid token: 1..=64 chars, hex/dash only (matches
     /// `uuid::Uuid` output and forbids traversal).
     fn valid_uuid(id: &str) -> bool {
-        !id.is_empty()
-            && id.len() <= 64
-            && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
     }
 
     /// Persist `body` for owner `hex`, returning its `hosted:<hex>/<uuid>`
@@ -71,7 +69,9 @@ impl HostedStore {
             return Err(ForgeError::PathTraversal(format!("{hex}/{uuid}")));
         };
         match tokio::fs::read(&path).await {
-            Ok(bytes) if bytes.len() > max_bytes => Err(ForgeError::BadRequest("body too large".into())),
+            Ok(bytes) if bytes.len() > max_bytes => {
+                Err(ForgeError::BadRequest("body too large".into()))
+            }
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(ForgeError::Io(e)),

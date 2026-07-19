@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::error::SigError;
-use crate::ssrf::assert_ssrf_safe;
+use crate::ssrf::resolve_ssrf_safe;
 
 /// A raw inbound request awaiting signature verification.
 #[derive(Debug, Clone)]
@@ -92,16 +92,13 @@ pub trait ActorKeyResolver: Send + Sync {
 /// JSS's `fetchActor` behaviour: GET the URL (with `#main-key` or
 /// similar fragment stripped), parse `publicKey.publicKeyPem`.
 pub struct HttpActorKeyResolver {
-    client: reqwest::Client,
+    user_agent: String,
 }
 
 impl Default for HttpActorKeyResolver {
     fn default() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .user_agent("solid-pod-rs-activitypub/0.4.0")
-                .build()
-                .expect("reqwest client builds"),
+            user_agent: "solid-pod-rs-activitypub/0.4.0".to_string(),
         }
     }
 }
@@ -114,12 +111,22 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .map(|(u, _)| u.to_string())
             .unwrap_or_else(|| key_id.to_string());
 
-        // P0-08: SSRF protection — reject private/internal IPs before
-        // fetching the remote actor document.
-        assert_ssrf_safe(&actor_url)?;
+        // P0-08 + TOCTOU: reject private/internal IPs before fetching the
+        // remote actor document, and PIN the connection to the validated
+        // IP. `resolve_ssrf_safe` resolves the host once and hands back the
+        // routable address; building a per-request client that resolves the
+        // host to exactly that address (with redirects disabled) means the
+        // fetch cannot be rebound to an internal target between the check
+        // and the connect, nor auto-follow a 3xx past the guard.
+        let (host, pinned) = resolve_ssrf_safe(&actor_url)?;
+        let client = reqwest::Client::builder()
+            .user_agent(self.user_agent.clone())
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&host, pinned)
+            .build()
+            .map_err(|e| SigError::ActorFetch(actor_url.clone(), e.to_string()))?;
 
-        let resp = self
-            .client
+        let resp = client
             .get(&actor_url)
             .header(reqwest::header::ACCEPT, "application/activity+json")
             .send()

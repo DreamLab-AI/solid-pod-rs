@@ -261,18 +261,25 @@ impl ForgeService {
             Route::OwnerIndex { owner } => self.h_owner(&owner).await,
             Route::GitSmart { rel_path } => self.h_git_smart(req, _agent, &rel_path).await,
             Route::RepoOverview { owner, repo } => self.h_overview(&owner, &repo).await,
-            Route::Tree { owner, repo, rev, path } => {
-                self.h_tree(&owner, &repo, &rev, &path).await
-            }
-            Route::Blob { owner, repo, rev, path } => {
-                self.h_blob(&owner, &repo, &rev, &path).await
-            }
-            Route::Raw { owner, repo, rev, path } => {
-                self.h_raw(&owner, &repo, &rev, &path).await
-            }
-            Route::Commits { owner, repo, rev } => {
-                self.h_commits(req, &owner, &repo, &rev).await
-            }
+            Route::Tree {
+                owner,
+                repo,
+                rev,
+                path,
+            } => self.h_tree(&owner, &repo, &rev, &path).await,
+            Route::Blob {
+                owner,
+                repo,
+                rev,
+                path,
+            } => self.h_blob(&owner, &repo, &rev, &path).await,
+            Route::Raw {
+                owner,
+                repo,
+                rev,
+                path,
+            } => self.h_raw(&owner, &repo, &rev, &path).await,
+            Route::Commits { owner, repo, rev } => self.h_commits(req, &owner, &repo, &rev).await,
             Route::Commit { owner, repo, sha } => self.h_commit(&owner, &repo, &sha).await,
             Route::Branches { owner, repo } => self.h_branches(&owner, &repo).await,
             Route::Tags { owner, repo } => self.h_tags(&owner, &repo).await,
@@ -391,14 +398,7 @@ impl ForgeService {
         let readme = self.find_readme(&dir, &branch, &entries).await;
         Ok(ForgeResponse::html(
             200,
-            html::repo_overview_page(
-                &prefix,
-                owner,
-                repo,
-                &branch,
-                &entries,
-                readme.as_deref(),
-            ),
+            html::repo_overview_page(&prefix, owner, repo, &branch, &entries, readme.as_deref()),
         ))
     }
 
@@ -410,15 +410,15 @@ impl ForgeService {
         entries: &[repo::browse::TreeEntry],
     ) -> Option<String> {
         let candidate = entries.iter().find(|e| {
-            e.kind == repo::browse::EntryKind::File
-                && {
-                    let n = e.name.to_ascii_lowercase();
-                    n == "readme" || n == "readme.md" || n == "readme.txt"
-                }
+            e.kind == repo::browse::EntryKind::File && {
+                let n = e.name.to_ascii_lowercase();
+                n == "readme" || n == "readme.md" || n == "readme.txt"
+            }
         })?;
-        let bytes = repo::browse::read_blob(dir, rev, &candidate.name, self.cfg.max_body_bytes as u64)
-            .await
-            .ok()?;
+        let bytes =
+            repo::browse::read_blob(dir, rev, &candidate.name, self.cfg.max_body_bytes as u64)
+                .await
+                .ok()?;
         if request::looks_textual(&bytes) {
             Some(String::from_utf8_lossy(&bytes).into_owned())
         } else {
@@ -580,11 +580,7 @@ impl ForgeService {
         ))
     }
 
-    async fn h_issue_new_form(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> Result<ForgeResponse, ForgeError> {
+    async fn h_issue_new_form(&self, owner: &str, repo: &str) -> Result<ForgeResponse, ForgeError> {
         self.resolve_repo(owner, repo).await?;
         Ok(ForgeResponse::html(
             200,
@@ -707,7 +703,11 @@ impl ForgeService {
             .as_ref()
             .ok_or_else(|| ForgeError::Unsupported("pod body verification unavailable".into()))?;
         match lb
-            .get(resource_url, self.cfg.max_body_bytes, self.cfg.fetch_timeout_secs)
+            .get(
+                resource_url,
+                self.cfg.max_body_bytes,
+                self.cfg.fetch_timeout_secs,
+            )
             .await
         {
             bodies::FetchResult::Body(_) => Ok(spine::issues::ThreadPointer {
@@ -745,7 +745,14 @@ impl ForgeService {
         // Pod agents supply a pod pointer; podless nostr agents supply an
         // inline body stored in forge-hosted storage.
         let pointer = self
-            .make_pointer(req, agent, owner, repo, resource_url.as_deref(), body.as_deref())
+            .make_pointer(
+                req,
+                agent,
+                owner,
+                repo,
+                resource_url.as_deref(),
+                body.as_deref(),
+            )
             .await?;
 
         let mut idx = spine::issues::load_issue_index(self.spine.as_ref(), owner, repo).await?;
@@ -775,7 +782,14 @@ impl ForgeService {
         self.resolve_repo(owner, repo).await?;
         let (_title, resource_url, body) = Self::parse_issue_body(req);
         let pointer = self
-            .make_pointer(req, agent, owner, repo, resource_url.as_deref(), body.as_deref())
+            .make_pointer(
+                req,
+                agent,
+                owner,
+                repo,
+                resource_url.as_deref(),
+                body.as_deref(),
+            )
             .await?;
 
         let mut idx = spine::issues::load_issue_index(self.spine.as_ref(), owner, repo).await?;
@@ -837,7 +851,11 @@ impl ForgeService {
             }
             let removed = self.hosted.delete(hex, id).await?;
             if removed {
-                return Ok(ForgeResponse::with_type(204, "application/json", bytes::Bytes::new()));
+                return Ok(ForgeResponse::with_type(
+                    204,
+                    "application/json",
+                    bytes::Bytes::new(),
+                ));
             }
             return Err(ForgeError::NotFound(format!("hosted {hex}/{id}")));
         }
@@ -892,7 +910,10 @@ mod tests {
     #[tokio::test]
     async fn index_renders_empty() {
         let (_td, svc) = service();
-        let r = svc.handle(req("GET", "/forge"), ForgeAgent::Anonymous).await.unwrap();
+        let r = svc
+            .handle(req("GET", "/forge"), ForgeAgent::Anonymous)
+            .await
+            .unwrap();
         assert_eq!(r.status, 200);
         let body = String::from_utf8(r.body.to_vec()).unwrap();
         assert!(body.contains("No repositories yet"));
@@ -904,7 +925,10 @@ mod tests {
         tokio::fs::create_dir_all(td.path().join("repos/alice/demo.git"))
             .await
             .unwrap();
-        let r = svc.handle(req("GET", "/forge"), ForgeAgent::Anonymous).await.unwrap();
+        let r = svc
+            .handle(req("GET", "/forge"), ForgeAgent::Anonymous)
+            .await
+            .unwrap();
         let body = String::from_utf8(r.body.to_vec()).unwrap();
         assert!(body.contains("/forge/alice/demo"));
 
@@ -954,7 +978,10 @@ mod tests {
     async fn unimplemented_route_is_404_for_now() {
         let (_td, svc) = service();
         let r = svc
-            .handle(req("GET", "/forge/alice/repo/issues"), ForgeAgent::Anonymous)
+            .handle(
+                req("GET", "/forge/alice/repo/issues"),
+                ForgeAgent::Anonymous,
+            )
             .await
             .unwrap();
         // Issues is implemented in Phase 2; before that it is a 404. Once
@@ -1010,7 +1037,11 @@ mod tests {
             ],
         );
         run_git(&work, &["tag", "v1.0"]);
-        let bare = td.path().join("repos").join(owner).join(format!("{name}.git"));
+        let bare = td
+            .path()
+            .join("repos")
+            .join(owner)
+            .join(format!("{name}.git"));
         std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
         run_git(
             td.path(),
@@ -1068,7 +1099,10 @@ mod tests {
 
         // Raw serves text/plain with nosniff.
         let r = svc
-            .handle(req("GET", "/forge/alice/demo/raw/main/src/lib.rs"), ForgeAgent::Anonymous)
+            .handle(
+                req("GET", "/forge/alice/demo/raw/main/src/lib.rs"),
+                ForgeAgent::Anonymous,
+            )
             .await
             .unwrap();
         assert_eq!(r.status, 200);
@@ -1079,7 +1113,10 @@ mod tests {
             .map(|(_, v)| v.clone())
             .unwrap();
         assert!(ct.starts_with("text/plain"));
-        assert_eq!(String::from_utf8_lossy(&r.body), "pub fn f() -> u8 { 42 }\n");
+        assert_eq!(
+            String::from_utf8_lossy(&r.body),
+            "pub fn f() -> u8 { 42 }\n"
+        );
     }
 
     #[tokio::test]
@@ -1147,7 +1184,10 @@ mod tests {
         // A bare repo with no commits.
         let bare = td.path().join("repos/bob/empty.git");
         std::fs::create_dir_all(&bare).unwrap();
-        run_git(td.path(), &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+        run_git(
+            td.path(),
+            &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+        );
         let (status, html) = body(&svc, "/forge/bob/empty").await;
         assert_eq!(status, 200);
         assert!(html.contains("empty"));
@@ -1168,7 +1208,10 @@ mod tests {
             }
         }
         fn put(&self, url: &str, body: &[u8]) {
-            self.present.lock().unwrap().insert(url.into(), body.to_vec());
+            self.present
+                .lock()
+                .unwrap()
+                .insert(url.into(), body.to_vec());
         }
         fn remove(&self, url: &str) {
             self.present.lock().unwrap().remove(url);
@@ -1231,7 +1274,10 @@ mod tests {
             .handle(
                 post_form(
                     "/forge/alice/demo/issues",
-                    &format!("title=First+bug&resourceUrl={}", url.replace(':', "%3A").replace('/', "%2F")),
+                    &format!(
+                        "title=First+bug&resourceUrl={}",
+                        url.replace(':', "%3A").replace('/', "%2F")
+                    ),
                 ),
                 pod_agent("alice"),
             )
@@ -1281,7 +1327,10 @@ mod tests {
             .handle(
                 post_form(
                     "/forge/alice/demo/issues",
-                    &format!("title=x&resourceUrl={}", bad.replace(':', "%3A").replace('/', "%2F")),
+                    &format!(
+                        "title=x&resourceUrl={}",
+                        bad.replace(':', "%3A").replace('/', "%2F")
+                    ),
                 ),
                 pod_agent("alice"),
             )
@@ -1295,7 +1344,10 @@ mod tests {
             .handle(
                 post_form(
                     "/forge/alice/demo/issues",
-                    &format!("title=x&resourceUrl={}", ssrf.replace(':', "%3A").replace('/', "%2F")),
+                    &format!(
+                        "title=x&resourceUrl={}",
+                        ssrf.replace(':', "%3A").replace('/', "%2F")
+                    ),
                 ),
                 pod_agent("alice"),
             )
@@ -1317,7 +1369,10 @@ mod tests {
         svc.handle(
             post_form(
                 "/forge/alice/demo/issues",
-                &format!("title=t&resourceUrl={}", open.replace(':', "%3A").replace('/', "%2F")),
+                &format!(
+                    "title=t&resourceUrl={}",
+                    open.replace(':', "%3A").replace('/', "%2F")
+                ),
             ),
             pod_agent("alice"),
         )
@@ -1358,7 +1413,10 @@ mod tests {
             .handle(
                 post_form(
                     "/forge/alice/demo/issues",
-                    &format!("title=x&resourceUrl={}", url.replace(':', "%3A").replace('/', "%2F")),
+                    &format!(
+                        "title=x&resourceUrl={}",
+                        url.replace(':', "%3A").replace('/', "%2F")
+                    ),
                 ),
                 pod_agent("alice"),
             )

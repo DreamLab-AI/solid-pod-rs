@@ -19,6 +19,7 @@
 //! → did:nostr direction, `alsoKnownAs` carrier) and
 //! `JavaScriptSolidServer/src/did/resolver.js` (DID Doc publication).
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,23 +35,30 @@ use crate::error::ResolverError;
 #[async_trait]
 pub trait SsrfCheck: Send + Sync {
     /// Verify that the supplied `host` (bare hostname or `host:port`)
-    /// resolves to an address permitted by the policy. Returns
-    /// `Ok(())` on permit, or an error message on refuse.
-    async fn verify_host(&self, host: &str) -> Result<(), String>;
+    /// resolves to an address permitted by the policy.
+    ///
+    /// On permit, returns `Ok(Some(ip))` with the validated IP so the
+    /// caller can **pin** the outbound connection to it — this is what
+    /// defeats DNS rebinding between the check and the fetch. Policies
+    /// that cannot (or deliberately do not) pin — permissive/test checks
+    /// that opt out — return `Ok(None)`. On refusal, returns
+    /// `Err(message)`.
+    async fn verify_host(&self, host: &str) -> Result<Option<IpAddr>, String>;
 }
 
 /// Default SSRF check delegating to `solid_pod_rs::security::ssrf`.
 ///
 /// Uses the restrictive defaults (no toggles, no lists) — identical to
-/// the upstream library behaviour for `verifyHost` in JSS.
+/// the upstream library behaviour for `verifyHost` in JSS. Returns the
+/// resolved IP so the resolver can pin the connection to it.
 pub struct DefaultSsrfCheck;
 
 #[async_trait]
 impl SsrfCheck for DefaultSsrfCheck {
-    async fn verify_host(&self, host: &str) -> Result<(), String> {
+    async fn verify_host(&self, host: &str) -> Result<Option<IpAddr>, String> {
         solid_pod_rs::security::ssrf::resolve_and_check(host)
             .await
-            .map(|_| ())
+            .map(Some)
             .map_err(|e| e.to_string())
     }
 }
@@ -75,6 +83,11 @@ impl NostrWebIdResolver {
     pub fn with_ssrf(ssrf: Arc<dyn SsrfCheck>) -> Self {
         let http = Client::builder()
             .timeout(Duration::from_secs(10))
+            // Never auto-follow a 3xx: a public WebID/DID URL redirecting to
+            // an internal target is the redirect leg of the SSRF chain. The
+            // pinned per-request client built in `client_for` is also
+            // redirect-none; this shared client is the non-pinned fallback.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| Client::new());
         Self { http, ssrf }
@@ -83,6 +96,32 @@ impl NostrWebIdResolver {
     /// Build with a custom HTTP client (test injection).
     pub fn with_http(http: Client, ssrf: Arc<dyn SsrfCheck>) -> Self {
         Self { http, ssrf }
+    }
+
+    /// Select the HTTP client for a single outbound fetch.
+    ///
+    /// When the SSRF check yielded a pinned IP, build a fresh client that
+    /// resolves `host` to exactly that address (rebinding-proof) with
+    /// redirects disabled. Otherwise fall back to the shared client — used
+    /// by permissive/test policies that opt out of pinning.
+    fn client_for(
+        &self,
+        host: &str,
+        url: &Url,
+        pin: Option<IpAddr>,
+    ) -> Result<Client, ResolverError> {
+        match pin {
+            Some(ip) => {
+                let port = url.port_or_known_default().unwrap_or(443);
+                Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .resolve(host, SocketAddr::new(ip, port))
+                    .build()
+                    .map_err(|e| ResolverError::Http(e.to_string()))
+            }
+            None => Ok(self.http.clone()),
+        }
     }
 
     /// Resolve a WebID URL to a `did:nostr` pubkey by inspecting the
@@ -99,13 +138,14 @@ impl NostrWebIdResolver {
             .host_str()
             .ok_or_else(|| ResolverError::InvalidUrl("missing host".into()))?
             .to_string();
-        self.ssrf
+        let pin = self
+            .ssrf
             .verify_host(&host)
             .await
             .map_err(ResolverError::Ssrf)?;
+        let http = self.client_for(&host, &url, pin)?;
 
-        let resp = self
-            .http
+        let resp = http
             .get(url.as_str())
             .header(
                 "accept",
@@ -153,13 +193,14 @@ impl NostrWebIdResolver {
             .host_str()
             .ok_or_else(|| ResolverError::InvalidUrl("missing host".into()))?
             .to_string();
-        self.ssrf
+        let pin = self
+            .ssrf
             .verify_host(&host)
             .await
             .map_err(ResolverError::Ssrf)?;
+        let http = self.client_for(&host, &parsed, pin)?;
 
-        let resp = self
-            .http
+        let resp = http
             .get(parsed.as_str())
             .header("accept", "application/did+json, application/json")
             .send()

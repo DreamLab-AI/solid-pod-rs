@@ -126,9 +126,38 @@ async fn read_balance(storage: &dyn Storage, did: &str) -> u64 {
     ledger.get_balance(did)
 }
 
+/// The unverified TXO stand-in is OFF by default (free-money oracle guard):
+/// a TXO deposit must return 501 and credit nothing.
+#[actix_web::test]
+async fn deposit_txo_standin_disabled_by_default_returns_501() {
+    let st = state();
+    assert!(
+        !st.deposit_txo_standin_enabled,
+        "TXO stand-in must default to OFF"
+    );
+    let app = test::init_service(build_app(st)).await;
+
+    let (auth, _did) = nip98_auth("POST", "/pay/.deposit");
+    let txid = "c".repeat(64);
+    let txo = format!("{txid}:0");
+    let req = test::TestRequest::post()
+        .uri("/pay/.deposit")
+        .insert_header((header::AUTHORIZATION, auth))
+        .insert_header((header::CONTENT_TYPE, "text/plain"))
+        .set_payload(txo)
+        .to_request();
+    let rsp = test::call_service(&app, req).await;
+    assert_eq!(
+        rsp.status().as_u16(),
+        501,
+        "unverified TXO deposit must be disabled by default"
+    );
+}
+
 #[actix_web::test]
 async fn deposit_credits_balance() {
-    let st = state();
+    let mut st = state();
+    st.deposit_txo_standin_enabled = true;
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
@@ -154,7 +183,8 @@ async fn deposit_credits_balance() {
 /// rejected and the balance is NOT credited twice.
 #[actix_web::test]
 async fn deposit_replay_is_rejected_and_does_not_double_credit() {
-    let st = state();
+    let mut st = state();
+    st.deposit_txo_standin_enabled = true;
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 

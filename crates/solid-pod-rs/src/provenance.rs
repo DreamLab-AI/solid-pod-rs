@@ -731,7 +731,11 @@ impl EpochAccumulator {
         let mut idx = index;
         let mut siblings: Vec<(String, bool)> = Vec::new();
         while level.len() > 1 {
-            let sibling_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
+            let sibling_idx = if idx.is_multiple_of(2) {
+                idx + 1
+            } else {
+                idx - 1
+            };
             // On an odd level the rightmost node is paired with itself.
             let sib = if sibling_idx < level.len() {
                 level[sibling_idx]

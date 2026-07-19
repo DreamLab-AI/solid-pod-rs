@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::{
     http_sig::{sign_request, OutboundRequest},
-    ssrf::assert_ssrf_safe,
+    ssrf::resolve_ssrf_safe,
     store::Store,
 };
 
@@ -71,6 +71,11 @@ impl DeliveryWorker {
             http: reqwest::Client::builder()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
                 .timeout(Duration::from_secs(30))
+                // Never auto-follow a 3xx from a target inbox: that is the
+                // redirect leg of the SSRF chain. The production path builds
+                // a per-request pinned client (also redirect-none) in
+                // `drain_once`; this shared client is the test fallback.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client builds"),
             skip_ssrf_check: false,
@@ -87,6 +92,7 @@ impl DeliveryWorker {
             http: reqwest::Client::builder()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
                 .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client builds"),
             skip_ssrf_check: true,
@@ -106,22 +112,38 @@ impl DeliveryWorker {
             return Ok(DeliveryOutcome::Dropped);
         };
 
-        // P0-09: SSRF protection — reject delivery to private/internal
-        // IPs before making the outbound POST.
-        if !self.skip_ssrf_check {
-            if let Err(e) = assert_ssrf_safe(&item.inbox_url) {
-                tracing::warn!(
-                    inbox_url = %item.inbox_url,
-                    error = %e,
-                    "SSRF blocked: dropping delivery to private/internal address"
-                );
-                self.store.drop_delivery(item.queue_id).await?;
-                self.store
-                    .mark_outbox_state(&item.activity_id, "failed")
-                    .await?;
-                return Ok(DeliveryOutcome::Dropped);
-            }
-        }
+        // P0-09 + TOCTOU: reject delivery to private/internal IPs before
+        // the outbound POST, and PIN the connection to the validated IP so
+        // a rebinding DNS record cannot swap in an internal address between
+        // this check and the connect. `resolve_ssrf_safe` returns the
+        // routable address; the per-request client resolves the host to
+        // exactly it, with redirects disabled.
+        let http = if self.skip_ssrf_check {
+            self.http.clone()
+        } else {
+            let (host, pinned) = match resolve_ssrf_safe(&item.inbox_url) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        inbox_url = %item.inbox_url,
+                        error = %e,
+                        "SSRF blocked: dropping delivery to private/internal address"
+                    );
+                    self.store.drop_delivery(item.queue_id).await?;
+                    self.store
+                        .mark_outbox_state(&item.activity_id, "failed")
+                        .await?;
+                    return Ok(DeliveryOutcome::Dropped);
+                }
+            };
+            reqwest::Client::builder()
+                .user_agent("solid-pod-rs-activitypub/0.4.0")
+                .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve(&host, pinned)
+                .build()
+                .map_err(|e| crate::error::OutboxError::Delivery(e.to_string()))?
+        };
 
         let body = serde_json::to_vec(&activity)
             .map_err(|e| crate::error::OutboxError::Delivery(e.to_string()))?;
@@ -133,7 +155,7 @@ impl DeliveryWorker {
         };
         sign_request(&mut req, &self.config.private_key_pem, &self.config.key_id)?;
 
-        let request = self.http.post(&req.url);
+        let request = http.post(&req.url);
         let request = req
             .headers
             .iter()
@@ -364,6 +386,44 @@ mod tests {
         let (store, config) = scaffold().await;
         let worker = DeliveryWorker::new(store, config);
         assert_eq!(worker.drain_once().await.unwrap(), DeliveryOutcome::Idle);
+    }
+
+    #[tokio::test]
+    async fn delivery_does_not_follow_redirects() {
+        let (store, config) = scaffold().await;
+        let actor = render_actor("https://pod.example", "me", "Me", None, "PEM");
+        let server = MockServer::start().await;
+        // A 302 pointing at the metadata endpoint must NOT be followed.
+        Mock::given(method("POST"))
+            .and(path("/inbox"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", "http://169.254.169.254/latest/meta-data"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let inbox_url = format!("{}/inbox", server.uri());
+        store
+            .add_follower(&actor.id, "fa", Some(&inbox_url))
+            .await
+            .unwrap();
+        handle_outbox(
+            &store,
+            &actor,
+            serde_json::json!({"type": "Create", "object": {"type": "Note", "content": "x"}}),
+        )
+        .await
+        .unwrap();
+
+        let worker = DeliveryWorker::new_without_ssrf_check(store.clone(), config);
+        // With redirects disabled the 302 is a non-2xx transient outcome
+        // (rescheduled), not a followed hop to the metadata endpoint.
+        match worker.drain_once().await.unwrap() {
+            DeliveryOutcome::Rescheduled { .. } => {}
+            other => panic!("expected Rescheduled (redirect not followed), got {other:?}"),
+        }
     }
 
     #[tokio::test]
