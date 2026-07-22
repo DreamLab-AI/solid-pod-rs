@@ -115,6 +115,7 @@ tradeoffs?
 
 ## Related material
 
+- [Top-level README](../../../README.md) — repository front door and ecosystem context.
 - [README.md](../README.md) — crate-level overview.
 - [PARITY-CHECKLIST.md](../PARITY-CHECKLIST.md) — feature-by-feature
   status against JSS.
