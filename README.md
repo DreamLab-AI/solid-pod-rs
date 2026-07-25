@@ -26,7 +26,7 @@ solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/
 | **[DreamLab-AI/solid-pod-rs](https://github.com/DreamLab-AI/solid-pod-rs)** | **The personal-data-sovereignty layer — this repo.** |
 | [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Nostr-native forum + relay — the human+agent communication and governance substrate. |
 | [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website) | DreamLab AI company website — the commercial face. |
-| [DreamLab-AI/knowledgeGraph](https://github.com/DreamLab-AI/knowledgeGraph) | narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D. |
+| [DreamLab-AI/knowledgeGraph](https://github.com/DreamLab-AI/knowledgeGraph) | narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D; main also releases that corpus and its build pipeline as open data, 7,457 pages under ODbL-1.0. |
 
 In July 2026 Block (Jack Dorsey) launched [Buzz](https://github.com/block/buzz), a self-hosted, Nostr-native team-chat + AI-agent + git platform in Rust. It independently arrives at the same substrate this ecosystem has built since 2022: Nostr events as source of truth, agents as first-class signed participants with their own keypairs, and NIP-42/98 auth — industry convergence that validates the direction. What Buzz does not carry is what differentiates this ecosystem: Solid-pod data sovereignty (this repo), OWL 2 EL / KG ontology grounding, immersive 3D embodiment, and closed learning loops (sibling repos).
 
