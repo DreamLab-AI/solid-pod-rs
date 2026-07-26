@@ -90,10 +90,11 @@ fn did_nostr_document_emits_canonical_schema() {
     // I2: multibase body round-trips to the DID body.
     assert_eq!(&mb[7..], TEST_PUBKEY);
 
-    // Canonical contexts (ADR-125 §2).
+    // Canonical did:nostr CG 0.1.1 three-context form (ADR-125 §2).
     let contexts = doc["@context"].as_array().expect("@context array");
-    assert_eq!(contexts[0], "https://www.w3.org/ns/cid/v1");
-    assert_eq!(contexts[1], "https://w3id.org/nostr/context");
+    assert_eq!(contexts[0], "https://www.w3.org/ns/did/v1");
+    assert_eq!(contexts[1], "https://www.w3.org/ns/cid/v1");
+    assert_eq!(contexts[2], "https://w3id.org/nostr/context");
 
     // Fragment-only auth/assertion. The did:nostr CG spec uses an
     // omit-when-empty field model, so a document with no service endpoints
@@ -124,8 +125,9 @@ fn did_nostr_document_rejects_keyless_multikey_for_malformed_hex() {
     // Canonical envelope preserved.
     assert_eq!(doc["id"], format!("did:nostr:{malformed}"));
     assert_eq!(doc["type"], "DIDNostr");
-    assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
-    assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
+    assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+    assert_eq!(doc["@context"][1], "https://www.w3.org/ns/cid/v1");
+    assert_eq!(doc["@context"][2], "https://w3id.org/nostr/context");
 
     // The critical I2 guarantee: verificationMethod is EMPTY, not a keyless
     // Multikey.

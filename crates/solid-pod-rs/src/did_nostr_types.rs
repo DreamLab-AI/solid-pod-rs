@@ -118,7 +118,7 @@ const KEY_FRAGMENT: &str = "#key1";
 ///
 /// ```json
 /// {
-///   "@context": ["https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"],
+///   "@context": ["https://www.w3.org/ns/did/v1", "https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"],
 ///   "id": "did:nostr:<hex>",
 ///   "type": "DIDNostr",
 ///   "verificationMethod": [{
@@ -142,6 +142,7 @@ pub fn render_did_document(pk: &NostrPubkey) -> Value {
     let did = did_nostr_uri(pk);
     json!({
         "@context": [
+            "https://www.w3.org/ns/did/v1",
             "https://www.w3.org/ns/cid/v1",
             "https://w3id.org/nostr/context"
         ],
@@ -471,9 +472,11 @@ mod tests {
         let did = format!("did:nostr:{PK_HEX}");
         let doc = render_did_document(&pk);
         assert_eq!(doc["id"], did);
-        // Canonical did:nostr CG / Controlled Identifiers v1.0 context (ADR-125 §2).
-        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
-        assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
+        // Canonical did:nostr CG 0.1.1 three-context form (ADR-125 §2):
+        // DID Core first (required by DID Core), then CID v1.0, then nostr.
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+        assert_eq!(doc["@context"][1], "https://www.w3.org/ns/cid/v1");
+        assert_eq!(doc["@context"][2], "https://w3id.org/nostr/context");
         // Top-level type + canonical Multikey VM.
         assert_eq!(doc["type"], "DIDNostr");
         // Minimal form omits optional members entirely (spec omit-when-empty):
@@ -584,7 +587,8 @@ mod tests {
         );
         // Canonical core unchanged (spec-aligned).
         assert_eq!(doc["type"], "DIDNostr");
-        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+        assert_eq!(doc["@context"][1], "https://www.w3.org/ns/cid/v1");
         assert_eq!(doc["verificationMethod"][0]["type"], "Multikey");
         assert_eq!(doc["authentication"][0], "#key1");
         // Top-level alsoKnownAs (spec canonical, multi-URI).

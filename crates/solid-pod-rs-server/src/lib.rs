@@ -278,10 +278,12 @@ impl Default for NodeInfoMeta {
 /// `50MB`, `1.5GB`, or a bare integer (bytes). Falls back to 50 MiB.
 pub const DEFAULT_BODY_CAP: usize = 50 * 1024 * 1024;
 
-/// Read `JSS_MAX_REQUEST_BODY` and parse via [`parse_size`]. On any
-/// failure, returns [`DEFAULT_BODY_CAP`].
+/// Read `JSS_MAX_REQUEST_BODY` (or, as a drop-in-config alias, upstream
+/// JSS's `JSS_BODY_LIMIT`, #474/#543) and parse via [`parse_size`]. The
+/// canonical name wins when both are set. On any failure, returns
+/// [`DEFAULT_BODY_CAP`].
 pub fn body_cap_from_env() -> usize {
-    match std::env::var("JSS_MAX_REQUEST_BODY") {
+    match std::env::var("JSS_MAX_REQUEST_BODY").or_else(|_| std::env::var("JSS_BODY_LIMIT")) {
         Ok(v) => parse_size(&v)
             .map(|u| u as usize)
             .unwrap_or(DEFAULT_BODY_CAP),
@@ -2689,6 +2691,18 @@ where
 }
 
 fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allowed: &[String]) {
+    // Handler-authoritative CORS (JSS #548 parity): the git smart-HTTP and
+    // forge surfaces stamp their own deliberate `*` CORS trio (those
+    // protocols are anonymously clonable by design, and browser git clients
+    // need the `WWW-Authenticate` challenge to be CORS-readable even when
+    // the pod's app allowlist would block the origin). When a handler has
+    // already set `Access-Control-Allow-Origin`, defer to it instead of
+    // clobbering — previously this was mode-dependent (wildcard mode
+    // overwrote, allowlist mode preserved), which made git/forge CORS
+    // inconsistent across deployments.
+    if headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN) {
+        return;
+    }
     // Determine the effective ACAO value and whether credentials may be
     // allowed. The web platform forbids combining a credentialed response
     // (`Access-Control-Allow-Credentials: true`) with a reflected/wildcard
@@ -2718,7 +2732,7 @@ fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allow
         ),
         (
             "access-control-allow-headers",
-            "Accept, Authorization, Content-Type, DPoP, If-Match, If-None-Match, Link, Range, Slug, Origin",
+            "Accept, Authorization, Content-Type, DPoP, Git-Protocol, If-Match, If-None-Match, Link, Range, Slug, Origin",
         ),
         (
             "access-control-expose-headers",
@@ -3815,7 +3829,19 @@ async fn handle_git(
         enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin).await
     };
     if let Err(e) = wac {
-        return e.error_response();
+        // JSS #548: the WAC gate's 401/402/403 must carry the git CORS
+        // headers, or browser-based git clients see a generic CORS/network
+        // error instead of the status and `WWW-Authenticate` challenge.
+        let mut resp = e.error_response();
+        for (k, v) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+            if let (Ok(name), Ok(value)) = (
+                actix_web::http::header::HeaderName::from_bytes(k.as_bytes()),
+                actix_web::http::header::HeaderValue::from_str(v),
+            ) {
+                resp.headers_mut().insert(name, value);
+            }
+        }
+        return resp;
     }
 
     let service = GitHttpService::new(repo_root);
@@ -3832,11 +3858,14 @@ async fn handle_git(
         }
         Err(e) => {
             let status = e.status_code();
-            HttpResponse::build(
+            let mut builder = HttpResponse::build(
                 actix_web::http::StatusCode::from_u16(status)
                     .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
-            )
-            .json(serde_json::json!({"error": e.to_string()}))
+            );
+            for (k, v) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+                builder.insert_header((k, v));
+            }
+            builder.json(serde_json::json!({"error": e.to_string()}))
         }
     }
 }

@@ -82,6 +82,21 @@ async fn fs_state_with_pods(pods: &[(&str, String)]) -> (AppState, tempfile::Tem
     (state, tmp)
 }
 
+/// JSS #548: every git response — including WAC denials and service errors —
+/// must carry the git CORS headers, or a browser-based git client sees a
+/// generic CORS/network error instead of the actual status and challenge.
+fn assert_git_cors<B>(rsp: &actix_web::dev::ServiceResponse<B>, ctx: &str) {
+    for (name, want) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+        let got = rsp
+            .headers()
+            .get(name)
+            .unwrap_or_else(|| panic!("{ctx}: missing git CORS header {name}"))
+            .to_str()
+            .expect("header value utf-8");
+        assert_eq!(got, want, "{ctx}: wrong value for {name}");
+    }
+}
+
 #[actix_web::test]
 async fn anonymous_clone_of_private_pod_is_denied() {
     let (state, _tmp) = fs_state_with_pods(&[("alice", owner_only_acl("/alice/"))]).await;
@@ -99,6 +114,7 @@ async fn anonymous_clone_of_private_pod_is_denied() {
         "anonymous clone of a private pod must be denied by WAC before the CGI \
          (expected 401/403, got {status})"
     );
+    assert_git_cors(&rsp, "WAC-denied clone (#548)");
 }
 
 #[actix_web::test]
@@ -119,6 +135,7 @@ async fn anonymous_push_to_private_pod_is_denied() {
         status == 401 || status == 403,
         "anonymous push must be denied by WAC (expected 401/403, got {status})"
     );
+    assert_git_cors(&rsp, "WAC-denied push (#548)");
 }
 
 #[actix_web::test]
@@ -140,4 +157,7 @@ async fn anonymous_read_of_public_pod_passes_gate() {
         "anonymous read of a public pod must PASS the WAC gate \
          (expected non-401/403, e.g. 404 no-repo; got {status})"
     );
+    // The gate-passed error path (404 NotARepository from the git service)
+    // must carry the git CORS headers too (#548).
+    assert_git_cors(&rsp, "no-repo 404 after gate pass (#548)");
 }

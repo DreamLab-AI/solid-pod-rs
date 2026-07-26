@@ -56,9 +56,23 @@ pub struct ProviderConfig {
 
 impl ProviderConfig {
     /// Reasonable Solid-OIDC defaults.
+    ///
+    /// The issuer is normalised to its trailing-slash form so that every
+    /// surface quoting it — the discovery document's `issuer` (which
+    /// [`crate::discovery::build_discovery`] already slash-normalises), the
+    /// RFC 9207 `iss` authorization-response parameter, and the access
+    /// token's `iss` claim — is byte-identical. Two normalisations
+    /// drifting apart makes strict clients reject the response
+    /// (JSS #524/#551 fixed the same invariant in `createProvider`).
     pub fn new(issuer: impl Into<String>) -> Self {
+        let issuer = issuer.into();
+        let issuer = if issuer.ends_with('/') {
+            issuer
+        } else {
+            format!("{issuer}/")
+        };
         Self {
-            issuer: issuer.into(),
+            issuer,
             access_token_ttl_secs: 3600,
             dpop_skew_secs: 60,
         }
@@ -520,19 +534,20 @@ mod tests {
         B64.encode(Sha256::digest(s.as_bytes()))
     }
 
-    /// Build an HS256-signed DPoP proof with `kty=oct` — the core
-    /// DPoP verifier has an explicit test path for this (see
-    /// `solid-pod-rs/src/oidc/mod.rs:553-563`).
+    /// Build an ES256-signed DPoP proof with an embedded EC public JWK.
+    ///
+    /// The verifier's alg-confusion gate rejects HS*/`kty=oct` proofs
+    /// outright (RFC 9449 §5, asymmetric algs only), so the test proof
+    /// must be a real asymmetric one — a fresh P-256 key per call.
     fn test_dpop_proof(htu: &str, htm: &str, iat: u64) -> String {
-        // oct JWK — 32 random bytes, base64url-noPad.
-        let mut sec = [0u8; 32];
-        rand::thread_rng().fill(&mut sec);
-        let k = B64.encode(sec);
+        let key = crate::jwks::SigningKey::generate_es256().unwrap();
         let jwk = json!({
-            "kty": "oct",
-            "k": k,
+            "kty": "EC",
+            "crv": "P-256",
+            "x": key.public_jwk.x,
+            "y": key.public_jwk.y,
         });
-        let mut header = Header::new(Algorithm::HS256);
+        let mut header = Header::new(Algorithm::ES256);
         header.typ = Some("dpop+jwt".into());
         header.jwk = Some(serde_json::from_value(jwk).unwrap());
         let claims = json!({
@@ -541,7 +556,12 @@ mod tests {
             "iat": iat,
             "jti": uuid::Uuid::new_v4().to_string(),
         });
-        encode(&header, &claims, &EncodingKey::from_secret(&sec)).unwrap()
+        encode(
+            &header,
+            &claims,
+            &EncodingKey::from_ec_pem(key.private_pem.as_bytes()).unwrap(),
+        )
+        .unwrap()
     }
 
     #[tokio::test]

@@ -314,7 +314,9 @@ pub mod did_nostr {
     /// well-known URL (ADR-125 — supersedes ADR-074 §D2/§D3/§D4/§D13).
     ///
     /// The single published form: `@context`
-    /// `["https://www.w3.org/ns/cid/v1", "https://w3id.org/nostr/context"]`,
+    /// `["https://www.w3.org/ns/did/v1", "https://www.w3.org/ns/cid/v1",
+    /// "https://w3id.org/nostr/context"]` (did:nostr CG 0.1.1 — DID Core
+    /// context first, as DID Core requires),
     /// top-level `type: "DIDNostr"`, a single `Multikey` verification method
     /// with `publicKeyMultibase: "fe70102<hex>"`, fragment `#key1`. Optional
     /// members are omitted when empty (no `service: []`), per the did:nostr CG
@@ -360,6 +362,7 @@ pub mod did_nostr {
         let did = format!("did:nostr:{pubkey}");
         let mut doc = serde_json::json!({
             "@context": [
+                "https://www.w3.org/ns/did/v1",
                 "https://www.w3.org/ns/cid/v1",
                 "https://w3id.org/nostr/context"
             ],

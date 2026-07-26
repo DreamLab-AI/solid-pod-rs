@@ -4,6 +4,83 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.7] - 2026-07-26
+
+did:nostr CG spec 0.1.1 alignment plus the JSS `0.0.204 → 0.0.219`
+comparator sync. The upstream delta was audited commit-by-commit: most of it
+is either already covered here (raw-bytes NIP-98 hashing, POST-sidecar
+Control elevation, MCP `write_acl` accessTo, HEAD conneg — all structural or
+closed by the alpha.4 closeout) or not applicable to a compiled server (the
+entire 11-commit runtime-plugin cluster, node-oidc-provider/Fastify/n3.js
+specific fixes). One genuine gap and one latent bug were found and fixed.
+
+### Changed
+
+- **did:nostr `@context` is now the CG spec 0.1.1 three-context form** —
+  `["https://www.w3.org/ns/did/v1", "https://www.w3.org/ns/cid/v1",
+  "https://w3id.org/nostr/context"]`, with the DID Core context first as
+  DID Core requires (and as the DID 1.1 transition expects). Previously the
+  documents carried only the two-entry `[cid/v1, nostr/context]` form.
+  Applied at the single canonical renderer
+  (`did_nostr_types::render_did_document`), the `interop` malformed-hex
+  fallback, and across tests, conformance fixtures, and fixture schemas in
+  the `nostr` and `didkey` crates. Both forms expand to the same terms under
+  JSON-LD, so consumers that parse rather than byte-compare are unaffected.
+
+### Fixed
+
+- **Git smart-HTTP CORS on denied responses (JSS #548)** — the WAC gate's
+  401/402/403 and the git service's error responses (e.g. 404
+  `NotARepository`) now carry the git CORS trio, so browser-based git
+  clients see the real status and `WWW-Authenticate` challenge instead of a
+  generic CORS error. The trio is now a single source of truth
+  (`service::GIT_CORS_HEADERS`) shared by the preflight, success, error,
+  and WAC-denial paths, and `Access-Control-Allow-Headers` gains
+  `Git-Protocol` (protocol-v2 clients send it). The server-wide CORS
+  middleware now defers to handler-set `Access-Control-Allow-Origin`
+  (git/forge surfaces are deliberately `*`-open), making git CORS identical
+  in wildcard and allowlist deployments; the global preflight header list
+  also gains `Git-Protocol`.
+- **IdP issuer slash-normalisation (JSS #524 class)** — `ProviderConfig::new`
+  now canonicalises the issuer to its trailing-slash form, so the discovery
+  document's `issuer`, the RFC 9207 `iss` authorization-response parameter,
+  and the access-token `iss` claim are byte-identical regardless of how the
+  operator wrote the config. Previously discovery slash-normalised while
+  token minting used the raw configured string — strict clients comparing
+  the two byte-for-byte would reject the response.
+- **IdP DPoP test helper minted HS256 proofs** — the alg-confusion gate
+  (audit sprint) rightly rejects HS*/`kty=oct` DPoP proofs, which had left
+  two provider unit tests failing on `main`. The helper now mints real
+  ES256 proofs with an embedded P-256 JWK.
+
+### Added
+
+- **`JSS_BODY_LIMIT` env alias** for `JSS_MAX_REQUEST_BODY` (upstream
+  #474/#543 config name), for drop-in config parity. The canonical name
+  wins when both are set; the default stays 50 MiB (upstream raised theirs
+  to 20 MB, still below ours).
+- **Blank-node round-trip regression test (JSS #536 class)** — pins that
+  blank-node subjects survive N-Triples re-parsing and stay `_:`-prefixed
+  in JSON-LD `@id` (the n3.js bare-label bug is structurally absent here;
+  the test keeps it that way).
+
+### Not ported (audited, classified N/A)
+
+- The JSS runtime plugin system (`createServer({plugins})`, `--plugin`,
+  `appPaths`, `api.mountApp`/`serverInfo`/`reservePath`/`plugins`,
+  0.0.213–0.0.219): architectural mismatch — this workspace extends via
+  compile-time Cargo features. Revisit via ADR only if a downstream needs
+  recompile-free app mounts; if ever built, copy upstream's two safety
+  invariants (parameterised reserved paths are read-only by default;
+  validate path shapes *after* normalisation).
+- JWK Y-parity reconcile (#571), well-known profile-probe (#451),
+  `lastSubmission` error transport (#514), hijack-then-throw sweeps
+  (#412/#526), passkey WebView degradation (#556), tunnel credential
+  passthrough (#530), port fallback (#477), Termux tmpdir (#518): fix
+  JS-runtime constructs (JWK VM path, filesystem DID indexer, node
+  oidc-provider, Fastify, inline browser JS, ops tunnel) that do not exist
+  in this codebase.
+
 ## [0.5.0-alpha.5] - 2026-07-15
 
 Ships the new **`solid-pod-rs-forge`** crate and clears the supply-chain audit

@@ -74,7 +74,9 @@ fn s256(verifier: &str) -> String {
 #[tokio::test]
 async fn provider_construction_succeeds() {
     let (p, _, _) = build_provider().await;
-    assert_eq!(p.config().issuer, "https://pod.example");
+    // Slash-normalised at construction (JSS #524 — see
+    // `provider_config_new_sets_defaults`).
+    assert_eq!(p.config().issuer, "https://pod.example/");
     assert_eq!(p.config().access_token_ttl_secs, 3600);
     assert_eq!(p.config().dpop_skew_secs, 60);
 }
@@ -443,8 +445,26 @@ fn provider_error_code_mapping() {
 
 #[test]
 fn provider_config_new_sets_defaults() {
+    // JSS #524: the issuer is slash-normalised at construction so the
+    // discovery `issuer`, RFC 9207 `iss` param, and token `iss` claim are
+    // byte-identical regardless of how the operator wrote the config.
     let cfg = ProviderConfig::new("https://my-pod.example");
-    assert_eq!(cfg.issuer, "https://my-pod.example");
+    assert_eq!(cfg.issuer, "https://my-pod.example/");
     assert_eq!(cfg.access_token_ttl_secs, 3600);
     assert_eq!(cfg.dpop_skew_secs, 60);
+    // Already-normalised input is untouched (idempotent).
+    assert_eq!(
+        ProviderConfig::new("https://my-pod.example/").issuer,
+        "https://my-pod.example/"
+    );
+}
+
+#[test]
+fn discovery_issuer_matches_token_iss_byte_for_byte() {
+    // The RFC 9207 invariant JSS #524 fixed: a strict client compares the
+    // discovery document's `issuer` against the authorization response
+    // `iss` and the token `iss` claim byte-for-byte.
+    let cfg = ProviderConfig::new("https://pod.example");
+    let discovery = solid_pod_rs_idp::discovery::build_discovery(&cfg.issuer);
+    assert_eq!(discovery.issuer, cfg.issuer);
 }

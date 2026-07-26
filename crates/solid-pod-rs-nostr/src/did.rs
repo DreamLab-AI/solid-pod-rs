@@ -66,8 +66,9 @@ mod tests {
         let did = format!("did:nostr:{PK_HEX}");
         let doc = render_did_document(&pk);
         assert_eq!(doc["id"], did);
-        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/cid/v1");
-        assert_eq!(doc["@context"][1], "https://w3id.org/nostr/context");
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+        assert_eq!(doc["@context"][1], "https://www.w3.org/ns/cid/v1");
+        assert_eq!(doc["@context"][2], "https://w3id.org/nostr/context");
         assert_eq!(doc["type"], "DIDNostr");
         // did:nostr CG omit-when-empty: a document with no service endpoints
         // OMITS `service` entirely (no `service: []`), and carries no

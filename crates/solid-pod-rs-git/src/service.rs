@@ -123,15 +123,39 @@ impl GitResponse {
     pub fn error(status: u16, msg: impl Into<String>) -> Self {
         let msg = msg.into();
         let body = Bytes::from(format!("{{\"error\":\"{msg}\"}}"));
+        let mut headers: Vec<(String, String)> =
+            vec![("content-type".into(), "application/json".into())];
+        headers.extend(git_cors_header_pairs());
         Self {
             status,
-            headers: vec![
-                ("content-type".into(), "application/json".into()),
-                ("access-control-allow-origin".into(), "*".into()),
-            ],
+            headers,
             body,
         }
     }
+}
+
+/// CORS headers for git responses. Single source of truth — used by the
+/// OPTIONS preflight and http-backend success path here, by
+/// [`GitResponse::error`], and by the server's WAC-gate 401/402/403
+/// early-returns (JSS #548). Without these, browser-based git clients see
+/// a generic CORS/network error instead of the actual status and
+/// `WWW-Authenticate` challenge.
+pub const GIT_CORS_HEADERS: [(&str, &str); 3] = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    (
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, Git-Protocol",
+    ),
+];
+
+/// [`GIT_CORS_HEADERS`] as owned pairs, ready to extend a header `Vec`.
+#[must_use]
+pub fn git_cors_header_pairs() -> Vec<(String, String)> {
+    GIT_CORS_HEADERS
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
 /// The Git HTTP service.
@@ -196,17 +220,7 @@ impl GitHttpService {
         if req.method.eq_ignore_ascii_case("OPTIONS") {
             return Ok(GitResponse {
                 status: 200,
-                headers: vec![
-                    ("access-control-allow-origin".into(), "*".into()),
-                    (
-                        "access-control-allow-methods".into(),
-                        "GET, POST, OPTIONS".into(),
-                    ),
-                    (
-                        "access-control-allow-headers".into(),
-                        "Content-Type, Authorization".into(),
-                    ),
-                ],
+                headers: git_cors_header_pairs(),
                 body: Bytes::new(),
             });
         }
@@ -444,16 +458,8 @@ fn parse_cgi_output(stdout: &[u8]) -> Result<GitResponse, GitError> {
         }
     }
 
-    // CORS headers (JSS lines 218-220).
-    headers.push(("Access-Control-Allow-Origin".into(), "*".into()));
-    headers.push((
-        "Access-Control-Allow-Methods".into(),
-        "GET, POST, OPTIONS".into(),
-    ));
-    headers.push((
-        "Access-Control-Allow-Headers".into(),
-        "Content-Type, Authorization".into(),
-    ));
+    // CORS headers (JSS lines 218-220, single source of truth per #548).
+    headers.extend(git_cors_header_pairs());
 
     Ok(GitResponse {
         status,

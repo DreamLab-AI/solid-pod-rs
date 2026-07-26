@@ -2203,6 +2203,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blank_node_subjects_survive_ntriples_and_jsonld_round_trip() {
+        // JSS #536 regression class: a blank-node SUBJECT whose label is
+        // written bare (no `_:` prefix) into JSON-LD `@id` gets re-read as
+        // a named IRI, severing the graph. Pin the invariant on both
+        // serialisations: N-Triples round-trips to an identical graph, and
+        // JSON-LD `@id` carries the `_:` prefix for blank subjects.
+        let mut g = Graph::new();
+        g.insert(Triple::new(
+            Term::blank("b0"),
+            Term::iri("http://xmlns.com/foaf/0.1/name"),
+            Term::literal("Alice"),
+        ));
+        g.insert(Triple::new(
+            Term::iri("http://ex.org/doc"),
+            Term::iri("http://ex.org/author"),
+            Term::blank("b0"),
+        ));
+
+        let nt = g.to_ntriples();
+        let reparsed = Graph::parse_ntriples(&nt).expect("re-parse own N-Triples");
+        assert_eq!(
+            reparsed.triples, g.triples,
+            "blank-node subject must survive an N-Triples round trip"
+        );
+
+        let jsonld = g.to_jsonld();
+        let ids: Vec<&str> = jsonld
+            .as_array()
+            .expect("expanded form is an array")
+            .iter()
+            .map(|n| n["@id"].as_str().expect("@id string"))
+            .collect();
+        assert!(
+            ids.contains(&"_:b0"),
+            "blank subject must be `_:`-prefixed in JSON-LD @id, got {ids:?}"
+        );
+        let obj_ref = jsonld
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["@id"] == "http://ex.org/doc")
+            .and_then(|n| n["http://ex.org/author"][0]["@id"].as_str())
+            .expect("object reference present");
+        assert_eq!(obj_ref, "_:b0", "blank object reference keeps the prefix");
+    }
+
+    #[test]
     fn is_container_detects_trailing_slash() {
         assert!(is_container("/"));
         assert!(is_container("/media/"));

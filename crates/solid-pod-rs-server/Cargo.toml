@@ -41,11 +41,11 @@ path = "src/main.rs"
 # fail-open. `nip98-replay` wires the single-use replay guard into the
 # default build; `acl-origin` activates the WAC `acl:origin` gate (F4)
 # fed by the request Origin header threaded through the enforce_* paths.
-solid-pod-rs = { version = "0.5.0-alpha.6", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20", "nip98-schnorr", "nip98-replay", "acl-origin"] }
+solid-pod-rs = { version = "0.5.0-alpha.7", path = "../solid-pod-rs", features = ["fs-backend", "memory-backend", "config-loader", "legacy-notifications", "dpop-replay-cache", "embedded-docs", "mrc20", "nip98-schnorr", "nip98-replay", "acl-origin"] }
 
 # IdP crate — Sprint-11 CLI ops (`account delete`, `invite create`)
 # dispatch into UserStore::delete and the new InviteStore trait.
-solid-pod-rs-idp = { version = "0.5.0-alpha.6", path = "../solid-pod-rs-idp" }
+solid-pod-rs-idp = { version = "0.5.0-alpha.7", path = "../solid-pod-rs-idp" }
 
 # Sprint-11 CLI: `invite create` surfaces invite records with
 # absolute expiry timestamps. Kept here rather than transitively
@@ -108,12 +108,12 @@ rustls-pemfile = { version = "2", optional = true }
 # Optional git HTTP backend + auto-init (JSS #466/#469/#471).
 # Gated by `git` feature; not compiled for wasm32. Requires the
 # `git` binary + `git-http-backend` CGI on the server host.
-solid-pod-rs-git = { version = "0.5.0-alpha.6", path = "../solid-pod-rs-git", optional = true }
+solid-pod-rs-git = { version = "0.5.0-alpha.7", path = "../solid-pod-rs-git", optional = true }
 
 # Optional Git forge (Gogs/Gitea slice) — issues/PRs, forge push tokens,
 # hosted did:nostr bodies, Blocktrails anchoring. Gated by `forge`
 # (default-off); implies `git` for the smart-HTTP CGI. Native-only.
-solid-pod-rs-forge = { version = "0.5.0-alpha.6", path = "../solid-pod-rs-forge", optional = true }
+solid-pod-rs-forge = { version = "0.5.0-alpha.7", path = "../solid-pod-rs-forge", optional = true }
 
 [features]
 # Feature umbrella toggles for the server binary.
