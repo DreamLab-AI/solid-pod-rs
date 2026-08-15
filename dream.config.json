@@ -1,0 +1,51 @@
+{
+  "repo": "DreamLab-AI/solid-pod-rs",
+  "cron": "0 2 * * *",
+  "slots": [
+    {
+      "deep": "wac-evaluator",
+      "scan": ["nip98-auth", "acl-walk"]
+    },
+    {
+      "deep": "storage-backend",
+      "scan": ["ldp-containers", "content-negotiation"]
+    },
+    {
+      "deep": "provenance-api",
+      "scan": ["git-marks", "blocktrails"]
+    },
+    {
+      "deep": "did-nostr-resolver",
+      "scan": ["mcp-tools", "webhook-signing"]
+    },
+    {
+      "deep": "performance-hardening",
+      "scan": ["rate-limiting", "quota-enforcement"]
+    }
+  ],
+  "bonusModuli": {
+    "30": "solid-protocol-compliance",
+    "60": "federation-interop"
+  },
+  "controlPlaneProbes": [
+    "cargo check --workspace 2>&1 | tail -5 || true",
+    "cargo test --workspace --no-run 2>&1 | tail -5 || true"
+  ],
+  "buildStep": {
+    "cmd": "cargo build --workspace --release 2>&1 | tail -20",
+    "degradeOnWasmFailure": true
+  },
+  "evaluatorEntrypoints": {
+    "bench": "cargo test --workspace 2>&1 | tail -30"
+  },
+  "adrConvention": "3-digit",
+  "extraDisciplines": [
+    "evaluation-is-not-promotion",
+    "witness-every-quantitative-claim",
+    "nip98-schnorr-verification-mandatory"
+  ],
+  "ledgerPath": "docs/dream-cycle/LEDGER.md",
+  "branchPrefix": "dream/",
+  "labels": ["dream-cycle", "research"],
+  "autoMerge": false
+}
