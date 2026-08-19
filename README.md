@@ -14,6 +14,10 @@ New to Solid, RDF/JSON-LD, WAC, or did:nostr? The concepts live in one place: th
 
 ---
 
+> **Your data's exit right should sit in the floor, not be granted at the door — solid-pod-rs gives every human and agent a self-owned RDF pod under their own key.** A Rust-native Solid Protocol server with WAC access control and `did:nostr` identity; every write is a git-mark commit and high-value writes anchor to Bitcoin. Standards-based sovereignty: leave at any time, and take everything with you.
+
+---
+
 ## Part of VisionFlow
 
 solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/DreamLab-AI/VisionFlow) — a seven-repo mesh for human–AI coordination built on one identity spine: `did:nostr` as login, WAC principal, provenance author, DID subject, and payment account, all from a single keypair. Pods are the canonical store the other components read from and write to. The mesh pairs that data sovereignty with a shared formal semantic layer — OWL 2 EL reasoning in VisionClaw bounds what agents assert, the arrangement the industry now calls neurosymbolic — so a pod holds data whose meaning is checked, not merely stored.
@@ -27,6 +31,64 @@ solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/
 | [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Nostr-native forum + relay — the human+agent communication and governance substrate. |
 | [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website) | DreamLab AI company website — the commercial face. |
 | [DreamLab-AI/knowledgeGraph](https://github.com/DreamLab-AI/knowledgeGraph) | narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D; main also releases that corpus and its build pipeline as open data, 7,457 pages under ODbL-1.0. |
+
+Each sibling in its own words:
+
+<details>
+<summary><b>VisionFlow</b> — <em>ecosystem canon — ADRs, PRDs, the compatibility matrix, marketing site and vision report</em></summary>
+<br/>
+
+> **Six honest systems can still assemble one collective lie — VisionFlow is the canon that stops that.** It holds the ADRs, PRDs, compatibility matrix and honest status ledger for a seven-repo human–AI mesh built on one wager: AI collapses the cost of routing information, so the human is promoted from router to judgment broker. This repo ships words, not runtime — and it is graded on their accuracy.
+
+</details>
+
+<details>
+<summary><b>VisionClaw</b> — <em>flagship engine — ontology-grounded immersive 3D knowledge graph, OWL 2 EL + Whelk, GPU physics</em></summary>
+<br/>
+
+> **Agent swarms are invisible; VisionClaw makes them something you can stand inside and watch.** It reasons over a curated corpus with an OWL 2 EL engine (Whelk, 5,975 classes), settles the result as a 3D graph under GPU physics, and renders agents acting inside it — desktop and Quest 3 alike, every agent action drawn as a beam to the concept it touched. It observes and never signs: the engine you can watch is deliberately not the surface that can commit.
+
+</details>
+
+<details>
+<summary><b>agentbox</b> — <em>sovereign agent runtime — Nix container, did:nostr agent identities, RuVector memory, Solid-pod bridge</em></summary>
+<br/>
+
+> **An agent runtime you can't reproduce is an audit you can't run — Agentbox is a byte-for-byte reproducible Nix container driven by one TOML manifest.** Every agent is minted its own `did:nostr` key at spawn, every durable write passes a privacy filter into a cryptographic audit trail, and what agents may touch is bounded by explicit fail-closed gates. Reproduce the runtime, audit every action, control every capability.
+
+</details>
+
+<details>
+<summary><b>nostr-rust-forum</b> — <em>Nostr-native forum + relay — the human+agent communication and governance substrate</em></summary>
+<br/>
+
+> **Machine coordination is cheap; accountable decisions are not — this forum is the one place in the mesh where a decision gets signed.** Humans and agents are the same kind of participant: each holds a `did:nostr` keypair and publishes Schnorr-signed events to an immutable log, so every governance outcome carries a human signature by construction. The kit ships vanilla — one TOML file stands up a community, no forking.
+
+</details>
+
+<details>
+<summary><b>dreamlab-ai-website</b> — <em>DreamLab AI company website — the commercial face</em></summary>
+<br/>
+
+> **The commercial face of the mesh, running on the mesh's own rails.** A React marketing site and a Rust/Leptos WASM community forum share one Cloudflare-edge origin, end-to-end encrypted where it matters. It is deliberately a thin consumer of the nostr-rust-forum kit — branding and zone config live here, the protocol lives upstream — living proof the kit stands up a real community without a fork.
+
+</details>
+
+<details>
+<summary><b>knowledgeGraph</b> — <em>narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D</em></summary>
+<br/>
+
+> **8,100+ ordinary Logseq markdown pages that compile losslessly into a formal OWL 2 ontology — pure TBox, every page a class, zero individuals by design.** Corpus, pipeline, viewer and method ship as one open release (ODbL-1.0 data, AGPL-3.0 pipeline) published at narrativegoldmine.com; siblings reason over it (VisionClaw) and serve it as measured LLM grounding (Loom, ~0.94 grounded recall). Rigorous curation is amortised once and reused per query — this repo is the once.
+
+</details>
+
+<details>
+<summary><b>Loom</b> — <em>measured LLM grounding over the curated corpus</em></summary>
+<br/>
+
+> **Your LLM doesn't know your data — Loom makes any LLM answer from it, verifiably.** Point any OpenAI-compatible client at one URL and every answer is grounded in your curated, reasoner-checked private corpus: recall on in-domain questions rises from as low as 0.15 to ~0.94, faster than the bare model, with every claim traceable to a corpus generation. The model is just a URL behind the door — swap it for the next one and nothing else changes, because the knowledge lives in the corpus you govern, not the weights you rent.
+
+</details>
 
 In July 2026 Block (Jack Dorsey) launched [Buzz](https://github.com/block/buzz), a self-hosted, Nostr-native team-chat + AI-agent + git platform in Rust. It independently arrives at the same substrate this ecosystem has built since 2022: Nostr events as source of truth, agents as first-class signed participants with their own keypairs, and NIP-42/98 auth — industry convergence that validates the direction. What Buzz does not carry is what differentiates this ecosystem: Solid-pod data sovereignty (this repo), OWL 2 EL / KG ontology grounding, immersive 3D embodiment, and closed learning loops (sibling repos).
 
