@@ -9,9 +9,9 @@ Streams 2.0 format. ≤ 15 minutes.
 - Rust toolchain + the `solid-pod-rs` workspace.
 - Familiarity with `tokio` and `async fn`.
 
-The stock example server (`examples/standalone.rs`) does not wire up
-Notifications — this tutorial adds a small program to exercise the
-notifications module directly.
+This tutorial exercises the framework-independent notification primitives
+directly. For the maintained HTTP routes, use the bundled server and its
+notification configuration.
 
 ## Step 1 — Understand the wiring
 

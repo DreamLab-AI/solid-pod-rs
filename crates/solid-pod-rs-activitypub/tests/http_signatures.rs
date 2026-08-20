@@ -33,6 +33,7 @@ impl ActorKeyResolver for StaticResolver {
                 .split_once('#')
                 .map(|(u, _)| u.to_string())
                 .unwrap_or_else(|| key_id.to_string()),
+            inbox_url: None,
             public_key_pem: self.pem.clone(),
         })
     }

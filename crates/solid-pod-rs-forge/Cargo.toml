@@ -17,12 +17,12 @@ readme = "README.md"
 # Core library at default (native) features — the forge is native-only and
 # never enters a wasm/core build. Provides provenance, NIP-98, did:nostr,
 # WAC, mrc20 (opt-in via the `anchoring` feature).
-solid-pod-rs = { version = "0.5.0-alpha.7", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init", "did-nostr-types"] }
+solid-pod-rs = { version = "0.5.0-alpha.8", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "git-auto-init", "did-nostr-types", "nip98-schnorr", "nip98-replay"] }
 # Git smart-HTTP CGI + porcelain reuse.
-solid-pod-rs-git = { version = "0.5.0-alpha.7", path = "../solid-pod-rs-git" }
+solid-pod-rs-git = { version = "0.5.0-alpha.8", path = "../solid-pod-rs-git" }
 # Nostr Event/Relay for NIP-34 discovery (build/sign always compiled; the
 # outbound WS publish path is gated by `announce`).
-solid-pod-rs-nostr = { version = "0.5.0-alpha.7", path = "../solid-pod-rs-nostr", optional = true }
+solid-pod-rs-nostr = { version = "0.5.0-alpha.8", path = "../solid-pod-rs-nostr", optional = true }
 
 tokio = { version = "1", features = ["process", "fs", "io-util", "rt", "sync", "macros", "time"] }
 bytes = "1"

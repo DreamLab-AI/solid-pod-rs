@@ -21,10 +21,35 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::relay::{Event, Filter, Relay};
+
+/// Conservative per-connection limits for a public relay endpoint.
+#[derive(Clone, Debug)]
+pub struct RelayLimits {
+    pub max_text_frame_bytes: usize,
+    pub max_event_bytes: usize,
+    pub max_subscriptions: usize,
+    pub max_filters_per_subscription: usize,
+    pub max_filter_bytes: usize,
+    pub max_history_events: usize,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_text_frame_bytes: 256 * 1024,
+            max_event_bytes: 128 * 1024,
+            max_subscriptions: 32,
+            max_filters_per_subscription: 8,
+            max_filter_bytes: 16 * 1024,
+            max_history_events: 500,
+        }
+    }
+}
 
 /// Run the WebSocket handshake loop over an already-upgraded stream.
 ///
@@ -32,8 +57,19 @@ use crate::relay::{Event, Filter, Relay};
 /// most consumers will call [`serve_relay_ws`] on a fresh TCP stream
 /// after their HTTP upgrade.
 #[allow(clippy::collapsible_match)]
-pub async fn serve_relay_ws_stream<S>(relay: Arc<Relay>, mut ws: WebSocketStream<S>)
+pub async fn serve_relay_ws_stream<S>(relay: Arc<Relay>, ws: WebSocketStream<S>)
 where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    serve_relay_ws_stream_with_limits(relay, ws, RelayLimits::default()).await;
+}
+
+/// Serve an upgraded stream with explicit application-level limits.
+pub async fn serve_relay_ws_stream_with_limits<S>(
+    relay: Arc<Relay>,
+    mut ws: WebSocketStream<S>,
+    limits: RelayLimits,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     // Subscriptions owned by this socket: subscription_id → filters.
@@ -47,7 +83,12 @@ where
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        let response = dispatch_message(&relay, &mut subscriptions, &text);
+                        let response = dispatch_message_with_limits(
+                            &relay,
+                            &mut subscriptions,
+                            &text,
+                            &limits,
+                        );
                         for out in response {
                             if ws.send(Message::Text(out)).await.is_err() {
                                 return;
@@ -96,11 +137,14 @@ pub async fn serve_relay_ws<S>(relay: Arc<Relay>, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    // Note: callers must have already performed the HTTP upgrade and
-    // are passing us the raw WebSocket-framed stream. Use
-    // `tokio_tungstenite::accept_async` in the HTTP integration.
-    if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
-        serve_relay_ws_stream(relay, ws).await;
+    let limits = RelayLimits::default();
+    let config = WebSocketConfig {
+        max_message_size: Some(limits.max_text_frame_bytes),
+        max_frame_size: Some(limits.max_text_frame_bytes),
+        ..WebSocketConfig::default()
+    };
+    if let Ok(ws) = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await {
+        serve_relay_ws_stream_with_limits(relay, ws, limits).await;
     }
 }
 
@@ -113,6 +157,19 @@ pub fn dispatch_message(
     subscriptions: &mut HashMap<String, Vec<Filter>>,
     text: &str,
 ) -> Vec<String> {
+    dispatch_message_with_limits(relay, subscriptions, text, &RelayLimits::default())
+}
+
+/// Dispatch a frame under explicit resource limits.
+pub fn dispatch_message_with_limits(
+    relay: &Relay,
+    subscriptions: &mut HashMap<String, Vec<Filter>>,
+    text: &str,
+    limits: &RelayLimits,
+) -> Vec<String> {
+    if text.len() > limits.max_text_frame_bytes {
+        return vec![notice("frame too large")];
+    }
     let parsed: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => return vec![notice(&format!("bad JSON: {e}"))],
@@ -127,19 +184,25 @@ pub fn dispatch_message(
     };
 
     match head.as_str() {
-        "EVENT" => handle_event(relay, &arr),
-        "REQ" => handle_req(relay, subscriptions, &arr),
+        "EVENT" => handle_event(relay, &arr, limits),
+        "REQ" => handle_req(relay, subscriptions, &arr, limits),
         "CLOSE" => handle_close(subscriptions, &arr),
         other => vec![notice(&format!("unknown frame type: {other}"))],
     }
 }
 
-fn handle_event(relay: &Relay, arr: &[Value]) -> Vec<String> {
+fn handle_event(relay: &Relay, arr: &[Value], limits: &RelayLimits) -> Vec<String> {
     use crate::typestate::UncheckedEvent;
 
     let Some(event_value) = arr.get(1) else {
         return vec![notice("EVENT frame missing event payload")];
     };
+    if serde_json::to_vec(event_value)
+        .map(|bytes| bytes.len() > limits.max_event_bytes)
+        .unwrap_or(true)
+    {
+        return vec![ok_frame("", false, "invalid: event too large")];
+    }
     let event: Event = match serde_json::from_value(event_value.clone()) {
         Ok(e) => e,
         Err(e) => {
@@ -171,14 +234,30 @@ fn handle_req(
     relay: &Relay,
     subscriptions: &mut HashMap<String, Vec<Filter>>,
     arr: &[Value],
+    limits: &RelayLimits,
 ) -> Vec<String> {
     let Some(sub_id) = arr.get(1).and_then(|v| v.as_str()) else {
         return vec![notice("REQ frame missing subscription id")];
     };
+    if sub_id.len() > 64 {
+        return vec![notice("subscription id too long")];
+    }
     let sub_id = sub_id.to_string();
     let raw_filters = &arr[2..];
+    if raw_filters.is_empty() || raw_filters.len() > limits.max_filters_per_subscription {
+        return vec![notice("too many filters")];
+    }
+    if !subscriptions.contains_key(&sub_id) && subscriptions.len() >= limits.max_subscriptions {
+        return vec![notice("too many subscriptions")];
+    }
     let mut filters = Vec::with_capacity(raw_filters.len());
     for raw in raw_filters {
+        if serde_json::to_vec(raw)
+            .map(|bytes| bytes.len() > limits.max_filter_bytes)
+            .unwrap_or(true)
+        {
+            return vec![notice("filter too large")];
+        }
         match Filter::from_value(raw.clone()) {
             Ok(f) => filters.push(f),
             Err(e) => {
@@ -186,11 +265,16 @@ fn handle_req(
             }
         }
     }
+    let result_limit = filters
+        .iter()
+        .filter_map(|filter| filter.limit)
+        .max()
+        .unwrap_or(limits.max_history_events)
+        .min(limits.max_history_events);
     let history = relay.history(&filters);
     subscriptions.insert(sub_id.clone(), filters);
-
-    let mut out = Vec::with_capacity(history.len() + 1);
-    for ev in history {
+    let mut out = Vec::with_capacity(result_limit.saturating_add(1));
+    for ev in history.into_iter().take(result_limit) {
         let frame = json!([
             "EVENT",
             sub_id,
@@ -325,6 +409,43 @@ mod tests {
         let out = dispatch_message(&relay, &mut subs, "[\"PING\"]");
         assert_eq!(out.len(), 1);
         assert!(out[0].contains("\"NOTICE\""));
+    }
+
+    #[test]
+    fn limits_bound_frames_subscriptions_filters_and_history() {
+        let relay = Relay::in_memory();
+        for i in 0..4 {
+            relay.ingest(make_event(1, &format!("event-{i}"))).unwrap();
+        }
+        let limits = RelayLimits {
+            max_text_frame_bytes: 100,
+            max_event_bytes: 80,
+            max_subscriptions: 1,
+            max_filters_per_subscription: 1,
+            max_filter_bytes: 32,
+            max_history_events: 2,
+        };
+        let mut subs = HashMap::new();
+
+        let out = dispatch_message_with_limits(
+            &relay,
+            &mut subs,
+            r#"["REQ","one",{"kinds":[1]}]"#,
+            &limits,
+        );
+        assert_eq!(out.len(), 3, "two history events plus EOSE");
+
+        let out = dispatch_message_with_limits(
+            &relay,
+            &mut subs,
+            r#"["REQ","two",{"kinds":[1]}]"#,
+            &limits,
+        );
+        assert!(out[0].contains("too many subscriptions"));
+
+        let oversized = "x".repeat(101);
+        let out = dispatch_message_with_limits(&relay, &mut subs, &oversized, &limits);
+        assert!(out[0].contains("frame too large"));
     }
 
     #[tokio::test]

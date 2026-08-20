@@ -4,7 +4,7 @@
 //!
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|
-//! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::FsQuotaStore::reconcile`] |
+//! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::QuotaPolicy::reconcile`] |
 //! | `account delete <user-id>`           | JSS #292 (`d9e56d8`)   | [`solid_pod_rs_idp::UserStore::delete`] |
 //! | `invite create -u N [--expires-in]`  | JSS #304 (`6578ab9`)   | [`solid_pod_rs_idp::InviteStore`]  |
 //!
@@ -92,7 +92,7 @@ pub enum AccountCommand {
 /// Arguments for `account delete`.
 #[derive(Debug, Args, Clone)]
 pub struct AccountDeleteArgs {
-    /// Stable internal user id (the one stored on the [`User`] row).
+    /// Stable internal user id (the one stored on the `User` row).
     pub user_id: String,
 
     /// Skip the interactive confirmation prompt.

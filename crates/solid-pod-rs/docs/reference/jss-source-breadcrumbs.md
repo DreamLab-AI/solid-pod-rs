@@ -49,7 +49,7 @@ parity rows in
 | `src/webledger.js` | 190 | not implemented (out of Solid spec scope) | 🚫 wontfix-in-crate | — |
 | `src/webrtc/index.js` | 430 | not implemented (out of Solid spec scope) | 🚫 wontfix-in-crate | — |
 | `src/remotestorage.js` | — | not implemented (out of Solid spec scope) | 🚫 wontfix-in-crate | — |
-| `src/token.js` | — | `src/oidc/mod.rs::verify_access_token` (the newer Solid-OIDC token verification); dev Bearer helper is consumer concern | 🟡 | 61, 71 |
+| `src/token.js` | — | `solid-pod-rs-server/src/lib.rs::verify_dev_bearer` plus `src/oidc/mod.rs::verify_access_token` | ✅ | 61, 71 |
 | `src/mrc20.js` | — | not implemented (out of scope) | 🚫 | — |
 | `src/terminal/index.js` | — | not implemented (ops tooling, not library) | 🚫 wontfix-in-crate | — |
 | `src/tunnel/index.js` | — | not implemented (ops tooling) | 🚫 wontfix-in-crate | — |
@@ -99,7 +99,7 @@ this surface):
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/auth/token.js` | 252 | consumer binder (primitives from `src/oidc/mod.rs::verify_access_token`); dev Bearer helper is out-of-scope | 🟡 / (consumer concern) | 61, 71, 72 |
+| `src/auth/token.js` | 252 | `solid-pod-rs-server/src/lib.rs::verify_dev_bearer`; OIDC verification in `src/oidc/mod.rs` | ✅ | 61, 71, 72 |
 | `src/auth/token-secret.js` | 122 | consumer binder responsibility (env-var handling) | 🚫 missing as primitive | 122 |
 | `src/auth/solid-oidc.js` | 344 | `src/oidc/mod.rs` (`verify_dpop_proof`, `verify_dpop_proof_with_ath`, `verify_access_token`, `DpopVerified`, `AccessTokenVerified`, `CnfClaim`); alg dispatch in `verify_dpop_proof_core` | ✅ (Sprint 9 P0) | 62, 62b, 63, 64, 71 |
 | `src/auth/nostr.js` | 273 | `src/auth/nip98.rs` (`verify_at`, `verify_schnorr_signature`, `Nip98Event`, `Nip98Verified`) | ✅ | 66, 67, 68 |
@@ -235,7 +235,7 @@ this surface):
 | `benchmark.js` | `autocannon`-based HTTP perf | `benches/*.rs` with criterion (4 benches: storage, wac, conneg, nip98; plus `dpop_replay_bench`) | ✅ |
 | `visualize-results.js` | Benchmark viz | — | 🚫 deferred |
 | `clock-updater.mjs` | Clock scenarios for tests | test harness helpers | 🚫 ops concern |
-| `scripts/test-cth-compat.js` | CTH conformance runner | — | ❌ missing (row 148) |
+| `scripts/test-cth-compat.js` | CTH conformance runner | `scripts/test-cth.sh` + `scripts/cth/test-subjects.ttl` | ✅ external harness integration (row 148) |
 
 ---
 

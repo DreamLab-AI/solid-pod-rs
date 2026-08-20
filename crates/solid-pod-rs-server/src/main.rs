@@ -67,6 +67,10 @@ struct Cli {
     #[arg(long, env = "JSS_MASHLIB_MODULE")]
     mashlib_module: Option<String>,
 
+    /// Inject a WebSocket reload client into served HTML. Development only.
+    #[arg(long, env = "JSS_LIVE_RELOAD")]
+    live_reload: bool,
+
     /// Optional TLS key PEM path. When set together with
     /// `--ssl-cert`, the server binds via rustls on the chosen port.
     #[cfg(feature = "tls")]
@@ -91,6 +95,12 @@ struct Cli {
     /// endpoint unconditionally returns 403.
     #[arg(long, env = "SOLID_ADMIN_KEY")]
     admin_key: Option<String>,
+
+    /// Allow unauthenticated pod registration through `POST /.pods` and
+    /// `POST /api/accounts/new`. Registration is closed by default; the
+    /// admin PSK remains available as an explicit per-request override.
+    #[arg(long, env = "JSS_OPEN_REGISTRATION")]
+    open_registration: bool,
 
     /// Enable the MCP (Model Context Protocol) server at `POST /mcp`,
     /// exposing the pod as a tool surface for agents (JSS #490). OFF by
@@ -138,32 +148,62 @@ async fn build_storage(cfg: &StorageBackendConfig) -> anyhow::Result<Arc<dyn Sto
             info!(backend = "memory", "initialising storage (ephemeral)");
             Ok(Arc::new(MemoryBackend::new()))
         }
-        StorageBackendConfig::S3 { bucket, region, .. } => {
-            anyhow::bail!(
-                "storage.type=s3 requested (bucket={bucket}, region={region}) but this \
-                 binary was built without the `s3-backend` feature. Rebuild with \
-                 `--features solid-pod-rs/s3-backend` or use fs/memory storage."
-            );
+    }
+}
+
+fn bind_available(host: &str, requested: u16) -> anyhow::Result<std::net::TcpListener> {
+    let attempts = if requested == 0 { 1 } else { 11 };
+    for offset in 0..attempts {
+        let port = requested.saturating_add(offset);
+        match std::net::TcpListener::bind((host, port)) {
+            Ok(listener) => {
+                listener.set_nonblocking(true)?;
+                if offset > 0 {
+                    warn!(
+                        requested_port = requested,
+                        selected_port = port,
+                        "port busy; shifted listener"
+                    );
+                }
+                return Ok(listener);
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse && offset + 1 < attempts => {}
+            Err(error) => return Err(error).with_context(|| format!("bind {host}:{port}")),
         }
+    }
+    unreachable!("the final bind attempt always returns")
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    #[test]
+    fn busy_port_shifts_and_zero_uses_ephemeral_port() {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let busy = occupied.local_addr().unwrap().port();
+        if busy < u16::MAX - 10 {
+            let shifted = bind_available("127.0.0.1", busy).unwrap();
+            assert!(shifted.local_addr().unwrap().port() > busy);
+        }
+        let ephemeral = bind_available("127.0.0.1", 0).unwrap();
+        assert_ne!(ephemeral.local_addr().unwrap().port(), 0);
     }
 }
 
 #[cfg(feature = "tls")]
 fn load_rustls_config(cert_path: &str, key_path: &str) -> anyhow::Result<rustls::ServerConfig> {
-    use std::fs::File;
-    use std::io::BufReader;
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-    let cert_file = File::open(cert_path).with_context(|| format!("open SSL cert {cert_path}"))?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+    let cert_pem =
+        std::fs::read(cert_path).with_context(|| format!("open SSL cert {cert_path}"))?;
+    let certs: Vec<_> = CertificateDer::pem_slice_iter(&cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .context("parse SSL cert chain")?;
-
-    let key_file = File::open(key_path).with_context(|| format!("open SSL key {key_path}"))?;
-    let mut key_reader = BufReader::new(key_file);
-    let key = rustls_pemfile::private_key(&mut key_reader)
-        .context("parse SSL private key")?
-        .ok_or_else(|| anyhow::anyhow!("no private key found in {key_path}"))?;
+    let key_pem = std::fs::read(key_path).with_context(|| format!("open SSL key {key_path}"))?;
+    let key = PrivateKeyDer::from_pem_slice(&key_pem).context("parse SSL private key")?;
 
     rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -214,7 +254,9 @@ async fn main() -> anyhow::Result<()> {
     cfg.validate().map_err(anyhow::Error::msg)?;
 
     let host = cfg.server.host.clone();
-    let port = cfg.server.port;
+    let requested_port = cfg.server.port;
+    let listener = bind_available(&host, requested_port)?;
+    let port = listener.local_addr()?.port();
     let bind_addr = format!("{host}:{port}");
 
     // Capture the FS root before moving cfg into storage construction.
@@ -233,6 +275,16 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::new(storage);
     state.data_root = data_root;
+    #[cfg(feature = "quota")]
+    if let (Some(root), limit) = (&state.data_root, cfg.security.default_quota_bytes) {
+        if limit > 0 {
+            state.quota = Some(std::sync::Arc::new(solid_pod_rs::quota::FsQuotaStore::new(
+                root.clone(),
+                limit,
+            )));
+            info!(limit_bytes = limit, "per-pod quota enforcement enabled");
+        }
+    }
     state.allowed_origins = cli.allowed_origins.clone();
     state.admin_key = cli.admin_key.clone();
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
@@ -253,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
     state.nodeinfo = NodeInfoMeta {
         software_name: "solid-pod-rs-server".into(),
         software_version: env!("CARGO_PKG_VERSION").into(),
-        open_registrations: false,
+        open_registrations: cli.open_registration || cfg.extras.invite_only == Some(false),
         total_users: 0,
         base_url,
     };
@@ -272,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     state.mashlib_cdn = cli.mashlib_cdn.clone();
+    state.live_reload = cli.live_reload;
 
     if !cfg.auth.oidc_enabled {
         warn!("auth.oidc_enabled=false — DPoP / OIDC routes disabled");
@@ -288,19 +341,19 @@ async fn main() -> anyhow::Result<()> {
             (Some(key), Some(cert)) => {
                 let rustls_cfg = load_rustls_config(cert, key)?;
                 server_builder
-                    .bind_rustls_0_23(&bind_addr, rustls_cfg)
-                    .with_context(|| format!("bind_rustls {bind_addr}"))?
+                    .listen_rustls_0_23(listener, rustls_cfg)
+                    .with_context(|| format!("listen_rustls {bind_addr}"))?
             }
             _ => server_builder
-                .bind(&bind_addr)
-                .with_context(|| format!("bind {bind_addr}"))?,
+                .listen(listener)
+                .with_context(|| format!("listen {bind_addr}"))?,
         }
     };
 
     #[cfg(not(feature = "tls"))]
     let server = server_builder
-        .bind(&bind_addr)
-        .with_context(|| format!("bind {bind_addr}"))?;
+        .listen(listener)
+        .with_context(|| format!("listen {bind_addr}"))?;
 
     let server = server.shutdown_timeout(30).run();
     let server_handle = server.handle();

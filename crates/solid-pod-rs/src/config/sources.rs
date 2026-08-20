@@ -13,11 +13,8 @@
 //! | `JSS_PORT` | `server.port` | `config.js:97` |
 //! | `JSS_BASE_URL` | `server.base_url` | `config.js:*` (bin/jss.js) |
 //! | `JSS_ROOT` | `storage.Fs{root}` (fs kind only) | `config.js:99` |
-//! | `JSS_STORAGE_TYPE` | `storage.type` (`fs`/`memory`/`s3`) | JSS uses storage adapters via `config.json`; env wrapper added here for CLI parity |
+//! | `JSS_STORAGE_TYPE` | `storage.type` (`fs`/`memory`) | JSS uses storage adapters via `config.json`; env wrapper added here for CLI parity |
 //! | `JSS_STORAGE_ROOT` | `storage.Fs{root}` | alias for `JSS_ROOT` restricted to fs backend |
-//! | `JSS_S3_BUCKET` | `storage.S3{bucket}` | not in upstream JSS env (adapter config) — `[TODO verify JSS]` |
-//! | `JSS_S3_REGION` | `storage.S3{region}` | `[TODO verify JSS]` |
-//! | `JSS_S3_PREFIX` | `storage.S3{prefix}` | `[TODO verify JSS]` |
 //! | `JSS_OIDC_ENABLED` | `auth.oidc_enabled` | JSS uses `JSS_IDP` (config.js:107); `JSS_IDP` accepted as alias |
 //! | `JSS_IDP` | `auth.oidc_enabled` (alias of `JSS_OIDC_ENABLED`) | `config.js:107` |
 //! | `JSS_OIDC_ISSUER` | `auth.oidc_issuer` | JSS `JSS_IDP_ISSUER` (config.js:108); `JSS_IDP_ISSUER` accepted as alias |
@@ -258,18 +255,6 @@ where
             // nonsensical; loader emits a warning. Here we honour
             // memory and drop root.
         }
-        Some("s3") => {
-            storage.insert("type".into(), Value::String("s3".into()));
-            if let Some(v) = get("JSS_S3_BUCKET") {
-                storage.insert("bucket".into(), Value::String(v));
-            }
-            if let Some(v) = get("JSS_S3_REGION") {
-                storage.insert("region".into(), Value::String(v));
-            }
-            if let Some(v) = get("JSS_S3_PREFIX") {
-                storage.insert("prefix".into(), Value::String(v));
-            }
-        }
         Some("fs") | None if storage_root.is_some() => {
             storage.insert("type".into(), Value::String("fs".into()));
             if let Some(v) = storage_root {
@@ -279,8 +264,10 @@ where
         Some("fs") => {
             storage.insert("type".into(), Value::String("fs".into()));
         }
-        Some(_) => {
-            // Unknown storage type — leave unset; loader will flag.
+        Some(other) => {
+            // Preserve unsupported values so tagged-enum deserialisation fails
+            // clearly instead of silently falling back to filesystem storage.
+            storage.insert("type".into(), Value::String(other.to_string()));
         }
         None => {}
     }
@@ -651,6 +638,16 @@ mod tests {
         });
         assert_eq!(v["storage"]["type"], "fs");
         assert_eq!(v["storage"]["root"], "/pods");
+    }
+
+    #[test]
+    fn env_unsupported_storage_is_preserved_for_validation_error() {
+        let v = env_from(|k| match k {
+            "JSS_STORAGE_TYPE" => Some("s3".into()),
+            _ => None,
+        });
+        assert_eq!(v["storage"]["type"], "s3");
+        assert!(serde_json::from_value::<super::super::schema::ServerConfig>(v).is_err());
     }
 
     #[test]

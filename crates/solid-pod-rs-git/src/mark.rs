@@ -7,7 +7,7 @@
 //! lands in a git-backed pod is followed by a [`ShellGitMarker::mark_write`]
 //! call that stages the written file and commits it, so every pod write becomes
 //! a git commit whose SHA is captured and surfaced as a
-//! [`GitMark`](solid_pod_rs::provenance::GitMark).
+//! [`GitMark`].
 //!
 //! ## Why native-only
 //!

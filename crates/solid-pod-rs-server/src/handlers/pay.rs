@@ -56,8 +56,8 @@ use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
 
 use crate::mempool::MempoolHttpClient;
-use crate::trail_store::{load_trail, save_trail};
-use crate::{agent_uri, extract_pubkey, AppState, WEBLEDGER_PATH};
+use crate::trail_store::{load_trail, save_trail, StoredTrail};
+use crate::{agent_uri, AppState, WEBLEDGER_PATH};
 
 // ---------------------------------------------------------------------------
 // Chain → Bitcoin network mapping (JSS parity — pay.js:295, 489)
@@ -84,6 +84,30 @@ const REPLAY_PATH: &str = "/.well-known/webledgers/replay.json";
 const OFFERS_PATH: &str = "/.well-known/webledgers/offers.json";
 /// AMM pool registry (reserves, LP shares, k). JSS: `pool.json`.
 const POOL_PATH: &str = "/.well-known/webledgers/pool.json";
+/// Canonical transaction document. All local payment state is committed with
+/// one observer-atomic Storage::put; the legacy documents are compatibility
+/// mirrors and are never authoritative after this document exists.
+const PAYMENT_STATE_PATH: &str = "/.well-known/webledgers/state.json";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PaymentState {
+    version: u64,
+    ledger: WebLedger,
+    replay: Vec<String>,
+    order_book: solid_pod_rs::trading::OrderBook,
+    exchange: Exchange,
+    #[serde(default)]
+    intents: Vec<PaymentIntent>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PaymentIntent {
+    txid: String,
+    did: String,
+    amount: u64,
+    #[serde(default)]
+    trail: Option<StoredTrail>,
+}
 
 // ---------------------------------------------------------------------------
 // StoragePaymentStore — the PaymentStore impl over Arc<dyn Storage>
@@ -91,11 +115,16 @@ const POOL_PATH: &str = "/.well-known/webledgers/pool.json";
 
 /// [`PaymentStore`] backed by the server's [`Storage`] trait object.
 ///
-/// This is the SOLE ledger read/write path for the payment handlers: it
-/// reads/writes the Web Ledger at [`WEBLEDGER_PATH`] and maintains the
-/// replay set at [`REPLAY_PATH`]. A missing ledger document is treated as
-/// an empty ledger (so the first deposit provisions it); a missing replay
-/// document is treated as an empty set.
+/// This is the sole ledger read/write path for the payment handlers. The
+/// authoritative document is the bundled state at [`PAYMENT_STATE_PATH`]
+/// (`state.json`), which carries the Web Ledger, replay set, order book and
+/// exchange together and is committed with one observer-atomic
+/// `Storage::put`. The legacy per-concern documents ([`WEBLEDGER_PATH`],
+/// [`REPLAY_PATH`], `OFFERS_PATH`, `POOL_PATH`) are written afterwards as
+/// best-effort compatibility mirrors; reads consult them only as a
+/// first-run bootstrap fallback when `state.json` is absent. A missing
+/// state document (and missing legacy documents) is treated as an empty
+/// ledger and empty replay set, so the first deposit provisions everything.
 pub struct StoragePaymentStore<'a> {
     storage: &'a dyn Storage,
     ledger_name: String,
@@ -127,39 +156,135 @@ impl<'a> StoragePaymentStore<'a> {
             .map_err(|e| PaymentError::Store(e.to_string()))?;
         Ok(())
     }
+
+    async fn read_legacy_ledger(&self) -> Result<WebLedger, PaymentError> {
+        match self.storage.get(WEBLEDGER_PATH).await {
+            Ok((bytes, _meta)) => serde_json::from_slice::<WebLedger>(&bytes)
+                .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}"))),
+            Err(_) => Ok(WebLedger::new(&self.ledger_name)),
+        }
+    }
+
+    async fn read_state(&self) -> Result<PaymentState, PaymentError> {
+        if let Ok((bytes, _)) = self.storage.get(PAYMENT_STATE_PATH).await {
+            return serde_json::from_slice(&bytes)
+                .map_err(|e| PaymentError::Store(format!("malformed payment state: {e}")));
+        }
+        Ok(PaymentState {
+            version: 0,
+            ledger: self.read_legacy_ledger().await?,
+            replay: self.read_replay_set().await?,
+            order_book: load_order_book(self.storage)
+                .await
+                .map_err(|e| PaymentError::Store(e.to_string()))?,
+            exchange: load_exchange(self.storage)
+                .await
+                .map_err(|e| PaymentError::Store(e.to_string()))?,
+            intents: Vec::new(),
+        })
+    }
+
+    async fn commit_state(&self, state: &mut PaymentState) -> Result<(), PaymentError> {
+        state.version = state.version.saturating_add(1);
+        let body = serde_json::to_vec(state)
+            .map_err(|e| PaymentError::Store(format!("serialise payment state: {e}")))?;
+        self.storage
+            .put(PAYMENT_STATE_PATH, Bytes::from(body), "application/json")
+            .await
+            .map_err(|e| PaymentError::Store(format!("commit payment state: {e}")))?;
+
+        // Best-effort compatibility mirrors. A crash here cannot split the
+        // authoritative state; subsequent reads always prefer state.json.
+        let ledger = serde_json::to_vec(&state.ledger).unwrap_or_default();
+        let _ = self
+            .storage
+            .put(WEBLEDGER_PATH, Bytes::from(ledger), "application/json")
+            .await;
+        let _ = self.write_replay_set(&state.replay).await;
+        let offers = serde_json::to_vec(&state.order_book).unwrap_or_default();
+        let _ = self
+            .storage
+            .put(OFFERS_PATH, Bytes::from(offers), "application/json")
+            .await;
+        let pools = serde_json::to_vec(&state.exchange).unwrap_or_default();
+        let _ = self
+            .storage
+            .put(POOL_PATH, Bytes::from(pools), "application/json")
+            .await;
+        Ok(())
+    }
+}
+
+fn raw_transaction_txid(raw_hex: &str) -> Result<String, PaymentError> {
+    use sha2::{Digest, Sha256};
+    let raw = hex::decode(raw_hex)
+        .map_err(|e| PaymentError::InvalidState(format!("invalid raw transaction: {e}")))?;
+    let first = Sha256::digest(&raw);
+    let mut second = Sha256::digest(first).to_vec();
+    second.reverse();
+    Ok(hex::encode(second))
+}
+
+/// Resolve durable intents left by a lost broadcast response or process
+/// interruption. A definite 404 compensates the debit; a known transaction
+/// finalises its trail; transport/server ambiguity is retained fail-closed.
+async fn recover_payment_intents(
+    store: &StoragePaymentStore<'_>,
+    storage: &std::sync::Arc<dyn Storage>,
+    mempool: &MempoolHttpClient,
+) -> Result<(), PaymentError> {
+    let mut state = store.read_state().await?;
+    if state.intents.is_empty() {
+        return Ok(());
+    }
+    let mut remaining = Vec::new();
+    let mut changed = false;
+    for intent in std::mem::take(&mut state.intents) {
+        match mempool.transaction_exists(&intent.txid).await {
+            Ok(true) => {
+                if let Some(trail) = &intent.trail {
+                    save_trail(storage, trail).await?;
+                }
+                changed = true;
+            }
+            Ok(false) => {
+                state.ledger.credit(&intent.did, intent.amount);
+                changed = true;
+            }
+            Err(error) => {
+                tracing::warn!(%error, txid = %intent.txid, "payment intent recovery remains pending");
+                remaining.push(intent);
+            }
+        }
+    }
+    state.intents = remaining;
+    if changed {
+        store.commit_state(&mut state).await?;
+    }
+    Ok(())
 }
 
 #[async_trait(?Send)]
 impl<'a> PaymentStore for StoragePaymentStore<'a> {
     async fn read_ledger(&self) -> Result<WebLedger, PaymentError> {
-        match self.storage.get(WEBLEDGER_PATH).await {
-            Ok((bytes, _meta)) => serde_json::from_slice::<WebLedger>(&bytes)
-                .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}"))),
-            // No ledger provisioned yet → fresh, empty ledger.
-            Err(_) => Ok(WebLedger::new(&self.ledger_name)),
-        }
+        Ok(self.read_state().await?.ledger)
     }
 
     async fn write_ledger(&self, ledger: &WebLedger) -> Result<(), PaymentError> {
-        let body = serde_json::to_vec(ledger)
-            .map_err(|e| PaymentError::Store(format!("serialise ledger: {e}")))?;
-        self.storage
-            .put(WEBLEDGER_PATH, Bytes::from(body), "application/json")
-            .await
-            .map_err(|e| PaymentError::Store(e.to_string()))?;
-        Ok(())
+        let mut state = self.read_state().await?;
+        state.ledger = ledger.clone();
+        self.commit_state(&mut state).await
     }
 
     async fn check_replay(&self, key: &str) -> Result<bool, PaymentError> {
-        let set = self.read_replay_set().await?;
-        Ok(set.iter().any(|k| k == key))
+        Ok(self.read_state().await?.replay.iter().any(|k| k == key))
     }
 
     async fn record_replay(&self, key: &str) -> Result<(), PaymentError> {
-        let mut set = self.read_replay_set().await?;
-        if !set.iter().any(|k| k == key) {
-            set.push(key.to_string());
-            self.write_replay_set(&set).await?;
+        let mut state = self.read_state().await?;
+        if !state.replay.iter().any(|k| k == key) {
+            state.replay.push(key.to_string());
+            self.commit_state(&mut state).await?;
         }
         Ok(())
     }
@@ -181,20 +306,6 @@ async fn load_order_book(
     }
 }
 
-async fn save_order_book(
-    storage: &dyn Storage,
-    book: &solid_pod_rs::trading::OrderBook,
-) -> Result<(), ActixError> {
-    let body = serde_json::to_vec(book).map_err(|e| {
-        actix_web::error::ErrorInternalServerError(format!("serialise offers: {e}"))
-    })?;
-    storage
-        .put(OFFERS_PATH, Bytes::from(body), "application/json")
-        .await
-        .map_err(crate::to_actix)?;
-    Ok(())
-}
-
 /// Load the AMM pool registry from [`POOL_PATH`], or a fresh one if absent.
 async fn load_exchange(storage: &dyn Storage) -> Result<Exchange, ActixError> {
     match storage.get(POOL_PATH).await {
@@ -205,16 +316,6 @@ async fn load_exchange(storage: &dyn Storage) -> Result<Exchange, ActixError> {
     }
 }
 
-async fn save_exchange(storage: &dyn Storage, exchange: &Exchange) -> Result<(), ActixError> {
-    let body = serde_json::to_vec(exchange)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("serialise pool: {e}")))?;
-    storage
-        .put(POOL_PATH, Bytes::from(body), "application/json")
-        .await
-        .map_err(crate::to_actix)?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Shared auth + error helpers
 // ---------------------------------------------------------------------------
@@ -223,7 +324,14 @@ async fn save_exchange(storage: &dyn Storage, exchange: &Exchange) -> Result<(),
 /// NIP-98 auth. Returns the authenticated `did:nostr:<pubkey>` or a 401
 /// response body matching JSS (`pay.js:54`, `pay.js:122`).
 async fn require_did(req: &HttpRequest) -> Result<String, HttpResponse> {
-    let pubkey = extract_pubkey(req).await;
+    require_did_with_body(req, None).await
+}
+
+async fn require_did_with_body(
+    req: &HttpRequest,
+    body: Option<&[u8]>,
+) -> Result<String, HttpResponse> {
+    let pubkey = crate::extract_pubkey_with_body(req, body).await;
     match agent_uri(pubkey.as_ref()) {
         Some(did) => Ok(did),
         None => Err(HttpResponse::Unauthorized()
@@ -330,10 +438,11 @@ async fn handle_deposit(
     state: web::Data<AppState>,
     body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let did = match require_did(&req).await {
+    let did = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
 
     // MRC20 path: a JSON body tagged `type: "mrc20"`. Probe cheaply for the
     // tag before committing to full deserialisation so a TXO JSON body
@@ -374,16 +483,16 @@ async fn handle_deposit(
     let replay_key = format!("{}:{}", txo.txid, txo.vout);
     let store = StoragePaymentStore::new(&*state.storage);
 
-    match store.check_replay(&replay_key).await {
-        Ok(true) => {
-            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "Replay: this output has already been used for a deposit",
-                "txid": txo.txid,
-                "vout": txo.vout,
-            })));
-        }
-        Ok(false) => {}
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
+    };
+    if payment_state.replay.iter().any(|key| key == &replay_key) {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Replay: this output has already been used for a deposit",
+            "txid": txo.txid,
+            "vout": txo.vout,
+        })));
     }
 
     // Phase 0: deterministic stand-in for the mempool-read UTXO value.
@@ -391,19 +500,13 @@ async fn handle_deposit(
 
     // Credit via the PaymentStore (sole ledger I/O path), then record the
     // replay key so a re-POST of the same TXO is rejected above.
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
-        Err(e) => return Ok(payment_error_response(e)),
-    };
-    ledger.credit(&did, amount);
-    if let Err(e) = store.write_ledger(&ledger).await {
-        return Ok(payment_error_response(e));
-    }
-    if let Err(e) = store.record_replay(&replay_key).await {
+    payment_state.ledger.credit(&did, amount);
+    payment_state.replay.push(replay_key);
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
 
-    let balance = ledger.get_balance(&did);
+    let balance = payment_state.ledger.get_balance(&did);
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({
@@ -505,15 +608,15 @@ async fn handle_mrc20_deposit(
     let state_hash = solid_pod_rs::mrc20::sha256_hex(&solid_pod_rs::mrc20::jcs(&state_value));
     let replay_key = format!("mrc20:{state_hash}");
     let store = StoragePaymentStore::new(&*state.storage);
-    match store.check_replay(&replay_key).await {
-        Ok(true) => {
-            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "Replay: this state has already been used for a deposit",
-                "state_hash": state_hash,
-            })))
-        }
-        Ok(false) => {}
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
+    };
+    if payment_state.replay.iter().any(|key| key == &replay_key) {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Replay: this state has already been used for a deposit",
+            "state_hash": state_hash,
+        })));
     }
 
     // (4) Anchor verification against live mempool state. An explicit
@@ -539,19 +642,13 @@ async fn handle_mrc20_deposit(
     };
 
     // (5) Credit the verified amount, then record the replay key.
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
-        Err(e) => return Ok(payment_error_response(e)),
-    };
-    ledger.credit(did, result.amount);
-    if let Err(e) = store.write_ledger(&ledger).await {
-        return Ok(payment_error_response(e));
-    }
-    if let Err(e) = store.record_replay(&replay_key).await {
+    payment_state.ledger.credit(did, result.amount);
+    payment_state.replay.push(replay_key);
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
 
-    let balance = ledger.get_balance(did);
+    let balance = payment_state.ledger.get_balance(did);
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({
@@ -678,7 +775,12 @@ async fn handle_offers(
     state: web::Data<AppState>,
     query: web::Query<OffersQuery>,
 ) -> Result<HttpResponse, ActixError> {
-    let book = load_order_book(&*state.storage).await?;
+    let store = StoragePaymentStore::new(&*state.storage);
+    let book = store
+        .read_state()
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?
+        .order_book;
     let pair = match (query.sell.as_deref(), query.buy.as_deref()) {
         (Some(s), Some(b)) => Some((s, b)),
         _ => None,
@@ -707,11 +809,20 @@ struct SellBody {
 async fn handle_sell(
     req: HttpRequest,
     state: web::Data<AppState>,
-    body: web::Json<SellBody>,
+    body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let seller = match require_did(&req).await {
+    let seller = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
+    };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let body: SellBody = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return Ok(
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid JSON body"}))
+            )
+        }
     };
 
     if body.sell_amount == 0 || body.price == 0 {
@@ -720,15 +831,21 @@ async fn handle_sell(
         })));
     }
 
-    let mut book = load_order_book(&*state.storage).await?;
-    let order = book.create_order(
+    let store = StoragePaymentStore::new(&*state.storage);
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    let order = payment_state.order_book.create_order(
         &seller,
         &body.sell_currency,
         body.sell_amount,
         &body.buy_currency,
         body.price,
     );
-    save_order_book(&*state.storage, &book).await?;
+    if let Err(e) = store.commit_state(&mut payment_state).await {
+        return Ok(payment_error_response(e));
+    }
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -747,30 +864,41 @@ struct SwapBody {
 async fn handle_swap(
     req: HttpRequest,
     state: web::Data<AppState>,
-    body: web::Json<SwapBody>,
+    body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let buyer = match require_did(&req).await {
+    let buyer = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let body: SwapBody = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return Ok(
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid JSON body"}))
+            )
+        }
+    };
 
     let store = StoragePaymentStore::new(&*state.storage);
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
     };
-    let mut book = load_order_book(&*state.storage).await?;
 
-    let result = match book.execute_swap(&body.id, &buyer, &mut ledger) {
-        Ok(r) => r,
-        Err(e) => return Ok(payment_error_response(e)),
-    };
+    let result =
+        match payment_state
+            .order_book
+            .execute_swap(&body.id, &buyer, &mut payment_state.ledger)
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(payment_error_response(e)),
+        };
 
     // Persist the mutated ledger (via the PaymentStore) and the order book.
-    if let Err(e) = store.write_ledger(&ledger).await {
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
-    save_order_book(&*state.storage, &book).await?;
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -800,7 +928,12 @@ async fn handle_pool_get(
     state: web::Data<AppState>,
     query: web::Query<PoolQuery>,
 ) -> Result<HttpResponse, ActixError> {
-    let exchange = load_exchange(&*state.storage).await?;
+    let store = StoragePaymentStore::new(&*state.storage);
+    let exchange = store
+        .read_state()
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?
+        .exchange;
     match (query.a.as_deref(), query.b.as_deref()) {
         (Some(a), Some(b)) => match exchange.get_pool(a, b) {
             Some(pool) => Ok(HttpResponse::Ok()
@@ -849,25 +982,42 @@ struct PoolOpBody {
 async fn handle_pool_post(
     req: HttpRequest,
     state: web::Data<AppState>,
-    body: web::Json<PoolOpBody>,
+    body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let provider = match require_did(&req).await {
+    let provider = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let body: PoolOpBody = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return Ok(
+                HttpResponse::BadRequest().json(serde_json::json!({"error": "Invalid JSON body"}))
+            )
+        }
+    };
 
     let store = StoragePaymentStore::new(&*state.storage);
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
     };
-    let mut exchange = load_exchange(&*state.storage).await?;
     let fee_bps = body.fee_bps.unwrap_or(AmmPool::DEFAULT_FEE_BPS);
 
     let response = match body.action.as_str() {
         "add-liquidity" => {
-            let pool = exchange.get_or_create_pool(&body.currency_a, &body.currency_b, fee_bps);
-            match pool.add_liquidity(&provider, body.amount_a, body.amount_b, &mut ledger) {
+            let pool = payment_state.exchange.get_or_create_pool(
+                &body.currency_a,
+                &body.currency_b,
+                fee_bps,
+            );
+            match pool.add_liquidity(
+                &provider,
+                body.amount_a,
+                body.amount_b,
+                &mut payment_state.ledger,
+            ) {
                 Ok(issued) => {
                     let mut deposited = serde_json::Map::new();
                     deposited.insert(body.currency_a.clone(), body.amount_a.into());
@@ -885,14 +1035,21 @@ async fn handle_pool_post(
             }
         }
         "remove-liquidity" => {
-            let pool = match exchange.get_pool(&body.currency_a, &body.currency_b) {
-                Some(_) => exchange.get_or_create_pool(&body.currency_a, &body.currency_b, fee_bps),
+            let pool = match payment_state
+                .exchange
+                .get_pool(&body.currency_a, &body.currency_b)
+            {
+                Some(_) => payment_state.exchange.get_or_create_pool(
+                    &body.currency_a,
+                    &body.currency_b,
+                    fee_bps,
+                ),
                 None => {
                     return Ok(HttpResponse::BadRequest()
                         .json(serde_json::json!({ "error": "Pool has no liquidity" })))
                 }
             };
-            match pool.remove_liquidity(&provider, body.shares, &mut ledger) {
+            match pool.remove_liquidity(&provider, body.shares, &mut payment_state.ledger) {
                 Ok((got_a, got_b)) => {
                     let mut withdrawn = serde_json::Map::new();
                     withdrawn.insert(body.currency_a.clone(), got_a.into());
@@ -917,14 +1074,21 @@ async fn handle_pool_post(
                     ))
                 }
             };
-            let pool = match exchange.get_pool(&body.currency_a, &body.currency_b) {
-                Some(_) => exchange.get_or_create_pool(&body.currency_a, &body.currency_b, fee_bps),
+            let pool = match payment_state
+                .exchange
+                .get_pool(&body.currency_a, &body.currency_b)
+            {
+                Some(_) => payment_state.exchange.get_or_create_pool(
+                    &body.currency_a,
+                    &body.currency_b,
+                    fee_bps,
+                ),
                 None => {
                     return Ok(HttpResponse::BadRequest()
                         .json(serde_json::json!({ "error": "Pool has no liquidity" })))
                 }
             };
-            match pool.swap(&provider, &from, body.amount_in, &mut ledger) {
+            match pool.swap(&provider, &from, body.amount_in, &mut payment_state.ledger) {
                 Ok(result) => serde_json::json!({
                     "action": "swap",
                     "amount_in": result.amount_in,
@@ -946,10 +1110,9 @@ async fn handle_pool_post(
     };
 
     // Persist mutated ledger (via PaymentStore) + pool registry.
-    if let Err(e) = store.write_ledger(&ledger).await {
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
-    save_exchange(&*state.storage, &exchange).await?;
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -1065,37 +1228,63 @@ async fn execute_token_transfer(
         }
     };
 
-    // Broadcast, then (only on success) persist + debit.
+    // Prepare one durable debit + recovery intent before the irreversible
+    // broadcast. A lost HTTP response is ambiguous, so recovery queries the
+    // locally-computed txid instead of immediately returning the balance.
+    let store = StoragePaymentStore::new(&**storage);
+    if let Err(error) = recover_payment_intents(&store, storage, &mempool).await {
+        return Err(payment_error_response(error));
+    }
+    let expected_txid = match raw_transaction_txid(&update.tx.raw_hex) {
+        Ok(txid) => txid,
+        Err(error) => return Err(payment_error_response(error)),
+    };
+    let mut appended = update.trail.clone();
+    appended.current_txid = expected_txid.clone();
+    stored.merge_public(&appended);
+    stored.current_txid = expected_txid.clone();
+    stored.current_vout = 0;
+
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
+        Err(error) => return Err(payment_error_response(error)),
+    };
+    if let Err(error) = payment_state.ledger.debit(did, sat_cost) {
+        return Err(payment_error_response(error));
+    }
+    payment_state.intents.push(PaymentIntent {
+        txid: expected_txid.clone(),
+        did: did.to_string(),
+        amount: sat_cost,
+        trail: Some(stored.clone()),
+    });
+    if let Err(error) = store.commit_state(&mut payment_state).await {
+        return Err(payment_error_response(error));
+    }
+
     let txid = match mempool.broadcast_tx(&update.tx.raw_hex).await {
         Ok(t) => t,
         Err(e) => {
-            return Err(HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
+            return Err(HttpResponse::InternalServerError().json(
+                serde_json::json!({"error": format!("Broadcast outcome pending recovery: {e}")}),
+            ));
         }
     };
-
-    let mut appended = update.trail.clone();
-    appended.current_txid = txid.clone();
-    stored.merge_public(&appended);
-    stored.current_txid = txid.clone();
-    stored.current_vout = 0;
+    if txid != expected_txid {
+        return Err(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Mempool returned a transaction id that does not match the signed transaction"
+        })));
+    }
     if let Err(e) = save_trail(storage, &stored).await {
         return Err(payment_error_response(e));
     }
-
-    // Debit the user's sat balance (JSS `debit` then `writeLedger`).
-    let store = StoragePaymentStore::new(&**storage);
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
-        Err(e) => return Err(payment_error_response(e)),
-    };
-    if let Err(e) = ledger.debit(did, sat_cost) {
+    payment_state
+        .intents
+        .retain(|intent| intent.txid != expected_txid);
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Err(payment_error_response(e));
     }
-    if let Err(e) = store.write_ledger(&ledger).await {
-        return Err(payment_error_response(e));
-    }
-    let new_balance = ledger.get_balance(did);
+    let new_balance = payment_state.ledger.get_balance(did);
 
     let proof = transfer_proof_json(&update.state, &prev_state, &appended);
     Ok((txid, proof, new_balance))
@@ -1108,10 +1297,11 @@ async fn handle_buy(
     state: web::Data<AppState>,
     body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let did = match require_did(&req).await {
+    let did = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
     let buyer_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
         None => {
@@ -1196,10 +1386,11 @@ async fn handle_withdraw(
     state: web::Data<AppState>,
     body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let did = match require_did(&req).await {
+    let did = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
     let user_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
         None => {
@@ -1298,10 +1489,11 @@ async fn handle_withdraw_sats(
     state: web::Data<AppState>,
     body: Bytes,
 ) -> Result<HttpResponse, ActixError> {
-    let did = match require_did(&req).await {
+    let did = match require_did_with_body(&req, Some(&body)).await {
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
 
     let req_body: WithdrawSatsBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
@@ -1351,6 +1543,9 @@ async fn handle_withdraw_sats(
 
     // Fetch the funding output's scriptPubKey (hex).
     let mempool = mempool_client(&state);
+    if let Err(e) = recover_payment_intents(&store, &state.storage, &mempool).await {
+        return Ok(payment_error_response(e));
+    }
     use solid_pod_rs::mrc20::MempoolLookup;
     let funding_spk_hex = match mempool.tx(&funding.txid).await {
         Ok(tx) => match tx
@@ -1385,43 +1580,46 @@ async fn handle_withdraw_sats(
         Err(e) => return Ok(payment_error_response(e)),
     };
 
-    // Reserve (debit) the balance BEFORE broadcasting. Broadcasting first
-    // (the previous order) is a TOCTOU: a broadcast could hand out a spendable
-    // voucher while the subsequent debit races/fails, letting the balance be
-    // spent twice. Debit up front; if the broadcast then fails, compensate by
-    // re-crediting the reserved amount.
-    let mut ledger = match store.read_ledger().await {
-        Ok(l) => l,
+    let expected_txid = match raw_transaction_txid(&voucher.tx.raw_hex) {
+        Ok(txid) => txid,
         Err(e) => return Ok(payment_error_response(e)),
     };
-    if let Err(e) = ledger.debit(&did, req_body.amount) {
+    let mut payment_state = match store.read_state().await {
+        Ok(s) => s,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if let Err(e) = payment_state.ledger.debit(&did, req_body.amount) {
         return Ok(payment_error_response(e));
     }
-    if let Err(e) = store.write_ledger(&ledger).await {
+    payment_state.intents.push(PaymentIntent {
+        txid: expected_txid.clone(),
+        did: did.clone(),
+        amount: req_body.amount,
+        trail: None,
+    });
+    if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
 
     let txid = match mempool.broadcast_tx(&voucher.tx.raw_hex).await {
         Ok(t) => t,
         Err(e) => {
-            // Compensating action: broadcast failed, so restore the reserved
-            // balance. Re-read so a concurrent writer's changes are preserved,
-            // falling back to the in-memory (debited) ledger on read failure.
-            let mut comp = store.read_ledger().await.unwrap_or_else(|_| ledger.clone());
-            comp.credit(&did, req_body.amount);
-            if let Err(werr) = store.write_ledger(&comp).await {
-                tracing::error!(
-                    error = %werr,
-                    did = %did,
-                    amount = req_body.amount,
-                    "withdraw-sats: broadcast failed and compensation write failed; \
-                     balance may be over-debited and requires operator reconciliation"
-                );
-            }
-            return Ok(HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("Broadcast failed: {e}")})));
+            return Ok(HttpResponse::InternalServerError().json(
+                serde_json::json!({"error": format!("Broadcast outcome pending recovery: {e}")}),
+            ));
         }
     };
+    if txid != expected_txid {
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Mempool returned a transaction id that does not match the signed transaction"
+        })));
+    }
+    payment_state
+        .intents
+        .retain(|intent| intent.txid != expected_txid);
+    if let Err(e) = store.commit_state(&mut payment_state).await {
+        return Ok(payment_error_response(e));
+    }
 
     // Return the new voucher URI (JSS `pay.js:890-892`).
     let voucher_uri = format!(
@@ -1433,7 +1631,7 @@ async fn handle_withdraw_sats(
         "amount": req_body.amount,
         "chain": chain_id,
         "txid": txid,
-        "balance": ledger.get_balance(&did),
+        "balance": payment_state.ledger.get_balance(&did),
     })))
 }
 
@@ -1457,4 +1655,94 @@ pub fn register(app: &mut web::ServiceConfig) {
         .route("/pay/.buy", web::post().to(handle_buy))
         .route("/pay/.withdraw", web::post().to(handle_withdraw))
         .route("/pay/.withdraw-sats", web::post().to(handle_withdraw_sats));
+}
+
+#[cfg(test)]
+mod intent_recovery_tests {
+    use super::*;
+    use actix_web::{web, App, HttpResponse, HttpServer};
+    use solid_pod_rs::storage::memory::MemoryBackend;
+    use std::sync::Arc;
+
+    async fn fixture(status: u16) -> (MempoolHttpClient, actix_web::dev::ServerHandle) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            App::new().route(
+                "/api/tx/{txid}",
+                web::get().to(move || async move {
+                    HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
+                        .finish()
+                }),
+            )
+        })
+        .listen(listener)
+        .unwrap()
+        .workers(1)
+        .run();
+        let handle = server.handle();
+        tokio::spawn(server);
+        (
+            MempoolHttpClient::new(format!("http://127.0.0.1:{port}")),
+            handle,
+        )
+    }
+
+    async fn prepared_state() -> Arc<dyn Storage> {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let store = StoragePaymentStore::new(&*storage);
+        let mut state = store.read_state().await.unwrap();
+        state.ledger.credit("did:nostr:test", 100);
+        state.ledger.debit("did:nostr:test", 40).unwrap();
+        state.intents.push(PaymentIntent {
+            txid: "11".repeat(32),
+            did: "did:nostr:test".into(),
+            amount: 40,
+            trail: None,
+        });
+        store.commit_state(&mut state).await.unwrap();
+        storage
+    }
+
+    #[actix_web::test]
+    async fn known_transaction_keeps_debit_and_clears_intent() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let (mempool, handle) = fixture(200).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let state = store.read_state().await.unwrap();
+        assert_eq!(state.ledger.get_balance("did:nostr:test"), 60);
+        assert!(state.intents.is_empty());
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn definite_not_found_compensates_and_clears_intent() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let (mempool, handle) = fixture(404).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let state = store.read_state().await.unwrap();
+        assert_eq!(state.ledger.get_balance("did:nostr:test"), 100);
+        assert!(state.intents.is_empty());
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn ambiguous_server_failure_retains_debit_and_intent() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let (mempool, handle) = fixture(503).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let state = store.read_state().await.unwrap();
+        assert_eq!(state.ledger.get_balance("did:nostr:test"), 60);
+        assert_eq!(state.intents.len(), 1);
+        handle.stop(false).await;
+    }
 }

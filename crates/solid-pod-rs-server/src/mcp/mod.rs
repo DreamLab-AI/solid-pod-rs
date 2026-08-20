@@ -177,7 +177,7 @@ pub async fn handle_mcp(
     // `None` web_id means "anonymous"; WAC treats it accordingly. Reuses the
     // pod's NIP-98 verifier so `did:nostr` agents authenticate identically to
     // every other endpoint.
-    let pubkey = crate::extract_pubkey(&req).await;
+    let pubkey = crate::extract_pubkey_with_body(&req, Some(&body)).await;
     let web_id = crate::agent_uri(pubkey.as_ref());
 
     // Federation depth (consumed by call_remote_pod to enforce the cap).

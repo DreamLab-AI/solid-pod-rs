@@ -33,7 +33,7 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
           # On workflow_dispatch the default ref is the default branch — check
@@ -75,11 +75,11 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c97703c9930c90c3f39e23fbd17aab7efc6f6a3 # stable
+      - uses: Swatinem/rust-cache@6323f82c93b0f8fe015be95bb3c2e1032005cc77 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
           key: release-dryrun
@@ -96,7 +96,7 @@ jobs:
     outputs:
       body-path: ${{ steps.write.outputs.path }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.ref }}
@@ -130,7 +130,7 @@ jobs:
           cat "${BODY_FILE}"
 
       - name: Upload changelog artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: release-body
           path: ${{ steps.write.outputs.path }}
@@ -149,10 +149,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-tag, changelog, cargo-publish]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download changelog body
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-body
           path: ./release-body
@@ -169,7 +169,7 @@ jobs:
           fi
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.verify-tag.outputs.tag }}
           name: solid-pod-rs ${{ needs.verify-tag.outputs.tag }}
@@ -209,11 +209,11 @@ jobs:
             exit 1
           fi
           echo "token present."
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c97703c9930c90c3f39e23fbd17aab7efc6f6a3 # stable
+      - uses: Swatinem/rust-cache@6323f82c93b0f8fe015be95bb3c2e1032005cc77 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
           key: release-publish

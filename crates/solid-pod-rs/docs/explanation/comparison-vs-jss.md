@@ -13,15 +13,15 @@ feature-level status table.
 
 ## At a glance
 
-|                                | JSS 0.0.x             | solid-pod-rs 0.2.0-alpha |
+|                                | JSS 0.0.220 (`f9f7a4d`) | solid-pod-rs 0.5.0-alpha.7 |
 |--------------------------------|-----------------------|---------------------------|
-| Language                       | JavaScript (Node 18+) | Rust 2021 / 1.74+         |
+| Language                       | JavaScript (Node 18+) | Rust 2021 / MSRV 1.88     |
 | Binary distribution            | `npm install -g javascript-solid-server` → `jss` | Build from source; drop-in crate |
 | Licence                        | AGPL-3.0-only         | AGPL-3.0-only (inherited) |
 | HTTP framework                 | Fastify               | Agnostic; actix/axum/hyper|
-| Configuration                  | `JSS_*` env vars + optional `config.json` | Rust code (no runtime config loader) |
-| Memory footprint (idle)        | ~80 MB                | ~8 MB                     |
-| Startup time                   | ~1 s                  | < 50 ms                   |
+| Configuration                  | `JSS_*` env vars + optional config | Typed library config plus server JSON/TOML/env loader |
+| Memory footprint (idle)        | Not re-benchmarked in this audit | Not re-benchmarked in this audit |
+| Startup time                   | Not re-benchmarked in this audit | Not re-benchmarked in this audit |
 
 ## Protocol coverage
 
@@ -30,7 +30,7 @@ feature-level status table.
 | LDP RDF + non-RDF GET/PUT/DELETE        | full      | full          |
 | LDP container GET                       | full      | full          |
 | LDP Slug→child via POST                 | full      | full          |
-| `Prefer` header parsing                 | full      | partial (return=representation / include / omit) |
+| `Prefer` header parsing                 | not first-class | full include/omit composition |
 | Content negotiation (Turtle/JSON-LD/N-Triples/RDF-XML) | full | Turtle/JSON-LD/N-Triples full; RDF-XML partial (negotiated, serialisation deferred) |
 | `Link`: type, acl, describedby, storage | full      | full          |
 | Strong ETag (SHA-256)                   | optional  | always        |
@@ -39,11 +39,12 @@ feature-level status table.
 | `WAC-Allow` header                      | full      | full          |
 | WAC agent / agentClass / agentGroup     | full      | full          |
 | `.acl` walk-up resolution               | full      | full          |
-| JSON Patch (RFC 6902)                   | full      | full          |
+| JSON Patch (RFC 6902)                   | not implemented | full (Rust extension) |
 | N3 PATCH (solid-protocol)               | full      | full          |
 | SPARQL-Update PATCH                     | full      | subset (INSERT DATA, DELETE DATA, DELETE/INSERT WHERE with ground templates) |
-| Notifications 0.2 WebSocketChannel2023  | full      | full          |
-| Notifications 0.2 WebhookChannel2023    | full      | full (3× retry, exp. backoff) |
+| Legacy `solid-0.1` WebSocket             | full      | full adapter  |
+| Notifications 0.2 WebSocketChannel2023  | not implemented | full     |
+| Notifications 0.2 WebhookChannel2023    | not implemented | full (3× retry, exponential backoff) |
 | Solid-OIDC DPoP                         | full      | full (feature `oidc`)         |
 | OIDC dynamic client registration        | full      | full          |
 | OIDC discovery doc                      | full      | full          |
@@ -92,7 +93,8 @@ Mitigation: commit `/.acl` as the first write to any new pod. See
 
 ### PATCH dialect support
 
-- **JSS:** supports JSON Patch, N3, and SPARQL Update.
+- **JSS:** supports N3 Patch and a SPARQL Update subset; it does not implement
+  JSON Patch.
 - **solid-pod-rs:** all three dialects supported; SPARQL-Update is a
   documented subset (INSERT DATA, DELETE DATA, DELETE/INSERT WHERE
   with ground templates only).
@@ -104,9 +106,9 @@ Mitigation: commit `/.acl` as the first write to any new pod. See
 - **JSS:** `JSS_*` environment variables (e.g. `JSS_PORT`, `JSS_HOST`,
   `JSS_ROOT`) overlaid on an optional `config.json` file, overlaid on
   CLI arguments. Precedence: CLI > env > file > defaults.
-- **solid-pod-rs:** configured in Rust. You write a ~50-line `main.rs`
-  that picks a storage backend, wires auth, and starts your HTTP
-  framework. No DI container, no runtime config loader.
+- **solid-pod-rs:** the library is configured in Rust; the canonical server
+  also has a typed layered runtime config loader with JSON/TOML and `JSS_*`
+  environment aliases.
 
 Pros and cons:
 
@@ -159,37 +161,33 @@ Pros and cons:
 
 ## What you give up moving to solid-pod-rs
 
-- IdP integration with dynamic account signup (JSS's
-  `oidc-provider`-based flow is out of scope; bring your own IdP).
-- ActivityPub federation (JSS has built-in support; not in
-  solid-pod-rs).
+- JSS's integrated `oidc-provider` HTML interaction experience. The Rust IdP
+  crate implements protocol logic, but its optional pre-built Axum router must
+  not be exposed until the open identity-header audit finding is fixed.
+- Recompile-free runtime plugins and WAC-exempt app mounts introduced in JSS
+  `0.0.213–0.0.219`.
 - Some Prefer-header nuances (handling=strict vs handling=lenient —
   we always parse leniently).
 
 ## What you gain moving to solid-pod-rs
 
-- A single static binary, <20 MB.
-- ~10× smaller memory footprint.
+- A single static binary; measure its actual size for your selected features.
 - Strong typing at every boundary (`AccessMode`, `PatchDialect`,
   `StorageEvent`, `RdfFormat`).
 - First-class NIP-98 authentication (useful for Nostr ecosystems).
-- Sub-ms startup time; viable as a serverless function.
-- `cargo test` runs the whole conformance suite in a couple of
-  seconds.
-- Linear cost increase per resource (Rust + tokio scales further per
-  core than V8).
+- A core-only WASM surface for edge consumers.
+- Workspace-wide Rust tests and strict Clippy gates.
 - AGPL-3.0-only licensing inherited from the JSS ecosystem covenant — same
   network-service copyleft protection, different runtime — fewer compliance
   concerns when embedding into proprietary or non-AGPL services.
 
 ## When to stay on JSS
 
-- You need the built-in IdP (OIDC provider with account signup).
-- You want ActivityPub federation out of the box.
+- You need the mature built-in IdP UI and account-signup flow.
 - You rely on JSS-specific features (`mashlib`, `solidosUi`, Git HTTP
   backend, invite-only registration).
 - You need WebID-TLS.
-- AGPL-3.0 licensing is acceptable or desired for your project.
+- You need recompile-free runtime plugins or app mounts.
 
 ## When to pick solid-pod-rs
 
@@ -200,7 +198,7 @@ Pros and cons:
 - You need strict deny-by-default WAC.
 - Your deployment demands static binaries (k8s, distroless, single-
   container deployments).
-- You cannot take an AGPL-3.0 dependency into your service tree.
+- AGPL-3.0 network-service copyleft is acceptable for your deployment.
 
 ## See also
 

@@ -48,6 +48,8 @@ async fn public_read_state() -> AppState {
         .unwrap();
 
     AppState {
+        live_reload: false,
+        quota: None,
         deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
@@ -89,6 +91,8 @@ async fn public_write_state(body_cap: usize) -> AppState {
         .unwrap();
 
     AppState {
+        live_reload: false,
+        quota: None,
         deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
@@ -251,6 +255,8 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         .unwrap();
 
     let state = AppState {
+        live_reload: false,
+        quota: None,
         deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),

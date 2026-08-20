@@ -133,6 +133,8 @@ pub struct ForgeService {
     hosted: Arc<HostedStore>,
     /// Forge instance HMAC key for push tokens (persisted `0600`).
     token_key: Arc<[u8; 32]>,
+    /// Per-service single-use guard for NIP-98 event ids.
+    nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache,
 }
 
 impl std::fmt::Debug for ForgeService {
@@ -167,6 +169,7 @@ impl ForgeService {
             loopback: None,
             hosted,
             token_key,
+            nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache::from_env(),
         })
     }
 
@@ -195,9 +198,8 @@ impl ForgeService {
     /// (forge token or NIP-98). The server may instead pass a
     /// [`ForgeAgent::Pod`] directly to [`Self::handle`] when it has a pod
     /// session; this helper is for the token/NIP-98 schemes.
-    #[must_use]
-    pub fn resolve_agent(&self, req: &ForgeRequest) -> ForgeAgent {
-        auth::resolve_agent(req, self.token_key.as_ref(), now_secs())
+    pub async fn resolve_agent(&self, req: &ForgeRequest) -> ForgeAgent {
+        auth::resolve_agent(req, self.token_key.as_ref(), &self.nip98_replay, now_secs()).await
     }
 
     /// The configured, normalised URL prefix (`/forge`).
@@ -1471,7 +1473,7 @@ mod tests {
             raw_body: Bytes::new(),
             host_url: Some("https://pod.example".into()),
         };
-        assert_eq!(svc.resolve_agent(&follow), agent);
+        assert_eq!(svc.resolve_agent(&follow).await, agent);
     }
 
     #[tokio::test]

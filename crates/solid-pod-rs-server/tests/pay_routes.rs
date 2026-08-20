@@ -39,7 +39,7 @@ fn state() -> AppState {
 /// reconstructs the signed URL from the actix `connection_info`, which in
 /// the test harness is `http://localhost:8080`. Mirrors that exactly so
 /// strict URL binding passes. Returns `(header_value, did:nostr)`.
-fn nip98_auth(method: &str, path: &str) -> (String, String) {
+fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String) {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
     // Each token MUST be a distinct NIP-98 event: the server's single-use replay
@@ -59,7 +59,7 @@ fn nip98_auth(method: &str, path: &str) -> (String, String) {
     });
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let token = nip98::mint(&url, method, SK_HEX, now)
+    let token = nip98::mint_with_payload(&url, method, body, SK_HEX, now)
         .expect("nip98-schnorr is enabled in the workspace test build");
     // Derive the did the server will compute from the same key.
     let sk = hex::decode(SK_HEX).unwrap();
@@ -86,7 +86,7 @@ async fn balance_for_authed_did_zero_then_credited() {
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, did) = nip98_auth("GET", "/pay/.balance");
+    let (auth, did) = nip98_auth("GET", "/pay/.balance", None);
 
     // Pre-seed the ledger with a known balance for this did.
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
@@ -137,9 +137,9 @@ async fn deposit_txo_standin_disabled_by_default_returns_501() {
     );
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, _did) = nip98_auth("POST", "/pay/.deposit");
     let txid = "c".repeat(64);
     let txo = format!("{txid}:0");
+    let (auth, _did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth))
@@ -161,9 +161,9 @@ async fn deposit_credits_balance() {
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, did) = nip98_auth("POST", "/pay/.deposit");
     let txid = "a".repeat(64);
     let txo = format!("{txid}:0"); // vout 0 → (0+1)*1000 = 1000 sats
+    let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
 
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
@@ -192,7 +192,7 @@ async fn deposit_replay_is_rejected_and_does_not_double_credit() {
     let txo = format!("{txid}:1"); // vout 1 → 2000 sats
 
     // First deposit — succeeds.
-    let (auth1, did) = nip98_auth("POST", "/pay/.deposit");
+    let (auth1, did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth1))
@@ -204,7 +204,7 @@ async fn deposit_replay_is_rejected_and_does_not_double_credit() {
     assert_eq!(read_balance(storage.as_ref(), &did).await, 2000);
 
     // Second deposit of the SAME output — rejected (400), balance unchanged.
-    let (auth2, _) = nip98_auth("POST", "/pay/.deposit");
+    let (auth2, _) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth2))
@@ -241,7 +241,7 @@ async fn offers_sell_swap_round_trip() {
     // Seed two principals with currency balances so the swap can settle.
     // The seller is the NIP-98 key (did derived below); the buyer is a
     // distinct did we fund directly.
-    let (_, seller_did) = nip98_auth("POST", "/pay/.sell");
+    let (_, seller_did) = nip98_auth("POST", "/pay/.sell", None);
     let buyer_did = "did:nostr:buyer";
 
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
@@ -259,16 +259,19 @@ async fn offers_sell_swap_round_trip() {
     let app = test::init_service(build_app(st)).await;
 
     // 1. Seller lists 100 tbtc4 at price 2 tbtc3 each (buyer pays 200 tbtc3).
-    let (sell_auth, _) = nip98_auth("POST", "/pay/.sell");
+    let sell_body = serde_json::json!({
+        "sell_currency": "tbtc4",
+        "sell_amount": 100,
+        "buy_currency": "tbtc3",
+        "price": 2
+    });
+    let sell_bytes = serde_json::to_vec(&sell_body).unwrap();
+    let (sell_auth, _) = nip98_auth("POST", "/pay/.sell", Some(&sell_bytes));
     let req = test::TestRequest::post()
         .uri("/pay/.sell")
         .insert_header((header::AUTHORIZATION, sell_auth))
-        .set_json(serde_json::json!({
-            "sell_currency": "tbtc4",
-            "sell_amount": 100,
-            "buy_currency": "tbtc3",
-            "price": 2
-        }))
+        .insert_header((header::CONTENT_TYPE, "application/json"))
+        .set_payload(sell_bytes)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 200);
@@ -296,25 +299,31 @@ async fn offers_sell_swap_round_trip() {
     //
     //    Re-seed: give the signing did enough tbtc3 to buy its own order.
     let (bytes, _) = storage
-        .get("/.well-known/webledgers/webledgers.json")
+        .get("/.well-known/webledgers/state.json")
         .await
         .unwrap();
-    let mut ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
+    let mut payment_state: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut ledger: solid_pod_rs::payments::WebLedger =
+        serde_json::from_value(payment_state["ledger"].clone()).unwrap();
     ledger.credit_currency(&seller_did, "tbtc3", 1_000);
+    payment_state["ledger"] = serde_json::to_value(&ledger).unwrap();
     storage
         .put(
-            "/.well-known/webledgers/webledgers.json",
-            serde_json::to_vec(&ledger).unwrap().into(),
+            "/.well-known/webledgers/state.json",
+            serde_json::to_vec(&payment_state).unwrap().into(),
             "application/json",
         )
         .await
         .unwrap();
 
-    let (swap_auth, _) = nip98_auth("POST", "/pay/.swap");
+    let swap_body = serde_json::json!({ "id": order_id });
+    let swap_bytes = serde_json::to_vec(&swap_body).unwrap();
+    let (swap_auth, _) = nip98_auth("POST", "/pay/.swap", Some(&swap_bytes));
     let req = test::TestRequest::post()
         .uri("/pay/.swap")
         .insert_header((header::AUTHORIZATION, swap_auth))
-        .set_json(serde_json::json!({ "id": order_id }))
+        .insert_header((header::CONTENT_TYPE, "application/json"))
+        .set_payload(swap_bytes)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 200, "swap should settle");
@@ -338,7 +347,7 @@ async fn pool_add_liquidity_then_swap() {
     let st = state();
     let storage = st.storage.clone();
 
-    let (_, did) = nip98_auth("POST", "/pay/.pool");
+    let (_, did) = nip98_auth("POST", "/pay/.pool", None);
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
     ledger.credit_currency(&did, "tbtc4", 10_000);
     ledger.credit_currency(&did, "tbtc3", 10_000);
@@ -354,18 +363,21 @@ async fn pool_add_liquidity_then_swap() {
     let app = test::init_service(build_app(st)).await;
 
     // Add liquidity 5000/5000.
-    let (auth, _) = nip98_auth("POST", "/pay/.pool");
+    let add_body = serde_json::json!({
+        "action": "add-liquidity",
+        "currency_a": "tbtc4",
+        "currency_b": "tbtc3",
+        "amount_a": 5000,
+        "amount_b": 5000,
+        "fee_bps": 0
+    });
+    let add_bytes = serde_json::to_vec(&add_body).unwrap();
+    let (auth, _) = nip98_auth("POST", "/pay/.pool", Some(&add_bytes));
     let req = test::TestRequest::post()
         .uri("/pay/.pool")
         .insert_header((header::AUTHORIZATION, auth))
-        .set_json(serde_json::json!({
-            "action": "add-liquidity",
-            "currency_a": "tbtc4",
-            "currency_b": "tbtc3",
-            "amount_a": 5000,
-            "amount_b": 5000,
-            "fee_bps": 0
-        }))
+        .insert_header((header::CONTENT_TYPE, "application/json"))
+        .set_payload(add_bytes)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 200);
@@ -374,18 +386,21 @@ async fn pool_add_liquidity_then_swap() {
     assert!(json["shares"].as_u64().unwrap() > 0);
 
     // Swap 1000 tbtc4 → tbtc3 (zero fee → 833 out, per trading.rs unit test).
-    let (auth, _) = nip98_auth("POST", "/pay/.pool");
+    let swap_body = serde_json::json!({
+        "action": "swap",
+        "currency_a": "tbtc4",
+        "currency_b": "tbtc3",
+        "from_currency": "tbtc4",
+        "amount_in": 1000,
+        "fee_bps": 0
+    });
+    let swap_bytes = serde_json::to_vec(&swap_body).unwrap();
+    let (auth, _) = nip98_auth("POST", "/pay/.pool", Some(&swap_bytes));
     let req = test::TestRequest::post()
         .uri("/pay/.pool")
         .insert_header((header::AUTHORIZATION, auth))
-        .set_json(serde_json::json!({
-            "action": "swap",
-            "currency_a": "tbtc4",
-            "currency_b": "tbtc3",
-            "from_currency": "tbtc4",
-            "amount_in": 1000,
-            "fee_bps": 0
-        }))
+        .insert_header((header::CONTENT_TYPE, "application/json"))
+        .set_payload(swap_bytes)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 200, "pool swap should succeed");

@@ -27,7 +27,9 @@ feature-depth = 1
 # -----------------------------------------------------------------------------
 [advisories]
 version = 2
-db-path = "~/.cargo/advisory-db"
+# Keep the database in the workspace target tree. This works in read-only-home
+# build containers and remains excluded from source control.
+db-path = "target/cargo-deny/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # Deny all advisories by default. Any ignore must carry a rationale as a
 # comment above the id. Unmaintained crates are also denied unless explicitly
@@ -35,28 +37,19 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 # Dated, justified exceptions — mirrored in ../../.cargo/audit.toml so both
 # gates agree. NO blanket ignores: advisories with an in-semver fix are resolved
-# via `cargo update` (anyhow 1.0.103, lru 0.16, crossbeam-epoch 0.9.20,
-# quinn-proto 0.11.16). Each entry below has no reachable in-semver fix.
-# Reviewed 2026-07-10 — revisit by 2026-10-08.
+# via `cargo update` (including lru 0.18 and h2 0.4.17).
+# Each entry below has no reachable in-semver fix.
 ignore = [
     # `rsa` 0.9.x Marvin timing sidechannel — no patched release exists. Pulled
     # by `openidconnect` (oidc) + activitypub for RSA signature *verification*
     # (public-key ops); the attack targets private-key decryption timing, which
     # this codebase never performs. Revisit when openidconnect drops `rsa`.
     "RUSTSEC-2023-0071",
-    # `rustls-webpki` 0.101.7 name-constraint / CRL-panic advisories. Pinned by
-    # rustls 0.21 via aws-smithy-http-client's default TLS connector (aws-sdk-s3),
-    # reachable ONLY under the `s3-backend` feature and only against a malicious
-    # cert from the operator's own configured S3 endpoint. Fix lives in webpki
-    # 0.103, unreachable until the AWS SDK migrates off rustls 0.21.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
-    # NOTE: `rustls-pemfile` unmaintained (RUSTSEC-2025-0134) is a transitive
-    # DEV-dependency of solid-pod-rs-server and is NOT reachable from this
-    # crate's own dependency graph, so cargo-deny (manifest = solid-pod-rs)
-    # never encounters it. It is ignored in ../../.cargo/audit.toml instead,
-    # where the whole-workspace cargo-audit scan does see it.
+    # `h2` 0.3 is retained by Actix's optional rustls integration. The normal
+    # listener does not enable Actix's `http2` feature, all request bodies are
+    # capped, and deployments terminate HTTP/2 at the reverse proxy. Revisit
+    # by 2026-09-20 or when Actix migrates this integration to h2 0.4.
+    "RUSTSEC-2026-0258",
 ]
 
 # -----------------------------------------------------------------------------
@@ -116,12 +109,11 @@ allow-wildcard-paths = true
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
-# Specific crates we never want to pull in.
+# Specific transport crates we never want to pull in. `openssl` remains an
+# indirect WebAuthn certificate dependency; HTTP clients and listeners use
+# rustls and must not add `native-tls`.
 deny = [
-    # openssl — we use rustls everywhere. If this shows up it's a dep regression.
-    { name = "openssl" },
-    { name = "openssl-sys" },
-    # native-tls — same reason; rustls-only policy.
+    # native-tls would silently change the network TLS implementation.
     { name = "native-tls" },
 ]
 # Hyper ecosystem regularly ships multiple versions during migrations. Allow

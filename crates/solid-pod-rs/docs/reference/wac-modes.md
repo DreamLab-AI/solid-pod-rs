@@ -2,7 +2,7 @@
 
 Web Access Control defines four access modes. solid-pod-rs encodes
 them in the `AccessMode` enum and `map_mode` function in
-[`src/wac.rs`](../../src/wac.rs).
+[`src/wac/mod.rs`](../../src/wac/mod.rs).
 
 ## The four modes
 
@@ -33,7 +33,7 @@ Critically:
   only `Control` lets you read/modify `.acl` but not the resource
   itself.
 
-See `fn map_mode` in `src/wac.rs`:
+See `fn map_mode` in `src/wac/mod.rs`:
 
 ```rust
 fn map_mode(mode_ref: &str) -> &'static [AccessMode] {

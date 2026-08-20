@@ -76,6 +76,8 @@ pub struct OutboundRequest {
 pub struct VerifiedActor {
     pub key_id: String,
     pub actor_url: String,
+    /// Delivery endpoint obtained from the verified actor document.
+    pub inbox_url: Option<String>,
     pub public_key_pem: String,
 }
 
@@ -147,9 +149,16 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .and_then(|k| k.get("publicKeyPem"))
             .and_then(|v| v.as_str())
             .ok_or(SigError::NoPublicKey)?;
+        let inbox_url = doc
+            .get("endpoints")
+            .and_then(|v| v.get("sharedInbox"))
+            .and_then(|v| v.as_str())
+            .or_else(|| doc.get("inbox").and_then(|v| v.as_str()))
+            .map(str::to_string);
         Ok(VerifiedActor {
             key_id: key_id.to_string(),
             actor_url,
+            inbox_url,
             public_key_pem: pem.to_string(),
         })
     }
@@ -291,6 +300,27 @@ fn build_signature_base(req: &SignedRequest, header_list: &[String]) -> Result<S
     Ok(lines.join("\n"))
 }
 
+fn validate_covered_components(method: &str, headers: &[String]) -> Result<(), SigError> {
+    let unique: std::collections::HashSet<&str> = headers.iter().map(String::as_str).collect();
+    if unique.len() != headers.len() {
+        return Err(SigError::MalformedSignature(
+            "duplicate covered component".into(),
+        ));
+    }
+    let mut required = vec!["(request-target)", "host", "date"];
+    if method.eq_ignore_ascii_case("POST") {
+        required.push("digest");
+    }
+    for component in required {
+        if !unique.contains(component) {
+            return Err(SigError::MalformedSignature(format!(
+                "signature must cover {component}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Compute the canonical `Digest: SHA-256=...` header value for a body.
 pub fn digest_header(body: &[u8]) -> String {
     let digest = Sha256::digest(body);
@@ -353,6 +383,7 @@ pub async fn verify_request_signature(
     if parsed.algorithm != "rsa-sha256" && parsed.algorithm != "hs2019" {
         return Err(SigError::UnsupportedAlgorithm(parsed.algorithm));
     }
+    validate_covered_components(&req.method, &parsed.headers)?;
 
     // P0-07: Date freshness check — reject stale or future-dated
     // requests to prevent replay attacks with captured signatures.
@@ -482,6 +513,7 @@ mod tests {
             Ok(VerifiedActor {
                 key_id: key_id.to_string(),
                 actor_url: key_id.trim_end_matches("#main-key").to_string(),
+                inbox_url: None,
                 public_key_pem: self.pem.clone(),
             })
         }
@@ -555,6 +587,33 @@ mod tests {
     fn digest_header_is_mastodon_shape() {
         let d = digest_header(b"hello");
         assert!(d.starts_with("SHA-256="));
+    }
+
+    #[test]
+    fn post_requires_every_security_critical_component() {
+        let complete = ["(request-target)", "host", "date", "digest"];
+        for omitted in complete {
+            let covered = complete
+                .iter()
+                .filter(|component| **component != omitted)
+                .map(|component| (*component).to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                validate_covered_components("POST", &covered).is_err(),
+                "POST without {omitted} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_covered_components_are_rejected() {
+        let covered = vec![
+            "(request-target)".into(),
+            "host".into(),
+            "date".into(),
+            "date".into(),
+        ];
+        assert!(validate_covered_components("GET", &covered).is_err());
     }
 
     #[tokio::test]

@@ -30,7 +30,6 @@
 //! | `notifications` | on | WebSocketChannel2023 + WebhookChannel2023.      |
 //! | `fs-backend` | on | POSIX filesystem storage. |
 //! | `memory-backend` | on | In-process `HashMap` storage (tests/demos). |
-//! | `s3-backend` | off | AWS S3 / S3-compatible object stores. |
 //! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
 //! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
 //! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. Verification is **unconditional and fail-closed**: without this feature the verifier returns [`PodError::Unsupported`] rather than accepting a forged pubkey after structural checks alone. |
@@ -42,7 +41,7 @@
 //! | `config-loader` | off | Layered config loader with `JSS_*` env vars + YAML/TOML. |
 //! | `webhook-signing` | off | RFC 9421 Ed25519 webhook signing. |
 //! | `rate-limit` | off | Sliding-window LRU rate limiter + CORS. |
-//! | `quota` | off | Per-pod `.quota.json` sidecar (atomic writes). |
+//! | `quota` | off | Cooperative per-pod `.quota.json` accounting primitive; sidecar replacement is atomic, but check+record is not. |
 //! | `did-nostr-types` | off | Canonical did:nostr types (wasm32-safe). |
 //! | `did-nostr` | off | did:nostr DID-Doc ↔ WebID resolver in [`interop`]. |
 //! | `mrc20` | off | BIP-341 taproot key chaining + anchor verify/build for MRC20 / block-trails. |
@@ -69,7 +68,7 @@
 //!
 //! | Module | Responsibility |
 //! |-----------------|--------------------------------------------------------------|
-//! | [`storage`] | `Storage` trait + FS / Memory / S3 backends. |
+//! | [`storage`] | `Storage` trait + filesystem and memory backends. |
 //! | [`ldp`] | Resources, containers, content negotiation, PATCH, `Prefer`. |
 //! | [`wac`] | Access control evaluator + WAC 2.0 conditions framework. |
 //! | [`webid`] | WebID profile documents (emits `solid:oidcIssuer` + CID). |
@@ -83,7 +82,7 @@
 //! | [`error`] | Crate-wide [`PodError`] error type. |
 //! | [`config`] | Layered configuration schema. |
 //! | [`security`] | SSRF guard, dotfile allowlist, CORS, rate limiter. |
-//! | [`quota`] | Per-pod byte-quota enforcement. |
+//! | [`quota`] | Cooperative per-pod byte-quota accounting (not wired by the bundled server). |
 //! | [`multitenant`] | `PodResolver` trait; path + subdomain modes. |
 //! | [`interop`] | `.well-known/solid`, WebFinger, NodeInfo, did:nostr. |
 //! | [`did_nostr_types`] | Canonical `did:nostr` types (wasm32-safe, `core`). |

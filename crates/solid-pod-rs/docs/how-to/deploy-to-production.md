@@ -10,8 +10,12 @@ proxy with monitoring, backup, and sensible defaults.
   authenticated channel.
 - Pod process: your binary built around `solid-pod-rs` + an HTTP
   framework (actix-web, axum). Run as a non-root user.
-- Storage: `FsBackend` on SSD for pods up to ~100 GB, S3-backed for
-  larger or multi-instance deployments.
+- Storage: the bundled server currently offers filesystem or ephemeral memory
+  storage only. The filesystem backend has known symlink-boundary and
+  non-atomic-write findings (AUD-013/AUD-014), so isolate its data directory
+  from untrusted git content and do not use it for value-bearing production
+  state until those findings are fixed. Implement a transactional custom
+  `Storage` backend for multi-instance deployments; no S3 backend ships yet.
 - Auth: NIP-98 only, or NIP-98 + Solid-OIDC (feature `oidc`).
 
 ## systemd unit
@@ -124,10 +128,11 @@ bodies or the pod will 404 on content-type discovery.
 rsync -av --delete /var/lib/mypod/ backup:/backups/mypod-$(date +%F)/
 ```
 
-### S3 backend
+### Custom object-store backend
 
-Enable bucket versioning + replication. Point-in-time restore is a
-bucket-level restore + key-prefix filter.
+No stock S3 backend exists. If your deployment supplies a custom object-store
+implementation, document and test its versioning, replication, key-prefix
+isolation, atomicity, and point-in-time restore procedure.
 
 ## Rotating the NIP-98 clock tolerance
 
@@ -154,5 +159,5 @@ that, either:
 
 - [how-to/configure-nip98-auth.md](configure-nip98-auth.md)
 - [how-to/enable-solid-oidc.md](enable-solid-oidc.md)
-- [how-to/scale-with-s3-backend.md](scale-with-s3-backend.md)
+- [Object-store backend status](scale-with-s3-backend.md)
 - [explanation/security-model.md](../explanation/security-model.md)

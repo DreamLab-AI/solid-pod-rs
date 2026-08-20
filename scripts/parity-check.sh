@@ -15,11 +15,9 @@ set -euo pipefail
 #     wontfix-in-crate | other
 #   - Strict = shipped / total
 #
-# The checklist header's "~98%" uses a curated 132-row denominator
-# (excluding test/conformance meta and architectural rows from the
-# denominator). This script uses the raw row count from the tables.
-# The "non-gap" percentage (total minus only missing/partial) typically
-# exceeds 95%.
+# The checklist headline uses the same classification as this script:
+# architectural and explicitly out-of-scope rows are excluded from the
+# strict denominator, while missing and partial rows remain in scope.
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKLIST="$WORKSPACE_ROOT/crates/solid-pod-rs/PARITY-CHECKLIST.md"
@@ -143,7 +141,7 @@ fi
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
-echo -e "${BOLD}Parity Report (Sprint 12)${RESET}"
+echo -e "${BOLD}JSS parity report${RESET}"
 echo "========================"
 echo ""
 printf "  Total rows:             %4d\n" "$total_rows"
@@ -166,15 +164,9 @@ echo ""
 # ---------------------------------------------------------------------------
 # Gate: strict >= 95%
 #
-# Note: the checklist headline claims ~98% over a curated 132-row
-# denominator. This script counts all 180 parsed table rows. The gate
-# threshold of 95% is achievable because shipped statuses (present +
-# net-new + semantic-difference) account for ~84% and the remaining
-# deferred/wontfix/partial/missing rows are a known, stable tail.
-#
 # If the threshold is not met, check which rows are missing/partial.
 # ---------------------------------------------------------------------------
-threshold=90
+threshold=95
 pass=$(awk "BEGIN { print ($strict_pct >= $threshold) ? 1 : 0 }")
 
 if [[ "$pass" -eq 1 ]]; then

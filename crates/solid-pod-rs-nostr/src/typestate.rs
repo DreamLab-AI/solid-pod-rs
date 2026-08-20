@@ -332,7 +332,7 @@ impl AsRef<Event> for VerifiedEvent {
 impl crate::relay::Relay {
     /// Ingest a pre-verified event, skipping redundant signature checks.
     ///
-    /// This is the typestate-aware counterpart of [`Relay::ingest`].
+    /// This is the typestate-aware counterpart of [`crate::relay::Relay::ingest`].
     /// Since the caller already holds a `VerifiedEvent`, the relay
     /// trusts the signature and proceeds directly to NIP-16
     /// classification and storage.

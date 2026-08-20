@@ -14,17 +14,24 @@
 //! Any failure resolves to [`ForgeAgent::Anonymous`]; the service's
 //! guards then decide, fail-closed.
 
-use solid_pod_rs::auth::nip98;
+use solid_pod_rs::auth::{nip98, replay::ReplayStore};
 use solid_pod_rs::did_nostr_types::is_valid_hex_pubkey;
 
 use crate::ownership::ForgeAgent;
 use crate::request::ForgeRequest;
 
+const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();
+
 /// Resolve a [`ForgeAgent`] from the request's `Authorization` header.
 /// `token_key` is the forge instance HMAC key; `now` is the current Unix
 /// time (injected for deterministic testing).
 #[must_use]
-pub fn resolve_agent(req: &ForgeRequest, token_key: &[u8], now: u64) -> ForgeAgent {
+pub async fn resolve_agent(
+    req: &ForgeRequest,
+    token_key: &[u8],
+    replay: &dyn ReplayStore,
+    now: u64,
+) -> ForgeAgent {
     let Some(authz) = req.header("authorization") else {
         return ForgeAgent::Anonymous;
     };
@@ -49,7 +56,8 @@ pub fn resolve_agent(req: &ForgeRequest, token_key: &[u8], now: u64) -> ForgeAge
             Some(req.raw_body.as_ref())
         };
         if let Ok(v) = nip98::verify_at(authz, &url, &req.method.to_uppercase(), body, now) {
-            if is_valid_hex_pubkey(&v.pubkey) {
+            if is_valid_hex_pubkey(&v.pubkey) && replay.check_and_record(&v.event_id).await.is_ok()
+            {
                 return ForgeAgent::Nostr {
                     pubkey_hex: v.pubkey,
                 };
@@ -84,51 +92,82 @@ mod tests {
         }
     }
 
-    #[test]
-    fn no_header_is_anonymous() {
+    #[tokio::test]
+    async fn no_header_is_anonymous() {
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
         assert_eq!(
-            resolve_agent(&req_with_auth(None), KEY, 0),
+            resolve_agent(&req_with_auth(None), KEY, &replay, 0).await,
             ForgeAgent::Anonymous
         );
     }
 
-    #[test]
-    fn valid_forge_token_resolves() {
+    #[tokio::test]
+    async fn valid_forge_token_resolves() {
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
         let agent = ForgeAgent::Nostr {
             pubkey_hex: "c".repeat(64),
         };
         let tok = crate::token::mint(KEY, &agent, 1000, 3600).unwrap();
         let req = req_with_auth(Some(&format!("Bearer {tok}")));
-        assert_eq!(resolve_agent(&req, KEY, 1500), agent);
+        assert_eq!(resolve_agent(&req, KEY, &replay, 1500).await, agent);
     }
 
-    #[test]
-    fn expired_or_tampered_token_is_anonymous() {
+    #[tokio::test]
+    async fn expired_or_tampered_token_is_anonymous() {
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
         let agent = ForgeAgent::Nostr {
             pubkey_hex: "c".repeat(64),
         };
         let tok = crate::token::mint(KEY, &agent, 1000, 10).unwrap();
         let req = req_with_auth(Some(&format!("Bearer {tok}")));
         // Expired.
-        assert_eq!(resolve_agent(&req, KEY, 9999), ForgeAgent::Anonymous);
+        assert_eq!(
+            resolve_agent(&req, KEY, &replay, 9999).await,
+            ForgeAgent::Anonymous
+        );
         // Wrong key.
         assert_eq!(
-            resolve_agent(&req, b"different-key-abcdefghijklmn", 1500),
+            resolve_agent(&req, b"different-key-abcdefghijklmn", &replay, 1500).await,
             ForgeAgent::Anonymous
         );
     }
 
-    #[test]
-    fn non_forge_bearer_is_anonymous() {
+    #[tokio::test]
+    async fn non_forge_bearer_is_anonymous() {
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
         let req = req_with_auth(Some("Bearer some-oauth-jwt"));
-        assert_eq!(resolve_agent(&req, KEY, 0), ForgeAgent::Anonymous);
+        assert_eq!(
+            resolve_agent(&req, KEY, &replay, 0).await,
+            ForgeAgent::Anonymous
+        );
     }
 
-    #[test]
-    fn malformed_nip98_is_anonymous() {
+    #[tokio::test]
+    async fn malformed_nip98_is_anonymous() {
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
         // Without the nip98-schnorr feature unified in, verification fails
         // closed; with a garbage token it is Anonymous regardless.
         let req = req_with_auth(Some("Nostr bm90LWEtdmFsaWQ="));
-        assert_eq!(resolve_agent(&req, KEY, 0), ForgeAgent::Anonymous);
+        assert_eq!(
+            resolve_agent(&req, KEY, &replay, 0).await,
+            ForgeAgent::Anonymous
+        );
+    }
+
+    #[tokio::test]
+    async fn nip98_event_is_single_use() {
+        const SECRET: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+        let replay = solid_pod_rs::auth::replay::Nip98ReplayCache::default();
+        let token = nip98::mint("https://pod.example/forge/x", "GET", SECRET, 1_000).unwrap();
+        let req = req_with_auth(Some(&format!("Nostr {token}")));
+
+        assert!(matches!(
+            resolve_agent(&req, KEY, &replay, 1_000).await,
+            ForgeAgent::Nostr { .. }
+        ));
+        assert_eq!(
+            resolve_agent(&req, KEY, &replay, 1_000).await,
+            ForgeAgent::Anonymous
+        );
     }
 }

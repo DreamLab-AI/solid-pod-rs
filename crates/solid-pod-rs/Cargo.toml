@@ -38,6 +38,7 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 notify = { version = "6", optional = true }
+cap-std = { version = "3.4.4", optional = true }
 
 # Extension → MIME resolution for sidecar-absent resources (e.g. files
 # extracted from a git push to /public/apps/). Pure-logic, wasm-safe,
@@ -57,9 +58,6 @@ futures-util = { version = "0.3", optional = true }
 # Optional so `core` consumers don't pull a TLS stack.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
-# Optional backends
-aws-sdk-s3 = { version = "1", optional = true }
-
 # Solid-OIDC (0.1) — DPoP, dynamic client registration, discovery
 openidconnect = { version = "4", optional = true }
 jsonwebtoken = { version = "9", optional = true }
@@ -73,7 +71,7 @@ p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
 # F5 (Sprint 4): DPoP jti replay cache — Solid-OIDC §5.2 / RFC 9449.
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
-lru = { version = "0.16", optional = true }
+lru = { version = "0.18", optional = true }
 
 # Sprint 7 A: rate-limit primitive — parking_lot for the LRU bucket
 # mutex (low contention, Send + Sync, already in dep tree via reqwest).
@@ -119,9 +117,8 @@ embedded-docs = ["dep:include_dir"]
 # leave this off via `default-features = false, features = ["core"]`.
 tokio-runtime = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 
-fs-backend = ["tokio-runtime", "dep:notify"]
+fs-backend = ["tokio-runtime", "dep:notify", "dep:cap-std"]
 memory-backend = ["tokio-runtime"]
-s3-backend = ["dep:aws-sdk-s3", "tokio-runtime"]
 oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]
 
@@ -244,7 +241,8 @@ nip05-endpoint = ["did-nostr"]
 
 # Row 198 — JSON-LD time-chain pod export
 # (`GET /api/exports/all`). Pulls the tokio runtime; consumers choose
-# their storage backend independently (`fs-backend` or `s3-backend`).
+# their storage backend independently (a shipped backend or a custom
+# `Storage` implementation).
 # `export::export_pod_jsonld` is implemented and the route is wired
 # (owner-WAC-gated) in `solid-pod-rs-server` under the same feature name.
 export-jsonld = ["tokio-runtime"]

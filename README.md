@@ -180,7 +180,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.6", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.7", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run
@@ -207,15 +207,15 @@ Each subsystem below is a one-paragraph summary; the linked docs carry the row-l
 
 **Payments & web ledger.** solid-pod-rs inherits JSS's HTTP-402 economy: a `PaymentCondition` in a WAC ACL gates a resource behind a price, the client pays, the read succeeds. Settlement is sovereign and Bitcoin-native (sats, no EVM), sharing one verified taproot core with block-trail anchors — deposits, withdrawals, a routed order book and constant-product AMM, all through `PaymentStore` as the sole ledger I/O path, with replay protection on every settlement proof.
 
-**Authentication.** Two paths, one `AuthContext`. **NIP-98** signs a per-request Nostr event (kind 27235) binding URL, method, and body hash — no IdP, just a keypair; see [`configure-nip98-auth.md`](crates/solid-pod-rs/docs/how-to/configure-nip98-auth.md). **Solid-OIDC** is authorization-code + PKCE with DPoP-bound tokens (RFC 9449) for interop with existing Solid clients; see [`enable-solid-oidc.md`](crates/solid-pod-rs/docs/how-to/enable-solid-oidc.md).
+**Authentication.** Two paths, one `AuthContext`. **NIP-98** binds the complete request URL, method, and raw-body hash in a signed kind-27235 Nostr event. **Solid-OIDC** uses the authorisation-code flow with PKCE and DPoP-bound tokens (RFC 9449) for interoperability with existing Solid clients. The bundled server also supports JSS-compatible HMAC development bearer tokens when an explicit `TOKEN_SECRET` of at least 32 bytes is configured. See [`configure-nip98-auth.md`](crates/solid-pod-rs/docs/how-to/configure-nip98-auth.md) and [`enable-solid-oidc.md`](crates/solid-pod-rs/docs/how-to/enable-solid-oidc.md).
 
-**Identity provider.** The `solid-pod-rs-idp` crate is a self-contained Solid-OIDC IdP — authorization-code flow with PKCE, ES256-signed DPoP tokens, dynamic client registration, JWKS publication, WebAuthn passkeys, and NIP-07 Schnorr SSO — so a pod can run without a separate identity service.
+**Identity provider.** The `solid-pod-rs-idp` crate is a self-contained Solid-OIDC IdP — authorisation-code flow with PKCE, ES256-signed DPoP tokens, dynamic client registration, JWKS publication, WebAuthn passkeys, and NIP-07 Schnorr SSO — so a pod can run without a separate identity service.
 
 **Federation.** `solid-pod-rs-activitypub` speaks ActivityPub (Actor discovery, HTTP-Signature inbox verification, follower fan-out, SQLite persistence). `solid-pod-rs-nostr` embeds a NIP-01 relay and resolves did:nostr. Solid Notifications 0.2 ships over WebSocket, webhook (RFC 9421 Ed25519-signed), and a legacy `solid-0.1` adapter. Reachable over three transports: Tailscale private mesh, the Nostr relay mesh, and Cloudflare tunnels.
 
-**Storage.** A pluggable `Storage` trait backs everything: `fs-backend` (POSIX, atomic rename, path-traversal guard), `memory-backend` (tests/demos), and `s3-backend` (S3/MinIO/R2/B2). Per-pod quota via `.quota.json` sidecars.
+**Storage.** A pluggable `Storage` trait backs everything. The shipped implementations are `fs-backend` (POSIX) and `memory-backend` (tests/demos). Unsupported backend names, including the removed dependency-only S3 scaffold, fail configuration validation. The filesystem backend uses capability-confined paths and atomic replacement writes. Per-pod quota uses `.quota.json` sidecars with process-wide atomic reservations.
 
-**Security.** Safe by default: `..`/null-byte path rejection on both backends, SSRF guard against RFC-1918 / loopback / link-local / cloud-metadata with per-call IP pinning against DNS-rebinding, ACL size caps, dotfile allowlist, NIP-98 token-size limit, and WAC-gated git smart-HTTP. See [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md) and [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md).
+**Security controls.** The workspace includes `..`/null-byte path rejection, SSRF filtering with IP pinning, ACL size caps, a dotfile allowlist, a NIP-98 token-size limit, and WAC-gated git smart-HTTP. These controls do not make the current checkout production-safe: the dated audit records critical IdP, MCP, and payment-integrity findings. See [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md), the [2026-08-19 audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md), and [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md).
 
 **Git forge.** `solid-pod-rs-forge` is a clean-room Rust forge composed on the pod's own primitives (git smart-HTTP, provenance, NIP-98, did:nostr, WAC), behind a default-off `forge` feature. See Status below for exactly what is shipped versus scaffolded.
 
@@ -227,14 +227,24 @@ Full documentation follows the [Diátaxis](https://diataxis.fr/) framework and l
 
 ---
 
-## Status & remaining work (2026-07-22)
+## Status & remaining work (2026-08-19)
 
-Honest, pre-1.0, dated. Version pins here match `Cargo.toml` `workspace.package.version` = **`0.5.0-alpha.6`** at time of writing.
+Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
+`workspace.package.version` = **`0.5.0-alpha.7`** at time of writing.
 
 - **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
-- **~96% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md) "Current state (Sprint 16)": 207 rows tracked — 3 missing, 6 deferred as legacy/P3, 3 wontfix-in-crate. See the checklist for the working; the Rust port adds a single static binary, no Node.js dependency, lower memory footprint, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
+- **97.6% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 230 rows tracked through JSS `0.0.220` (`f9f7a4d`) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
 - **Provenance is git-mark-first.** git-marks are always-on; Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr) is validated against the official test vectors.
-- **Security fixes landed after the last CHANGELOG entry.** git HEAD (`0.5.0-alpha.6`) closes audit criticals — deposit-oracle exploit, an SSRF cluster, CORS, and auth stubs — beyond CHANGELOG's `alpha.5` cut. Treat CHANGELOG.md as the authoritative record of shipped work; do not read more security completeness into this line than the checklist records.
+- **Security audit is not green.** At this checkout, formatting, strict Clippy,
+  compilation, and the complete all-feature workspace test command pass, but
+  `cargo audit --deny warnings` fails on `RUSTSEC-2026-0258` in both shipped
+  HTTP/2 stacks. Reproduced critical findings include filesystem symlink root
+  escape, anonymous MCP reads/WAC sidecar bypass, forged IdP identity, and
+  non-atomic payment state. Filesystem writes also violate the advertised
+  atomic storage contract. Keep MCP disabled; do not expose the optional IdP
+  router or carry value through payment routes until the findings are fixed.
+  See the [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
+  for evidence, affected optional surfaces, and remediation priority.
 
 ---
 

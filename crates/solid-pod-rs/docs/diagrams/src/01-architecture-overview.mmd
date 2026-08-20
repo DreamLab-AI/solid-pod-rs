@@ -37,7 +37,7 @@ flowchart TB
     direction LR
     FS["FsBackend<br/>(storage::fs)"]:::store
     MEM["MemoryBackend<br/>(storage::memory)"]:::store
-    S3["s3-backend feature flag<br/>(aws-sdk-s3 dep declared;<br/>no backend impl ships yet)"]:::storeOpt
+    Custom["Consumer-owned Storage impl<br/>(not configured by bundled server)"]:::storeOpt
   end
 
   %% ───── FLOW ─────

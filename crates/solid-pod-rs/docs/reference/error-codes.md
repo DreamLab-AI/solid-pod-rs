@@ -4,9 +4,10 @@ Every `solid_pod_rs` API returns `Result<T, PodError>`. This page
 documents how each `PodError` variant maps to an HTTP status code and
 response body, and what typically triggers it.
 
-The library itself does not produce HTTP responses. Your HTTP
-framework maps errors. The mapping below matches the convention used
-in `examples/standalone.rs` and is the recommended default.
+The core library itself does not produce HTTP responses. The bundled Actix
+server maps errors in `solid-pod-rs-server/src/lib.rs`; custom HTTP frameworks
+must provide an equivalent mapping. The table below is the recommended
+protocol mapping.
 
 ## `PodError` → HTTP mapping
 

@@ -1,10 +1,10 @@
 # HTTP endpoint reference
 
-solid-pod-rs is framework-agnostic: it does not ship an HTTP server.
-This page describes the endpoint surface your integration should
-expose, derived from the example in
-[`examples/standalone.rs`](../../examples/standalone.rs) and the LDP
-specification.
+The `solid-pod-rs` core library is framework-agnostic. The workspace also
+ships the Actix-based `solid-pod-rs-server` binary. This page describes the
+protocol surface implemented by
+[`solid-pod-rs-server/src/lib.rs`](../../../solid-pod-rs-server/src/lib.rs)
+and the reusable LDP handlers in the core crate.
 
 ## Method matrix
 

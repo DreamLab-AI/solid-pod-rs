@@ -71,7 +71,7 @@ If `granted == false`, one of the following is true:
 ## Step 4 — Check for path mismatches
 
 The resolver normalises paths as follows (see
-[`wac.rs::normalize_path`](../../src/wac.rs)):
+[`wac/evaluator.rs::normalize_path`](../../src/wac/evaluator.rs)):
 
 - Strip leading `./` or `.`.
 - Strip trailing `/` unless the path is `/`.

@@ -1,6 +1,6 @@
 # solid-pod-rs-idp
 
-**Status: 0.4.0-alpha.17 — Sprint 10–12 Solid-OIDC provider.**
+**Status: 0.5.0-alpha.7 — Solid-OIDC provider.**
 
 Rust port of the JSS identity provider (`JavaScriptSolidServer/src/idp/*`).
 This crate owns the **protocol** surface; transport framing is the
@@ -28,10 +28,11 @@ Sprint 11 lands real backends for both rows:
 
 | Row | Backend | Feature flag | Notes |
 |----:|---------|--------------|-------|
-|  80 | [`WebauthnPasskey`] on top of `webauthn-rs` 0.5 | `passkey` | Reasonable defaults: user-verification required, `EdDSA`+`ES256`, single-step registration, in-memory challenge/credential store. Swap for a persistent store via a custom [`PasskeyBackend`] impl. |
-|  81 | [`Nip07SchnorrSso`] on top of core `nip98-schnorr` | `schnorr-sso` | 32-byte CSPRNG challenges, 5-minute default TTL, one-shot consume-on-verify. Canonical digest is `SHA-256(token ‖ user_id ‖ pubkey)`. |
+|  80 | [`WebauthnPasskey`](crate::passkey::WebauthnPasskey) on top of `webauthn-rs` 0.5 | `passkey` | Reasonable defaults: user-verification required, `EdDSA`+`ES256`, single-step registration, in-memory challenge/credential store. Swap for a persistent store via a custom [`PasskeyBackend`](crate::passkey::PasskeyBackend) impl. |
+|  81 | [`Nip07SchnorrSso`](crate::schnorr::Nip07SchnorrSso) on top of core `nip98-schnorr` | `schnorr-sso` | 32-byte CSPRNG challenges, 5-minute default TTL, one-shot consume-on-verify. Canonical digest is `SHA-256(token ‖ user_id ‖ pubkey)`. |
 
-The trait types ([`PasskeyBackend`], [`SchnorrSso`]) stay stable so
+The trait types ([`PasskeyBackend`](crate::passkey::PasskeyBackend),
+[`SchnorrSso`](crate::schnorr::SchnorrSso)) stay stable so
 integrators who want to bring their own backend — e.g. attestation-
 pinned WebAuthn, or Redis-backed Schnorr state — can swap the default
 impl without touching `Provider`.
@@ -138,7 +139,7 @@ registration, and credentials pre-wired:
 
 ```toml
 [dependencies]
-solid-pod-rs-idp = { version = "0.5.0-alpha.4", features = ["axum-binder"] }
+solid-pod-rs-idp = { version = "0.5.0-alpha.7", features = ["axum-binder"] }
 ```
 
 `/idp/auth` and `/idp/token` are NOT on the binder — their request

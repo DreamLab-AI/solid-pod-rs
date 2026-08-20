@@ -13,7 +13,8 @@ pub enum SigError {
     /// A required HTTP header (e.g. `Date`, `Digest`) is absent.
     #[error("missing required header: {0}")]
     MissingHeader(&'static str),
-    /// The `Signature` header could not be parsed.
+    /// The `Signature` header could not be parsed, or does not cover the
+    /// required components.
     #[error("malformed Signature header: {0}")]
     MalformedSignature(String),
     /// The `Signature` header lacks a `keyId` parameter.
@@ -62,6 +63,9 @@ pub enum InboxError {
     /// The activity object has no `type` field.
     #[error("missing activity type")]
     MissingType,
+    /// The activity claims an actor other than the HTTP-signature identity.
+    #[error("activity actor does not match verified signer: {0}")]
+    ActorMismatch(String),
     /// SQLite persistence layer failure.
     #[error("storage error: {0}")]
     Storage(#[from] sqlx::Error),

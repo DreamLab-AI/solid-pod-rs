@@ -78,7 +78,7 @@ pod-backed thread storage.
   verification (`auth::nip98::verify_at`), dotfile allowlist, LDP
   parsers (PATCH dialects, content negotiation), interop types.
 - **Dependency:**
-  `solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }`
+  `solid-pod-rs = { version = "0.5.0-alpha.7", default-features = false, features = ["core"] }`
 
 Repository: [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum)
 
@@ -102,7 +102,8 @@ Repository: [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dre
 - LDP semantics (containers, Link headers, PATCH).
 - WAC evaluator.
 - NIP-98 + Solid-OIDC verification.
-- In-memory, filesystem, and S3 backends.
+- In-memory and filesystem backends. S3 is configuration/dependency
+  scaffolding only; no implementation ships yet.
 - Solid Notifications 0.2 channel managers.
 - DID:nostr resolution + WebID generation.
 - did:key resolution (Ed25519, P-256, secp256k1).
@@ -167,7 +168,7 @@ and metrics around the solid-pod-rs library.
 
 ```rust
 // Cargo.toml
-// solid-pod-rs = { version = "0.4", default-features = false, features = ["core"] }
+// solid-pod-rs = { version = "0.5.0-alpha.7", default-features = false, features = ["core"] }
 
 use solid_pod_rs::auth::nip98::verify_at;
 use solid_pod_rs::wac::evaluate_access;
@@ -197,9 +198,9 @@ on you.
 - VisionClaw consumes `solid-pod-rs` at the current alpha line with the
   feature set it needs for embedded pods. agentbox builds a pinned
   `solid-pod-rs-server` binary through Nix for the native pod tier.
-- nostr-bbs-pod-worker pins
-  `solid-pod-rs = { version = "0.4.0-alpha.17", default-features = false, features = ["core"] }`.
-- The current workspace version is **0.4.0-alpha.17** across all 7
+- Downstream consumers should pin the audited alpha line explicitly and review
+  the security audit before exposing server routes.
+- The current workspace version is **0.5.0-alpha.7** across all 8
   workspace crates.
 
 ## Cross-system identity

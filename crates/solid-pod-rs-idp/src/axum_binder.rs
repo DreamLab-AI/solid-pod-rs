@@ -1,6 +1,6 @@
 //! Optional axum Router factory (feature: `axum-binder`).
 //!
-//! Wires [`Provider`] + [`Jwks`] into a minimal axum Router covering
+//! Wires [`Provider`] + [`Jwks`](crate::jwks::Jwks) into a minimal axum Router covering
 //! the always-on endpoints:
 //!
 //! | Path                              | Method | Purpose                              |
@@ -23,8 +23,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{ConnectInfo, Json, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, FromRequestParts, Json, State};
+use axum::http::{request::Parts, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -50,6 +50,42 @@ pub struct IdpState {
     pub provider: Provider,
     /// Rate limiter for `/idp/credentials`.
     pub limiter: Arc<dyn RateLimiter>,
+}
+
+/// Authenticated account identity supplied by trusted authentication middleware.
+///
+/// This binder never derives the identity from a client-controlled HTTP header.
+/// A consumer must first validate its access token or session and then insert an
+/// `AuthenticatedUserId` into the request extensions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedUserId(String);
+
+impl AuthenticatedUserId {
+    /// Construct an identity after validating a token or session.
+    pub fn new(user_id: impl Into<String>) -> Self {
+        Self(user_id.into())
+    }
+
+    /// Return the stable internal user id.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for AuthenticatedUserId
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<Self>()
+            .cloned()
+            .ok_or((StatusCode::UNAUTHORIZED, "authentication required"))
+    }
 }
 
 /// Build an axum Router with the always-on routes.
@@ -149,34 +185,20 @@ async fn credentials_handler(
 
 /// Request body for `PUT /idp/credentials`.
 ///
-/// Authentication is validated via the `Authorization` header by the
-/// transport layer before this handler runs; the handler receives the
-/// authenticated user id from the header (see `extract_user_id_header`).
+/// Authentication is validated by the transport layer before this handler
+/// runs. That middleware supplies a typed [`AuthenticatedUserId`] extension.
 #[derive(Debug, Deserialize)]
 struct PasswordChangeBody {
     current_password: String,
     new_password: String,
 }
 
-/// Extract the authenticated user id from the `X-Authenticated-User`
-/// header. The transport layer is responsible for populating this after
-/// validating the access token or session. This decouples the binder
-/// from a particular auth middleware.
-fn extract_user_id_header(headers: &axum::http::HeaderMap) -> Result<String, AxumErr> {
-    headers
-        .get("X-Authenticated-User")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| AxumErr(StatusCode::UNAUTHORIZED, "authentication required".into()))
-}
-
 async fn password_change_handler(
     State(st): State<IdpState>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
+    user_id: AuthenticatedUserId,
     Json(body): Json<PasswordChangeBody>,
 ) -> Result<Json<PasswordChangeResponse>, AxumErr> {
-    let user_id = extract_user_id_header(&headers)?;
     let ip: IpAddr = peer.ip();
 
     let req = PasswordChangeRequest {
@@ -185,7 +207,7 @@ async fn password_change_handler(
     };
 
     change_password(
-        &user_id,
+        user_id.as_str(),
         &req,
         st.provider.user_store_trait_object(),
         st.limiter.as_ref(),
@@ -222,30 +244,32 @@ struct AccountDeleteBody {
 
 async fn account_delete_handler(
     State(st): State<IdpState>,
-    headers: axum::http::HeaderMap,
+    user_id: AuthenticatedUserId,
     Json(body): Json<AccountDeleteBody>,
 ) -> Result<Json<AccountDeleteResponse>, AxumErr> {
-    let user_id = extract_user_id_header(&headers)?;
-
     let req = AccountDeleteRequest {
         confirmation: body.confirmation,
     };
 
-    delete_account(&user_id, &req, st.provider.user_store_trait_object())
-        .await
-        .map(Json)
-        .map_err(|e| match e {
-            AccountDeleteError::ConfirmationMismatch { expected } => AxumErr(
-                StatusCode::BAD_REQUEST,
-                format!("confirmation must be exactly \"{expected}\""),
-            ),
-            AccountDeleteError::NotFound => AxumErr(StatusCode::NOT_FOUND, "user not found".into()),
-            AccountDeleteError::NotImplemented => AxumErr(
-                StatusCode::NOT_IMPLEMENTED,
-                "account deletion not supported".into(),
-            ),
-            other => AxumErr(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-        })
+    delete_account(
+        user_id.as_str(),
+        &req,
+        st.provider.user_store_trait_object(),
+    )
+    .await
+    .map(Json)
+    .map_err(|e| match e {
+        AccountDeleteError::ConfirmationMismatch { expected } => AxumErr(
+            StatusCode::BAD_REQUEST,
+            format!("confirmation must be exactly \"{expected}\""),
+        ),
+        AccountDeleteError::NotFound => AxumErr(StatusCode::NOT_FOUND, "user not found".into()),
+        AccountDeleteError::NotImplemented => AxumErr(
+            StatusCode::NOT_IMPLEMENTED,
+            "account deletion not supported".into(),
+        ),
+        other => AxumErr(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -255,5 +279,39 @@ struct AxumErr(StatusCode, String);
 impl IntoResponse for AxumErr {
     fn into_response(self) -> Response {
         (self.0, self.1).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+
+    #[tokio::test]
+    async fn client_header_cannot_forge_authenticated_identity() {
+        let request = Request::builder()
+            .header("X-Authenticated-User", "victim")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = request.into_parts();
+
+        let rejection = AuthenticatedUserId::from_request_parts(&mut parts, &())
+            .await
+            .expect_err("a client header must not authenticate the request");
+        assert_eq!(rejection.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn trusted_extension_supplies_authenticated_identity() {
+        let request = Request::new(());
+        let (mut parts, _) = request.into_parts();
+        parts
+            .extensions
+            .insert(AuthenticatedUserId::new("verified-user"));
+
+        let identity = AuthenticatedUserId::from_request_parts(&mut parts, &())
+            .await
+            .expect("trusted middleware identity should be accepted");
+        assert_eq!(identity.as_str(), "verified-user");
     }
 }

@@ -1,8 +1,8 @@
 # JSS ↔ solid-pod-rs Parity Checklist
 
 Exhaustive row-per-feature tracker against JavaScriptSolidServer (JSS),
-local clone at `/home/devuser/workspace/JavaScriptSolidServer/` (checked
-out at `10bd60f` / package `0.0.197`). Canonical JSS
+verified from upstream `gh-pages` at `f9f7a4d` / package `0.0.220` on
+2026-08-19. Canonical JSS
 surface: [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md).
 Prose companion (categorical summary, port tickets, architecture
 discussion): [`GAP-ANALYSIS.md`](./GAP-ANALYSIS.md). This document is the
@@ -21,53 +21,55 @@ and our status against it.
 > split) and, in §20, NRF ADR-089. ADR-053 and ADR-056 are backlog record
 > numbers **not** authored in this crate's `docs/adr/` set — which holds
 > ADR-057, ADR-058, ADR-059 only. The decisions they name are implemented
-> (the split ships as `solid-pod-rs-server`; S3 is gated behind
-> `s3-backend`; WebID-TLS is a recorded won't-fix). ADR-089 lives in the
+> (the split ships as `solid-pod-rs-server`; unsupported S3 configuration is
+> rejected; WebID-TLS is a recorded won't-fix). ADR-089 lives in the
 > nostr-rust-forum repo. Treat these citations as backlog pointers, not
 > extant authoritative documents.
 
 ---
 
-## Current state (Sprint 16, 2026-05-30, alpha.15 — JSS `10bd60f`/0.0.197 on disk, 0.0.204 delta tracked)
+## Current state (2026-08-20, alpha.7 — JSS `f9f7a4d`/0.0.220)
 
-**207 rows tracked** across 21 functional sections. §21 adds the JSS
-v0.0.197 → v0.0.204 delta: MCP server (#490), `install` CLI, NIP-98
-minting + git push leniency, `getContentType` (#533), symlinked-dir
-listing (#531), and the mashlib audio pane.
+**230 rows tracked** across 22 functional sections. §21 records the JSS
+v0.0.197 → v0.0.204 delta. §22 audits every portable behaviour in the
+v0.0.204 → v0.0.220 delta, including the runtime-plugin cluster, body-limit
+and port behaviour, NIP-98 raw-byte hashing, sidecar Control enforcement,
+and the DID Core-first context update.
 
 ### Parity percentages
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/other) | **~96%** raw checklist gate — Phase 1, git-auto-init, CORS, auth challenge, and `POST /.pods` landed |
-| Half-credit (partial-parity counted 0.5) | **~97%** raw checklist gate |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.6%** raw checklist gate — 206/211 classified in-scope rows |
+| Half-credit (partial-parity counted 0.5) | **98.8%** raw checklist gate |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
-> **Authoritative figure.** The **~96% strict** value is the current gate
-> over all 207 tracked rows: 189 (present 164 + net-new 20 +
-> semantic-difference 5) ÷ 197 (excluding the 6 explicitly-deferred, 3
-> wontfix-in-crate, and 1 unclassified rows) = 0.959. It supersedes the
+> **Authoritative figure.** The **97.6% strict** value is the current gate
+> over all 230 tracked rows: 206 passing rows ÷ 211 classified in-scope rows.
+> The denominator excludes explicitly deferred, wontfix-in-crate,
+> and not-applicable/present-by-absence rows. It supersedes the
 > Sprint 12–14 headline figures (~98–99%), which were computed against the
 > smaller 132–137-row denominators before §19–§21 added rows and the
 > counts were reconciled — the strict percentage *dropped* only because the
 > denominator grew, not because parity regressed. `README.md` and
-> `GAP-ANALYSIS.md` are aligned to this ~96% figure.
+> `GAP-ANALYSIS.md` are aligned to this 97.6% figure.
 
 ### By status
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 164 | +6 (Sprint 16 §21: rows 202-207 — MCP, install, NIP-98 minting, getContentType, symlink listing, audio pane) |
+| present | 182 | Includes present-by-absence classifications |
 | partial-parity | 5 | -5 |
 | semantic-difference | 5 | — |
-| missing | 3 | — |
-| net-new (ours; not in JSS) | 20 | — |
+| missing | 0 | -4 |
+| net-new (ours; not in JSS) | 19 | S3 dependency-only scaffold removed and reclassified as absent on both sides |
 | explicitly-deferred | 6 | — |
 | wontfix-in-crate | 3 | — |
-| other/unclassified | 1 | — |
-| **Total** | **207** | On-disk JSS comparator is `10bd60f` / package `0.0.197`; the §21 `0.0.197 → 0.0.204` delta (+6 rows: MCP/install/NIP-98-mint/getContentType/symlink-listing/audio-pane) was ported from the upstream commits, not from a checked-out `0.0.204` tree |
+| not-applicable / present-by-absence | 13 | +13 (Node/Fastify/browser/tunnel/runtime-plugin constructs) |
+| other/unclassified | 10 | Architectural and test-meta rows excluded from the denominator |
+| **Total** | **230** | Comparator fetched directly from upstream `gh-pages` at `f9f7a4d`, package `0.0.220`, on 2026-08-19 |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -95,19 +97,25 @@ for sprint-pace arithmetic but excluded from the parity denominator
 
 ---
 
-## Sibling crate reality (Sprint 11)
+## Workspace crate reality (2026-08-19)
 
-All **five** sibling crates are now **functional**:
+The core library has **seven** sibling crates. All compile and pass the
+workspace test command; deployment readiness remains feature-specific:
 
 | Crate | LOC | Status |
 |---|---|---|
-| `solid-pod-rs-git` | 1,299 | Rows 69, 100 present. CGI bridge + NIP-98 Basic-nostr auth. |
-| `solid-pod-rs-nostr` | 2,177 | Rows 89, 90, 101, 132 present. BIP-340, NIP-01/11/16 relay, did:nostr↔WebID resolver. |
-| `solid-pod-rs-activitypub` | 2,394 | Rows 102-108, 131 present. Draft-cavage v12 HTTP Sig, sqlx store, retry delivery. |
-| `solid-pod-rs-idp` | ~4,400 | Rows 74-81, 130 all present (Sprint 11 promoted 80+81 from partial to full); 82 wontfix-in-crate. Invites module added. |
-| `solid-pod-rs-didkey` | 858 | **NEW (Sprint 11)**. Row 153 present. Ed25519/P-256/secp256k1 did:key, hand-rolled JWT verify, `DidKeyVerifier`. |
+| `solid-pod-rs-server` | 10,117 | Canonical Actix server, CLI, MCP, pay/provenance routes. |
+| `solid-pod-rs-forge` | 5,335 | Phases 0–3 shipped; later fork/PR/anchor/NIP-34 phases remain scaffolded. |
+| `solid-pod-rs-git` | 3,150 | Rows 69, 100 present. CGI bridge + NIP-98 Basic-nostr auth. |
+| `solid-pod-rs-nostr` | 2,542 | Rows 89, 90, 101, 132 present. BIP-340, NIP-01/11/16 relay, did:nostr↔WebID resolver. |
+| `solid-pod-rs-activitypub` | 3,498 | Rows 102–108, 131 present. HTTP signatures, sqlx store, retry delivery. |
+| `solid-pod-rs-idp` | 6,003 | Rows 74–81, 130 implemented; the optional Axum binder has an open authentication-boundary audit finding. |
+| `solid-pod-rs-didkey` | 864 | Row 153 present. Ed25519/P-256/secp256k1 did:key and JWT verification. |
 
-**Workspace total: 870+ tests (Sprint 12 adds ~35 new tests), `cargo clippy --workspace --all-features -- -D warnings` clean.**
+**Current receipt (2026-08-19):** `cargo test --workspace --all-targets
+--all-features` and `cargo clippy --workspace --all-targets --all-features --
+-D warnings` both exit 0. Cargo emits no workspace-wide aggregate test count,
+so this tracker does not freeze a number that immediately becomes stale.
 
 ---
 
@@ -127,7 +135,7 @@ All **five** sibling crates are now **functional**:
 | 10 | LDP Direct Containers | not implemented | not implemented | present (both absent) | — | Solid Protocol mandates Basic only. |
 | 11 | LDP Indirect Containers | not implemented | not implemented | present (both absent) | — | Same as 10. |
 | 12 | `Prefer` header dispatch (minimal / contained IRIs) | **not implemented** | `ldp::PreferHeader::parse` with multi-include | net-new | `src/ldp.rs:155,164` | We implement LDP §4.2.2 + RFC 7240 multi-include. |
-| 13 | Live-reload script injection | `src/handlers/resource.js:23-35` | not implemented | missing (P3) | — | Dev-mode-only. No port ticket; operator concern. |
+| 13 | Live-reload script injection | `src/handlers/resource.js:23-35` | HTML responses receive the JSS-compatible reload WebSocket script when `--live-reload` / `JSS_LIVE_RELOAD=true` is set | present | `solid-pod-rs-server/src/lib.rs::inject_live_reload` | Disabled by default; unit-tested for enabled and disabled responses. |
 | 14 | Pod root bootstrap (profile card, Settings/Preferences.ttl, publicTypeIndex, privateTypeIndex, per-container `.acl`) | `src/server.js:504-548`, `src/handlers/container.js::createPodStructure` | `provision::provision_pod` seeds WebID + containers + ACL + `/settings/publicTypeIndex.jsonld` (`solid:TypeIndex` + `solid:ListedDocument`) + `/settings/privateTypeIndex.jsonld` (`solid:TypeIndex` + `solid:UnlistedDocument`) + `/settings/publicTypeIndex.jsonld.acl` public-read carve-out | present | `src/provision.rs:55, 227-236, 98-` | Closes bundled rows 164 + 166 in the same change. |
 
 ## 2. HTTP headers, content negotiation, conditional/range
@@ -195,7 +203,7 @@ All **five** sibling crates are now **functional**:
 
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 61 | Simple Bearer (HMAC-signed 2-part dev token) | `src/auth/token.js:45-117` | not implemented | missing (P3) | — | Dev convenience; consumer crate concern. |
+| 61 | Simple Bearer (HMAC-signed 2-part dev token) | `src/auth/token.js:45-117` | validates two-part base64url HMAC-SHA256 tokens with `iat`, `exp`, and HTTP(S) WebID claims | present | `solid-pod-rs-server/src/lib.rs::verify_dev_bearer` | Requires an explicit `TOKEN_SECRET` of at least 32 bytes; tampered and expired tokens are rejected. |
 | 62 | Solid-OIDC DPoP verification | `src/auth/solid-oidc.js:85-251` | `oidc::verify_dpop_proof`, `DpopClaims`, `AccessTokenVerified` | present | `src/oidc/mod.rs` | Feature `oidc`. |
 | 62b | DPoP proof signature verification | `src/auth/solid-oidc.js:171-249` (jose `jwtVerify`) | `oidc::verify_dpop_proof_core` dispatches on header alg across ES256/ES384/RS256/RS384/RS512/PS256/PS384/PS512/EdDSA; HS256 only for `kty=oct` (test/dev); constant-time `ath` binding (RFC 9449 §4.3) | present (P0 CVE-class cleared) | `src/oidc/mod.rs` | Covered by `tests/oidc_dpop_signature.rs`, `tests/oidc_access_token_alg.rs`, `tests/oidc_thumbprint_rfc7638.rs`. |
 | 63 | DPoP `cnf.jkt` binding enforcement | `src/auth/solid-oidc.js` | `oidc::verify_access_token` | present | `src/oidc/mod.rs` | |
@@ -288,7 +296,7 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 |---|---|---|---|---|---|---|
 | 116 | Filesystem storage backend | `src/storage/filesystem.js` | `storage::fs::FileSystemStorage` | present | `src/storage/fs.rs` | `.meta.json` sidecars. |
 | 117 | In-memory storage backend | provided for tests | `storage::memory::MemoryStorage` with broadcast watcher | present | `src/storage/memory.rs` | |
-| 118 | S3/R2/object-store storage | not provided | gated behind `s3-backend` feature | net-new (gated) | `Cargo.toml:47` | Feature `aws-sdk-s3`. ADR-053 §"Backend boundary". |
+| 118 | S3/R2/object-store storage | not provided | not provided; unsupported `storage.type` values fail configuration validation | present (both absent) | `src/config/schema.rs` | The former dependency-only `s3-backend` flag was removed because it advertised no usable backend. |
 | 119 | SPARQL/memory-only/external-HTTP backends | `sql.js` used only for AP state, not LDP | not provided | explicitly-deferred | — | Not a Solid-spec concern. |
 | 120 | Config file (JSON) + env overlay + CLI overlay with precedence | `src/config.js:17-239` | `ConfigLoader::from_file` + `with_env_overlay` + `with_cli_overlay`; auto-detects JSON/YAML/TOML by extension | present | `src/config/loader.rs`, `src/config/sources.rs` | Sprint 11. `config-loader` feature. |
 | 121 | `JSS_PORT`/`JSS_HOST`/`JSS_ROOT`/30+ more env vars | `src/config.js:96-132` | 31 `JSS_*` env vars wired in `sources::env` | present | `src/config/sources.rs` | Sprint 11. |
@@ -343,7 +351,7 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | 145 | Runner | `node --test --test-concurrency=1` (`package.json:21`) | `cargo test` | parity | — | |
 | 146 | Test count | 21 top-level `test/*.test.js`, 6,527 lines, "223 tests inc. 27 conformance" (README:944) | 567 tests across integration + inline module tests | parity-plus | `tests/` | |
 | 147 | Conformance suite | `test/conformance.test.js` (349 lines) + `test/interop/*.js` | `tests/interop_jss.rs` (42 tests), `tests/parity_close.rs` (20), `tests/wac_inheritance.rs` (31) | parity-plus | `tests/*.rs` | JSS-fixture-driven. |
-| 148 | CTH (Conformance Test Harness) compatibility | `scripts/test-cth-compat.js`, `npm run test:cth` | not provided | missing (P3) | — | External harness. |
+| 148 | CTH (Conformance Test Harness) compatibility | `scripts/test-cth-compat.js`, `npm run test:cth` | Docker-based external runner with discovery preflight and a checked-in test subject | present | `scripts/test-cth.sh`; `scripts/cth/test-subjects.ttl` | Harness wiring is present; a deployed server and IdP configuration are required to execute the external suite. |
 | 149 | Benchmarks (`autocannon`) | `npm run benchmark` → `benchmark.js` (182 lines) | `cargo bench` with criterion (4 benches) | parity | `benches/` | |
 
 ## 15. LWS 1.0 Authentication Suite (JSS #319)
@@ -492,7 +500,7 @@ consumers opt in explicitly.
 |---|---|---|---|---|---|---|
 | 196 | `--provision-keys` flag (single-user) + `POST /.pods {provisionKeys: true}` (multi-user) — generates Schnorr secp256k1 keypair, writes NIP-19 bech32-encoded `privkey.jsonld` to `/private/`, WAC-locks to WebID owner, seeds `nostr:pubkey` triple in WebID profile | JSS v0.0.190 (issue #437): single-user CLI flag + multi-user endpoint body field; keys stored at `pods/<webid>/private/privkey.jsonld`; npub seeded into WebID `profile/card` | `idp::key_provisioning::provision_pod_keys` → `KeyProvisioningOutcome` + `ProvisionPlan::provision_keys` field | present (Phase 1 port) | `crates/solid-pod-rs-idp/src/key_provisioning.rs`; `crates/solid-pod-rs/src/provision.rs` (`provision_keys` field, cfg-gated) | Feature `provision-keys` (default-off; in `solid-pod-rs-idp`, depends on `solid-pod-rs/did-nostr` + core's `nip98-schnorr` + `dep:k256`). BIP-340 Schnorr keypair generation; hand-rolled NIP-19 bech32 (no new deps). 3 integration tests in `tests/key_provisioning_smoke.rs`. |
 | 197 | Pod-resident NIP-05 endpoint (`/.well-known/nostr.json?name=<local>`) — server route backed by WebID `nostr:pubkey` triple | JSS v0.0.190: pod-resident NIP-05 lookup endpoint backed by `profile/card` triple | `handle_well_known_nip05` route in `solid-pod-rs-server`; assembles response via existing `interop::nip05_document` builder + `webid::extract_nostr_pubkey` | present (Phase 1 port) | `crates/solid-pod-rs-server/src/lib.rs::handle_well_known_nip05`; `crates/solid-pod-rs/src/webid.rs::extract_nostr_pubkey` | Feature `nip05-endpoint` (default-off; depends on `did-nostr`). Emits `Access-Control-Allow-Origin: *`. 5 integration tests in `tests/nip05_endpoint_integration.rs`. |
-| 198 | Pod data export — `GET /api/exports/all` JSON-LD time-chain bundle, `dct:created` ascending, excludes `/private/*` by default, opt-in `?include_private=true` requires owner WAC credential | JSS v0.0.190: agent-friendly pod export endpoint | `export::export_pod_jsonld` → `PodExportBundle` | present (Phase 1 port) | `crates/solid-pod-rs/src/export.rs::export_pod_jsonld` | Feature `export-jsonld` (default-off; depends on `tokio-runtime`). Picks up whichever storage backend the consumer enabled (`fs-backend` or `s3-backend`). Backends without separate creation timestamps mirror `modified` into `created`. 3 integration tests in `tests/export_jsonld_smoke.rs`. Server-route wiring of `GET /api/exports/all` deferred to a future sprint — the library surface ships now. |
+| 198 | Pod data export — `GET /api/exports/all` JSON-LD time-chain bundle, `dct:created` ascending, excludes `/private/*` by default, opt-in `?include_private=true` requires owner WAC credential | JSS v0.0.190: agent-friendly pod export endpoint | `export::export_pod_jsonld` → `PodExportBundle` | present (Phase 1 port) | `crates/solid-pod-rs/src/export.rs::export_pod_jsonld` | Feature `export-jsonld` (default-off; depends on `tokio-runtime`). Works with the filesystem and memory backends. Backends without separate creation timestamps mirror `modified` into `created`. Three integration tests cover the library surface; server-route wiring remains deferred. |
 
 ---
 
@@ -526,6 +534,38 @@ freely.
 | 205 | `getContentType` — extension→MIME for sidecar-absent resources (git-extracted app files render inline) | JSS #533 `src/utils/url.js` | `ldp::guess_content_type`; `FsBackend::read_meta` fallback routes through it | present (alpha.15) | `crates/solid-pod-rs/src/ldp.rs`; `crates/solid-pod-rs/src/storage/fs.rs` | Dotfile rule → Solid RDF/playlist overrides → `mime_guess` DB → `application/octet-stream`. New `mime_guess` dep. 4 unit tests. |
 | 206 | Symlinked-directory container listing — symlink-to-dir lists as `ldp:BasicContainer` | JSS #531 | `FsBackend` list reclassifies symlinks from dereferenced stat | present (alpha.15) | `crates/solid-pod-rs/src/storage/fs.rs` | `file_type()` lstat reports symlinks as non-dirs; deref restores container semantics. Dangling symlinks remain non-containers. |
 | 207 | Mashlib audio pane — serve mashlib for `audio/*` resources | JSS #533 `shouldServeMashlib` | `mashlib::should_serve` matches the `audio/*` family | present (alpha.15) | `crates/solid-pod-rs/src/mashlib.rs` | Whole-family match (mpeg/ogg/wave/flac + `audio/mpegurl`/`audio/x-scpls` playlists) instead of enumerated spellings. Video/image deliberately excluded (no panes). |
+
+## 22. JSS v0.0.204 → v0.0.220 delta (alpha.7 audit)
+
+Comparator: upstream `gh-pages` `f9f7a4d`, package `0.0.220`, fetched
+2026-08-19. The range contains 47 commits and 5,267 insertions across 53 files;
+many commits are version bumps or tests for the behaviours below.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 208 | Preserve blank-node subjects through Turtle ↔ JSON-LD | `b48135c`, #536/#537 | RDF parser and serializer retain `_:` subject identifiers | present | `ldp::parse_ntriples`; blank-node round-trip regression tests | The n3.js defect is structurally absent and pinned by a Rust regression. |
+| 209 | RFC 9207 `iss` equals the discovery issuer byte-for-byte | `80a42aa`, #524/#551 | `ProviderConfig::new` slash-normalises once for discovery, codes, and tokens | present | `solid-pod-rs-idp/src/provider.rs::ProviderConfig::new` | Fixed in alpha.7. |
+| 210 | HEAD mirrors GET's negotiated content type | `f40978b`, #552/#553 | Actix routes HEAD through `handle_get`; shared negotiation path | present | `solid-pod-rs-server/src/lib.rs::handle_get`; content-negotiation tests | No separate drifting HEAD implementation. |
+| 211 | Preserve IdP login errors through `oidc-provider` redirects | `a38a9e1`, #514/#554 | No `oidc-provider` interaction redirect state machine | present-by-absence | typed `ProviderError` results | Node IdP UI transport concern. |
+| 212 | Passkey login degrades in WebView/insecure browser contexts | `8af19c4`, #556/#558 | Rust crate exposes protocol operations, not inline browser JavaScript | present-by-absence | `solid-pod-rs-idp/src/passkey.rs` | Client UI owns browser capability detection. |
+| 213 | Configurable request body limit and `JSS_BODY_LIMIT` | `12e3e8d`, `e94a18e`, `84eae4b`, #543/#562/#566 | Body cap is configurable; `JSS_BODY_LIMIT` aliases `JSS_MAX_REQUEST_BODY` | present | `config/schema.rs`; server `PayloadConfig` | Rust default remains 50 MiB versus JSS 20 MB: deliberate semantic difference. |
+| 214 | Tunnel credential passthrough | `7d1c9f3`, #530/#555 | No embedded Cloudflare tunnel runtime | not applicable | deployment-layer concern | Deployments configure tunnel forwarding outside the compiled pod server. |
+| 215 | NIP-98 payload hash covers raw request bytes | `e31293b`, #565/#573 | Hash is verified over the received byte buffer | present | `auth/nip98.rs`; server extraction tests | Avoids JSON reserialisation drift. |
+| 216 | Shift automatically from a busy CLI port and print openable URL | `345dc4f`, #557/#574 | retains a bound listener while probing the requested port and the next ten ports; reports the actual base URL | present | `solid-pod-rs-server/src/main.rs::bind_available` | Port `0` requests one OS-assigned ephemeral port. The retained listener avoids a probe-to-bind race. |
+| 217 | MCP `write_acl` uses the resource URL in `acl:accessTo` | `3660b96`, #575/#576 | Tool writes a resource-scoped ACL | present | `solid-pod-rs-server/src/mcp/tools.rs` | Prevents the owner-lockout caused by `./`. |
+| 218 | Reconcile JWK key path across both secp256k1 Y parities | `9c8b9ec`, #571/#577 | Rust uses typed curve keys and direct BIP-340 verification | present-by-absence | `auth/nip98.rs`; `solid-pod-rs-nostr` typestate verifier | No JavaScript VM JWK import path. |
+| 219 | Skip landing-page seeding in JSS `--public` mode | `ec8547b`, #578/#579 | No WAC-disabled public mode | present-by-absence | deny-by-default server invariant | A public-mode exception would weaken the Rust security model. |
+| 220 | POST-created `.acl`/`.meta` sidecars require Control | `b9b38ed`, #580 | Destination mode is elevated to Control and lockout-checked | present | server POST enforcement and sidecar-injection tests | Landed in the alpha.4 closeout. |
+| 221 | WAC-exempt `appPaths` mount points | `b6a0169`, #582/#585 | Extensions are compile-time routes with explicit handlers | not applicable | server route table | No generic runtime app mount. |
+| 222 | Public request → WebID `getAgent` accessor | `327bb01`, #584/#586 | Request authentication exposes the verified agent to route gates | present | `extract_pubkey`, `agent_uri`, `AuthContext` | Framework shape differs; capability is present. |
+| 223 | `createServer({ plugins })` runtime loader | `c516bb6`, #589 | Cargo feature graph | not applicable | workspace feature declarations | Recompile-free third-party code loading is intentionally absent. |
+| 224 | Repeatable `--plugin module[@prefix]` CLI flag | `3db7130`, #594/#595 | Cargo feature graph | not applicable | server feature declarations | Same architectural decision as row 223. |
+| 225 | `api.mountApp` for wrapped Node-style applications | `58797b3`, #583/#590 | Typed Actix route composition at build time | not applicable | `build_app` | No Node middleware ABI. |
+| 226 | Plugin `api.serverInfo` origin accessor | `538aa07`, #601/#605 | Server origin lives in typed state/config | not applicable | `AppState::nodeinfo` | No runtime plugin API consumer. |
+| 227 | Plugin `api.reservePath` protocol path claims | `9dadbc9`, #602/#607 | Protocol routes are statically reserved before catch-alls | not applicable | `build_app` route order | Static route ownership is stronger than runtime claims. |
+| 228 | Plugin roster via `api.plugins` | `18ee785`, #610/#612 | Cargo metadata/features describe compiled extensions | not applicable | Cargo manifests | No loaded-plugin runtime roster. |
+| 229 | Derive plugin id from parent directory for generic basenames | `cdfeda8`, #596/#613 | No runtime plugin identifiers | not applicable | — | Node module-loader fix. |
+| 230 | DID document context begins with DID Core `did/v1` | `f13526f`, #618; release `f9f7a4d` | Canonical three-context CG 0.1.1 renderer | present | `did_nostr_types::render_did_document` | Rust and JSS `0.0.220` now agree. |
 
 ---
 

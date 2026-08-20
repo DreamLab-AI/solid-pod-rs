@@ -54,7 +54,7 @@ fn state_with_issuer(mempool_url: Option<String>) -> AppState {
     st
 }
 
-fn nip98_auth(method: &str, path: &str) -> (String, String) {
+fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String) {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
     // Each minted token MUST be a distinct NIP-98 event. The server's single-use
@@ -77,7 +77,7 @@ fn nip98_auth(method: &str, path: &str) -> (String, String) {
     });
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let token = nip98::mint(&url, method, SK_HEX, now).expect("nip98 mint");
+    let token = nip98::mint_with_payload(&url, method, body, SK_HEX, now).expect("nip98 mint");
     let sk = hex::decode(SK_HEX).unwrap();
     let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
     let pubkey = hex::encode(signing.verifying_key().to_bytes());
@@ -220,14 +220,15 @@ async fn mrc20_deposit_credits_when_utxo_present() {
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, did) = nip98_auth("POST", "/pay/.deposit");
     let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let payload = serde_json::to_vec(&body).unwrap();
+    let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
 
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(serde_json::to_vec(&body).unwrap())
+        .set_payload(payload)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(
@@ -262,14 +263,15 @@ async fn mrc20_deposit_rejected_when_no_utxo() {
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, did) = nip98_auth("POST", "/pay/.deposit");
     let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let payload = serde_json::to_vec(&body).unwrap();
+    let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
 
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(serde_json::to_vec(&body).unwrap())
+        .set_payload(payload)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 400, "no UTXO ⇒ deposit rejected");
@@ -305,7 +307,7 @@ async fn mrc20_deposit_replay_is_rejected() {
     let payload = serde_json::to_vec(&body).unwrap();
 
     // First deposit — credited.
-    let (auth1, did) = nip98_auth("POST", "/pay/.deposit");
+    let (auth1, did) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth1))
@@ -316,7 +318,7 @@ async fn mrc20_deposit_replay_is_rejected() {
     assert_eq!(rsp.status().as_u16(), 200);
 
     // Second deposit of the SAME state — replay-rejected, no double-credit.
-    let (auth2, _) = nip98_auth("POST", "/pay/.deposit");
+    let (auth2, _) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")
         .insert_header((header::AUTHORIZATION, auth2))

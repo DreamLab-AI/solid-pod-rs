@@ -4,7 +4,7 @@
 **Date:** 2026-07-08
 **Decision Owners:** solid-pod-rs maintainers
 **Supersedes:** none
-**Related:** [PRD-gap-close-solid-pod](../PRD-gap-close-solid-pod.md), [DDD-gap-close-solid-pod-context](../DDD-gap-close-solid-pod-context.md), [ADR-059](ADR-059-provenance-primitives-block-trails-git-marks.md), the meta-PRD and [ADR-004](../../../../VisionFlow/docs/ADR-004-gap-close-sprint-governance.md) at the VisionFlow canon, ADR-002 (ecosystem alignment)
+**Related:** [PRD-gap-close-solid-pod](../PRD-gap-close-solid-pod.md), [DDD-gap-close-solid-pod-context](../DDD-gap-close-solid-pod-context.md), [ADR-059](ADR-059-provenance-primitives-block-trails-git-marks.md), the meta-PRD and [ADR-004](https://github.com/DreamLab-AI/VisionFlow/blob/main/docs/ADR-004-gap-close-sprint-governance.md) at the VisionFlow canon, ADR-002 (ecosystem alignment)
 
 **Naming note.** This slice's PRD and DDD adopt the canon's unnumbered child-document convention (`PRD-gap-close-solid-pod.md`, `DDD-gap-close-solid-pod-context.md`); this ADR keeps the repository's numbered series, taking the next free number, 060.
 

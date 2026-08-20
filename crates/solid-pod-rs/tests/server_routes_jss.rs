@@ -59,6 +59,8 @@ async fn make_state() -> AppState {
         .unwrap();
 
     let mut state = AppState {
+        live_reload: false,
+        quota: None,
         deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
@@ -66,7 +68,9 @@ async fn make_state() -> AppState {
         nodeinfo: NodeInfoMeta {
             software_name: "solid-pod-rs-server".into(),
             software_version: "0.4.0".into(),
-            open_registrations: false,
+            // This fixture exercises the explicitly enabled public
+            // registration path; production defaults remain closed.
+            open_registrations: true,
             total_users: 0,
             base_url: "https://pod.example".into(),
         },

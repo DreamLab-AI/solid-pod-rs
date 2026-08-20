@@ -40,7 +40,7 @@ shortest procedural recipe.
 - [Migrate from JSS (JavaScriptSolidServer)](how-to/migrate-from-jss.md)
 - [Enable webhook notifications](how-to/enable-notifications-webhook.md)
 - [Enable WebSocket notifications](how-to/enable-notifications-websocket.md)
-- [Scale with an S3 backend](how-to/scale-with-s3-backend.md)
+- [Object-store backend status](how-to/scale-with-s3-backend.md)
 - [Deploy to production](how-to/deploy-to-production.md)
 - [Debug ACL denials](how-to/debug-acl-denials.md)
 
@@ -70,6 +70,8 @@ Information-oriented. Dry, exhaustive, accurate. Look things up here.
   inverse lookup (JSS file → Rust equivalent + parity row).
 - [JSS feature inventory](reference/jss-feature-inventory.md) —
   the canonical reference JSS surface we track against.
+- [Security and quality audit (2026-08-19)](reference/security-audit-2026-08-19.md)
+  — reproducible gates, findings, and remediation order for `0.5.0-alpha.7`.
 
 ## Explanation
 

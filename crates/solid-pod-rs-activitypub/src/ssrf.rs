@@ -7,7 +7,8 @@
 //! concerns:
 //!
 //! - **Scheme restriction**: only `http` and `https` are permitted.
-//! - **Error mapping**: core [`SsrfError`] is mapped to AP-layer
+//! - **Error mapping**: core
+//!   [`SsrfError`](solid_pod_rs::security::ssrf::SsrfError) is mapped to AP-layer
 //!   [`SigError::SsrfBlocked`] for ergonomic use in signature verification
 //!   and delivery code paths.
 //!

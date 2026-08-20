@@ -19,6 +19,31 @@ const POD_ROOT_SKILL: [&str; 2] = ["/SKILL.md", "/SKILL.jsonld"];
 const APPS_BASE: &str = "/public/apps/";
 const BOTS_BASE: &str = "/private/bots/";
 
+/// Return whether `path` is exactly one of the conventional skill locations.
+/// Arbitrary pod resources must never be accepted by the `get_skill` tool.
+pub fn is_conventional_skill_path(path: &str) -> bool {
+    let path = if path.starts_with('/') {
+        path
+    } else {
+        return false;
+    };
+    if POD_ROOT_SKILL.contains(&path) {
+        return true;
+    }
+    for base in [APPS_BASE, BOTS_BASE] {
+        if let Some(rest) = path.strip_prefix(base) {
+            let mut parts = rest.split('/');
+            let name = parts.next().unwrap_or_default();
+            let file = parts.next().unwrap_or_default();
+            return !name.is_empty()
+                && !matches!(name, "." | "..")
+                && matches!(file, "SKILL.md" | "SKILL.jsonld")
+                && parts.next().is_none();
+        }
+    }
+    false
+}
+
 fn format_for_path(path: &str) -> &'static str {
     if path.ends_with(".jsonld") {
         "jsonld"
@@ -133,6 +158,9 @@ pub async fn read_skill(storage: &dyn Storage, path: &str) -> Result<Value, Stri
     } else {
         format!("/{path}")
     };
+    if !is_conventional_skill_path(&path) {
+        return Err(format!("not a conventional skill path: {path}"));
+    }
     if !exists(storage, &path).await {
         return Err(format!("skill not found: {path}"));
     }
@@ -148,12 +176,28 @@ pub async fn read_skill(storage: &dyn Storage, path: &str) -> Result<Value, Stri
     }))
 }
 
-/// Read the pod-wide `SKILL.md` (or `.jsonld`). `None` if neither exists.
-pub async fn read_pod_skill(storage: &dyn Storage) -> Option<Value> {
-    for p in POD_ROOT_SKILL {
-        if exists(storage, p).await {
-            return read_skill(storage, p).await.ok();
+#[cfg(test)]
+mod tests {
+    use super::is_conventional_skill_path;
+
+    #[test]
+    fn conventional_skill_paths_are_exact() {
+        for valid in [
+            "/SKILL.md",
+            "/SKILL.jsonld",
+            "/public/apps/editor/SKILL.md",
+            "/private/bots/helper/SKILL.jsonld",
+        ] {
+            assert!(is_conventional_skill_path(valid), "{valid}");
+        }
+        for invalid in [
+            "/private/privkey.jsonld",
+            "/public/apps/SKILL.md",
+            "/public/apps/a/nested/SKILL.md",
+            "/private/bots/../secret/SKILL.md",
+            "SKILL.md",
+        ] {
+            assert!(!is_conventional_skill_path(invalid), "{invalid}");
         }
     }
-    None
 }

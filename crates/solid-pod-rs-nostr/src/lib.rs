@@ -73,4 +73,7 @@ pub use relay::{
 };
 pub use resolver::{DefaultSsrfCheck, NostrWebIdResolver, SsrfCheck};
 pub use typestate::{UncheckedEvent, VerifiedEvent, VerifyError};
-pub use ws::{dispatch_message, serve_relay_ws, serve_relay_ws_stream};
+pub use ws::{
+    dispatch_message, dispatch_message_with_limits, serve_relay_ws, serve_relay_ws_stream,
+    serve_relay_ws_stream_with_limits, RelayLimits,
+};

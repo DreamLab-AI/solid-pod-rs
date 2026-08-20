@@ -4,9 +4,12 @@ Framework-agnostic Rust library for serving [Solid Protocol 0.11]
 pods: LDP resources and containers, Web Access Control, WebID,
 Solid Notifications 0.2, Solid-OIDC 0.1, and NIP-98 HTTP auth.
 
-**Parity vs JSS: ~100 % spec-normative** (~98 % strict on the full
-132-row tracker — see [`PARITY-CHECKLIST.md`](PARITY-CHECKLIST.md)).
-702 tests pass across the workspace as of Sprint 12 close (2026-05-06).
+**Parity vs JSS: ~100% spec-normative** (97.6% strict on the full
+230-row tracker through JSS `0.0.220` — see
+[`PARITY-CHECKLIST.md`](PARITY-CHECKLIST.md)). The current workspace-wide,
+all-target, all-feature test command passed on 2026-08-19; no fixed test count
+is quoted because Cargo does not emit a workspace aggregate and the suite is
+still growing.
 
 The library has no opinions about the HTTP runtime; wire it into
 actix-web, axum, hyper, or any other server. For a turnkey binary
@@ -14,7 +17,7 @@ use the sibling crate [`solid-pod-rs-server`](../solid-pod-rs-server/).
 
 ```toml
 [dependencies]
-solid-pod-rs = "0.5.0-alpha.4"
+solid-pod-rs = "0.5.0-alpha.7"
 ```
 
 ```rust,no_run
@@ -107,7 +110,6 @@ a small WAC Turtle serializer quirk is tracked in
 |-------------------------|:-------:|-----------------------------------------------|
 | `fs-backend`            | on      | POSIX filesystem storage.                     |
 | `memory-backend`        | on      | In-process `HashMap` storage (tests/demos).   |
-| `s3-backend`            | off     | AWS S3 / S3-compatible object stores.         |
 | `oidc`                  | off     | Solid-OIDC 0.1 + DPoP.                        |
 | `dpop-replay-cache`     | off     | DPoP `jti` replay cache (pulls `oidc`).       |
 | `nip98-schnorr`         | off     | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash). Verification is unconditional and fail-closed — without this feature the verifier returns `PodError::Unsupported` rather than accepting a forged pubkey. |
@@ -126,7 +128,7 @@ a small WAC Turtle serializer quirk is tracked in
 
 | Module          | Responsibility                                               |
 |-----------------|--------------------------------------------------------------|
-| `storage`       | `Storage` trait + FS / Memory / S3 backends.                 |
+| `storage`       | `Storage` trait + filesystem and memory backends.            |
 | `ldp`           | Resources, containers, content negotiation, PATCH, `Prefer`. |
 | `wac`           | Access control evaluator + WAC 2.0 conditions framework.     |
 | `webid`         | WebID profile documents (emits `solid:oidcIssuer` + CID).    |
@@ -146,8 +148,9 @@ a small WAC Turtle serializer quirk is tracked in
 
 ## Sibling crate ecosystem
 
-Five sibling crates live in the workspace — all **functional and
-shipping** as of Sprint 12. Integrators may depend on them today.
+Seven sibling crates live alongside the core library in the eight-crate
+workspace. All compile and pass the workspace test suite; feature-specific
+deployment readiness still follows each crate's own status notes.
 
 | Crate                      | LOC   | Parity rows            | JSS source refs                     |
 |----------------------------|-------|------------------------|-------------------------------------|

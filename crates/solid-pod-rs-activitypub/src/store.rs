@@ -189,7 +189,7 @@ impl Store {
 
     /// Return every follower's inbox URL for the given actor.
     ///
-    /// Alias for [`follower_inboxes`] — named to match the JSS
+    /// Alias for [`Self::follower_inboxes`] — named to match the JSS
     /// `getFollowerInboxes` helper added in v0.0.67.
     pub async fn get_follower_inboxes(&self, actor_id: &str) -> Result<Vec<String>, sqlx::Error> {
         self.follower_inboxes(actor_id).await

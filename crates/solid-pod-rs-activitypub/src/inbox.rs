@@ -58,6 +58,17 @@ pub async fn handle_inbox(
         .and_then(|v| v.as_str())
         .ok_or(InboxError::MissingType)?;
 
+    let claimed_actor = activity
+        .get("actor")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| InboxError::ActorMismatch("missing actor".into()))?;
+    if claimed_actor != verified_actor.actor_url {
+        return Err(InboxError::ActorMismatch(format!(
+            "claimed {claimed_actor}, verified {}",
+            verified_actor.actor_url
+        )));
+    }
+
     let was_new = store.record_inbox(local_actor_id, activity).await?;
     if !was_new {
         return Ok(InboxOutcome::Duplicate);
@@ -65,21 +76,21 @@ pub async fn handle_inbox(
 
     match activity_type {
         "Follow" => {
-            let follower_id = activity
-                .get("actor")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&verified_actor.actor_url)
-                .to_string();
+            if activity.get("object").and_then(|v| v.as_str()) != Some(local_actor_id) {
+                return Err(InboxError::ActorMismatch(
+                    "Follow object is not the local actor".into(),
+                ));
+            }
+            let follower_id = verified_actor.actor_url.clone();
             // Per JSS — the follower's inbox is looked up from the
             // actor document. That fetch is the caller's responsibility
             // (we'd pull it in via [`crate::http_sig::ActorKeyResolver`]
             // if this were a blocking op); we surface the follower_id
             // here and let the caller hydrate the inbox URL before
             // persisting if they want to.
-            let follower_inbox = activity
-                .get("actorInbox")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            // Never trust a caller-supplied `actorInbox`. The transport may
+            // hydrate this from the already verified actor document.
+            let follower_inbox = verified_actor.inbox_url.clone();
             store
                 .add_follower(local_actor_id, &follower_id, follower_inbox.as_deref())
                 .await?;
@@ -96,11 +107,22 @@ pub async fn handle_inbox(
                 .and_then(|v| v.get("type"))
                 .and_then(|v| v.as_str());
             if inner_type == Some("Follow") {
-                let follower_id = activity
-                    .get("actor")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&verified_actor.actor_url)
-                    .to_string();
+                let inner_actor = activity
+                    .get("object")
+                    .and_then(|v| v.get("actor"))
+                    .and_then(|v| v.as_str());
+                let inner_object = activity
+                    .get("object")
+                    .and_then(|v| v.get("object"))
+                    .and_then(|v| v.as_str());
+                if inner_actor != Some(verified_actor.actor_url.as_str())
+                    || inner_object != Some(local_actor_id)
+                {
+                    return Err(InboxError::ActorMismatch(
+                        "Undo(Follow) is not bound to signer and local actor".into(),
+                    ));
+                }
+                let follower_id = verified_actor.actor_url.clone();
                 store.remove_follower(local_actor_id, &follower_id).await?;
                 return Ok(InboxOutcome::FollowRemoved { follower_id });
             }
@@ -110,11 +132,17 @@ pub async fn handle_inbox(
             let inner = activity.get("object");
             let inner_type = inner.and_then(|v| v.get("type")).and_then(|v| v.as_str());
             if inner_type == Some("Follow") {
+                let inner_actor = inner.and_then(|v| v.get("actor")).and_then(|v| v.as_str());
                 let target_id = inner
                     .and_then(|v| v.get("object"))
                     .and_then(|v| v.as_str())
                     .unwrap_or(local_actor_id)
                     .to_string();
+                if inner_actor != Some(local_actor_id) || target_id != verified_actor.actor_url {
+                    return Err(InboxError::ActorMismatch(
+                        "Accept(Follow) does not match the verified remote actor".into(),
+                    ));
+                }
                 store.accept_following(local_actor_id, &target_id).await?;
                 return Ok(InboxOutcome::FollowAcknowledged { target_id });
             }
@@ -149,6 +177,7 @@ mod tests {
         VerifiedActor {
             key_id: format!("{actor_url}#main-key"),
             actor_url: actor_url.to_string(),
+            inbox_url: Some("https://remote.example/inbox".into()),
             public_key_pem: "PEM".to_string(),
         }
     }
@@ -284,6 +313,30 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(second, InboxOutcome::Duplicate);
+    }
+
+    #[tokio::test]
+    async fn inbox_rejects_actor_claim_not_bound_to_signature() {
+        let store = Store::in_memory().await.unwrap();
+        let me = "https://pod.example/profile/card.jsonld#me";
+        let forged = serde_json::json!({
+            "id": "https://attacker.example/follows/forged",
+            "type": "Follow",
+            "actor": "https://victim.example/actor",
+            "object": me
+        });
+        let result = handle_inbox(
+            &store,
+            me,
+            &sample_verified("https://attacker.example/actor"),
+            &forged,
+        )
+        .await;
+        assert!(matches!(result, Err(InboxError::ActorMismatch(_))));
+        assert!(!store
+            .is_follower(me, "https://victim.example/actor")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

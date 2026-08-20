@@ -373,7 +373,7 @@ impl Relay {
     /// Access the underlying event store.
     ///
     /// Exposed for the typestate `ingest_verified` path and custom
-    /// store implementations. Most consumers should use [`ingest`] or
+    /// store implementations. Most consumers should use [`Self::ingest`] or
     /// [`ingest_verified`](crate::typestate) instead.
     pub fn store(&self) -> &dyn EventStore {
         &*self.store

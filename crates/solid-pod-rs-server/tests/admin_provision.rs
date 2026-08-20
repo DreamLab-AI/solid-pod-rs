@@ -56,7 +56,7 @@ async fn fs_state() -> (AppState, tempfile::TempDir) {
 /// in the test harness is `http://localhost:8080`; mirror it exactly so strict
 /// URL binding passes. Each token is a distinct event (unique `created_at`) so
 /// the process-global single-use replay guard never rejects a second mint.
-fn nip98_auth(sk_hex: &str, method: &str, path: &str) -> String {
+fn nip98_auth(sk_hex: &str, method: &str, path: &str, body: Option<&[u8]>) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
     static BASE: OnceLock<u64> = OnceLock::new();
@@ -70,7 +70,7 @@ fn nip98_auth(sk_hex: &str, method: &str, path: &str) -> String {
     });
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let token = nip98::mint(&url, method, sk_hex, now)
+    let token = nip98::mint_with_payload(&url, method, body, sk_hex, now)
         .expect("nip98-schnorr is enabled in the workspace test build");
     format!("Nostr {token}")
 }
@@ -167,7 +167,7 @@ async fn provisioned_owner_can_put_into_pod() {
 
     // Authenticated NIP-98 PUT into the fresh pod (the write that used to 403).
     let resource = format!("/pods/{pk}/media/public/x");
-    let auth = nip98_auth(OWNER_SK, "PUT", &resource);
+    let auth = nip98_auth(OWNER_SK, "PUT", &resource, Some(b"hello"));
     let req = test::TestRequest::put()
         .uri(&resource)
         .insert_header((header::AUTHORIZATION, auth))
@@ -183,7 +183,7 @@ async fn provisioned_owner_can_put_into_pod() {
     );
 
     // And the owner can read it back.
-    let auth = nip98_auth(OWNER_SK, "GET", &resource);
+    let auth = nip98_auth(OWNER_SK, "GET", &resource, None);
     let req = test::TestRequest::get()
         .uri(&resource)
         .insert_header((header::AUTHORIZATION, auth))
@@ -215,7 +215,7 @@ async fn stranger_cannot_put_into_provisioned_pod() {
     // only `did:nostr:{owner}`) — proves the sibling ACL is enforced, not
     // world-writable.
     let resource = format!("/pods/{pk}/media/public/x");
-    let auth = nip98_auth(STRANGER_SK, "PUT", &resource);
+    let auth = nip98_auth(STRANGER_SK, "PUT", &resource, Some(b"intruder"));
     let req = test::TestRequest::put()
         .uri(&resource)
         .insert_header((header::AUTHORIZATION, auth))

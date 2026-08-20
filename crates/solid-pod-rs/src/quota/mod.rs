@@ -6,10 +6,15 @@
 //! rewrites the sidecar against disk truth; this is the recovery path
 //! after a crash / manual edit / storage-backend swap.
 //!
-//! The in-memory mutation path is cooperative, not authoritative:
-//! [`FsQuotaStore::record`] updates the sidecar best-effort, but
-//! callers MUST invoke [`FsQuotaStore::check`] before accepting a write
-//! to enforce the cap atomically relative to the policy's own view.
+//! Two write disciplines are offered (both on the `quota`-gated
+//! `FsQuotaStore`). [`QuotaPolicy::check`] followed by
+//! [`QuotaPolicy::record`] is a cooperative pre-check: cheap, but the
+//! check and the record are separate awaits, so concurrent writers to the
+//! same pod can each pass `check` before either records and collectively
+//! overshoot the cap. Callers that need an atomic check-and-commit MUST use
+//! [`QuotaPolicy::reserve`], which holds a per-pod lock across the
+//! read-project-write cycle and is the discipline the write path should
+//! prefer.
 //!
 //! # Feature gate
 //!
@@ -42,9 +47,9 @@ pub struct QuotaUsage {
 /// Error surfaced when a pre-write check exceeds the pod's cap.
 ///
 /// Carried through [`crate::error::PodError::QuotaExceeded`] when the
-/// `quota` feature is enabled; kept as a standalone type so other
-/// backends (e.g. S3-tag quota) can reuse the shape without pulling in
-/// `PodError` machinery directly.
+/// `quota` feature is enabled; kept as a standalone type so other backends
+/// (e.g. a custom object-store quota adapter) can reuse the shape without
+/// pulling in `PodError` machinery directly.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("quota exceeded: pod={pod} used={used} limit={limit}")]
 pub struct QuotaExceeded {
@@ -53,11 +58,20 @@ pub struct QuotaExceeded {
     pub limit: u64,
 }
 
-/// Per-pod quota policy. Call [`Self::check`] on write paths and
-/// [`Self::record`] after a successful write; [`Self::reconcile`] is
-/// the crash-recovery entry point that re-reads disk truth.
+/// Per-pod quota policy. Prefer [`Self::reserve`] for atomic
+/// check-and-commit on write paths; the separate [`Self::check`] /
+/// [`Self::record`] pair is a cooperative pre-check that can race under
+/// concurrent writers. [`Self::reconcile`] is the crash-recovery entry
+/// point that re-reads disk truth.
 #[async_trait]
 pub trait QuotaPolicy: Send + Sync {
+    /// Atomically check and reserve positive bytes: projects the write,
+    /// rejects it if it would exceed the cap, and otherwise commits the new
+    /// usage — all under a per-pod lock so concurrent calls for the same pod
+    /// are serialisable and cannot collectively overshoot. This is the
+    /// write-path method; `check` + `record` is the non-atomic alternative.
+    async fn reserve(&self, pod: &str, delta_bytes: u64) -> Result<(), QuotaExceeded>;
+
     /// Pre-write check: would adding `delta_bytes` push the pod over
     /// its limit? A `delta_bytes == 0` check is always allowed so
     /// HEAD/GET pre-checks never trip the quota.
@@ -91,6 +105,9 @@ mod fs_impl {
     pub struct FsQuotaStore {
         root: PathBuf,
         default_limit: u64,
+        locks: std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
     }
 
     impl FsQuotaStore {
@@ -102,7 +119,17 @@ mod fs_impl {
             Self {
                 root,
                 default_limit,
+                locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             }
+        }
+
+        fn pod_lock(&self, pod: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+            self.locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(pod.to_string())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
         }
 
         /// Filesystem path of the sidecar for a given pod.
@@ -242,6 +269,35 @@ mod fs_impl {
 
     #[async_trait]
     impl QuotaPolicy for FsQuotaStore {
+        async fn reserve(&self, pod: &str, delta_bytes: u64) -> Result<(), QuotaExceeded> {
+            let lock = self.pod_lock(pod);
+            let _guard = lock.lock().await;
+            let current = self.effective(pod).await.unwrap_or(QuotaUsage {
+                used_bytes: 0,
+                limit_bytes: self.default_limit,
+            });
+            let projected = current.used_bytes.saturating_add(delta_bytes);
+            if current.limit_bytes != 0 && projected > current.limit_bytes {
+                return Err(QuotaExceeded {
+                    pod: pod.to_string(),
+                    used: current.used_bytes,
+                    limit: current.limit_bytes,
+                });
+            }
+            let updated = QuotaUsage {
+                used_bytes: projected,
+                limit_bytes: current.limit_bytes,
+            };
+            self.write_sidecar(pod, &updated)
+                .await
+                .map_err(|_| QuotaExceeded {
+                    pod: pod.to_string(),
+                    used: current.used_bytes,
+                    limit: current.limit_bytes,
+                })?;
+            Ok(())
+        }
+
         async fn check(&self, pod: &str, delta_bytes: u64) -> Result<(), QuotaExceeded> {
             if delta_bytes == 0 {
                 // HEAD/GET-style zero-delta checks never reject; also
@@ -269,6 +325,8 @@ mod fs_impl {
         }
 
         async fn record(&self, pod: &str, delta_bytes: i64) {
+            let lock = self.pod_lock(pod);
+            let _guard = lock.lock().await;
             let current = self.effective(pod).await.unwrap_or(QuotaUsage {
                 used_bytes: 0,
                 limit_bytes: self.default_limit,
@@ -288,6 +346,8 @@ mod fs_impl {
         }
 
         async fn reconcile(&self, pod: &str) -> std::io::Result<QuotaUsage> {
+            let lock = self.pod_lock(pod);
+            let _guard = lock.lock().await;
             // JSS parity (post-#310): opportunistically clean up stale
             // `.quota.json.tmp-*` orphans left by crashed writers
             // BEFORE computing disk truth. Errors here are ignored —

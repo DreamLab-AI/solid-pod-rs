@@ -1,7 +1,7 @@
 # solid-pod-rs-git
 
-**Status: 0.4.0-alpha.17 — functional Git HTTP backend.** 1,685 LOC,
-25 tests. Integrators may depend on this crate today.
+**Status: 0.5.0-alpha.7 — functional Git HTTP backend.** Integrators may
+depend on this crate today; see the workspace audit for current quality gates.
 
 ## Target scope
 

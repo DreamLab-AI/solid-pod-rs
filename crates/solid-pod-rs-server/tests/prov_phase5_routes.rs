@@ -54,7 +54,7 @@ fn owner_xonly() -> String {
 }
 
 /// Mint a NIP-98 `Authorization` header for the owner over `method`+`path`.
-fn owner_nip98(method: &str, path: &str) -> String {
+fn owner_nip98(method: &str, path: &str, body: Option<&[u8]>) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
     // Each token MUST be a distinct NIP-98 event: the server's single-use replay
@@ -74,7 +74,7 @@ fn owner_nip98(method: &str, path: &str) -> String {
     });
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let token = nip98::mint(&url, method, OWNER_SK, now).expect("nip98 mint");
+    let token = nip98::mint_with_payload(&url, method, body, OWNER_SK, now).expect("nip98 mint");
     format!("Nostr {token}")
 }
 
@@ -460,7 +460,10 @@ async fn prov_anchor_upgrade_is_payment_gated_and_owner_only() {
     let ok = test::TestRequest::post()
         .uri(&anchor_path)
         .insert_header(("content-type", "application/json"))
-        .insert_header(("authorization", owner_nip98("POST", &anchor_path)))
+        .insert_header((
+            "authorization",
+            owner_nip98("POST", &anchor_path, Some(body.as_bytes())),
+        ))
         .set_payload(body.clone())
         .to_request();
     let rsp = test::call_service(&app, ok).await;
@@ -513,11 +516,15 @@ async fn prov_anchor_upgrade_402_on_insufficient_balance() {
     let sha = last_commit_sha(&repo);
 
     let anchor_path = format!("/{pod}/_prov/anchor");
+    let body = json!({"commit_sha": sha}).to_string();
     let req = test::TestRequest::post()
         .uri(&anchor_path)
         .insert_header(("content-type", "application/json"))
-        .insert_header(("authorization", owner_nip98("POST", &anchor_path)))
-        .set_payload(json!({"commit_sha": sha}).to_string())
+        .insert_header((
+            "authorization",
+            owner_nip98("POST", &anchor_path, Some(body.as_bytes())),
+        ))
+        .set_payload(body)
         .to_request();
     let rsp = test::call_service(&app, req).await;
     assert_eq!(rsp.status().as_u16(), 402, "insufficient balance must 402");

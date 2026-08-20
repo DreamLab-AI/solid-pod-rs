@@ -63,7 +63,8 @@ old state or the new state. No half-written bodies, no mismatched
 `ResourceMeta`.
 
 - `MemoryBackend`: achieved via `RwLock` write guard.
-- `FsBackend`: achieved via `tempfile + rename(2)`.
+- `FsBackend`: **not currently achieved**. It performs a truncating body write
+  followed by a separate sidecar write; AUD-014 tracks the contract violation.
 - Custom: use whatever the underlying store offers (S3 `PutObject`
   is atomic; etcd has transactions; SQL has…).
 
@@ -143,9 +144,9 @@ We considered `impl AsyncRead` for streaming uploads. Rejected:
 - The ETag must be computed at write time. Streaming etag computation
   works but complicates the trait.
 - LDP PATCH operations are not streaming; they load the whole body.
-- Pods are for small-to-medium documents. For file storage with GB-
-  scale bodies, you're in S3 territory, and the S3 backend can
-  multipart under the hood without changing the trait.
+- Pods are for small-to-medium documents. A custom object-store backend can
+  multipart large bodies under the hood without changing the trait, but no
+  S3 implementation currently ships in this workspace.
 
 ## Why `watch` returns `mpsc`, not `broadcast`
 

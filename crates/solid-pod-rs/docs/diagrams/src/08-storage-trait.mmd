@@ -52,6 +52,6 @@ classDiagram
   Storage ..> ResourceMeta        : returns
   Storage ..> StorageEvent        : emits via watch()
 
-  note for Storage "The `s3-backend` feature flag is declared\n(pulls aws-sdk-s3) but no S3/R2 backend\nimplementation ships as of 2026-06-12 —\nFsBackend and MemoryBackend are the\nonly impls."
+  note for Storage "FsBackend and MemoryBackend are the\nshipped implementations. Consumers may\nimplement this trait for other storage;\nunsupported bundled-server backend names\nfail configuration validation."
   note for FsBackend "Uses notify(6) for watch();\nplain fs::write + .meta JSON sidecar\n(no atomic rename-on-put)."
   note for MemoryBackend "In-process RwLock store;\nintended for tests + examples."

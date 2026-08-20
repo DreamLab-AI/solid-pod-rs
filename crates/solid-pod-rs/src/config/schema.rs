@@ -26,7 +26,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub server: ServerSection,
 
-    /// Storage backend selection (filesystem, memory, or S3).
+    /// Storage backend selection (filesystem or memory).
     #[serde(default)]
     pub storage: StorageBackendConfig,
 
@@ -144,7 +144,7 @@ fn default_port() -> u16 {
 // ---------------------------------------------------------------------------
 
 /// Tagged storage backend selector — matches JSS's
-/// `{ "type": "fs"|"memory"|"s3", … }` JSON shape.
+/// `{ "type": "fs"|"memory", … }` JSON shape.
 ///
 /// `JSS_STORAGE_TYPE` drives the variant; `JSS_STORAGE_ROOT` /
 /// `JSS_ROOT` feeds the `fs` root.
@@ -159,16 +159,6 @@ pub enum StorageBackendConfig {
 
     /// In-memory (ephemeral) backend.
     Memory,
-
-    /// S3-compatible object store backend.
-    S3 {
-        bucket: String,
-
-        region: String,
-
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        prefix: Option<String>,
-    },
 }
 
 impl Default for StorageBackendConfig {
@@ -293,6 +283,10 @@ pub struct SecurityConfig {
     /// ACL-origin lockdown toggle — `JSS_ACL_ORIGIN_ENABLED`.
     #[serde(default = "default_true")]
     pub acl_origin_enabled: bool,
+
+    /// Default per-pod byte quota. Zero disables quota enforcement.
+    #[serde(default)]
+    pub default_quota_bytes: u64,
 }
 
 impl Default for SecurityConfig {
@@ -303,6 +297,7 @@ impl Default for SecurityConfig {
             ssrf_denylist: Vec::new(),
             dotfile_allowlist: default_dotfile_allowlist(),
             acl_origin_enabled: true,
+            default_quota_bytes: 0,
         }
     }
 }
@@ -334,15 +329,6 @@ impl ServerConfig {
                 "auth.oidc_enabled=true but auth.oidc_issuer is not set (set JSS_OIDC_ISSUER)"
                     .to_string(),
             );
-        }
-
-        if let StorageBackendConfig::S3 { bucket, region, .. } = &self.storage {
-            if bucket.is_empty() {
-                return Err("storage.type=s3 but storage.bucket is empty".to_string());
-            }
-            if region.is_empty() {
-                return Err("storage.type=s3 but storage.region is empty".to_string());
-            }
         }
 
         Ok(())

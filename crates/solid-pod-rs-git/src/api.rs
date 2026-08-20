@@ -369,7 +369,8 @@ pub struct ResolvedCommit {
 ///
 /// Shells `git show --no-patch` (metadata) + `git show --name-only` (files),
 /// mirroring the other `api` operations. Used by the `_prov/{commit_sha}`
-/// route to map a git-mark back to its resource + [`ProvenanceMark`].
+/// route to map a git-mark back to its resource +
+/// [`ProvenanceMark`](solid_pod_rs::provenance::ProvenanceMark).
 pub async fn resolve_commit(repo: &Path, sha: &str) -> Result<ResolvedCommit, GitError> {
     // Reject obviously-malformed revs early (defence-in-depth; the route also
     // validates). A commit-ish is hex; refuse anything with shell/path metachars.

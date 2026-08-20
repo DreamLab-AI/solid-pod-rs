@@ -146,6 +146,7 @@ use actix_web::middleware::{NormalizePath, TrailingSlash};
 use actix_web::{web, App, Error as ActixError, HttpRequest, HttpResponse};
 use bytes::Bytes;
 use futures_util::future::{ready, LocalBoxFuture, Ready};
+use futures_util::StreamExt;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use solid_pod_rs::{
@@ -157,7 +158,6 @@ use solid_pod_rs::{
     interop,
     ldp::{self, LdpContainerOps, PatchCreateOutcome},
     mashlib::{self, MashlibConfig},
-    provision,
     security::DotfileAllowlist,
     storage::Storage,
     wac::{
@@ -189,6 +189,14 @@ const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();
 static NIP98_REPLAY: std::sync::LazyLock<solid_pod_rs::auth::replay::Nip98ReplayCache> =
     std::sync::LazyLock::new(solid_pod_rs::auth::replay::Nip98ReplayCache::from_env);
 
+/// Serialises every local payment-state transition in this process. The
+/// storage API has no cross-resource CAS primitive, so handlers must hold
+/// this guard across replay checks, ledger/order/pool/trail mutation, and
+/// persistence. Durable intent records add crash recovery where an external
+/// broadcast is involved.
+pub(crate) static PAYMENT_STATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 // ---------------------------------------------------------------------------
 // Shared app state
 // ---------------------------------------------------------------------------
@@ -204,6 +212,8 @@ pub struct AppState {
     /// Legacy alias — reads from `mashlib.mode` when `Cdn`.  Deprecated;
     /// use `mashlib` directly.
     pub mashlib_cdn: Option<String>,
+    /// Inject a development-only WebSocket reload client into HTML responses.
+    pub live_reload: bool,
     /// Payment configuration — drives `/pay/.info` and the `X-Balance` /
     /// `X-Cost` / `X-Pay-Currency` response headers on paid resources.
     pub pay_config: solid_pod_rs::payments::PayConfig,
@@ -212,6 +222,8 @@ pub struct AppState {
     /// storage. Required by the `git` feature to locate pod directories
     /// for `GitAutoInit` (provisioning) and `GitHttpService` (serving).
     pub data_root: Option<PathBuf>,
+    /// Optional atomic per-pod quota policy applied to every LDP mutation.
+    pub quota: Option<Arc<dyn solid_pod_rs::quota::QuotaPolicy>>,
     /// JSS-compatible pod creation limiter: one `POST /.pods` per IP per day.
     pub pod_create_limiter: Arc<PodCreateLimiter>,
     /// When non-empty, CORS responses are only reflected for origins in this
@@ -250,6 +262,65 @@ pub struct AppState {
     /// replaced with a live UTXO check (mempool read of the referenced
     /// output's value + scriptPubKey ownership).
     pub deposit_txo_standin_enabled: bool,
+}
+
+#[cfg(test)]
+mod nip98_request_binding_tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+
+    const SECRET: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[actix_web::test]
+    async fn authentication_binds_the_complete_query_string() {
+        let signed_url = "http://localhost:8080/private?include=true";
+        let token = nip98::mint(signed_url, "GET", SECRET, now()).unwrap();
+        let request = TestRequest::get()
+            .uri("/private?include=true")
+            .insert_header((header::AUTHORIZATION, format!("Nostr {token}")))
+            .to_http_request();
+        assert!(extract_pubkey(&request).await.is_some());
+
+        let path_only = nip98::mint("http://localhost:8080/private", "GET", SECRET, now()).unwrap();
+        let request = TestRequest::get()
+            .uri("/private?include=true")
+            .insert_header((header::AUTHORIZATION, format!("Nostr {path_only}")))
+            .to_http_request();
+        assert!(extract_pubkey(&request).await.is_none());
+    }
+
+    #[actix_web::test]
+    async fn authentication_binds_the_exact_raw_body() {
+        let expected = br#"{"value":"authorised"}"#;
+        let token = nip98::mint_with_payload(
+            "http://localhost:8080/resource",
+            "PUT",
+            Some(expected),
+            SECRET,
+            now(),
+        )
+        .unwrap();
+        let request = TestRequest::put()
+            .uri("/resource")
+            .insert_header((header::AUTHORIZATION, format!("Nostr {token}")))
+            .to_http_request();
+
+        assert!(
+            extract_pubkey_with_body(&request, Some(br#"{"value":"tampered"}"#))
+                .await
+                .is_none()
+        );
+        assert!(extract_pubkey_with_body(&request, Some(expected))
+            .await
+            .is_some());
+    }
 }
 
 /// NodeInfo 2.1 body inputs. Kept here so tests can override them.
@@ -302,8 +373,10 @@ impl AppState {
             nodeinfo: NodeInfoMeta::default(),
             mashlib: MashlibConfig::default(),
             mashlib_cdn: None,
+            live_reload: false,
             pay_config: solid_pod_rs::payments::PayConfig::default(),
             data_root: None,
+            quota: None,
             pod_create_limiter: Arc::new(PodCreateLimiter::default()),
             allowed_origins: Vec::new(),
             admin_key: None,
@@ -313,6 +386,75 @@ impl AppState {
             // free-money oracle until backed by a real UTXO check.
             deposit_txo_standin_enabled: false,
         }
+    }
+}
+
+const LIVE_RELOAD_SCRIPT: &str = "<script>(function(){var ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/.notifications');ws.onopen=function(){ws.send('sub '+location.href)};ws.onmessage=function(e){if(e.data.startsWith('pub '))location.reload()};ws.onclose=function(){setTimeout(function(){location.reload()},1000)}})();</script>";
+
+fn inject_live_reload(html: impl AsRef<[u8]>, enabled: bool) -> Vec<u8> {
+    let bytes = html.as_ref();
+    if !enabled {
+        return bytes.to_vec();
+    }
+    let html = String::from_utf8_lossy(bytes);
+    if let Some(index) = html.find("</body>") {
+        let mut out = String::with_capacity(html.len() + LIVE_RELOAD_SCRIPT.len());
+        out.push_str(&html[..index]);
+        out.push_str(LIVE_RELOAD_SCRIPT);
+        out.push_str(&html[index..]);
+        out.into_bytes()
+    } else {
+        format!("{html}{LIVE_RELOAD_SCRIPT}").into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod live_reload_tests {
+    use super::*;
+
+    #[test]
+    fn injects_before_body_close_and_is_disabled_by_default() {
+        let html = b"<html><body>ok</body></html>";
+        assert_eq!(inject_live_reload(html, false), html);
+        let injected = String::from_utf8(inject_live_reload(html, true)).unwrap();
+        assert!(injected.contains("/.notifications"));
+        assert!(injected.find("<script>").unwrap() < injected.find("</body>").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod dev_bearer_tests {
+    use super::*;
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::sync::Mutex;
+
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn token(exp: u64) -> String {
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"webId":"https://alice.example/profile/card#me","iat":1,"exp":exp})
+                .to_string(),
+        );
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"01234567890123456789012345678901").unwrap();
+        mac.update(data.as_bytes());
+        let sig =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        format!("{data}.{sig}")
+    }
+
+    #[test]
+    fn simple_bearer_verifies_signature_and_expiry() {
+        let _guard = ENV.lock().unwrap();
+        std::env::set_var("TOKEN_SECRET", "01234567890123456789012345678901");
+        assert_eq!(
+            verify_dev_bearer(&token(u64::MAX)).as_deref(),
+            Some("https://alice.example/profile/card#me")
+        );
+        assert!(verify_dev_bearer(&(token(u64::MAX) + "x")).is_none());
+        assert!(verify_dev_bearer(&token(2)).is_none());
+        std::env::remove_var("TOKEN_SECRET");
     }
 }
 
@@ -375,10 +517,23 @@ pub(crate) fn to_actix(e: PodError) -> ActixError {
 /// i.e. treated as unauthenticated → the WAC gate denies with 401). This
 /// closes the ~120s replay window the stateless verifier leaves open.
 pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
+    extract_pubkey_with_body(req, None).await
+}
+
+/// NIP-98 verification for a request whose raw body is available.
+/// Supplying the bytes requires a signature-bound `payload` tag and prevents
+/// an otherwise valid token from being replayed with altered content.
+pub(crate) async fn extract_pubkey_with_body(
+    req: &HttpRequest,
+    body: Option<&[u8]>,
+) -> Option<String> {
     let header_val = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())?;
+    if let Some(token) = header_val.strip_prefix("Bearer ") {
+        return verify_dev_bearer(token);
+    }
     // Reconstruct the request URL the NIP-98 event was signed over. The
     // scheme must reflect the externally-visible scheme (honouring
     // `X-Forwarded-Proto` via actix `connection_info`) — a pod behind TLS
@@ -391,13 +546,13 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
     // lexical scope, not liveness, so an explicit `drop` does not suffice).
     let url = {
         let conn = req.connection_info();
-        format!("{}://{}{}", conn.scheme(), conn.host(), req.uri().path())
+        format!("{}://{}{}", conn.scheme(), conn.host(), req.uri())
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let verified = nip98::verify_at(header_val, &url, req.method().as_str(), None, now).ok()?;
+    let verified = nip98::verify_at(header_val, &url, req.method().as_str(), body, now).ok()?;
 
     // F3 replay guard: reject a re-presented token. The event id is the
     // signature-bound single-use nonce; a hit means the same signed request
@@ -419,7 +574,59 @@ pub(crate) async fn extract_pubkey(req: &HttpRequest) -> Option<String> {
 }
 
 pub(crate) fn agent_uri(pubkey: Option<&String>) -> Option<String> {
-    pubkey.map(|pk| format!("did:nostr:{pk}"))
+    pubkey.map(|pk| {
+        if pk.starts_with("https://") || pk.starts_with("http://") {
+            pk.clone()
+        } else {
+            format!("did:nostr:{pk}")
+        }
+    })
+}
+
+fn verify_dev_bearer(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let secret = std::env::var("TOKEN_SECRET").ok()?;
+    if secret.len() < 32 {
+        tracing::warn!("TOKEN_SECRET shorter than 32 bytes; refusing development bearer token");
+        return None;
+    }
+    let (data, signature) = token.split_once('.')?;
+    if signature.contains('.') {
+        return None;
+    }
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(signature)
+        .ok()?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(data.as_bytes());
+    mac.verify_slice(&signature).ok()?;
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Claims {
+        web_id: String,
+        iat: u64,
+        exp: u64,
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(data)
+        .ok()?;
+    let claims: Claims = serde_json::from_slice(&payload).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if claims.exp < now || claims.iat > now.saturating_add(60) || claims.exp <= claims.iat {
+        return None;
+    }
+    let url = url::Url::parse(&claims.web_id).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    Some(claims.web_id)
 }
 
 /// The request `Origin` header value, if present and valid UTF-8.
@@ -857,6 +1064,7 @@ async fn debit_ledger(
     cost: u64,
 ) -> Result<(), solid_pod_rs::payments::PaymentError> {
     use solid_pod_rs::payments::{PaymentError, WebLedger};
+    let _transaction = PAYMENT_STATE_LOCK.lock().await;
 
     let (bytes, _meta) = storage
         .get(WEBLEDGER_PATH)
@@ -942,7 +1150,7 @@ async fn handle_get(
             if let Ok((body, _meta)) = state.storage.get(&index_path).await {
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
-                    .body(body.to_vec());
+                    .body(inject_live_reload(&body, state.live_reload));
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
@@ -974,7 +1182,7 @@ async fn handle_get(
                 .insert_header(("X-Frame-Options", "DENY"))
                 .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
                 .insert_header(("Cache-Control", "no-store"))
-                .body(html);
+                .body(inject_live_reload(html, state.live_reload));
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state.nodeinfo.base_url);
             set_link_headers(&mut rsp, &path);
@@ -1021,7 +1229,7 @@ async fn handle_get(
                     .insert_header(("X-Frame-Options", "DENY"))
                     .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
                     .insert_header(("Cache-Control", "no-store"))
-                    .body(html);
+                    .body(inject_live_reload(html, state.live_reload));
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
@@ -1055,7 +1263,12 @@ async fn handle_get(
                 return Ok(rsp);
             }
 
-            let mut rsp = HttpResponse::Ok().body(body.to_vec());
+            let response_body = if meta.content_type.starts_with("text/html") {
+                inject_live_reload(&body, state.live_reload)
+            } else {
+                body.to_vec()
+            };
+            let mut rsp = HttpResponse::Ok().body(response_body);
             rsp.headers_mut().insert(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_str(&meta.content_type).unwrap_or_else(|_| {
@@ -1093,7 +1306,7 @@ async fn handle_put(
 
     if ldp::is_container(&path) {
         if has_basic_container_link(&req) {
-            let auth_pk = extract_pubkey(&req).await;
+            let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
             let agent = agent_uri(auth_pk.as_ref());
             enforce_write_ctx(
                 &state,
@@ -1118,7 +1331,7 @@ async fn handle_put(
         return Ok(HttpResponse::MethodNotAllowed().body("cannot PUT to a container"));
     }
 
-    let auth_pk = extract_pubkey(&req).await;
+    let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
     let agent = agent_uri(auth_pk.as_ref());
     enforce_write_ctx(
         &state,
@@ -1148,11 +1361,13 @@ async fn handle_put(
         ));
     }
 
-    let meta = state
+    let quota = reserve_quota_for_size(&state, &path, body.len() as u64).await?;
+    let write = state
         .storage
         .put(&path, Bytes::from(body.to_vec()), ct)
-        .await
-        .map_err(to_actix)?;
+        .await;
+    finish_quota_reservation(&state, quota, write.is_ok()).await;
+    let meta = write.map_err(to_actix)?;
     // git-mark (Phase 2): commit + PROV-O sidecar on git-backed pods. Runs
     // AFTER the write succeeded; additive + best-effort (errors swallowed),
     // git-backed-only, never changes the response.
@@ -1202,7 +1417,7 @@ async fn handle_post(
     let path = req.uri().path().to_string();
     // POST route only matches container paths (trailing slash) via the
     // `POST /{tail:.*}/` registration.
-    let auth_pk = extract_pubkey(&req).await;
+    let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
     let agent = agent_uri(auth_pk.as_ref());
     enforce_write_ctx(
         &state,
@@ -1259,11 +1474,13 @@ async fn handle_post(
         target = mint_unique_target(&*state.storage, &target).await;
     }
 
-    let meta = state
+    let quota = reserve_quota_for_size(&state, &target, body.len() as u64).await?;
+    let write = state
         .storage
         .put(&target, Bytes::from(body.to_vec()), ct)
-        .await
-        .map_err(to_actix)?;
+        .await;
+    finish_quota_reservation(&state, quota, write.is_ok()).await;
+    let meta = write.map_err(to_actix)?;
     // git-mark (Phase 2): commit + PROV-O sidecar for the newly-created child.
     // Additive + best-effort, git-backed-only.
     git_mark_write(&state, &target, agent.as_deref(), "POST").await;
@@ -1287,7 +1504,7 @@ async fn handle_patch(
     if ldp::is_container(&path) {
         return Ok(HttpResponse::MethodNotAllowed().body("cannot PATCH a container"));
     }
-    let auth_pk = extract_pubkey(&req).await;
+    let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
     let agent = agent_uri(auth_pk.as_ref());
     // PATCH can modify or delete data (e.g. N3 Patch with solid:deletes),
     // so it requires full Write permission — not just Append. Only POST
@@ -1355,11 +1572,13 @@ async fn handle_patch(
                     let bytes = serde_json::to_vec(&json)
                         .map_err(PodError::from)
                         .map_err(to_actix)?;
-                    let _ = state
+                    let quota = reserve_quota_for_size(&state, &path, bytes.len() as u64).await?;
+                    let write = state
                         .storage
                         .put(&path, Bytes::from(bytes), &meta.content_type)
-                        .await
-                        .map_err(to_actix)?;
+                        .await;
+                    finish_quota_reservation(&state, quota, write.is_ok()).await;
+                    let _ = write.map_err(to_actix)?;
                     git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
                     return Ok(HttpResponse::NoContent().finish());
                 }
@@ -1385,11 +1604,13 @@ async fn handle_patch(
                      (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
                 ));
             }
-            let _ = state
+            let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
+            let write = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
-                .await
-                .map_err(to_actix)?;
+                .await;
+            finish_quota_reservation(&state, quota, write.is_ok()).await;
+            let _ = write.map_err(to_actix)?;
             git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
             Ok(HttpResponse::NoContent().finish())
         }
@@ -1415,11 +1636,13 @@ async fn handle_patch(
                      (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
                 ));
             }
-            let _ = state
+            let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
+            let write = state
                 .storage
                 .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
-                .await
-                .map_err(to_actix)?;
+                .await;
+            finish_quota_reservation(&state, quota, write.is_ok()).await;
+            let _ = write.map_err(to_actix)?;
             git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
             Ok(HttpResponse::Created().finish())
         }
@@ -1635,8 +1858,12 @@ async fn handle_delete(
     )
     .await?;
 
+    let quota = reserve_quota_for_size(&state, &path, 0).await?;
     match state.storage.delete(&path).await {
-        Ok(()) => Ok(HttpResponse::NoContent().finish()),
+        Ok(()) => {
+            finish_quota_reservation(&state, quota, true).await;
+            Ok(HttpResponse::NoContent().finish())
+        }
         Err(PodError::NotFound(_)) => Ok(HttpResponse::NotFound().finish()),
         Err(e) => Err(to_actix(e)),
     }
@@ -1981,10 +2208,72 @@ fn request_ip(req: &HttpRequest) -> IpAddr {
         .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
+#[derive(Debug)]
+struct QuotaReservation {
+    pod: String,
+    delta: i64,
+}
+
+fn pod_name_from_path(path: &str) -> Option<&str> {
+    path.trim_start_matches('/')
+        .split('/')
+        .next()
+        .filter(|p| !p.is_empty())
+}
+
+async fn reserve_quota_for_size(
+    state: &AppState,
+    path: &str,
+    new_size: u64,
+) -> Result<Option<QuotaReservation>, ActixError> {
+    let (Some(policy), Some(pod)) = (&state.quota, pod_name_from_path(path)) else {
+        return Ok(None);
+    };
+    let old_size = state
+        .storage
+        .head(path)
+        .await
+        .map(|meta| meta.size)
+        .unwrap_or(0);
+    let delta = i128::from(new_size) - i128::from(old_size);
+    let delta = delta.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    if delta > 0 {
+        policy
+            .reserve(pod, delta as u64)
+            .await
+            .map_err(|error| actix_web::error::ErrorInsufficientStorage(error.to_string()))?;
+    }
+    Ok(Some(QuotaReservation {
+        pod: pod.to_string(),
+        delta,
+    }))
+}
+
+async fn finish_quota_reservation(
+    state: &AppState,
+    reservation: Option<QuotaReservation>,
+    write_succeeded: bool,
+) {
+    let (Some(policy), Some(reservation)) = (&state.quota, reservation) else {
+        return;
+    };
+    if write_succeeded {
+        if reservation.delta < 0 {
+            policy.record(&reservation.pod, reservation.delta).await;
+        }
+    } else if reservation.delta > 0 {
+        policy.record(&reservation.pod, -reservation.delta).await;
+    }
+}
+
 async fn handle_create_account(
+    req: HttpRequest,
     state: web::Data<AppState>,
     body: web::Json<CreateAccountRequest>,
 ) -> Result<HttpResponse, ActixError> {
+    if let Some(response) = provisioning_gate(&req, &state, &body.username) {
+        return Ok(response);
+    }
     let pod_root = format!("/{}/", body.username);
     if state.storage.exists(&pod_root).await.unwrap_or(false) {
         return Ok(
@@ -1992,53 +2281,111 @@ async fn handle_create_account(
         );
     }
 
-    let mut plan = provision::ProvisionPlan::new(
-        body.username.clone(),
-        format!(
-            "{}/{}",
-            state.nodeinfo.base_url.trim_end_matches('/'),
-            body.username,
-        ),
-    );
-    plan.display_name = body.name.clone();
-    plan.containers = vec![
-        format!("/{}/", body.username),
-        format!("/{}/profile/", body.username),
-        format!("/{}/inbox/", body.username),
-        format!("/{}/public/", body.username),
-        format!("/{}/private/", body.username),
-        format!("/{}/settings/", body.username),
-    ];
+    let base_uri = state.nodeinfo.base_url.trim_end_matches('/');
+    let outcome =
+        provision_named_pod(&state, &body.username, body.name.as_deref(), base_uri).await?;
+    Ok(HttpResponse::Created().json(serde_json::json!({
+        "webid": outcome.webid,
+        "pod_root": outcome.pod_uri,
+        "username": body.username,
+    })))
+}
 
-    // Provision the pod. When the `git` feature is enabled and a FS root
-    // is configured, run git init on the new pod directory immediately
-    // after the storage containers are created (JSS #466/#469/#471).
-    #[cfg(feature = "git")]
-    let outcome = {
-        use solid_pod_rs_git::init::GitAutoInit;
-        let git_hook = state.data_root.as_ref().map(|root| {
-            let fs_path = root.join(&body.username);
-            (GitAutoInit::new(), fs_path)
-        });
-        match git_hook {
-            Some((hook, ref fs_path)) => {
-                provision::provision_pod_ext(state.storage.as_ref(), &plan, Some((&hook, fs_path)))
-                    .await
-            }
-            None => provision::provision_pod(state.storage.as_ref(), &plan).await,
-        }
-    };
-    #[cfg(not(feature = "git"))]
-    let outcome = provision::provision_pod(state.storage.as_ref(), &plan).await;
+struct NamedPodOutcome {
+    webid: String,
+    pod_uri: String,
+}
 
-    match outcome {
-        Ok(outcome) => Ok(HttpResponse::Created().json(serde_json::json!({
-            "webid": outcome.webid,
-            "pod_root": outcome.pod_root,
-            "username": body.username,
-        }))),
-        Err(e) => Err(to_actix(e)),
+/// Apply the same closed-by-default registration policy, validation, and
+/// per-IP rate limiter to every public provisioning surface.
+fn provisioning_gate(req: &HttpRequest, state: &AppState, name: &str) -> Option<HttpResponse> {
+    if !valid_pod_name(name) {
+        return Some(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Invalid pod name. Use alphanumeric, dash, or underscore only."
+        })));
     }
+
+    let supplied_key = req
+        .headers()
+        .get("x-pod-admin-key")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    use subtle::ConstantTimeEq;
+    let admin_override = state
+        .admin_key
+        .as_deref()
+        .is_some_and(|expected| bool::from(supplied_key.as_bytes().ct_eq(expected.as_bytes())));
+    if !state.nodeinfo.open_registrations && !admin_override {
+        return Some(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "pod registration is closed"
+        })));
+    }
+
+    if let Err(retry_after) = state.pod_create_limiter.check(request_ip(req)) {
+        return Some(
+            HttpResponse::TooManyRequests()
+                .insert_header(("Retry-After", retry_after.to_string()))
+                .json(serde_json::json!({
+                    "error": "Too Many Requests",
+                    "message": "Pod creation rate limit exceeded",
+                    "retryAfter": retry_after
+                })),
+        );
+    }
+    None
+}
+
+/// Provision only below `/{name}/`; the core `provision_pod` helper expects a
+/// pod-scoped storage view and must not be called with the server's global
+/// storage backend.
+async fn provision_named_pod(
+    state: &AppState,
+    name: &str,
+    display_name: Option<&str>,
+    base_uri: &str,
+) -> Result<NamedPodOutcome, ActixError> {
+    for container in ["", "profile", "inbox", "public", "private", "settings"] {
+        let path = if container.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("/{name}/{container}")
+        };
+        state
+            .storage
+            .put(
+                &format!("{path}.meta"),
+                Bytes::from_static(b"{}"),
+                "application/ld+json",
+            )
+            .await
+            .map_err(to_actix)?;
+    }
+
+    let base_uri = base_uri.trim_end_matches('/');
+    let pod_uri = format!("{base_uri}/{name}/");
+    let canonical_prefix = format!("{base_uri}/pods/{name}/");
+    let webid = format!("{pod_uri}profile/card#me");
+    let profile = solid_pod_rs::webid::generate_webid_html(name, display_name, base_uri)
+        .replace(&canonical_prefix, &pod_uri);
+    state
+        .storage
+        .put(
+            &format!("/{name}/profile/card"),
+            Bytes::from(profile.into_bytes()),
+            "text/html",
+        )
+        .await
+        .map_err(to_actix)?;
+
+    #[cfg(feature = "git")]
+    if let Some(root) = &state.data_root {
+        let hook = solid_pod_rs_git::init::GitAutoInit::new();
+        if let Err(error) = hook.init_repo_at(&root.join(name)).await {
+            tracing::warn!(pod = name, %error, "git auto-init failed after pod creation");
+        }
+    }
+
+    Ok(NamedPodOutcome { webid, pod_uri })
 }
 
 async fn handle_create_pod(
@@ -2046,21 +2393,8 @@ async fn handle_create_pod(
     state: web::Data<AppState>,
     body: web::Json<CreatePodRequest>,
 ) -> Result<HttpResponse, ActixError> {
-    let ip = request_ip(&req);
-    if let Err(retry_after) = state.pod_create_limiter.check(ip) {
-        return Ok(HttpResponse::TooManyRequests()
-            .insert_header(("Retry-After", retry_after.to_string()))
-            .json(serde_json::json!({
-                "error": "Too Many Requests",
-                "message": "Pod creation rate limit exceeded",
-                "retryAfter": retry_after
-            })));
-    }
-
-    if !valid_pod_name(&body.name) {
-        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Invalid pod name. Use alphanumeric, dash, or underscore only."
-        })));
+    if let Some(response) = provisioning_gate(&req, &state, &body.name) {
+        return Ok(response);
     }
 
     let pod_root = format!("/{}/", body.name);
@@ -2074,44 +2408,14 @@ async fn handle_create_pod(
         let conn = req.connection_info();
         format!("{}://{}", conn.scheme(), conn.host())
     };
-    let pod_uri = format!("{}/{}/", base_uri.trim_end_matches('/'), body.name);
-
-    for container in [
-        format!("/{}/", body.name),
-        format!("/{}/profile/", body.name),
-        format!("/{}/inbox/", body.name),
-        format!("/{}/public/", body.name),
-        format!("/{}/private/", body.name),
-        format!("/{}/settings/", body.name),
-    ] {
-        let meta_key = format!("{}.meta", container.trim_end_matches('/'));
-        state
-            .storage
-            .put(&meta_key, Bytes::from_static(b"{}"), "application/ld+json")
-            .await
-            .map_err(to_actix)?;
-    }
-
-    let canonical_pods_prefix = format!("{}/pods/{}/", base_uri.trim_end_matches('/'), body.name);
-    let webid = format!("{pod_uri}profile/card#me");
-    let profile = solid_pod_rs::webid::generate_webid_html(&body.name, None, &base_uri)
-        .replace(&canonical_pods_prefix, &pod_uri);
-    state
-        .storage
-        .put(
-            &format!("/{}/profile/card", body.name),
-            Bytes::from(profile.into_bytes()),
-            "text/html",
-        )
-        .await
-        .map_err(to_actix)?;
+    let outcome = provision_named_pod(&state, &body.name, None, &base_uri).await?;
 
     Ok(HttpResponse::Created()
-        .insert_header(("Location", pod_uri.clone()))
+        .insert_header(("Location", outcome.pod_uri.clone()))
         .json(serde_json::json!({
             "name": body.name,
-            "webId": webid,
-            "podUri": pod_uri,
+            "webId": outcome.webid,
+            "podUri": outcome.pod_uri,
         })))
 }
 
@@ -2153,20 +2457,22 @@ async fn handle_copy(
         Err(e) => return Err(to_actix(e)),
     };
 
-    state
-        .storage
-        .put(&dest, body, &meta.content_type)
-        .await
-        .map_err(to_actix)?;
+    let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
+    let write = state.storage.put(&dest, body, &meta.content_type).await;
+    finish_quota_reservation(&state, quota, write.is_ok()).await;
+    write.map_err(to_actix)?;
 
     // Copy ACL sidecar if it exists.
     let src_acl = format!("{}.acl", source.trim_end_matches('/'));
     let dst_acl = format!("{}.acl", dest.trim_end_matches('/'));
     if let Ok((acl_body, acl_meta)) = state.storage.get(&src_acl).await {
-        let _ = state
+        let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
+        let write = state
             .storage
             .put(&dst_acl, acl_body, &acl_meta.content_type)
             .await;
+        finish_quota_reservation(&state, quota, write.is_ok()).await;
+        write.map_err(to_actix)?;
     }
 
     let mut rsp = HttpResponse::Created().finish();
@@ -2431,6 +2737,8 @@ async fn handle_proxy(
     let mut current_url = query.url.clone();
     let mut redirect_count = 0u8;
     const MAX_REDIRECTS: u8 = 5;
+    const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
+    let started = Instant::now();
 
     let byte_cap = std::env::var("PROXY_BYTE_CAP")
         .ok()
@@ -2442,6 +2750,10 @@ async fn handle_proxy(
         .unwrap_or(DEFAULT_PROXY_BYTE_CAP);
 
     loop {
+        let Some(remaining) = TOTAL_TIMEOUT.checked_sub(started.elapsed()) else {
+            return Ok(HttpResponse::GatewayTimeout()
+                .json(serde_json::json!({"error": "proxy operation timed out"})));
+        };
         // Validate + DNS-resolve EVERY hop (initial request and each redirect
         // target), then pin the outbound client to the resolved IP so the
         // socket connects to exactly the vetted address (DNS-rebinding guard).
@@ -2451,7 +2763,7 @@ async fn handle_proxy(
         };
         let client = build_pinned_proxy_client(&target_url, pinned_ip)?;
 
-        let mut upstream_req = client.get(&current_url);
+        let mut upstream_req = client.get(&current_url).timeout(remaining);
 
         // Forward X-Upstream-Authorization if present.
         if let Some(auth_val) = req
@@ -2499,6 +2811,15 @@ async fn handle_proxy(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream")
             .to_string();
+        if response
+            .content_length()
+            .is_some_and(|length| length > byte_cap as u64)
+        {
+            return Ok(HttpResponse::PayloadTooLarge().json(serde_json::json!({
+                "error": "proxied response exceeds byte cap",
+                "limit": byte_cap
+            })));
+        }
 
         // Collect response headers, stripping sensitive ones.
         let mut forwarded_headers: Vec<(String, String)> = Vec::new();
@@ -2519,16 +2840,18 @@ async fn handle_proxy(
             }
         }
 
-        let body_bytes = response
-            .bytes()
-            .await
-            .map_err(|e| actix_web::error::ErrorBadGateway(format!("body read: {e}")))?;
-
-        if body_bytes.len() > byte_cap {
-            return Ok(HttpResponse::PayloadTooLarge().json(serde_json::json!({
-                "error": "proxied response exceeds byte cap",
-                "limit": byte_cap
-            })));
+        let mut stream = response.bytes_stream();
+        let mut body_bytes = Vec::with_capacity(byte_cap.min(64 * 1024));
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|e| actix_web::error::ErrorBadGateway(format!("body read: {e}")))?;
+            if body_bytes.len().saturating_add(chunk.len()) > byte_cap {
+                return Ok(HttpResponse::PayloadTooLarge().json(serde_json::json!({
+                    "error": "proxied response exceeds byte cap",
+                    "limit": byte_cap
+                })));
+            }
+            body_bytes.extend_from_slice(&chunk);
         }
 
         // Build the response.
@@ -2547,7 +2870,7 @@ async fn handle_proxy(
             }
         }
 
-        return Ok(rsp.body(body_bytes.to_vec()));
+        return Ok(rsp.body(body_bytes));
     }
 }
 
@@ -3174,7 +3497,16 @@ async fn git_mark_write(
 
 #[cfg(feature = "git")]
 pub(crate) async fn require_pod_owner(req: &HttpRequest, pod_pubkey: &str) -> Option<String> {
-    let caller = extract_pubkey(req).await?;
+    require_pod_owner_with_body(req, pod_pubkey, None).await
+}
+
+#[cfg(feature = "git")]
+pub(crate) async fn require_pod_owner_with_body(
+    req: &HttpRequest,
+    pod_pubkey: &str,
+    body: Option<&[u8]>,
+) -> Option<String> {
+    let caller = extract_pubkey_with_body(req, body).await?;
     if caller != pod_pubkey {
         return None;
     }
@@ -3920,11 +4252,24 @@ impl solid_pod_rs_forge::LoopbackFetch for ServerLoopback {
         if !resp.status().is_success() {
             return FetchResult::Error(format!("status {code}"));
         }
-        match resp.bytes().await {
-            Ok(b) if b.len() > max_bytes => FetchResult::TooLarge,
-            Ok(b) => FetchResult::Body(b.to_vec()),
-            Err(e) => FetchResult::Error(e.to_string()),
+        if resp
+            .content_length()
+            .is_some_and(|length| length > max_bytes as u64)
+        {
+            return FetchResult::TooLarge;
         }
+        let mut stream = resp.bytes_stream();
+        let mut body = Vec::with_capacity(max_bytes.min(16 * 1024));
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) if body.len().saturating_add(chunk.len()) <= max_bytes => {
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(_) => return FetchResult::TooLarge,
+                Err(error) => return FetchResult::Error(error.to_string()),
+            }
+        }
+        FetchResult::Body(body)
     }
 }
 
@@ -3988,7 +4333,7 @@ async fn handle_forge(
     // token (`Bearer f1.…`) and NIP-98 (`Nostr …`). An unresolved caller
     // is Anonymous and the service's guards decide, fail-closed. (A pod
     // session, when present, would be injected as a `Pod` agent instead.)
-    let agent = service.resolve_agent(&forge_req);
+    let agent = service.resolve_agent(&forge_req).await;
 
     match service.handle(forge_req, agent).await {
         Ok(resp) => {

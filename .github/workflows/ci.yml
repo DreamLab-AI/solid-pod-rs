@@ -42,7 +42,7 @@ jobs:
   # beta is informational — it is allowed to fail without blocking the pipeline.
   # ---------------------------------------------------------------------------
   build-test:
-    name: test (${{ matrix.os }} / ${{ matrix.toolchain }} / ${{ matrix.features-label }})
+    name: test (${{ matrix.os }} / ${{ matrix.toolchain }} / ${{ matrix.features.label }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.toolchain == 'beta' }}
     strategy:
@@ -50,52 +50,50 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         toolchain: [stable, beta]
-        include:
-          - features-label: default
-            features-flags: ""
-          - features-label: oidc
-            features-flags: "--no-default-features --features memory-backend,fs-backend,oidc"
-          - features-label: s3-backend
-            features-flags: "--no-default-features --features memory-backend,fs-backend,s3-backend"
-          - features-label: all-features
-            features-flags: "--all-features"
+        features:
+          - label: default
+            flags: ""
+          - label: oidc
+            flags: "--no-default-features --features memory-backend,fs-backend,oidc"
+          - label: all-features
+            flags: "--all-features"
     defaults:
       run:
         working-directory: crates/solid-pod-rs
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain (${{ matrix.toolchain }})
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.features-label }}
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.features.label }}
 
       - name: cargo fmt --check
-        if: matrix.toolchain == 'stable' && matrix.features-label == 'default'
+        if: matrix.toolchain == 'stable' && matrix.features.label == 'default'
         run: cargo fmt --all -- --check
 
-      - name: cargo check --all-targets ${{ matrix.features-flags }}
-        run: cargo check --all-targets ${{ matrix.features-flags }}
+      - name: cargo check --all-targets ${{ matrix.features.flags }}
+        run: cargo check --all-targets ${{ matrix.features.flags }}
 
-      - name: cargo clippy --all-targets ${{ matrix.features-flags }} -- -D warnings
-        run: cargo clippy --all-targets ${{ matrix.features-flags }} -- -D warnings
+      - name: cargo clippy --all-targets ${{ matrix.features.flags }} -- -D warnings
+        run: cargo clippy --all-targets ${{ matrix.features.flags }} -- -D warnings
 
-      - name: cargo test ${{ matrix.features-flags }}
-        run: cargo test ${{ matrix.features-flags }} --all-targets
+      - name: cargo test ${{ matrix.features.flags }}
+        run: cargo test ${{ matrix.features.flags }} --all-targets
 
-      - name: cargo doc --no-deps ${{ matrix.features-flags }}
+      - name: cargo doc --no-deps ${{ matrix.features.flags }}
         if: matrix.toolchain == 'stable'
         env:
           RUSTDOCFLAGS: "-D warnings -D rustdoc::broken-intra-doc-links"
-        run: cargo doc --no-deps ${{ matrix.features-flags }}
+        run: cargo doc --no-deps ${{ matrix.features.flags }}
 
   # ---------------------------------------------------------------------------
   # MSRV sanity check (pinned to clippy.toml msrv)
@@ -107,11 +105,11 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: "1.88"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
           key: msrv-1.88
@@ -132,12 +130,12 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
           key: wasm32
@@ -159,10 +157,10 @@ jobs:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
-          manifest-path: crates/solid-pod-rs/Cargo.toml
+          manifest-path: Cargo.toml
           log-level: warn
           command: check
           arguments: --all-features
@@ -175,8 +173,8 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       # Runs at the repo root so the whole-workspace Cargo.lock (all 7 members'
@@ -190,14 +188,13 @@ jobs:
   coverage:
     name: coverage (tarpaulin)
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
     defaults:
       run:
         working-directory: crates/solid-pod-rs
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: crates/solid-pod-rs -> target
           key: coverage
@@ -209,18 +206,19 @@ jobs:
             --all-features \
             --workspace \
             --timeout 300 \
+            --fail-under 60 \
             --out Xml \
             --output-dir ./coverage
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: crates/solid-pod-rs/coverage/cobertura.xml
           flags: solid-pod-rs
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # Workspace-wide build/lint/test — covers ALL 7 workspace members, not just
+  # Workspace-wide build/lint/test — covers all eight workspace members, not just
   # the core crate. The core-crate matrix above exercises solid-pod-rs feature
   # combinations; this job guarantees the six sibling crates (server, idp,
   # activitypub, nostr, git, didkey) are compiled, linted and tested on every
@@ -231,12 +229,12 @@ jobs:
     name: workspace (test + clippy, all members)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: workspace-all-members
       - name: cargo clippy --workspace --all-targets -- -D warnings
@@ -255,7 +253,7 @@ jobs:
     name: diagrams (RES-c staleness guard)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # commit-time comparison needs full history
       - name: check diagram staleness
@@ -274,6 +272,7 @@ jobs:
       - wasm-check
       - cargo-deny
       - cargo-audit
+      - coverage
       - diagrams
     if: always()
     steps:
@@ -285,6 +284,7 @@ jobs:
           echo "wasm-check=${{ needs.wasm-check.result }}"
           echo "cargo-deny=${{ needs.cargo-deny.result }}"
           echo "cargo-audit=${{ needs.cargo-audit.result }}"
+          echo "coverage=${{ needs.coverage.result }}"
           echo "diagrams=${{ needs.diagrams.result }}"
           if [[ "${{ needs.build-test.result }}" != "success" ]] \
              || [[ "${{ needs.workspace.result }}" != "success" ]] \
@@ -292,6 +292,7 @@ jobs:
              || [[ "${{ needs.wasm-check.result }}" != "success" ]] \
              || [[ "${{ needs.cargo-deny.result }}" != "success" ]] \
              || [[ "${{ needs.cargo-audit.result }}" != "success" ]] \
+             || [[ "${{ needs.coverage.result }}" != "success" ]] \
              || [[ "${{ needs.diagrams.result }}" != "success" ]]; then
             echo "One or more required jobs failed."
             exit 1

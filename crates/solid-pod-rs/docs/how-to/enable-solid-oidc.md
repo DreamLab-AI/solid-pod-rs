@@ -9,7 +9,7 @@ In your crate's `Cargo.toml`:
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.2", features = ["oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.7", features = ["oidc"] }
 ```
 
 This pulls in `openidconnect` and `jsonwebtoken` dependencies. The

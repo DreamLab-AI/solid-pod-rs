@@ -39,21 +39,12 @@ let backend = FsBackend::new("/var/lib/my-pod").await?;
 let state = AppState { storage: Arc::new(backend) };
 ```
 
-`FsBackend::new` creates the directory if it doesn't exist. Path
-traversal is blocked at the boundary (`..` and `\0` both reject with
-`InvalidPath`).
+`FsBackend::new` creates the directory if it does not exist. Capability-based
+path resolution confines operations to the opened root, including in the
+presence of symlinks. `put` writes temporary body and metadata files and then
+atomically replaces their destinations.
 
-## Option 3 — S3
-
-See [how-to/scale-with-s3-backend.md](scale-with-s3-backend.md) for
-the full guide.
-
-```rust
-// Cargo.toml
-// solid-pod-rs = { version = "0.2", features = ["s3-backend"] }
-```
-
-## Option 4 — Custom backend
+## Option 3 — Custom backend
 
 Implement `Storage` on your type. Minimum surface:
 
@@ -86,8 +77,8 @@ impl Storage for MyBackend {
 - The implementation must be `Send + Sync + 'static`.
 - `put` must be atomic from an observer's standpoint — either
   `get` returns the old state or the new state, never a half-written
-  body. The stock `MemoryBackend` uses `RwLock`; `FsBackend` writes
-  to a temp file and renames.
+  body. `MemoryBackend` satisfies this with an `RwLock`; `FsBackend` uses
+  temporary files and atomic replacement.
 
 ### ETag contract
 

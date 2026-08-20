@@ -34,7 +34,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use solid_pod_rs::oidc::verify_dpop_proof;
+use solid_pod_rs::oidc::{verify_dpop_proof, DpopReplayCache};
 
 use crate::error::ProviderError;
 use crate::jwks::Jwks;
@@ -87,6 +87,7 @@ pub struct Provider {
     session_store: SessionStore,
     user_store: Arc<dyn UserStore>,
     jwks: Jwks,
+    dpop_replay: DpopReplayCache,
 }
 
 impl Provider {
@@ -104,6 +105,7 @@ impl Provider {
             session_store,
             user_store,
             jwks,
+            dpop_replay: DpopReplayCache::from_env(),
         }
     }
 
@@ -242,7 +244,7 @@ impl Provider {
             "POST",
             req.now_unix,
             self.config.dpop_skew_secs,
-            None, // replay cache: consumer can plumb this later
+            Some(&self.dpop_replay),
         )
         .await
         .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?;
@@ -766,6 +768,22 @@ mod tests {
             tok.webid.as_deref(),
             Some("https://alice.example/profile#me")
         );
+
+        // The proof itself is single-use, independently of the one-time
+        // authorization code. Replay is rejected before code processing.
+        let replay_err = p
+            .token(TokenRequest {
+                grant_type: "authorization_code".into(),
+                code: &code,
+                redirect_uri: "https://app.example/cb".into(),
+                client_id: client.client_id.clone(),
+                code_verifier: Some(&verifier),
+                dpop_proof: Some(&proof),
+                now_unix: 1_700_000_000,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(replay_err, ProviderError::InvalidDpop(_)));
 
         // Second redemption must fail — code is single-use.
         let proof2 = test_dpop_proof("https://pod.example/idp/token", "POST", 1_700_000_000);

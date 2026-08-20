@@ -12,14 +12,18 @@ We defend against:
 - Authenticated-but-unauthorised access (WAC).
 - Token replay (both NIP-98 and DPoP-bound OIDC).
 - Path traversal / escape in storage backends.
-- Request tampering on bodies (both dialects bind the body hash).
+- Request tampering when the embedding transport supplies the raw body to the
+  verifier. The core verifier supports this, but the bundled server currently
+  omits it; see AUD-010 in the dated audit.
 
-We **do not** (as a library) defend against:
+We **do not** uniformly defend against:
 
 - TLS termination weaknesses — that's the reverse proxy's job.
-- Application-layer rate limiting.
-- Denial of service from oversized requests — use your HTTP
-  framework's body-size limits.
+- Application-layer rate limiting. Selected endpoints have local limiters,
+  but this is not a server-wide invariant.
+- Denial of service from oversized responses or subprocess output. Request
+  body limits exist, but the proxy and git CGI paths currently buffer output;
+  see the [2026-08-19 audit](../reference/security-audit-2026-08-19.md).
 - OS-level integrity — if an attacker can write to `$POD_FS_ROOT`
   directly, they own the pod regardless of what the library does.
 
@@ -87,17 +91,29 @@ Characteristics:
 | Signature algorithm             | BIP-340 Schnorr over secp256k1 via `verify_raw` (raw 32-byte message, no tagged pre-hash) | ES256 / RS256 (access token + DPoP proof) |
 | Binds URL                       | `u` tag                         | `htu` claim (DPoP proof)        |
 | Binds method                    | `method` tag                    | `htm` claim                     |
-| Binds body                      | `payload` tag = `SHA-256(body)` | Access-token handling; proof's `ath` if applicable |
+| Binds body                      | Core verifier checks `payload = SHA-256(body)` when its caller supplies the body; the bundled server currently does not | Access-token handling; proof's `ath` if applicable |
 | Timestamp tolerance             | ±60 s                           | Configurable `skew` (default 60 s) |
 | Key-to-identity                 | pubkey → `did:nostr:{pubkey}`   | DPoP thumbprint bound via `cnf.jkt` |
-| Anti-replay                     | Per-request timestamp window    | `jti` nonce cache (consumer-crate concern) |
+| Anti-replay                     | Main server adds an event-id cache; forge currently uses only the timestamp window | `jti` nonce cache (consumer-crate concern) |
 
 Both layers produce an `agent_uri` string that feeds the WAC evaluator.
 
+> **Binder trust boundary:** the optional IdP Axum router does not install
+> authentication middleware. Its password-change and account-delete handlers
+> trust `X-Authenticated-User`. Never expose that router directly; strip the
+> header at the edge and inject it only after session/token verification. This
+> unsafe default is tracked as AUD-001 in the
+> [2026-08-19 audit](../reference/security-audit-2026-08-19.md).
+
+> **MCP boundary:** keep MCP disabled on this release. The optional MCP surface
+> contains a reproduced anonymous arbitrary-read path and generic resource
+> operations that do not elevate ACL sidecars to `acl:Control`; see AUD-009.
+
 ### Layer 2 — WAC authorisation
 
-Once authenticated, every request is filtered by
-`wac::evaluate_access`. The WAC evaluator:
+Ordinary LDP requests are filtered by `wac::evaluate_access`. Special-purpose
+routes have their own gates; they are not all equivalent, and AUD-002/AUD-009
+document current exceptions. The WAC evaluator:
 
 - Walks up the tree looking for `.acl` sidecars.
 - Parses JSON-LD authorizations.
@@ -123,15 +139,16 @@ Mitigated. The `method` tag must match.
 
 ### Token replay with a modified body
 
-Mitigated. If the body is non-empty, the `payload` tag must equal
-`SHA-256(body)`. A token with no `payload` tag is rejected if a body
-is provided.
+Mitigated by the core verifier only when its caller supplies the raw body. The
+bundled server calls it with `None`, so ordinary REST, payment, proxy, and MCP
+authentication does not currently enforce the signed payload tag. This is
+AUD-010 and must be fixed before relying on NIP-98 for request integrity.
 
 ### Token replay in the future
 
-The 60 s window bounds replay. Clocks must be synced within that
-window (NTP). We do **not** implement jti-cache — the timestamp
-window is the only bound.
+The main server supplements the 60-second window with a canonical event-id
+replay cache. The forge resolver calls the stateless verifier directly and
+does not use that cache (AUD-012). Clocks must be synchronised.
 
 ### Enlarged token to exhaust the server
 
@@ -215,10 +232,13 @@ axum, and hyper all handle this).
 
 ### Symlink escape (FS backend)
 
-The `FsBackend::resolve` path check (`full.starts_with(root)`) is
-best-effort — on filesystems that follow symlinks, a malicious
-symlink inside the root could redirect writes. Run the pod as a user
-with write access only to the pod root and nothing else.
+The `FsBackend::resolve` path check (`full.starts_with(root)`) is lexical and
+does not contain symlinks. The audit reproduced reading a host file through a
+symlink inside the pod root; writes follow the same OS resolution. Git-backed
+pods can materialise symlinks from tenant-controlled repositories, turning
+this into a tenant-to-host boundary rather than merely an OS-admin concern.
+Treat the FS backend as unsafe for mutually untrusted tenants until AUD-013 is
+fixed. Least-privilege service credentials reduce impact but are not a fix.
 
 ### Concurrent mutation
 

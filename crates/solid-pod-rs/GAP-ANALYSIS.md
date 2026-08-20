@@ -1,24 +1,15 @@
 # Gap Analysis — solid-pod-rs vs JavaScriptSolidServer (JSS)
 
-> Comparison against JavaScriptSolidServer (JSS). The row-per-feature
-> table lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md); this
-> document is the categorical reasoning narrative. Current as of the
-> Sprint 16 sync (2026-05-30): the local JSS clone checked out on disk is
-> at `10bd60f` (`Bump version to 0.0.197`, package `0.0.197`). The
-> upstream `gh-pages` `9d29167` (`0.0.204`) fast-forward described in
-> earlier drafts was **not** applied to the working tree, so the on-disk
-> comparator is `0.0.197`. The v0.0.197 → v0.0.204 delta (§21 of the
-> checklist) was ported by reading the upstream commits directly, not by
-> diffing against a checked-out `0.0.204` tree. Derived from the
-> checklist's own row counts, the raw gate reports **~96% strict parity,
-> ~100% on the spec-normative surface, ~100% protocol-visible**. The §21
-> delta covers the MCP server (#490), `install` CLI, NIP-98 minting + git
-> push leniency, `getContentType` (#533), symlinked-dir listing (#531),
-> and the mashlib audio pane. Five sibling crates
-> (`solid-pod-rs-{activitypub,git,idp,nostr,didkey}`) are all functional
-> and shipping. Sprint 12 closed the JSS v0.0.60–v0.0.71 delta (ADR-058):
-> size-capped ACL parsing, `.account` dotfile, password-length validation,
-> AP outbox POST, Accept-negotiation, and actor caching.
+> Comparison against JavaScriptSolidServer (JSS). The row-per-feature table
+> lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
+> Re-synchronised 2026-08-19 against upstream `gh-pages` `f9f7a4d`, package
+> `0.0.220`. The tracker now contains 230 rows and reports **97.6% strict
+> classified in-scope parity** (206/211 rows) and ~100% of the
+> spec-normative surface. Section 22 records the complete `0.0.204 → 0.0.220`
+> progression. No row remains classified as missing: live reload, development
+> bearer tokens, the external CTH runner, and busy-port shifting now ship. The runtime-plugin
+> cluster is deliberately not applicable to a statically linked Cargo feature
+> architecture.
 >
 > **Verification method.** The `*_jss.rs` parity tests are self-contained
 > Rust assertions that transcribe JSS's observed behaviour; they are
@@ -33,27 +24,22 @@
 - **solid-pod-rs**: workspace at `HEAD` of the local checkout. Library
   crate (`crates/solid-pod-rs/src/lib.rs`), framework-agnostic; the
   `solid-pod-rs-server` sibling binary crate is the canonical actix-web
-  server consumer. Five sibling crates (`-activitypub`, `-git`, `-idp`,
-  `-nostr`, `-didkey`) are functional and covered by the workspace test
+  server consumer. Seven sibling crates are covered by the workspace test
   suite.
-- **JavaScriptSolidServer**: local clone at
-  `/home/devuser/workspace/JavaScriptSolidServer/`, checked out at
-  `10bd60f` (`Bump version to 0.0.197`, package `0.0.197`). The
-  `upstream/gh-pages` `9d29167` (`0.0.204`) fast-forward was not applied
-  to the working tree; §21 tracks the `0.0.197 → 0.0.204` delta from the
-  upstream commits directly. Licence `AGPL-3.0-only`. Node.js ≥ 18 ESM,
-  Fastify-based server.
+- **JavaScriptSolidServer**: upstream `gh-pages` at `f9f7a4d`, package
+  `0.0.220`, fetched into a disposable audit clone on 2026-08-19. Licence
+  `AGPL-3.0-only`. Node.js ≥ 18 ESM, Fastify-based server.
 
 ### Source paths
 
 | Side | Path |
 |---|---|
 | solid-pod-rs source | `crates/solid-pod-rs/src/` |
-| solid-pod-rs tests | `crates/solid-pod-rs/tests/` (54 integration test files; ~1,519 `#[test]`/`#[tokio::test]` annotations workspace-wide) |
+| solid-pod-rs tests | Workspace unit/integration/benchmark/example targets; verified with `cargo test --workspace --all-targets --all-features` on 2026-08-19 |
 | solid-pod-rs examples | `crates/solid-pod-rs/examples/` (7 runnable examples) |
-| JSS source | `/home/devuser/workspace/JavaScriptSolidServer/src/` |
-| JSS tests | `/home/devuser/workspace/JavaScriptSolidServer/test/` |
-| JSS CLI | `/home/devuser/workspace/JavaScriptSolidServer/bin/jss.js` |
+| JSS source | upstream `src/` at `f9f7a4d` |
+| JSS tests | upstream `test/` at `f9f7a4d` |
+| JSS CLI | upstream `bin/jss.js` at `f9f7a4d` |
 
 ### Criteria (status vocabulary)
 
@@ -87,6 +73,14 @@ module paths and test IDs.
 ---
 
 ## C. Categorical summary
+
+> **Historical-detail notice.** Sections C–H preserve the design reasoning and
+> port-ticket history that led to the current implementation. Some individual
+> “missing” labels describe their state when the section was authored; they are
+> not current status claims. Use the checklist's current-state table and rows
+> 208–230 for present status. In particular, ActivityPub, Git, the IdP, Nostr,
+> did:key, the config loader, legacy notifications, and security primitives all
+> subsequently shipped as workspace crates or core features.
 
 ### C.1 LDP (Linked Data Platform core)
 
@@ -293,9 +287,9 @@ Patch (net-new). Grammar coverage is broader on SPARQL-Update.
 
 | Surface | solid-pod-rs | JSS | Verdict |
 |---|---|---|---|
-| CLI binary | `examples/standalone.rs` (~200 LOC actix example) | `bin/jss.js` (400+ LOC, 40+ flags, subcommands `start`/`init`/`invite`/`quota`) | **partial-parity** (C.7a) |
-| Config file (JSON) | **not provided** — consumer's responsibility | `config.json` via `src/config.js:211-239` (CLI > env > file > default precedence) | **missing** (E.6) |
-| Env var map | **not provided** — consumer's responsibility | 30+ `JSS_*` vars + `TOKEN_SECRET`, `CORS_ALLOWED_ORIGINS`, `NODE_ENV`, `DATA_ROOT` (`config.js:96-132`) | **missing** (E.6) |
+| CLI binary | `solid-pod-rs-server` with server + quota/account/invite/install commands | `bin/jss.js` (flags and operator subcommands) | **present with semantic differences** |
+| Config file (JSON) | JSS-compatible loader (CLI > env > file > default) | `config.json` via `src/config.js:211-239` | **present** |
+| Env var map | JSS aliases plus Rust-specific controls | 30+ `JSS_*` vars and service controls | **present** |
 | Pod-create HTTP endpoint | `solid-pod-rs-server::handle_create_pod` + `PodCreateLimiter` | `POST /.pods` with 1/day/IP rate-limit (`src/server.js:692-703`) | **present** |
 | Admin override | `provision::check_admin_override` (constant-time secret compare) | no direct equivalent (operators edit `config.json`) | **net-new** |
 
@@ -314,9 +308,9 @@ is implemented directly.
 | Language | Rust 2021 | Node.js ≥ 18 ESM |
 | HTTP framework | agnostic (library) | Fastify 4.29.x (tightly coupled) |
 | RDF graph model | `ldp::Graph` (internal deterministic) | `n3.js` via `n3` package (ad-hoc per serialiser) |
-| Storage backends | `memory`, `fs`, `s3` (gated `s3-backend`) | filesystem only |
+| Storage backends | `memory`, `fs`; custom implementations use the public trait | filesystem only |
 | WAC enforcement | library function, HTTP binder decides hook | Fastify `preHandler` hook |
-| Dependency count | 13 required + 4 optional (`oidc`, `nip98-schnorr`, `s3-backend`, etc.) | 10 runtime + 1 dev (`autocannon`) |
+| Dependency shape | small default graph; protocol integrations are feature-gated | 10 runtime + 1 dev (`autocannon`) |
 | Runtime footprint | ~30 MB static binary, <10 ms cold start (example binary) | ~120 MB Node + 432 KB source + deps (per README §"footprint comparison") |
 | Steady-state perf | ~15k req/s GET (measured via `wrk`, memory backend, 1 core) | 5,400 req/s GET resource, 4,700 req/s container (README `Performance`) |
 
@@ -439,12 +433,12 @@ the `dev` feature to prevent accidental production use. Store admin
 flag only through the typed constructor — never from request headers
 (already enforced).
 
-### D.10 S3 / R2 / Object-store backends — **keep gated**
+### D.10 S3 / R2 / Object-store backends — **removed scaffold**
 
-`s3-backend` feature exposes an S3 storage backend. JSS is
-filesystem-only. Operators running at scale need this. Cost to carry is
-low (dep is `optional = true`). Keep as-is; expand R2 and KV in
-consumer crates per ADR-053.
+Neither project ships an object-store backend. The former Rust feature only
+added an AWS SDK dependency and no implementation, so it has been removed.
+The public `Storage` trait remains the supported boundary for a consumer-owned
+backend, and unsupported bundled-server configuration fails validation.
 
 ### D.11 Framework-agnostic library surface — **keep (core identity)**
 
@@ -720,10 +714,12 @@ updates until E.4 lands. Listed as P1 for 0.4.0.
 **JSS**: full CLI `bin/jss.js` with `start`/`init`/`invite`/`quota`
 subcommands and 30+ flags. Config precedence CLI > env > file > default.
 
-**solid-pod-rs**: `examples/standalone.rs` is the only binary — a
-demonstration, not a production CLI.
+**solid-pod-rs**: the workspace ships `solid-pod-rs-server`, including the
+server and quota/account/invite/install operator commands, while keeping the
+core library framework-independent.
 
-**Bug or feature?** Feature — scope call. Library vs server.
+**Bug or feature?** Deliberate architecture: framework-independent core plus a
+maintained Actix server.
 
 **Compatibility impact**: operators can drop the `solid-pod-rs-server`
 binary crate into a JSS-replacement slot. The library-vs-server split
@@ -789,13 +785,13 @@ ecosystem contributions:
 7. **`Prefer` header composition** (D.7).
 8. **Turtle ACL serialisation** (D.8).
 9. **Dev-mode session helper** (D.9).
-10. **S3/R2/object-store storage backends** (D.10).
+10. **Consumer-owned storage backends** through the public trait (D.10).
 11. **WebID-OIDC discovery helpers** (`webid::generate_webid_html_with_issuer`, `extract_oidc_issuer`) (D.12).
 12. **`.well-known/solid` discovery document** (D.13, C.7).
 13. **Atomic quota reserve/release primitive** (D.14).
 14. **Constant-time admin override check** (D.15).
-15. **Feature-gated OIDC / Schnorr / S3**: default build compiles without
-    `openidconnect`, `jsonwebtoken`, `k256`, `aws-sdk-s3`, minimising
+15. **Feature-gated OIDC / Schnorr**: default build compiles without
+    `openidconnect`, `jsonwebtoken`, and `k256`, minimising
     attack surface.
 16. **`Send + Sync + 'static` public types**: one process hosts N pods.
     JSS's IdP is process-global.
@@ -929,23 +925,23 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **~96% strict parity** (derived from the
-[`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) row counts) and **~100%
-spec-normative parity** as of the Sprint 16 sync (2026-05-30). All P0
-CVE-class items are cleared
-(DPoP signature verification, SSRF primitive, dotfile allowlist,
-size-capped ACL parsing). Six net-new features push us **ahead** of
+solid-pod-rs has **97.6% strict parity** (206/211 classified in-scope rows,
+derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) and **~100%
+spec-normative parity** as of the 2026-08-19 JSS `0.0.220` sync. Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL
-serialisation. All five sibling crates are functional and shipping:
+serialisation. Seven sibling crates compile and pass the workspace suite:
 ActivityPub federation, Git HTTP backend, embedded IdP, did:nostr,
-and did:key. Sprint 12 additionally closed the JSS v0.0.60–v0.0.71
+did:key, the canonical server, and the forge. Sprint 12 additionally closed the JSS v0.0.60–v0.0.71
 delta: size-capped ACL parsing (CWE-400), `.account` dotfile, password
 validation (CWE-521), AP outbox POST with Note→Create wrapping,
-Accept-negotiation, and actor caching. ~1,519 `#[test]`/`#[tokio::test]`
-annotations across the workspace (54 integration test files in the core
-crate alone).
+Accept-negotiation, and actor caching.
+
+Parity is not a security-readiness claim. The 2026-08-19 audit found an
+exploitable identity-header trust boundary in the optional IdP Axum binder,
+an unguarded account-provisioning route, and current RustSec failures. Those
+must be remediated before an open production deployment.
 
 ---
 
@@ -953,15 +949,15 @@ crate alone).
 
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
-- JSS source: `/home/devuser/workspace/JavaScriptSolidServer/` (local clone, upstream `9d29167` / `0.0.204`).
+- JSS source: upstream `gh-pages` `f9f7a4d` / package `0.0.220`, fetched 2026-08-19.
 - **Referenced decision records not present in this crate's `docs/adr/`
   set** (which holds ADR-057, ADR-058, ADR-059 only): ADR-053 (backend
   boundary + extraction scope), ADR-054 (library-vs-server separation) and
   ADR-056 §D3 (library-server split) are backlog record numbers that were
   never authored in this repo. The decisions they name are nonetheless
   **implemented** — the library-vs-server split ships as the
-  `solid-pod-rs-server` binary crate, the S3 backend ships gated behind
-  `s3-backend`, and WebID-TLS is a recorded won't-fix (E.5). Treat the
+  `solid-pod-rs-server` binary crate, unsupported S3 configuration is rejected,
+  and WebID-TLS is a recorded won't-fix (E.5). Treat the
   inline "ADR-053/054/056 §…" citations throughout this document and
   [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) as backlog pointers, not
   as extant authoritative documents. ADR-089 (referenced by §20 of the

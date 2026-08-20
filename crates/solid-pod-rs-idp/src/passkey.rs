@@ -5,7 +5,7 @@
 //! 1. The [`PasskeyBackend`] trait — the stable contract the IdP
 //!    uses to issue and verify passkey ceremonies.
 //! 2. [`WebauthnPasskey`] — a production-leaning implementation
-//!    backed by [`webauthn-rs`] 0.5. It covers the happy path a
+//!    backed by [webauthn-rs](https://docs.rs/webauthn-rs/0.5) 0.5. It covers the happy path a
 //!    Solid-OIDC passkey flow needs: register-options /
 //!    register-verify / login-options / login-verify.
 //! 3. [`NullPasskeyBackend`] — retained as a `#[doc(hidden)]`
@@ -196,7 +196,8 @@ impl PasskeyBackend for PasskeyTodo {
 // Real impl — webauthn-rs 0.5 backed.
 // ---------------------------------------------------------------
 
-/// Production-leaning WebAuthn backend built on [`webauthn-rs`] 0.5.
+/// Production-leaning WebAuthn backend built on
+/// [webauthn-rs](https://docs.rs/webauthn-rs/0.5) 0.5.
 ///
 /// # Defaults
 ///

@@ -32,10 +32,10 @@ licence-wise, nothing changes.
 | Authentication | Solid-OIDC via built-in IdP (`oidc-provider`); optional WebID-TLS | NIP-98 is first-class; Solid-OIDC behind the `oidc` feature |
 | Storage layout | `$JSS_ROOT/<pod-or-user>/...` | `<root>/<path>` mirroring the pod URI directly |
 | Quota | `defaultQuota` config (50 MB default) | `QuotaTracker` (explicit, per-pod) |
-| Provisioning endpoint | IdP signup flow (`multiuser: true`) | `provision_pod` (library call, no HTTP endpoint) |
-| HTTP framework | Fastify | framework-agnostic; examples use actix-web |
-| JSON Patch (RFC 6902) | supported | supported |
-| ActivityPub federation | feature-flagged (`activitypub: true`) | not supported |
+| Provisioning endpoint | IdP signup flow (`multiuser: true`) | `provision_pod` plus `POST /.pods`; secure account-policy integration remains operator work |
+| HTTP framework | Fastify | Actix server binary; framework-agnostic core |
+| JSON Patch (RFC 6902) | not implemented | supported as a Rust extension |
+| ActivityPub federation | built in | `solid-pod-rs-activitypub` sibling crate |
 | Licence | AGPL-3.0-only | AGPL-3.0-only (inherited) |
 
 The most important difference is the WAC default. **Do not start
@@ -49,22 +49,26 @@ document**, or every request will 401. See
 
 | JSS env var                              | solid-pod-rs equivalent             | Notes |
 |------------------------------------------|-------------------------------------|-------|
-| `JSS_PORT`                               | bind address in your HTTP wiring    | solid-pod-rs is framework-agnostic; configure your actix/axum server directly |
-| `JSS_HOST`                               | bind address in your HTTP wiring    | — |
-| `JSS_ROOT`                               | `FsBackend::new(path)` argument     | default `./data` in JSS |
+| `JSS_PORT`                               | `server.port` / server CLI wiring   | Supported by the layered config loader |
+| `JSS_HOST`                               | `server.host` / server CLI wiring   | — |
+| `JSS_ROOT`                               | `storage.root` / `FsBackend::new(path)` | default `./data` in JSS |
 | `JSS_SSL_KEY` / `JSS_SSL_CERT`           | terminate TLS in your HTTP framework or reverse proxy | — |
-| `JSS_IDP` / `JSS_IDP_ISSUER`             | — (consumer-crate concern)          | bring your own OIDC provider; wire via the `oidc` feature |
-| `JSS_MULTIUSER`                          | — (consumer-crate concern)          | handled at the HTTP routing / tenant layer |
+| `JSS_IDP` / `JSS_IDP_ISSUER`             | `auth.oidc.issuer` / `solid-pod-rs-idp` | The IdP crate exists, but the canonical server does not yet mount its complete authenticated flow |
+| `JSS_MULTIUSER`                          | `multitenant` resolver + provisioning policy | No single compatibility switch |
 | `JSS_PUBLIC`                             | install permissive `/.acl` manually | solid-pod-rs has no public-mode switch |
 | `JSS_READ_ONLY`                          | enforce at the HTTP framework layer | — |
-| `JSS_NOTIFICATIONS`                      | always on if you wire a `Notifications` impl | — |
-| Other `JSS_*` flags (`JSS_NOSTR`, `JSS_ACTIVITYPUB`, `JSS_MASHLIB`, etc.) | `[TODO verify against JSS CLI]` — mostly consumer-crate features not in solid-pod-rs | — |
+| `JSS_NOTIFICATIONS`                      | notification feature selection and server wiring | WebSocket, webhook, and legacy adapters are separate Rust features |
+| `JSS_NOSTR` / `JSS_ACTIVITYPUB`          | sibling crates / compile-time features | Rebuild required; there is no runtime plugin loader |
+| `JSS_MASHLIB`                            | core `mashlib` feature and server route wiring | Compile-time rather than runtime selection |
+| `JSS_BODY_LIMIT`                         | `server.body_cap` (`JSS_MAX_REQUEST_BODY` alias) | Rust default 50 MiB; JSS `0.0.220` default 20 MB |
+| `JSS_MCP`                                | server MCP enable flag | Off by default |
 
 ### Config-file mapping
 
 JSS is configured via `JSS_*` env vars + optional `config.json` (CLI
-args take precedence). solid-pod-rs is configured in Rust code. The
-rough equivalence:
+args take precedence). The core Rust crate remains framework-agnostic, while
+`solid-pod-rs-server` supplies a layered JSON/TOML/environment config loader.
+The rough equivalence:
 
 | JSS setting                                | solid-pod-rs equivalent                                   |
 |--------------------------------------------|-----------------------------------------------------------|
@@ -144,9 +148,9 @@ find /var/lib/mypod -type f ! -name '*.meta.json' | wc -l
 # Numbers should match.
 ```
 
-**Note:** `[TODO verify against JSS CLI]` — if your JSS deployment uses
-non-default file naming (e.g. transcoded sidecars for conneg), adjust
-the stripper accordingly. JSS 0.0.x stores bodies verbatim by default.
+If your JSS deployment uses non-default file naming (for example transcoded
+sidecars for content negotiation), inspect a staging copy and adjust the
+stripper accordingly. JSS `0.0.220` stores bodies verbatim by default.
 
 ### ACL translation
 
@@ -201,8 +205,8 @@ use solid_pod_rs::storage::{fs::FsBackend, Storage};
 async fn main() -> anyhow::Result<()> {
     let storage: Arc<dyn Storage> =
         Arc::new(FsBackend::new("/var/lib/mypod").await?);
-    // Wire your HTTP framework's handlers against `storage`.
-    // See examples/standalone.rs for actix-web.
+    // Wire your HTTP framework's handlers against `storage`, or deploy the
+    // bundled solid-pod-rs-server binary for the maintained Actix surface.
     Ok(())
 }
 ```
@@ -244,11 +248,15 @@ translated, forward and backward migration are symmetric.
 
 ## 7. What you lose
 
-- **Built-in IdP** — JSS ships `oidc-provider` for account signup;
-  solid-pod-rs expects you to bring your own OIDC provider.
-- **ActivityPub federation** — JSS feature; not in solid-pod-rs.
-- **Nostr relay (`JSS_NOSTR`)** — JSS feature; not in solid-pod-rs.
-- **Mashlib / SolidOS UI** — JSS features; not in solid-pod-rs.
+- **Built-in IdP** — an optional Rust IdP crate exists, but its pre-built Axum
+  binder has the critical identity-header finding AUD-001 and is not a safe
+  drop-in replacement yet.
+- **ActivityPub federation** — available as a transport-agnostic optional
+  crate, with signature/actor-binding findings AUD-016 and AUD-017.
+- **Nostr relay (`JSS_NOSTR`)** — available as an embeddable optional crate;
+  the bundled server does not mount it and embedders must apply AUD-018 limits.
+- **Mashlib / SolidOS UI** — Mashlib rendering and a legacy notification
+  adapter exist, but this is not a full JSS UI distribution.
 - **WebID-TLS** — legacy; deliberately not ported.
 
 ## 8. What you gain
@@ -258,7 +266,8 @@ translated, forward and backward migration are symmetric.
   today, so regression tests in CI are cheap.
 - Strong typing at every API boundary — `AccessMode`, `RdfFormat`,
   `PatchDialect`, `StorageEvent`.
-- Straight path to S3, R2, IPFS backends via the `Storage` trait.
+- A stable trait seam for custom S3, R2, IPFS, or database backends. No stock
+  object-store implementation ships yet.
 - AGPL-3.0-only licensing inherited from JSS — same covenant, different
   runtime, no change in your obligations as a network-service operator.
 

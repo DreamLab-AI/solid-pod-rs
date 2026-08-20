@@ -1,0 +1,10 @@
+@base <https://github.com/solid/conformance-test-harness/> .
+@prefix solid-test: <https://github.com/solid/conformance-test-harness/vocab#> .
+@prefix doap: <http://usefulinc.com/ns/doap#> .
+@prefix earl: <http://www.w3.org/ns/earl#> .
+
+<solid-pod-rs> a earl:Software, earl:TestSubject ;
+    doap:name "solid-pod-rs"@en ;
+    doap:homepage <https://github.com/DreamLab-AI/solid-pod-rs> ;
+    doap:programming-language "Rust"@en ;
+    solid-test:skip "acp" .

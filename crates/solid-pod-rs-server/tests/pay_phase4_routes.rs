@@ -19,6 +19,7 @@ use std::sync::Arc;
 use actix_web::http::header;
 use actix_web::{test, web, App, HttpResponse};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use solid_pod_rs::auth::nip98;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
@@ -26,6 +27,14 @@ use solid_pod_rs_server::trail_store::{save_trail, StoredTrail};
 use solid_pod_rs_server::{build_app, AppState};
 
 const NETWORK: &str = "testnet4";
+
+fn bitcoin_txid(raw_hex: &[u8]) -> String {
+    let raw = hex::decode(raw_hex).unwrap();
+    let first = Sha256::digest(raw);
+    let mut second = Sha256::digest(first).to_vec();
+    second.reverse();
+    hex::encode(second)
+}
 // Issuer (pod) key — controls the trail.
 const ISSUER_PRIVKEY: &str = "0000000000000000000000000000000000000000000000000000000000000007";
 // Buyer/withdrawer NIP-98 key.
@@ -49,7 +58,7 @@ fn user_pubkey() -> String {
     hex::encode(sk.verifying_key().to_bytes())
 }
 
-fn nip98_auth(method: &str, path: &str) -> (String, String) {
+fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String) {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
     // Each token MUST be a distinct NIP-98 event: the server's single-use replay
@@ -69,7 +78,7 @@ fn nip98_auth(method: &str, path: &str) -> (String, String) {
     });
     let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
     let url = format!("http://localhost:8080{path}");
-    let token = nip98::mint(&url, method, USER_SK, now).expect("nip98 mint");
+    let token = nip98::mint_with_payload(&url, method, body, USER_SK, now).expect("nip98 mint");
     (
         format!("Nostr {token}"),
         format!("did:nostr:{}", user_pubkey()),
@@ -182,8 +191,7 @@ async fn spawn_fixture(genesis_spk_hex: String) -> (String, actix_web::dev::Serv
             .route(
                 "/api/tx",
                 web::post().to(|body: bytes::Bytes| async move {
-                    let raw = String::from_utf8_lossy(&body);
-                    let txid = solid_pod_rs::mrc20::sha256_hex(&raw);
+                    let txid = bitcoin_txid(&body);
                     HttpResponse::Ok().content_type("text/plain").body(txid)
                 }),
             )
@@ -228,12 +236,13 @@ async fn buy_moves_tokens_and_debits_sats() {
     let (st, storage) = state_with_minted_trail(mempool_url, 500).await;
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, _did) = nip98_auth("POST", "/pay/.buy");
+    let payload = json!({ "amount": 100 }).to_string();
+    let (auth, _did) = nip98_auth("POST", "/pay/.buy", Some(payload.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.buy")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(json!({ "amount": 100 }).to_string())
+        .set_payload(payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200, "buy must succeed");
@@ -266,12 +275,13 @@ async fn buy_rejects_insufficient_balance() {
     let (st, _storage) = state_with_minted_trail(mempool_url, 10).await; // only 10 sats
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, _did) = nip98_auth("POST", "/pay/.buy");
+    let payload = json!({ "amount": 100 }).to_string();
+    let (auth, _did) = nip98_auth("POST", "/pay/.buy", Some(payload.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.buy")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(json!({ "amount": 100 }).to_string())
+        .set_payload(payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 402, "insufficient balance ⇒ 402");
@@ -302,12 +312,13 @@ async fn withdraw_all_moves_tokens_and_zeroes_balance() {
     let (st, _storage) = state_with_minted_trail(mempool_url, 250).await;
     let app = test::init_service(build_app(st)).await;
 
-    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw");
+    let payload = json!({ "all": true }).to_string();
+    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw", Some(payload.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.withdraw")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(json!({ "all": true }).to_string())
+        .set_payload(payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200, "withdraw all must succeed");
@@ -355,7 +366,7 @@ async fn withdraw_sats_mints_a_voucher() {
             .route(
                 "/api/tx",
                 web::post().to(|body: bytes::Bytes| async move {
-                    let txid = solid_pod_rs::mrc20::sha256_hex(&String::from_utf8_lossy(&body));
+                    let txid = bitcoin_txid(&body);
                     HttpResponse::Ok().content_type("text/plain").body(txid)
                 }),
             )
@@ -372,14 +383,13 @@ async fn withdraw_sats_mints_a_voucher() {
     let app = test::init_service(build_app(st)).await;
 
     let funding_uri = format!("txo:tbtc4:{funding_txid}:0?amount=20000&key={funding_sk}");
-    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw-sats");
+    let payload = json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string();
+    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw-sats", Some(payload.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.withdraw-sats")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(
-            json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string(),
-        )
+        .set_payload(payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200, "withdraw-sats must mint a voucher");
@@ -437,14 +447,13 @@ async fn withdraw_sats_rejects_insufficient_funding() {
 
     // Funding voucher claims 500 sats — too small for 10000 + fee.
     let funding_uri = format!("txo:tbtc4:{funding_txid}:0?amount=500&key={funding_sk}");
-    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw-sats");
+    let payload = json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string();
+    let (auth, _did) = nip98_auth("POST", "/pay/.withdraw-sats", Some(payload.as_bytes()));
     let req = test::TestRequest::post()
         .uri("/pay/.withdraw-sats")
         .insert_header((header::AUTHORIZATION, auth))
         .insert_header((header::CONTENT_TYPE, "application/json"))
-        .set_payload(
-            json!({ "amount": 10000, "chain": "tbtc4", "funding": funding_uri }).to_string(),
-        )
+        .set_payload(payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 400, "insufficient funding ⇒ 400");

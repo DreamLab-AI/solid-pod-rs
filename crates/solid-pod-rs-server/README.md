@@ -43,6 +43,36 @@ Defaults  <  File  <  EnvVars  <  CLI flags
 See [`crates/solid-pod-rs/src/config/sources.rs`](../solid-pod-rs/src/config/sources.rs)
 for the full `JSS_*` environment variable table.
 
+When the requested listen port is occupied, the binary retains the first
+available listener from that port through the next ten ports and prints the
+actual base URL. `--port 0` requests one operating-system-assigned port.
+
+## Development compatibility helpers
+
+`--live-reload` (or `JSS_LIVE_RELOAD=true`) injects the JSS-compatible
+WebSocket reload client into served HTML. It is disabled by default and is
+intended only for local development.
+
+The write-path authenticator also accepts JSS's two-part development bearer
+token when `TOKEN_SECRET` is explicitly set to at least 32 bytes. The token is
+base64url payload plus HMAC-SHA256 signature; the payload must contain valid
+`iat`, `exp`, and HTTP(S) WebID claims. An absent or short secret disables this
+path, and expired or tampered tokens are rejected.
+
+## External Solid conformance harness
+
+Start a server with working Solid-OIDC discovery, then run:
+
+```bash
+CTH_BASE_URL=http://127.0.0.1:4000 scripts/test-cth.sh
+```
+
+The script checks discovery before starting the official Docker harness and
+mounts `scripts/cth/test-subjects.ttl` read-only. Override `CTH_IMAGE` or
+`CTH_TARGET` when pinning a harness image or selecting another report target.
+The script supplies the integration path; it does not make an external CTH
+pass part of the offline Rust test suite.
+
 ## Mashlib / SolidOS data browser
 
 Enable the mashlib data browser to render RDF resources in the browser:
@@ -294,8 +324,9 @@ This binary enables the following `solid-pod-rs` features by default:
 | `config-loader` | F6 layered config loader |
 | `legacy-notifications` | F3 `solid-0.1` WS notifications adapter |
 
-Other feature flags (`oidc`, `dpop-replay-cache`, `nip98-schnorr`,
-`s3-backend`) can be opted into by the operator via a custom build.
+Other feature flags (`oidc`, `dpop-replay-cache`, and `nip98-schnorr`) can be
+opted into by the operator via a custom build. No stock object-store backend
+ships; unknown storage types are rejected during configuration loading.
 
 ## Licence
 

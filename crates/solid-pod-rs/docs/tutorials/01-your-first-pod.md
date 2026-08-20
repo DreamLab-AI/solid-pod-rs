@@ -12,29 +12,30 @@ first request, and read back an LDP-compliant response. ≤ 10 minutes.
 
 ## Prerequisites
 
-- Rust toolchain 1.74 or newer (`rustup default stable`).
+- Rust toolchain 1.88 or newer (`rustup default stable`).
 - `curl` (or any HTTP client).
 - The `solid-pod-rs` workspace checked out.
 
 No Docker. No database. No TLS. Everything is local.
 
-## Step 1 — Build and run the example server
+## Step 1 — Build and run the bundled server
 
 From the workspace root:
 
 ```bash
-cargo run --example standalone -p solid-pod-rs
+JSS_ROOT=/tmp/solid-pod-rs-tutorial \
+  cargo run -p solid-pod-rs-server -- --host 127.0.0.1 --port 8765
 ```
 
 On first run the crate compiles; subsequent runs take a few seconds.
 You will see a line like:
 
 ```text
-solid-pod-rs example running on http://127.0.0.1:8765 (root: /tmp/solid-pod-rs-example)
+listening on http://127.0.0.1:8765
 ```
 
 The server is now accepting requests. The Pod root directory is
-`/tmp/solid-pod-rs-example` (your OS's temp directory).
+`/tmp/solid-pod-rs-tutorial`.
 
 ## Step 2 — Make your first request
 
@@ -88,7 +89,7 @@ decisions](../explanation/architecture-decisions.md).
 ## Step 3 — Inspect the filesystem layout
 
 ```bash
-ls -la /tmp/solid-pod-rs-example
+ls -la /tmp/solid-pod-rs-tutorial
 ```
 
 It is empty. The pod root exists implicitly — the server synthesises
@@ -108,15 +109,11 @@ You will watch this directory fill up in the next tutorial.
 - Tutorial 2: [store your first resource](02-storing-your-first-resource.md)
   — `PUT` a JSON-LD document and read back its ETag.
 - Reference: [HTTP endpoint matrix](../reference/http-endpoints.md).
-- Explanation: [why we built a framework-agnostic crate](../explanation/architecture-decisions.md).
+- Explanation: [why the core is framework-agnostic](../explanation/architecture-decisions.md).
 
 ## Troubleshooting
 
-- **Port 8765 is already in use.** Edit `examples/standalone.rs`,
-  change the `.bind(...)` port, and re-run.
-- **Compile error about missing `actix-web`.** `actix-web` is a
-  dev-dependency — make sure you are running `cargo run --example
-  standalone -p solid-pod-rs`, not `cargo run -p solid-pod-rs`.
-- **Permission denied writing to `/tmp`.** Run with `TMPDIR=$HOME/tmp
-  cargo run --example standalone -p solid-pod-rs` (the example server
-  honours `TMPDIR`).
+- **Port 8765 is already in use.** Choose another explicit `--port`; unlike
+  JSS 0.0.220, the Rust server currently fails fast instead of shifting ports.
+- **Permission denied writing to `/tmp`.** Set `JSS_ROOT` to a directory the
+  service user owns.

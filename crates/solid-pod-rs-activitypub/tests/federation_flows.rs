@@ -34,6 +34,7 @@ fn verified(actor_url: &str) -> VerifiedActor {
     VerifiedActor {
         key_id: format!("{actor_url}#main-key"),
         actor_url: actor_url.to_string(),
+        inbox_url: Some(format!("{}/inbox", actor_url.trim_end_matches("/actor"))),
         public_key_pem: "PEM".to_string(),
     }
 }

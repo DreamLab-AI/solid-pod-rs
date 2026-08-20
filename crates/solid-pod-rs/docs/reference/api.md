@@ -5,7 +5,7 @@ trait, and function exported from `lib.rs` is listed. Private items
 are not documented here.
 
 - Crate root: [`src/lib.rs`](../../src/lib.rs)
-- Crate version: `0.2.0-alpha.1`
+- Crate version: `0.5.0-alpha.7`
 
 ## Modules
 
@@ -153,7 +153,6 @@ pub enum StorageEvent {
 |---|---|---|
 | `storage::memory::MemoryBackend` | `memory-backend` (default) | `src/storage/memory.rs` |
 | `storage::fs::FsBackend`         | `fs-backend` (default)     | `src/storage/fs.rs` |
-| `storage::s3::S3Backend`         | `s3-backend` (opt-in)      | planned P2 |
 
 Both shipped backends pass `tests/storage_trait.rs`.
 
@@ -745,7 +744,6 @@ impl IntrospectionResponse {
 |---|---|---|---|
 | `memory-backend` | yes | — | `storage::memory::MemoryBackend` |
 | `fs-backend`     | yes | `notify` | `storage::fs::FsBackend` |
-| `s3-backend`     | no  | `aws-sdk-s3` | `storage::s3::S3Backend` (P2 impl) |
 | `oidc`           | no  | `openidconnect`, `jsonwebtoken` | `oidc::*` |
 
 ## Crate-level attributes

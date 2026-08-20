@@ -25,7 +25,7 @@ pub struct ForgeConfig {
     /// default; mainnet (`"btc"`/`"mainnet"`) is refused unless
     /// [`ForgeConfig::allow_mainnet`] is set.
     pub default_chain: String,
-    /// Fail-closed mainnet guard. When `false`, [`chain_allowed`] rejects
+    /// Fail-closed mainnet guard. When `false`, [`Self::chain_allowed`] rejects
     /// any mainnet chain string. Mark custody here is testnet-grade.
     pub allow_mainnet: bool,
     /// Opt-in relays the NIP-34 announcement is published to. Empty =

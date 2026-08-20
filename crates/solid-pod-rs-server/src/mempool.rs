@@ -1,6 +1,6 @@
 //! Native mempool.space REST client — the read-side of block-trail anchors.
 //!
-//! [`MempoolHttpClient`] is the server-side concrete implementation of the
+//! [`MempoolHttpClient`](crate::mempool::MempoolHttpClient) is the server-side concrete implementation of the
 //! pure [`solid_pod_rs::mrc20::MempoolLookup`] trait. It speaks the
 //! mempool.space-style REST API over the `reqwest` client the crate already
 //! pulls in for the CORS proxy and webhook delivery:
@@ -12,16 +12,16 @@
 //!
 //! The wire shapes (`status: {confirmed, block_height}` nested objects) are
 //! deserialised into local `*Wire` structs and flattened into the crate's
-//! transport-free [`Utxo`]/[`TxInfo`] value types, so the pure verification
+//! transport-free [`Utxo`](solid_pod_rs::mrc20::Utxo)/[`TxInfo`](solid_pod_rs::mrc20::TxInfo) value types, so the pure verification
 //! surface never learns the mempool.space schema.
 //!
 //! ## wasm boundary
 //!
 //! This module is native-only (it builds a `reqwest::Client`). It mirrors
 //! the JSS `verifyMrc20Anchor` mempool round-trip (`mrc20.js:315-327`,
-//! `token.js:176-187`) and is the production [`MempoolLookup`] the
+//! `token.js:176-187`) and is the production [`MempoolLookup`](solid_pod_rs::mrc20::MempoolLookup) the
 //! `/pay/.deposit` MRC20 path and `/pay/.address` derivation use. wasm
-//! consumers implement [`MempoolLookup`] over `fetch` instead and never
+//! consumers implement [`MempoolLookup`](solid_pod_rs::mrc20::MempoolLookup) over `fetch` instead and never
 //! compile this file.
 //!
 //! ## Configuration
@@ -87,6 +87,29 @@ impl MempoolHttpClient {
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    /// Check whether a transaction is known without collapsing an HTTP 404
+    /// into the same result as an ambiguous transport/server failure. Payment
+    /// intent recovery may compensate a debit only for `Ok(false)`.
+    pub async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError> {
+        let url = format!("{}/api/tx/{txid}", self.base);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| PaymentError::InvalidState(format!("mempool request failed: {e}")))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            return Err(PaymentError::InvalidState(format!(
+                "mempool API error: {} for {url}",
+                resp.status().as_u16()
+            )));
+        }
+        Ok(true)
     }
 
     /// GET `url`, returning the body text on a 2xx, or a fail-closed
@@ -257,7 +280,7 @@ impl MempoolBroadcast for MempoolHttpClient {
 ///   address. No pod trust required.
 /// - `anchor` (Phase 4) loads the named trail from storage, appends an MRC20
 ///   state notarising `state_hash` (via
-///   [`anchor_state`](solid_pod_rs::bitcoin_tx::anchor_state)), broadcasts the
+///   [`anchor_state`], broadcasts the
 ///   anchoring tx, persists the updated trail, and returns the
 ///   [`BlockTrailAnchor`] (txid/vout/address/state_strings/pubkey). It requires
 ///   a `storage` handle (set via [`MempoolBlockAnchorer::with_storage`]); the

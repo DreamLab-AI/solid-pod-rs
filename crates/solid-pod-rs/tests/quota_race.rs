@@ -106,3 +106,24 @@ async fn reconcile_sweeps_tempfile_orphans() {
     assert_eq!(reconciled.limit_bytes, 1_000);
     assert!(store.quota_file(POD).exists());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_reservations_cannot_overcommit_limit() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(POD)).unwrap();
+    let store = Arc::new(FsQuotaStore::new(tmp.path().to_path_buf(), 100));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move { store.reserve(POD, 25).await }));
+    }
+    let mut accepted = 0;
+    for handle in handles {
+        if handle.await.unwrap().is_ok() {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 4, "only four 25-byte reservations fit");
+    assert_eq!(store.usage(POD).await.unwrap().used_bytes, 100);
+}

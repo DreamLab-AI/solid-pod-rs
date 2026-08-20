@@ -26,6 +26,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::time::{sleep, Duration};
 
 use crate::auth::{AuthError, GitAuth};
 use crate::config::{apply_write_config, find_git_dir};
@@ -36,6 +37,50 @@ use crate::guard::{extract_repo_slug, path_safe};
 /// `GIT_HTTP_BACKEND_PATH` env var at service-startup time (the
 /// default matches Debian/Ubuntu).
 pub const DEFAULT_GIT_HTTP_BACKEND: &str = "/usr/lib/git-core/git-http-backend";
+const CGI_STDOUT_CAP: usize = 256 * 1024 * 1024;
+const CGI_STDERR_CAP: usize = 64 * 1024;
+const CGI_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(cap.min(64 * 1024));
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(output);
+        }
+        if output.len().saturating_add(read) > cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "CGI stdout exceeded configured cap",
+            ));
+        }
+        output.extend_from_slice(&chunk[..read]);
+    }
+}
+
+async fn read_diagnostics_bounded<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    cap: usize,
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(cap.min(8 * 1024));
+    let mut chunk = [0u8; 4096];
+    loop {
+        let Ok(read) = reader.read(&mut chunk).await else {
+            return output;
+        };
+        if read == 0 {
+            return output;
+        }
+        let remaining = cap.saturating_sub(output.len());
+        output.extend_from_slice(&chunk[..read.min(remaining)]);
+        // Continue draining after the diagnostic cap so the child cannot
+        // block on a full stderr pipe.
+    }
+}
 
 /// Opaque HTTP request shape consumed by the service.
 ///
@@ -207,7 +252,7 @@ impl GitHttpService {
         self
     }
 
-    /// Same as [`with_auth`] but takes a pre-boxed Arc.
+    /// Same as [`Self::with_auth`] but takes a pre-boxed Arc.
     #[must_use]
     pub fn with_auth_arc(mut self, auth: Arc<dyn GitAuth>) -> Self {
         self.auth = Some(auth);
@@ -391,20 +436,52 @@ async fn spawn_cgi(
     let mut stdout = child.stdout.take().expect("stdout piped");
     let mut stderr = child.stderr.take().expect("stderr piped");
 
-    let stdout_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        stdout.read_to_end(&mut buf).await.map(|_| buf)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf).await;
-        buf
-    });
-
-    let status = child.wait().await?;
-    let stdout_bytes = stdout_task
-        .await
-        .map_err(|e| GitError::MalformedCgi(format!("stdout task: {e}")))??;
+    let mut stdout_task =
+        tokio::spawn(async move { read_bounded(&mut stdout, CGI_STDOUT_CAP).await });
+    let stderr_task =
+        tokio::spawn(async move { read_diagnostics_bounded(&mut stderr, CGI_STDERR_CAP).await });
+    let deadline = sleep(CGI_EXECUTION_TIMEOUT);
+    tokio::pin!(deadline);
+    let mut early_stdout = None;
+    let status = tokio::select! {
+        result = &mut stdout_task => {
+            match result {
+                Ok(Ok(bytes)) => early_stdout = Some(bytes),
+                Ok(Err(error)) => {
+                    let _ = child.kill().await;
+                    return Err(GitError::MalformedCgi(error.to_string()));
+                }
+                Err(error) => {
+                    let _ = child.kill().await;
+                    return Err(GitError::MalformedCgi(format!("stdout task: {error}")));
+                }
+            }
+            tokio::select! {
+                status = child.wait() => status?,
+                _ = &mut deadline => {
+                    let _ = child.kill().await;
+                    return Err(GitError::BackendFailed {
+                        exit_code: None,
+                        stderr: "git HTTP backend execution timed out".into(),
+                    });
+                }
+            }
+        }
+        status = child.wait() => status?,
+        _ = &mut deadline => {
+            let _ = child.kill().await;
+            return Err(GitError::BackendFailed {
+                exit_code: None,
+                stderr: "git HTTP backend execution timed out".into(),
+            });
+        }
+    };
+    let stdout_bytes = match early_stdout {
+        Some(bytes) => bytes,
+        None => stdout_task
+            .await
+            .map_err(|e| GitError::MalformedCgi(format!("stdout task: {e}")))??,
+    };
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
     if !status.success() && stdout_bytes.is_empty() {
@@ -744,5 +821,16 @@ mod tests {
         let r = GitResponse::error(404, "not found");
         assert_eq!(r.status, 404);
         assert!(!r.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_rejects_output_above_cap() {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        let write = tokio::spawn(async move {
+            writer.write_all(&[7u8; 33]).await.unwrap();
+        });
+        let result = read_bounded(&mut reader, 32).await;
+        write.await.unwrap();
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::FileTooLarge);
     }
 }

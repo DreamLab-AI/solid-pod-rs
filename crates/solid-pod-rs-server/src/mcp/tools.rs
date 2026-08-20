@@ -81,13 +81,18 @@ fn parent_path(p: &str) -> String {
 /// non-existent resource, fall back to the parent container (same pattern
 /// as `enforce_write`), so MCP tools and REST endpoints agree.
 async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode) -> bool {
-    let is_write = matches!(mode, AccessMode::Write | AccessMode::Append);
-    let check_path =
-        if is_write && !path.ends_with('/') && !state.storage.exists(path).await.unwrap_or(false) {
-            parent_path(path)
-        } else {
-            path.to_string()
-        };
+    // Sidecars are always evaluated as Control on the resource they govern.
+    // This is the same canonical elevation used by the REST and Git paths.
+    let (target, effective_mode) = wac::effective_acl_target(path, mode);
+    let is_write = matches!(effective_mode, AccessMode::Write | AccessMode::Append);
+    let check_path = if is_write
+        && !target.ends_with('/')
+        && !state.storage.exists(&target).await.unwrap_or(false)
+    {
+        parent_path(&target)
+    } else {
+        target
+    };
 
     let acl_doc = match crate::find_effective_acl_dyn(&*state.storage, &check_path).await {
         Ok(doc) => doc,
@@ -103,18 +108,20 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
     };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups = wac::StaticGroupMembership::default();
-    // F4 `acl:origin`: thread the `/mcp` request Origin so an ACL that
-    // restricts origins gates cross-origin tool calls.
     let request_origin = ctx.request_origin.as_deref().and_then(wac::Origin::parse);
     wac::evaluate_access_ctx_with_registry(
         acl_doc.as_ref(),
         &rc,
         &check_path,
-        mode,
+        effective_mode,
         request_origin.as_ref(),
         &groups,
         &registry,
     )
+}
+
+async fn can_read_child(state: &AppState, ctx: &McpCtx, path: &str) -> bool {
+    wac_check(state, ctx, path, AccessMode::Read).await
 }
 
 fn ids_of(val: &Option<IdOrIds>) -> Vec<String> {
@@ -149,7 +156,11 @@ async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         let is_container = entry.ends_with('/');
         let name = entry.trim_end_matches('/').to_string();
         let child = format!("{path}{entry}");
-        let meta = state.storage.head(&child).await.ok();
+        let meta = if can_read_child(state, ctx, &child).await {
+            state.storage.head(&child).await.ok()
+        } else {
+            None
+        };
         items.push(json!({
             "name": name,
             "path": child,
@@ -237,6 +248,13 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         Ok(p) => p,
         Err(e) => return tool_error(format!("invalid slug: {e}")),
     };
+    // Resolve authorization again against the final slug. For ordinary new
+    // children this inherits the container's Append grant; an `.acl` or
+    // `.meta` slug is elevated by `wac_check` to Control on its governed
+    // resource and therefore cannot bypass the sidecar boundary.
+    if !wac_check(state, ctx, &base, AccessMode::Write).await {
+        return tool_error(format!("access denied: create {base}"));
+    }
     if is_container {
         let child = format!("{base}/");
         match state.storage.create_container(&child).await {
@@ -298,26 +316,62 @@ async fn head_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
 // Skill tools
 // ---------------------------------------------------------------------------
 
-async fn list_skills(_args: &Value, state: &AppState, _ctx: &McpCtx) -> Value {
-    tool_json(skills::discover_skills(&*state.storage).await)
+async fn list_skills(_args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
+    let mut index = skills::discover_skills(&*state.storage).await;
+    let discovered = index
+        .get("skill:items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut visible = Vec::new();
+    for skill in discovered {
+        let Some(path) = skill.get("@id").and_then(Value::as_str) else {
+            continue;
+        };
+        if wac_check(state, ctx, path, AccessMode::Read).await {
+            visible.push(skill);
+        }
+    }
+    index["skill:items"] = Value::Array(visible);
+    tool_json(index)
 }
 
-async fn get_skill(args: &Value, state: &AppState, _ctx: &McpCtx) -> Value {
+async fn get_skill(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
     if path.is_empty() {
         return tool_error("path required");
     }
-    match skills::read_skill(&*state.storage, path).await {
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    if !skills::is_conventional_skill_path(&path) {
+        return tool_error(format!("not a conventional skill path: {path}"));
+    }
+    if !wac_check(state, ctx, &path, AccessMode::Read).await {
+        return tool_error(format!("access denied: read {path}"));
+    }
+    match skills::read_skill(&*state.storage, &path).await {
         Ok(v) => tool_json(v),
         Err(e) => tool_error(e),
     }
 }
 
-async fn get_pod_skill(_args: &Value, state: &AppState, _ctx: &McpCtx) -> Value {
-    match skills::read_pod_skill(&*state.storage).await {
-        Some(v) => tool_json(v),
-        None => tool_text("no pod-wide SKILL.md or SKILL.jsonld"),
+async fn get_pod_skill(_args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
+    for path in ["/SKILL.md", "/SKILL.jsonld"] {
+        if !state.storage.exists(path).await.unwrap_or(false) {
+            continue;
+        }
+        if !wac_check(state, ctx, path, AccessMode::Read).await {
+            return tool_error(format!("access denied: read {path}"));
+        }
+        return match skills::read_skill(&*state.storage, path).await {
+            Ok(value) => tool_json(value),
+            Err(error) => tool_error(error),
+        };
     }
+    tool_text("no pod-wide SKILL.md or SKILL.jsonld")
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +426,15 @@ async fn read_docs(args: &Value, _state: &AppState, _ctx: &McpCtx) -> Value {
 // ---------------------------------------------------------------------------
 
 async fn pod_info(_args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
-    let skill = skills::read_pod_skill(&*state.storage).await;
+    let mut skill = None;
+    for path in ["/SKILL.md", "/SKILL.jsonld"] {
+        if state.storage.exists(path).await.unwrap_or(false)
+            && wac_check(state, ctx, path, AccessMode::Read).await
+        {
+            skill = skills::read_skill(&*state.storage, path).await.ok();
+            break;
+        }
+    }
     tool_json(json!({
         "pod": ctx.origin,
         "server": "solid-pod-rs",

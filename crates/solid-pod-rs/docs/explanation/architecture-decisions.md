@@ -8,14 +8,15 @@ looks like this" document for people reading or extending the code.
 Unless noted otherwise, the status of each decision is **stable** —
 we don't plan to revisit it.
 
-## Why a framework-agnostic library, not a ready-to-run server
+## Why a framework-agnostic core plus a ready-to-run server
 
 **Alternatives considered:**
 
 1. Ship an actix-web binary with everything baked in.
 2. Ship a trait-based library with example HTTP wiring.
 
-**Decision:** ship the library. The example lives in `examples/`.
+**Decision:** keep protocol and storage primitives in a framework-agnostic
+library and ship the Actix-based `solid-pod-rs-server` as a sibling crate.
 
 **Why:**
 
@@ -31,8 +32,8 @@ we don't plan to revisit it.
   with `Send + Sync + 'static` bounds. That composes cleanly with
   actix, axum, and hyper tower services.
 
-**Consequence:** consumers write ~120 lines of HTTP glue per
-deployment. `examples/standalone.rs` is a usable starting point.
+**Consequence:** operators can run the bundled server, while embedders can use
+the core without pulling an HTTP framework into their architecture.
 
 ## Why a single `Storage` trait
 

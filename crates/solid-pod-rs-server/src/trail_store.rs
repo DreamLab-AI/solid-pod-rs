@@ -4,8 +4,8 @@
 //! A trail lives at `/.well-known/token/{ticker}.json` in pod storage. JSS
 //! persists the issuer **private key** straight inside the trail JSON
 //! (`token.js:294`) so `transferToken` can re-sign the next state. We keep the
-//! same on-disk shape but model it as a [`StoredTrail`] = the public
-//! [`Mrc20Trail`] plus a `privkey` (and a `date_created` the library type does
+//! same on-disk shape but model it as a [`StoredTrail`](crate::trail_store::StoredTrail) = the public
+//! [`Mrc20Trail`](solid_pod_rs::mrc20::Mrc20Trail) plus a `privkey` (and a `date_created` the library type does
 //! not carry), so the secret never leaks onto the shared `Mrc20Trail` type that
 //! flows through wasm/core and the portable proof.
 //!

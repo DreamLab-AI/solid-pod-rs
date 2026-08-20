@@ -1,10 +1,9 @@
 # solid-pod-rs — Agent Integration Guide
 
-> Status as of Sprint 12 close (2026-05-06).
-> ~98% strict parity / ~100% spec-normative parity against
-> JavaScriptSolidServer (JSS). 132 parity rows, 702 tests,
-> 47,600 lines of Rust across the workspace (29,196 in the
-> `solid-pod-rs` library crate). Five sibling crates functional.
+> Status refreshed 2026-08-20 at `0.5.0-alpha.7` against JSS `0.0.220`.
+> The tracker contains 230 rows and passes its 95% strict gate at 97.6%.
+> Eight workspace crates (core plus seven siblings) build and test with all
+> features; consult the dated security audit before deployment.
 
 ## How to use this guide
 
@@ -133,7 +132,7 @@ crates/
 │       │   ├── cors.rs                 # CorsPolicy (feature-gated via jss-v04)
 │       │   └── rate_limit.rs           # RateLimiter trait + LruRateLimiter (feature)
 │       ├── quota/
-│       │   └── mod.rs                  # QuotaPolicy trait + FsQuotaStore (atomic)
+│       │   └── mod.rs                  # QuotaPolicy + FsQuotaStore (atomic sidecar replacement only)
 │       ├── config/                     # layered config loader (feature: config-loader)
 │       │   ├── mod.rs
 │       │   ├── loader.rs               # ConfigLoader builder (file → env)
@@ -174,7 +173,7 @@ crates/
 | Direct / Indirect Containers | n/a | not implemented (spec-optional) | not implemented | — | 10, 11 |
 | `Prefer` multi-include | `src/ldp.rs` | `PreferHeader::parse` | not implemented in JSS | `tests/ldp_headers_jss.rs` | 12 (net-new) |
 | Pod root bootstrap | `src/provision.rs` | `provision_pod` → `ProvisionOutcome` | `src/server.js:504-548` + `src/handlers/container.js::createPodStructure` | `provision::tests` (inline) | 14 |
-| Live-reload script injection | n/a | dev-mode, out of scope | `src/handlers/resource.js:23-35` | — | 13 |
+| Live-reload script injection | `solid-pod-rs-server/src/lib.rs::inject_live_reload` | `--live-reload` / `JSS_LIVE_RELOAD` | `src/handlers/resource.js:23-35` | present | 13 |
 
 ### 2. HTTP headers, content negotiation, conditional/range
 
@@ -302,7 +301,7 @@ crates/
 |---|---|---|---|---|---|
 | FS backend | `src/storage/fs.rs` | `FsBackend` (`.meta.json` sidecars) | `src/storage/filesystem.js` | `tests/storage_trait.rs` | 116 |
 | Memory backend | `src/storage/memory.rs` | `MemoryBackend` with broadcast watcher | test-only in JSS | `tests/storage_trait.rs` | 117 |
-| S3 backend | `src/storage` (feature `s3-backend`) | — | not provided | — | 118 (net-new, gated) |
+| S3 backend | not provided; implement `Storage` in the consumer | — | not provided | — | 118 (both absent) |
 | SPARQL / external-HTTP | n/a | explicitly-deferred | `sql.js` (AP state only) | — | 119 |
 | Config file + env + CLI | `src/config/` (feature `config-loader`) | `ConfigLoader`, `ServerConfig`, `StorageBackendConfig`, `parse_size`, `ConfigSource` | `src/config.js:17-239` | `tests/config_test.rs`, `tests/config_size_parsing.rs` | 120 |
 | `JSS_*` env vars | `src/config/sources.rs` | `ConfigSource::Env` | `src/config.js:96-132` | `tests/config_test.rs` | 121 |
@@ -413,7 +412,7 @@ pub use webid::{
 | `solid_pod_rs::notifications::signing` | `webhook-signing` | RFC 9421 `SignerConfig`, `sign_webhook` |
 | `solid_pod_rs::security::cors::CorsPolicy` | `jss-v04` (via `security-primitives`) | CORS policy + preflight |
 | `solid_pod_rs::security::rate_limit` | `rate-limit` | LRU-backed rate limiter |
-| `solid_pod_rs::quota::FsQuotaStore` | `quota` | atomic-write sidecar quota store |
+| `solid_pod_rs::quota::FsQuotaStore` | `quota` | cooperative quota store; atomic sidecar replacement, non-atomic check+record |
 | `solid_pod_rs::oidc::replay::JtiReplayCache` | `dpop-replay-cache` | DPoP jti replay cache (5-min TTL, 10k cap) |
 | `solid_pod_rs::interop::did_nostr` | `did-nostr` | did:nostr DID-Doc ↔ WebID resolver |
 | `solid_pod_rs::config` | (always compiled; `config-loader` is the consumer toggle) | `ConfigLoader`, `ServerConfig`, `StorageBackendConfig` |
@@ -424,7 +423,6 @@ pub use webid::{
 |---|---|---|---|
 | `fs-backend` (default) | `FsBackend` filesystem storage | (core) | 116 |
 | `memory-backend` (default) | `MemoryBackend` in-memory storage | (core) | 117 |
-| `s3-backend` | `aws-sdk-s3` object-store backend | `aws-sdk-s3` | 118 (net-new) |
 | `oidc` | Solid-OIDC module (DPoP, access token, DCR, discovery) | `openidconnect`, `jsonwebtoken` | 62, 63, 71, 75, 76, 129 |
 | `nip98-schnorr` | Schnorr signature verification for NIP-98 | `k256` (schnorr feature) | 67 |
 | `jss-v04` | Parent umbrella; no-op alone | — | — |
@@ -436,7 +434,7 @@ pub use webid::{
 | `webhook-signing` | RFC 9421 signing + Retry-After + circuit breaker | `ed25519-dalek`, `httpdate`, `rand` | 92, 93, 97 |
 | `did-nostr` | `interop::did_nostr` resolver + DID-Doc helper | (reuses `reqwest`, `serde`, `url`) | 89, 90 |
 | `rate-limit` | `security::rate_limit::LruRateLimiter` | `lru`, `parking_lot` | 111, 112, 141 |
-| `quota` | `quota::FsQuotaStore` + atomic writes | (reuses `serde_json`, `tokio::fs`) | 113, 159, 160, 161 |
+| `quota` | `quota::FsQuotaStore`; atomic sidecar replacement only, not server-wired enforcement | (reuses `serde_json`, `tokio::fs`) | 113, 159, 160, 161 |
 
 Feature-flag philosophy: library-level structs are always compiled
 cheaply; the flag opts the consumer into integrations, additional
@@ -453,7 +451,7 @@ without touching `solid-pod-rs` source.
 |---|---|---|---|---|
 | `Storage` | `src/storage/mod.rs` | Filesystem-like read/write/list/watch interface backing everything LDP does | `FsBackend` (disk), `MemoryBackend` (tests) | S3, SPARQL, database-backed storage, remote pod |
 | `GroupMembership` | `src/wac/mod.rs` (re-exports from `evaluator`) | Resolves `acl:agentGroup` → set of WebIDs | `StaticGroupMembership` (in-memory `HashMap`) | vcard:Group stored in a container, external LDAP, DB lookup |
-| `QuotaPolicy` | `src/quota/mod.rs` | Reserve/record/release bytes against a pod-scoped budget | `FsQuotaStore` (feature `quota`, atomic `.quota.json` sidecar) | Redis counter, per-tenant DB row |
+| `QuotaPolicy` | `src/quota/mod.rs` | Check/record/reconcile bytes against a pod-scoped budget | `FsQuotaStore` (feature `quota`; atomic sidecar replacement but non-atomic check+record) | Redis counter, per-tenant DB row |
 | `Notifications` | `src/notifications/mod.rs` | Subscription registry | `InMemoryNotifications` | Redis pub/sub, PostgreSQL LISTEN/NOTIFY, cross-process |
 | `RateLimiter` | `src/security/rate_limit.rs` (feature `rate-limit`) | Token-bucket decision per `(route, subject)` key | `LruRateLimiter` | Shared-cluster rate limiting |
 | `PodResolver` | `src/multitenant.rs` | Map request path/host → `ResolvedPath` | `PathResolver`, `SubdomainResolver` | Hybrid path+subdomain, DNS-driven, custom tenant model |
@@ -506,15 +504,16 @@ let cid_verifier = CidVerifier::builder()
 
 | Crate | Status | Rows | Milestone | JSS equivalent | Notes |
 |---|---|---|---|---|---|
-| `solid-pod-rs` | **landed** (~17k LOC, 835 workspace tests pass) | 108 present + 1 partial + 10 semantic-diff + 8 net-new + 1 present-by-absence | v0.5.0-alpha.1 | `src/ldp/`, `src/wac/`, `src/storage/`, `src/auth/*` | Main library; framework-agnostic. |
-| `solid-pod-rs-server` | **landed** (~2k LOC including CLI) | rows 139, 140, 158, 138, 163, 168 | v0.5.0-alpha.1 | `bin/jss.js` + `src/server.js` | Actix-web binary + operator CLI. |
-| `solid-pod-rs-activitypub` | **landed** (2,394 LOC, Sprint 10) | 102–108, 131 | v0.5.0-alpha.1 | `src/ap/**`, `src/ap/routes/**` | ActivityPub + draft-cavage v12 HTTP Sig + sqlx + retry delivery. |
-| `solid-pod-rs-git` | **landed** (1,299 LOC, Sprint 10) | 69, 100 | v0.5.0-alpha.1 | `src/handlers/git.js` | `git-http-backend` CGI bridge + `Basic nostr:` auth forward. |
-| `solid-pod-rs-idp` | **landed** (~4,400 LOC, Sprint 10 + 11) | 74–81, 130 | v0.5.0-alpha.1 | `src/idp/**` | Solid-OIDC provider + Passkeys (webauthn-rs) + NIP-07 Schnorr SSO. |
-| `solid-pod-rs-nostr` | **landed** (2,177 LOC, Sprint 10) | 89, 90, 101, 132 | v0.5.0-alpha.1 | `src/nostr/relay.js` + `src/auth/did-nostr.js` | BIP-340, NIP-01/11/16 relay, did:nostr ↔ WebID bidirectional resolver. |
-| `solid-pod-rs-didkey` | **landed NEW** (858 LOC, Sprint 11) | 153 (net-new 152) | v0.5.0-alpha.1 | (JSS #86 — not yet in JSS) | did:key (Ed25519/P-256/secp256k1) + self-signed JWT verify. |
+| `solid-pod-rs` | **landed** | core protocol rows | v0.5.0-alpha.7 | `src/ldp/`, `src/wac/`, `src/storage/`, `src/auth/*` | Framework-agnostic core. |
+| `solid-pod-rs-server` | **landed** | server/operator rows | v0.5.0-alpha.7 | `bin/jss.js` + `src/server.js` | Actix-web binary + operator CLI. |
+| `solid-pod-rs-activitypub` | **landed** | 102–108, 131 | v0.5.0-alpha.7 | `src/ap/**`, `src/ap/routes/**` | ActivityPub + HTTP Signatures + sqlx delivery state. |
+| `solid-pod-rs-git` | **landed** | 69, 100 | v0.5.0-alpha.7 | `src/handlers/git.js` | `git-http-backend` CGI bridge. |
+| `solid-pod-rs-forge` | **landed** | forge extension rows | v0.5.0-alpha.7 | JSS forge/plugin surfaces | Pod-native hosting, browse, and issues. |
+| `solid-pod-rs-idp` | **landed** | 74–81, 130 | v0.5.0-alpha.7 | `src/idp/**` | Solid-OIDC provider + Passkeys + NIP-07 Schnorr SSO. |
+| `solid-pod-rs-nostr` | **landed** | 89, 90, 101, 132 | v0.5.0-alpha.7 | `src/nostr/relay.js` + `src/auth/did-nostr.js` | BIP-340 relay and did:nostr resolver. |
+| `solid-pod-rs-didkey` | **landed** | 152–153 | v0.5.0-alpha.7 | JSS self-signed issuer work | did:key + self-signed JWT verification. |
 
-**Sibling-crate discipline.** All five sibling crates are functional
+**Sibling-crate discipline.** All seven sibling crates are functional
 and may be depended on by integrators. Verify the parity row before
 quoting coverage — the checklist is the authoritative tracker.
 
@@ -649,7 +648,7 @@ mcp__claude-flow__memory_store({
 // Sibling crate reminder
 mcp__claude-flow__memory_store({
   key: "solid-pod-rs-sibling-crates-are-functional",
-  value: "All five sibling crates are functional as of Sprint 11: activitypub (2,394 LOC), git (1,299 LOC), idp (~4,400 LOC incl. Passkeys/Schnorr), nostr (2,177 LOC), didkey (858 LOC NEW). Still verify the parity row per feature before quoting coverage.",
+  value: "All seven sibling crates are functional at 0.5.0-alpha.7: server, activitypub, git, forge, idp, nostr, and didkey. Verify the parity row and dated security audit before quoting coverage or deployment readiness.",
   namespace: "solid-pod-rs-integration"
 });
 ```

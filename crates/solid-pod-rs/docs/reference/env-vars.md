@@ -1,27 +1,26 @@
 # Environment variables reference
 
-solid-pod-rs is a **library** — it does not read environment variables
-itself. This page documents the conventional environment variables
-the example server and recommended integrations honour, plus those
-honoured by upstream dependencies that consumers typically surface.
+The core `solid-pod-rs` crate is a library; its config loader and the bundled
+`solid-pod-rs-server` binary do read the JSS-compatible variables below.
+Custom embedders decide whether to use that loader.
 
-If you want a specific env var to be authoritative, wire it into your
-pod binary yourself. Nothing below is read by `solid_pod_rs` code.
+CLI arguments override environment and config-file values in the bundled
+server. Consult `solid-pod-rs-server --help` for the exact command-line
+surface.
 
 ## Recommended conventional env vars
 
-Use these when building a pod binary on top of the crate. The stock
-example (`examples/standalone.rs`) uses hard-coded defaults; production
-wrappers add the indirection.
+Use these names when building a custom pod binary. They are conventions;
+the authoritative bundled-server names are in the JSS-compatible table.
 
 | Variable | Type / default | Consumed by | Purpose |
 |---|---|---|---|
 | `POD_BIND`               | `host:port` string, default `127.0.0.1:8765` | your HTTP framework | Listen address. |
 | `POD_BASE_URL`           | URL, e.g. `https://pod.example` | `notifications::ChangeNotification::from_storage_event`, `oidc::discovery_for` | Canonical public URL of the pod. |
-| `POD_STORAGE_BACKEND`    | `fs`, `memory`, `s3` | your wiring | Selects the `Storage` implementation to construct. |
+| `POD_STORAGE_BACKEND`    | `fs`, `memory`, or a custom value | your wiring | Selects the `Storage` implementation your application constructs. No stock S3 implementation exists. |
 | `POD_FS_ROOT`            | path | `FsBackend::new` | Root directory for the FS backend. |
-| `POD_S3_BUCKET`          | bucket name | S3 backend builder | S3 bucket (when using the S3 backend). |
-| `POD_S3_PREFIX`          | key prefix | S3 backend builder | Key-prefix isolation for multi-tenant buckets. |
+| `POD_S3_BUCKET`          | bucket name | your custom backend | Suggested convention; ignored by the library and bundled server. |
+| `POD_S3_PREFIX`          | key prefix | your custom backend | Suggested convention; ignored by the library and bundled server. |
 | `POD_NIP98_TOLERANCE`    | seconds, default 60 | your NIP-98 middleware | Override the timestamp window. Don't exceed 300. |
 | `POD_OIDC_ISSUER`        | URL | `oidc::discovery_for` | OIDC issuer identity. Ignored when `oidc` feature is off. |
 | `POD_OIDC_HS256_SECRET`  | bytes (UTF-8 OK) | `oidc::verify_access_token` | HS256 secret for test-path token verification. Production deployments use ES256/RS256 and a JWKS instead. |
@@ -44,6 +43,7 @@ unchanged.
 | `JSS_OIDC_ISSUER`      | URL | `config::ConfigLoader` | Identity provider discovery URL. |
 | `JSS_WORKERS`          | usize, default CPUs | `config::ConfigLoader` | actix-web worker count. |
 | `JSS_LOG_LEVEL`        | string | `config::ConfigLoader` | `trace` / `debug` / `info` / `warn` / `error`. |
+| `JSS_LIVE_RELOAD`      | bool, default `false` | `solid-pod-rs-server` | Injects the development reload WebSocket script into HTML responses. Do not enable it on a public production service. |
 | `JSS_DISABLE_DOTFILES` | bool | `config::ConfigLoader` | If set, no dotfiles served even on allowlist. |
 | `JSS_MAX_ACL_BYTES`    | bytes, default `1048576` (1 MiB) | `wac::parse_turtle_acl_with_limit`, `wac::parse_jsonld_acl_with_limits` | Maximum ACL document size before rejection (CWE-400 DoS protection). Added Sprint 12. |
 | `DOTFILE_ALLOWLIST`    | comma-separated | `security::dotfile::DotfileAllowlist::from_env` | Override the default dotfile allowlist (`.acl`, `.meta`, `.account`). |
@@ -62,6 +62,12 @@ These variables are consumed by the `solid-pod-rs-server` binary directly
 |---|---|---|---|
 | `SOLID_ALLOWED_ORIGINS` | `--allowed-origins` | Comma-separated URL list, default empty | CORS origin allowlist for git and pod routes. When non-empty, only listed origins receive `Access-Control-Allow-Origin` in responses. Empty = wildcard (`*`) — suitable for local dev only. Example: `https://dreamlab-ai.com,https://staging.dreamlab-ai.com`. |
 | `SOLID_ADMIN_KEY` | `--admin-key` | String (opaque secret), default unset | Pre-shared key (PSK) for the `POST /_admin/provision/{pubkey}` endpoint. The endpoint returns `403` on every request when this variable is unset. Generate with `openssl rand -hex 32`. Treat as a credential — do not log, do not commit. |
+| `TOKEN_SECRET` | — | At least 32 bytes, default unset | Enables JSS-compatible two-part development bearer tokens. Tokens are HMAC-SHA256 authenticated and must contain valid `iat`, `exp`, and HTTP(S) WebID claims. An absent or short secret disables this authentication path. |
+
+If `JSS_PORT` or `--port` names an occupied port, the server tries the next ten
+ports and reports the actual base URL. Port `0` asks the operating system for
+one ephemeral port. Production supervisors should still monitor the reported
+address rather than assume the requested port was selected.
 
 ## Payments + provenance (0.5.0-alpha.0)
 
@@ -95,22 +101,12 @@ Example production settings:
 RUST_LOG=solid_pod_rs=info,tower_http=info,actix_web=warn
 ```
 
-## AWS S3 backend (when feature `s3-backend` enabled)
+## Unsupported object-store configuration
 
-Standard AWS env vars are honoured by the `aws-config` default
-loader:
-
-| Variable | Purpose |
-|---|---|
-| `AWS_REGION`                    | AWS region. |
-| `AWS_ACCESS_KEY_ID`             | Static access key. |
-| `AWS_SECRET_ACCESS_KEY`         | Static secret key. |
-| `AWS_SESSION_TOKEN`             | STS session token. |
-| `AWS_PROFILE`                   | Named profile in `~/.aws/credentials`. |
-| `AWS_ENDPOINT_URL_S3`           | Custom endpoint (R2, MinIO, Tigris). |
-| `AWS_USE_PATH_STYLE_ADDRESSING` | Path-style URLs (some S3-compatible stores). |
-
-These are read by the AWS SDK, not by solid-pod-rs.
+No S3 or R2 implementation ships, and the former dependency-only
+`s3-backend` Cargo feature has been removed. `storage.type=s3` and
+`JSS_STORAGE_TYPE=s3` now fail validation instead of falling back to the
+filesystem. AWS environment variables are not consumed by this workspace.
 
 ## `notify` filesystem watcher
 
@@ -132,7 +128,6 @@ These are feature flags in `Cargo.toml`, set at build time:
 |----------------|---------|--------|
 | `fs-backend`   | yes     | Compiles `FsBackend`. |
 | `memory-backend` | yes   | Compiles `MemoryBackend`. |
-| `s3-backend`   | no      | Compiles `S3Backend` (requires `aws-sdk-s3`). |
 | `oidc`         | no      | Compiles the `oidc` module. |
 
 ## Testing

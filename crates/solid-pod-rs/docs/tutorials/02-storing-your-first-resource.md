@@ -107,7 +107,7 @@ curl -i -X PUT \
      http://127.0.0.1:8765/notes/hello.jsonld
 ```
 
-> **Note:** the example server in `examples/standalone.rs` does not
+> **Note:** the bundled server does not
 > yet honour `If-Match`; the storage trait returns the ETag and the
 > example accepts the write unconditionally. See
 > [PARITY-CHECKLIST.md §Metadata / Link headers](../../PARITY-CHECKLIST.md)

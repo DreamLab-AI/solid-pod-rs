@@ -4,6 +4,73 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.8] - 2026-08-20
+
+A feature-parity and hardening bump. The public surface loses the unfinished
+S3 backend and gains capability-sandboxed filesystem storage, an atomic quota
+reservation path, and an observer-atomic payment ledger; the ActivityPub, git,
+IdP and nostr siblings each pick up a targeted correctness or hardening fix.
+All eight workspace crates are re-pinned to `0.5.0-alpha.8`.
+
+### Removed
+
+- **S3 storage backend dropped.** The `s3-backend` feature, the `aws-sdk-s3`
+  dependency, the `StorageBackendConfig::S3` config variant, and the
+  `JSS_S3_BUCKET` / `JSS_S3_REGION` / `JSS_S3_PREFIX` env vars are gone.
+  Storage is now filesystem or memory only; downstream consumers needing an
+  object store supply their own `Storage` implementation. An unsupported
+  `JSS_STORAGE_TYPE` (including `s3`) is now preserved through the env layer
+  so tagged-enum deserialisation fails loudly, rather than silently falling
+  back to filesystem storage. The core / wasm dependency surface shrinks.
+
+### Security
+
+- **Filesystem backend is capability-sandboxed (`cap-std`).** `FsBackend`
+  now holds a `cap_std::fs::Dir` handle rooted at the pod store, so path
+  traversal is prevented at the OS-handle level rather than by string
+  inspection alone. `fs-backend` pulls `cap-std`.
+- **Atomic quota reservation.** `QuotaPolicy` gains a `reserve` method that
+  performs check-and-commit under a per-pod async lock, so concurrent writers
+  to the same pod can no longer each pass a pre-check and collectively
+  overshoot the cap. The existing `check` + `record` pair is retained as the
+  non-atomic cooperative discipline; `record` and `reconcile` also take the
+  per-pod lock now. New `security.default_quota_bytes` config field.
+- **Observer-atomic payment state.** The payment handlers now commit the Web
+  Ledger, replay set, order book and exchange together as a single
+  `state.json` document via one `Storage::put`; the legacy per-concern
+  documents (`webledgers/ledger.json`, `replay.json`, `offers.json`,
+  `pool.json`) are demoted to best-effort compatibility mirrors, consulted on
+  read only as a first-run bootstrap fallback. This closes a crash window
+  between the ledger and replay writes that could double-credit a deposit.
+  Adds `base64` / `hex` / `hmac` / `sha2` to the server for TXO txid
+  derivation and dev-bearer HMAC auth.
+- **HTTP-signature covered-component validation (ActivityPub).** The verifier
+  now rejects a well-formed `Signature` header that omits or duplicates a
+  required covered component (`SigError::MalformedSignature`).
+- **IdP: spoofable header path removed.** An `AuthenticatedUserId` extractor
+  replaces the trust-the-`X-Authenticated-User`-header path, and the DPoP
+  replay cache is wired into the provider.
+- **Git CGI execution timeout.** A 120 s guard kills a hung
+  `git-http-backend` child, surfaced as `GitError::BackendFailed` with
+  `exit_code: None`.
+- **Nostr relay limits.** `RelayLimits` / `dispatch_message_with_limits` bound
+  per-connection relay message handling in the WebSocket path.
+
+### Changed
+
+- **`solid-pod-rs-forge`** enables `nip98-schnorr` + `nip98-replay` on its
+  core dependency and makes agent resolution async with replay handling.
+- **Server transport trimmed.** `actix-web` is taken at
+  `default-features = false, features = ["macros"]`; `rustls-pemfile` is
+  dropped from the `tls` feature. `lru` moves `0.16 → 0.18`.
+- **CI / release hardening.** All workflow actions are pinned to commit SHAs;
+  the core feature matrix is restructured (nested `features` object) and the
+  now-removed `s3-backend` combination is gone; coverage (tarpaulin) is
+  promoted to a required gate (`--fail-under 60`, `fail_ci_if_error: true`);
+  `cargo-deny` runs against the workspace-root manifest. New security
+  regression tests land for MCP/WAC, payment atomicity, quota enforcement and
+  registration.
+
 ## [0.5.0-alpha.7] - 2026-07-26
 
 did:nostr CG spec 0.1.1 alignment plus the JSS `0.0.204 → 0.0.219`

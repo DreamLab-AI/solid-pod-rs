@@ -33,7 +33,8 @@ pub enum GitError {
     #[error("git-http-backend binary not available: {0}")]
     BackendNotAvailable(String),
 
-    /// The CGI process exited non-zero before emitting headers.
+    /// The CGI process exited non-zero before emitting headers, or was
+    /// killed after exceeding the execution timeout (`exit_code: None`).
     #[error("git backend failed: exit={exit_code:?}, stderr={stderr}")]
     BackendFailed {
         /// Process exit code, if the child did terminate.
