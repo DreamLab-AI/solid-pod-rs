@@ -40,13 +40,13 @@ pub struct QuotaUsage {
     /// Bytes currently attributed to the pod.
     pub used_bytes: u64,
     /// Hard cap; `0` in an on-disk sidecar is treated as "unset →
-    /// apply default" by [`FsQuotaStore`].
+    /// apply default" by `FsQuotaStore`.
     pub limit_bytes: u64,
 }
 
 /// Error surfaced when a pre-write check exceeds the pod's cap.
 ///
-/// Carried through [`crate::error::PodError::QuotaExceeded`] when the
+/// Carried through `PodError::QuotaExceeded` when the
 /// `quota` feature is enabled; kept as a standalone type so other backends
 /// (e.g. a custom object-store quota adapter) can reuse the shape without
 /// pulling in `PodError` machinery directly.

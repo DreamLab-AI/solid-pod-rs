@@ -370,7 +370,7 @@ pub enum WebhookDelivery {
 /// `deliver_all()` POSTs the Activity Streams payload to each target.
 ///
 /// Sprint 6 C additions (ADR-058):
-/// * Optional RFC 9421 HTTP Message Signatures via [`Self::with_signer`].
+/// * Optional RFC 9421 HTTP Message Signatures via `with_signer`.
 /// * `Retry-After` honoured on 429.
 /// * 410 Gone treated as `FatalDrop`; other 4xx retried as transient.
 /// * Full-jitter exponential back-off bounded by `max_backoff`.

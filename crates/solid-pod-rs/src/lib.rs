@@ -9,7 +9,7 @@
 //! cheap, always-on **git-marks** (every pod write captured as a git commit
 //! + a PROV-O sidecar) and expensive, opt-in **block-trails** (a
 //! Bitcoin-taproot-anchored, hash-chained state trail — [`mrc20`] /
-//! [`bitcoin_tx`]) — and a routed, sovereign HTTP-402 economy: a `did:nostr`-keyed
+//! `bitcoin_tx`) — and a routed, sovereign HTTP-402 economy: a `did:nostr`-keyed
 //! [Web Ledger](payments), `acl:PaymentCondition` ([`wac`]) access gating, an MRC20
 //! deposit path, and a peer order book + constant-product AMM ([`trading`]).
 //! The HTTP routing for the 402 economy and the `_prov` provenance API lives in
@@ -78,14 +78,14 @@
 //! | [`mrc20`] | MRC20 state chains, JCS, BIP-341 key chaining.       |
 //! | [`provenance`] | git-mark / block-trail provenance primitives + PROV-O.  |
 //! | [`trading`] | Peer-to-peer order book + AMM constant-product pool.  |
-//! | [`notifications`] | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
+//! | `notifications` | WebSocket, Webhook (RFC 9421 signed), legacy adapter. |
 //! | [`error`] | Crate-wide [`PodError`] error type. |
 //! | [`config`] | Layered configuration schema. |
 //! | [`security`] | SSRF guard, dotfile allowlist, CORS, rate limiter. |
 //! | [`quota`] | Cooperative per-pod byte-quota accounting (not wired by the bundled server). |
 //! | [`multitenant`] | `PodResolver` trait; path + subdomain modes. |
 //! | [`interop`] | `.well-known/solid`, WebFinger, NodeInfo, did:nostr. |
-//! | [`did_nostr_types`] | Canonical `did:nostr` types (wasm32-safe, `core`). |
+//! | `did_nostr_types` | Canonical `did:nostr` types (wasm32-safe, `core`). |
 //! | [`provision`] | Pod bootstrap (WebID + containers + type indexes + ACL). |
 //!
 //! ## Quick start

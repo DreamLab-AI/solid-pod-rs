@@ -17,10 +17,10 @@
 //!
 //! ## Git auto-init (alpha.12, rows 199-200, JSS #466/#469/#471)
 //!
-//! [`GitInitHook`] is a wasm32-safe async trait. Callers that want
+//! `GitInitHook` is a wasm32-safe async trait. Callers that want
 //! `git init -b main` to run after the pod files are written pass an
 //! implementor (e.g. `solid_pod_rs_git::init::GitAutoInit`) to
-//! [`provision_pod_ext`]. The trait itself lives in this crate so the
+//! `provision_pod_ext`. The trait itself lives in this crate so the
 //! type is stable; the subprocess implementation lives in
 //! `solid-pod-rs-git`, which requires `tokio::process` and is never
 //! compiled for `wasm32-unknown-unknown`.
@@ -328,7 +328,7 @@ pub async fn provision_pod<S: Storage + ?Sized>(
 /// spawns `git init -b main` via `tokio::process::Command` and lives in
 /// a separate crate that is never compiled for `wasm32-unknown-unknown`.
 ///
-/// Pass an implementor to [`provision_pod_ext`] to opt in.
+/// Pass an implementor to `provision_pod_ext` to opt in.
 /// Feature-gated: only present when the `git-auto-init` Cargo feature
 /// is enabled on `solid-pod-rs`.
 #[cfg(feature = "git-auto-init")]

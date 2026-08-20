@@ -12,7 +12,7 @@
 //! optional: with the `nip98-schnorr` feature it runs for real; **without
 //! it the verifier fails CLOSED** (returns [`PodError::Unsupported`]) so a
 //! mis-configured build denies authentication rather than accepting any
-//! forged pubkey. See [`assert_schnorr_verification_enabled`] for the
+//! forged pubkey. See `assert_schnorr_verification_enabled` for the
 //! compile-time guard binaries use to refuse a fail-open build outright.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,7 +54,7 @@ pub struct Nip98Verified {
     /// dedup key a replay guard keys on — two distinct requests (differing
     /// URL, method, body, or `created_at`) always hash to different ids,
     /// while a re-presented token hashes identically. See
-    /// [`crate::auth::replay::Nip98ReplayCache`].
+    /// `crate::auth::replay::Nip98ReplayCache`.
     pub event_id: String,
 }
 

@@ -1,7 +1,7 @@
 //! Pluggable rate-limit primitive (Sprint 7 §6.1, ADR-057).
 //!
 //! The library exposes a transport-agnostic [`RateLimiter`] trait plus a
-//! reference in-process [`LruRateLimiter`] implementation. Consumer
+//! reference in-process `LruRateLimiter` implementation. Consumer
 //! binders (actix-web, axum, tower) adapt the trait to their middleware
 //! surface — this crate never mounts routes itself (F7 boundary).
 //!
