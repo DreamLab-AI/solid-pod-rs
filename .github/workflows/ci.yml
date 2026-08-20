@@ -218,7 +218,11 @@ jobs:
         with:
           files: crates/solid-pod-rs/coverage/cobertura.xml
           flags: solid-pod-rs
-          fail_ci_if_error: true
+          # The coverage GATE is tarpaulin's --fail-under above; the Codecov
+          # upload is reporting only. Without a CODECOV_TOKEN secret the
+          # tokenless upload is rejected, so a fatal upload would mask a
+          # passing gate (84%+ measured) behind a missing-credential error.
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # ---------------------------------------------------------------------------
