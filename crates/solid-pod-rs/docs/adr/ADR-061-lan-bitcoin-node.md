@@ -30,19 +30,31 @@ Three ecosystem threads need a Bitcoin node and today settle for less:
 
 | Service | API | Consumer | Suggested port |
 |---|---|---|---|
-| bitcoind (testnet4 first; mainnet by explicit later decision) | JSON-RPC (LAN-only) | electrs/mempool stack only — pod code never speaks RPC | 48332 |
-| **electrs/esplora or mempool.space self-host** | mempool.space-style REST (**the contract this crate needs**: `GET /api/address/:addr/utxo`, `GET /api/tx/:txid`, `POST /api/tx`, `GET /api/blocks/tip/height`) | `MempoolHttpClient` via `JSS_PAY_MEMPOOL_URL` | 3000 (electrs) or 8999→`/api` (mempool) |
+| bitcoind (**dual-network: mainnet + testnet4**, see below) | JSON-RPC (LAN-only) | electrs/mempool stack only — pod code never speaks RPC | 8332 (mainnet) / 48332 (testnet4) |
+| **electrs/esplora or mempool.space self-host** | mempool.space-style REST (**the contract this crate needs**: `GET /api/address/:addr/utxo`, `GET /api/tx/:txid`, `POST /api/tx`, `GET /api/blocks/tip/height`) | `MempoolHttpClient` via `JSS_PAY_MEMPOOL_URL` | 3000 (electrs-mainnet) / 3001 (electrs-testnet4), or 8999/9000→`/api` (mempool) |
 | Core-Lightning (restored `hsm_secret`) + NWC bridge | NIP-47 over the mesh relay | PRD-015 C10 spender/receiver | n/a (relay-mediated) |
 
-Configuration (no code change required for anchoring — the seam already exists):
+### Dual-network posture (2026-08-25 amendment)
+
+The node runs **both networks simultaneously**: mainnet for real-money
+Lightning (PRD-015 C10) and cheap on-chain tests; testnet4 for development
+and integration testing. Each network gets its own bitcoind instance, its
+own electrs, and its own REST port. Consumers select by URL:
 
 ```
-JSS_PAY_MEMPOOL_URL=http://192.168.2.27:3000        # electrs; or http://192.168.2.27:8999/api
+# Mainnet (real money — Lightning + cheap anchoring tests)
+JSS_PAY_MEMPOOL_URL=http://192.168.2.27:3000
+
+# Testnet4 (development + CI)
+JSS_PAY_MEMPOOL_URL=http://192.168.2.27:3001
+
+# Core-Lightning connects to the mainnet bitcoind for the NWC rail
 ```
 
 The public `mempool.space/testnet4` default **stays the shipped default**: a pod
 without LAN access must keep working. The LAN URL is deployment configuration
-(agentbox `.env` / compose), not a new crate default.
+(agentbox `.env` / compose), not a new crate default. The `JSS_PAY_NETWORK`
+env var is not needed — the URL itself selects the network.
 
 ## Non-goals / rejected
 
@@ -56,13 +68,17 @@ without LAN access must keep working. The LAN URL is deployment configuration
 
 ## Acceptance checklist (gates the cutover — run when .27 is reachable)
 
-1. `curl http://192.168.2.27:<port>/api/blocks/tip/height` returns the current
-   testnet4 tip (within 1 block of a public explorer).
+1. **Both networks synced:**
+   - `curl http://192.168.2.27:3000/api/blocks/tip/height` returns the current
+     mainnet tip (within 1 block of a public explorer).
+   - `curl http://192.168.2.27:3001/api/blocks/tip/height` returns the current
+     testnet4 tip.
 2. The four contract endpoints above respond with mempool.space-compatible
-   schemas (the crate's fixture tests document the exact shapes).
-3. A full anchor round-trip on testnet4 against the LAN URL:
-   `_prov/anchor` → txid → confirmed lookup, with `JSS_PAY_MEMPOOL_URL` set
-   in a staging pod.
+   schemas on both ports (the crate's fixture tests document the exact shapes).
+3. A full anchor round-trip on **testnet4** against the LAN URL:
+   `_prov/anchor` → txid → confirmed lookup, with `JSS_PAY_MEMPOOL_URL=http://192.168.2.27:3001`
+   in a staging pod. Then a cheap mainnet test (balance lookup only, no spend)
+   against `:3000`.
 4. Firewall: REST port reachable from the agentbox/pod segment; bitcoind RPC
    and P2P **not** reachable from it.
 5. Update: agentbox `.env` (+ compose env passthrough), this ADR's Status →
