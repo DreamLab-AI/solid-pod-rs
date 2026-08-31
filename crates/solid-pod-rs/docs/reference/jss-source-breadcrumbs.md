@@ -127,7 +127,7 @@ this surface):
 
 | JSS file | JSS lines | solid-pod-rs equivalent | Status | Parity row |
 |---|---|---|---|---|
-| `src/auth/solid-oidc.js` | — | `src/oidc/mod.rs` + `docs/adr/ADR-057-lws10-oidc-delta.md` | ✅ (delta audit) | 150 |
+| `src/auth/solid-oidc.js` | — | `src/oidc/mod.rs` + `docs/archive/adr/ADR-057-lws10-oidc-delta.md` | ✅ (delta audit) | 150 |
 | (not implemented in JSS; tracked in JSS #86) | — | `crates/solid-pod-rs-didkey/` — Ed25519/P-256/secp256k1 encoding + JWT verify + `DidKeyVerifier` | 🔄 net-new | 153 |
 | (not implemented in JSS) | — | `src/auth/self_signed.rs::{SelfSignedVerifier, CidVerifier}` + wiring into `wac::issuer::IssuerCondition` | 🔄 net-new | 152 |
 

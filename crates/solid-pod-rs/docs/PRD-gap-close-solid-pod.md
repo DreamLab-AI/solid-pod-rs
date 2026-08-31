@@ -5,7 +5,7 @@
 **Date:** 2026-07-08
 **Governed by:** [Meta-PRD Gap-Close Sprint](../../../../VisionFlow/docs/PRD-gap-close-sprint.md), [ADR-004 Gap-Close Sprint Governance](../../../../VisionFlow/docs/ADR-004-gap-close-sprint-governance.md), [ADR-002 Ecosystem Alignment Governance]
 **Bounded context:** [DDD Gap-Close solid-pod Context](DDD-gap-close-solid-pod-context.md), conformist to [DDD Gap-Close Context](../../../../VisionFlow/docs/DDD-gap-close-context.md)
-**Local decision record:** [ADR-060 Gap-Close solid-pod slice](adr/ADR-060-gap-close-solid-pod-slice.md)
+**Local decision record:** [ADR-060 Gap-Close solid-pod slice](archive/adr/ADR-060-gap-close-solid-pod-slice.md)
 
 **Naming note.** This repository carries no numbered PRD/DDD series; its ADRs are numbered (`adr/ADR-0NN-slug.md`, next free number 060). For this sprint the repository adopts the canon's unnumbered child-document convention: one `PRD-gap-close-solid-pod.md` and one `DDD-gap-close-solid-pod-context.md` alongside the numbered ADR. The pre-existing `sprint-12-prd.md` is a one-off and not part of any series.
 
@@ -134,5 +134,5 @@ solid-pod-rs owns no forum, desktop, MR or voice surface, so it scores nothing d
 
 - Meta-register: [PRD-gap-close-sprint.md](../../../../VisionFlow/docs/PRD-gap-close-sprint.md) Table B (REC-1, REC-11), Table C (RES-c); solid-pod-rs work-package section.
 - Governance: [ADR-004](../../../../VisionFlow/docs/ADR-004-gap-close-sprint-governance.md) (canary gate, anti-fox, wave gating), ADR-002 (maturity vocabulary, compatibility matrix, release manifest).
-- Local: [ADR-060](adr/ADR-060-gap-close-solid-pod-slice.md) (the decisions this slice forces), [ADR-059](adr/ADR-059-provenance-primitives-block-trails-git-marks.md) (provenance primitives, Status-detail correction pending), `docs/reference/patch-semantics.md`, `docs/diagrams/README.md`.
+- Local: [ADR-060](archive/adr/ADR-060-gap-close-solid-pod-slice.md) (the decisions this slice forces), [ADR-059](archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) (provenance primitives, Status-detail correction pending), `docs/reference/patch-semantics.md`, `docs/diagrams/README.md`.
 - Upstream dependency: VisionClaw RES-a `LivenessHarness` (canary registration); VisionFlow RES-b render gate (RES-c gate); VisionClaw REC-11 lead (trace-index build).

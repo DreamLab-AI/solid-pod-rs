@@ -5,7 +5,7 @@ anchor and a git committer? What are the two provenance tiers, how do
 they compose, and what does "independently verifiable" actually buy you?
 
 This page explains the model. For the decision record see
-[ADR-059](../adr/ADR-059-provenance-primitives-block-trails-git-marks.md);
+[ADR-059](../archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md);
 for the full inheritance matrix and phased delivery see the
 [provenance upgrade master plan](../design/provenance-upgrade-master-plan.md);
 for the data-flow picture see
@@ -222,7 +222,7 @@ available, not programmable money.
   402 economy whose Bitcoin write-side this provenance tier shares.
 - [Security model](security-model.md) — WAC-gated git, replay protection,
   the auth layering the `_prov` routes sit behind.
-- [ADR-059](../adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+- [ADR-059](../archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
   — the decision record.
 - [Provenance upgrade master plan](../design/provenance-upgrade-master-plan.md)
   — the JSS inheritance matrix and phased delivery.

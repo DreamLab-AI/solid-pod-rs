@@ -33,15 +33,19 @@ let storage = FsBackend::new(PathBuf::from("./pod-root"));
 Two composable, cost-tiered **provenance primitives** become first-class, giving
 the pod **verifiable, tamper-evident traceability** over every change to its
 data, plus a sovereign, Bitcoin-settled trust ledger beneath it. See
-[ADR-059](docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and
+[ADR-059](docs/archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and
 the [master plan](docs/design/provenance-upgrade-master-plan.md).
 
-- **git-marks** (cheap, always-on) — every LDP write (`PUT`/`POST`/`PATCH`)
-  becomes a git commit, captured as a `GitMark` and persisted as a PROV-O
-  sidecar at `<resource>.prov.ttl`. Content-addressed, append-only,
-  tamper-evident ordering of every write — and a queryable history of who wrote
-  what. Module `provenance`; native `GitMarker` in `solid-pod-rs-git`, no-op on
-  wasm.
+- **git-marks** (cheap, opt-in via `--features git`) — with the `git` feature
+  built in, every LDP write (`PUT`/`POST`/`PATCH`) becomes a git commit,
+  captured as a `GitMark` and persisted as a PROV-O sidecar at
+  `<resource>.prov.ttl`: content-addressed, append-only, tamper-evident ordering
+  of every write, and a queryable history of who wrote what. Module
+  `provenance`; native `GitMarker` in `solid-pod-rs-git`, no-op on wasm.
+  **Not a default build:** `solid-pod-rs-server` ships `default = []`
+  (`Cargo.toml:123`), so without `--features git` `git_mark_write` compiles to a
+  no-op shim (`lib.rs:3490`) and records zero marks. See
+  [BASELINE divergence #3](docs/BASELINE-solid-pod-rs.md).
 - **block-trails** (high-value, opt-in, feature `mrc20`) — a Bitcoin-taproot
   -anchored, hash-chained MRC20 state trail. Verify **and** write side
   (`bitcoin_tx.rs`: P2TR build, BIP-341 TapSighash, BIP-340 Schnorr signing) —

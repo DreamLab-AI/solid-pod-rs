@@ -3,7 +3,7 @@
 **Status:** Living document
 **Date:** 2026-07-08
 **Scope:** solid-pod-rs's owned slice of the four-surface gap register — REC-1 PATCH correctness, NIP-98 verifier consolidation, the REC-11 provenance-trail share, RES-c diagram render
-**Governed by:** [PRD-gap-close-solid-pod](PRD-gap-close-solid-pod.md), [ADR-060](adr/ADR-060-gap-close-solid-pod-slice.md)
+**Governed by:** [PRD-gap-close-solid-pod](PRD-gap-close-solid-pod.md), [ADR-060](archive/adr/ADR-060-gap-close-solid-pod-slice.md)
 **Conformist to:** [DDD Gap-Close Context](../../../../VisionFlow/docs/DDD-gap-close-context.md), ADR-002 Ecosystem Alignment
 
 **Naming note.** This repository carries no numbered DDD series; for this sprint it adopts the canon's unnumbered child-document convention, matching `PRD-gap-close-solid-pod.md`.

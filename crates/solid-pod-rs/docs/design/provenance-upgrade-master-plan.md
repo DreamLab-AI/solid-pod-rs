@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-13
 **Status:** Ready for implementation
-**Companion ADR:** [ADR-059](../adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+**Companion ADR:** [ADR-059](../archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
 **Origin:** Produced by a 6-reader research mesh over JavaScriptSolidServer (JSS,
 gh-pages v0.0.197), this crate, and the downstream VisionFlow consumers
 (agentbox, nostr-rust-forum, dreamlab-ai-website, VisionClaw).

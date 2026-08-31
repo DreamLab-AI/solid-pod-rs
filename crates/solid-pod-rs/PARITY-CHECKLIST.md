@@ -365,7 +365,7 @@ SAML.
 
 | # | LWS 1.0 / JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 150 | LWS10 **OpenID Connect** profile conformance (FPWD 2026-04-23) | `src/auth/solid-oidc.js` (Solid-OIDC baseline) | Delta audit complete: ADR-057 documents 5 back-compat fields, 7 port tickets, 5 semantic differences | present | `docs/adr/ADR-057-lws10-oidc-delta.md` | Sprint 11. Action items prioritised XS→M; implementation tracked under separate rows. |
+| 150 | LWS10 **OpenID Connect** profile conformance (FPWD 2026-04-23) | `src/auth/solid-oidc.js` (Solid-OIDC baseline) | Delta audit complete: ADR-057 documents 5 back-compat fields, 7 port tickets, 5 semantic differences | present | `docs/archive/adr/ADR-057-lws10-oidc-delta.md` | Sprint 11. Action items prioritised XS→M; implementation tracked under separate rows. |
 | 151 | LWS10 **SAML 2.0** suite (FPWD 2026-04-23) | **not implemented** | **not implemented** | explicitly-deferred (both) | — | JSS #319 box 2 scoped-out. |
 | 152 | LWS10 **SSI-CID** (Controlled Identifiers) verifier | **not implemented** | `CidVerifier` fan-out dispatcher + `Nip98Verifier` + `DidKeyVerifier`; wired into `wac::issuer::IssuerCondition` dispatch | **present** (we ship first; JSS hasn't) | `src/auth/self_signed.rs`, `crates/solid-pod-rs-didkey/src/verifier.rs` | Sprint 11. Net-new advantage. |
 | 153 | LWS10 **SSI-did:key** auth | **not implemented** (tracked in JSS #86) | New crate `solid-pod-rs-didkey` — Ed25519/P-256/secp256k1 encoding per W3C did:key, hand-rolled JWT verify with alg-confusion gates, `DidKeyVerifier` impl of `SelfSignedVerifier` | **present** (we ship first; JSS hasn't) | `crates/solid-pod-rs-didkey/` | Sprint 11. 29 tests. Net-new advantage. |

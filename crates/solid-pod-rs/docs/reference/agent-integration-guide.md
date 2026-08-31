@@ -470,7 +470,7 @@ Landed extension points (Sprint 11):
 The LWS 1.0 Auth Suite landed in Sprint 11. Three rows promoted to
 `present`:
 
-- **Row 150** — Solid-OIDC / LWS10 OIDC delta. `docs/adr/ADR-057-lws10-oidc-delta.md`
+- **Row 150** — Solid-OIDC / LWS10 OIDC delta. `docs/archive/adr/ADR-057-lws10-oidc-delta.md`
   documents the field-level delta between the current Solid-OIDC
   profile and the LWS10 FPWD (2026-04-23): 5 fields we emit that
   LWS10 does not require, 7 fields LWS10 requires that we do not

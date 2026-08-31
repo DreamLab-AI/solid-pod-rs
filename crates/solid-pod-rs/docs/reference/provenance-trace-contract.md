@@ -4,8 +4,8 @@
 **Date:** 2026-07-08
 **Owner:** solid-pod-rs maintainers (DreamLab AI)
 **Governed by:** [PRD-gap-close-solid-pod](../PRD-gap-close-solid-pod.md) WP-3,
-[ADR-060](../adr/ADR-060-gap-close-solid-pod-slice.md) Decision 3,
-[ADR-059](../adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+[ADR-060](../archive/adr/ADR-060-gap-close-solid-pod-slice.md) Decision 3,
+[ADR-059](../archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
 **Consumers:** VisionClaw (REC-11 lead, builds the unified trace), agentbox
 (supplies the `did:nostr` agent identity that authors git-marks)
 

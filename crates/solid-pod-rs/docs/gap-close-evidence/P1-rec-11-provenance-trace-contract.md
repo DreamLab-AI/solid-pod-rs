@@ -14,7 +14,7 @@ VisionClaw-led P2). Per-commit provenance stays `integrated` under
 | File | Change |
 |---|---|
 | `crates/solid-pod-rs/docs/reference/provenance-trace-contract.md` (new) | The contract: `GET /{pod}/_prov/` request params, enumeration semantics (commit-chain walk, newest-first, one commit → one mark, sidecar overlay, **no pre-known SHA**), response schema (same mark shape as the point-lookup), the `did:nostr` `agent_did` attribution field, the SPARQL merged-graph alternative, auth, the registered `solid-pod.prov-trace-index` canary, and a falsification section. Default-off git caveat stated at the head and re-stated on the enumeration claims. |
-| `crates/solid-pod-rs/docs/adr/ADR-059-*.md` | Status-detail corrected: D3/D5/D7 + the `ProvenanceLog::record` composition moved from "Still Proposed / not built" to "Shipped in `182ed31`" (with file/line evidence); the two real residuals named (default-off `git` feature; no pod-wide `_prov` enumeration index). Top Status line: Proposed → Accepted-with-residuals. |
+| `crates/solid-pod-rs/docs/archive/adr/ADR-059-*.md` | Status-detail corrected: D3/D5/D7 + the `ProvenanceLog::record` composition moved from "Still Proposed / not built" to "Shipped in `182ed31`" (with file/line evidence); the two real residuals named (default-off `git` feature; no pod-wide `_prov` enumeration index). Top Status line: Proposed → Accepted-with-residuals. |
 
 ## Grounding (the contract cites real code, not a wish)
 

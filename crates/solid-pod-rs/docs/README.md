@@ -97,7 +97,7 @@ tradeoffs?
   the routed HTTP-402 economy: `did:nostr`-keyed Web Ledger,
   `acl:PaymentCondition` gating, deposits, replay protection, and the live
   order book + constant-product AMM.
-- [ADR-059 — block-trails & git-marks](adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+- [ADR-059 — block-trails & git-marks](archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
   — the two provenance primitives, their composition, and why
   Bitcoin-anchored (and not EVM).
 - [Provenance upgrade master plan](design/provenance-upgrade-master-plan.md)
