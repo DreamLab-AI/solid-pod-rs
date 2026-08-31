@@ -26,8 +26,14 @@ redirect table).
 (`node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr` — it fails CI on
 invalid frontmatter).
 
-_1 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
+_7 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
 
 | ID | Title | Date | Decision | Impl | Activation | Supersedes | Superseded by | Owner | Repo |
 |----|-------|------|----------|------|------------|------------|---------------|-------|------|
 | [ADR-2001](ADR-2001-corpus-consolidation.md) | Consolidate the ADR corpus into a code-grounded baseline | 2026-08-31 | accepted | complete | live | — | — | solid-pod-rs maintainers | solid-pod-rs |
+| [ADR-2002](ADR-2002-wac-access-model.md) | Ground access control on Web Access Control, not ACP | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
+| [ADR-2003](ADR-2003-solid-oidc-01-defer-lws10.md) | Hold the OIDC wire at Solid-OIDC 0.1 and defer the LWS10 delta | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
+| [ADR-2004](ADR-2004-provenance-off-by-default.md) | Keep git-mark provenance opt-in behind the git feature | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
+| [ADR-2005](ADR-2005-fail-closed-untrusted-parsing.md) | Parse untrusted access-control input fail-closed and bounded | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
+| [ADR-2006](ADR-2006-nip98-replaystore-seam.md) | Single-source NIP-98 and expose a ReplayStore seam, not a cross-tier store | 2026-08-31 | accepted | complete | staged | — | — | jjohare | solid-pod-rs |
+| [ADR-2007](ADR-2007-mempool-single-url-no-fallback.md) | Anchor against one configured explorer URL, public default, no silent fallback | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
