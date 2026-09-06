@@ -42,15 +42,37 @@ use std::time::Duration;
 use async_trait::async_trait;
 use thiserror::Error;
 
-/// Error returned by [`ReplayStore::check_and_record`] when a credential id is
-/// re-presented inside its replay window. Fail closed: treat the request as
-/// unauthenticated.
+/// Error returned by [`ReplayStore::check_and_record`]. Fail closed: treat the
+/// request as unauthenticated for every variant.
+///
+/// Marked `#[non_exhaustive]` so a future store can report a new refusal mode
+/// without breaking downstream `match` arms.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ReplayError {
     /// The event id was already recorded within the TTL window — a client
     /// re-presented a NIP-98 token.
     #[error("NIP-98 token already used within replay window ({ttl:?})")]
     Replayed { ttl: Duration },
+
+    /// The store is full of entries that are **still inside** their replay
+    /// window, so a new id cannot be recorded without forgetting one that is
+    /// still needed (ADR-2006).
+    ///
+    /// A bounded store has only two ways to answer this: evict an unexpired
+    /// entry — which reopens the replay window for whichever token was
+    /// evicted — or refuse the new credential. Refusing is the fail-closed
+    /// answer, and the one this contract requires: **an implementor MUST NOT
+    /// accept a replay within the window in order to stay under capacity.**
+    ///
+    /// Reaching this means the store is undersized for the offered request
+    /// rate. Size it for `peak_rps × ttl_secs` entries (see
+    /// `crate::auth::replay::sizing_floor`).
+    #[error(
+        "replay store at capacity ({capacity} unexpired entries, ttl {ttl:?}); \
+             cannot record a new credential without reopening the replay window"
+    )]
+    CapacityExhausted { capacity: usize, ttl: Duration },
 }
 
 /// Single-use nonce store for one-shot credentials.
@@ -70,5 +92,30 @@ pub trait ReplayStore: Send + Sync {
     /// not, record it and return `Ok(())`. If already seen within the window,
     /// return [`ReplayError::Replayed`] without refreshing the entry (so a
     /// flood of replays cannot pin an id past its natural expiry).
+    ///
+    /// # Contract
+    ///
+    /// 1. **Atomic.** The check and the record are one indivisible operation.
+    ///    Two concurrent calls with the same `event_id` must yield exactly one
+    ///    `Ok`; the loser gets [`ReplayError::Replayed`]. An implementor that
+    ///    reads, then writes, under separate locks violates this and leaves a
+    ///    race in which a token is accepted twice.
+    /// 2. **No replay inside the window, ever** (ADR-2006). A bounded
+    ///    implementor MUST NOT evict an entry that is still inside its TTL in
+    ///    order to make room. If the store is full of unexpired entries it
+    ///    must return [`ReplayError::CapacityExhausted`] and refuse the new
+    ///    credential, because forgetting an unexpired id would let that id be
+    ///    replayed. Expired entries may of course be reclaimed first.
+    /// 3. **No refresh on rejection.** A rejected replay must not extend the
+    ///    original entry's expiry, or a flood of replays could pin an id
+    ///    indefinitely.
+    ///
+    /// # Restart semantics
+    ///
+    /// A process-local store loses every entry on restart, so each restart
+    /// reopens the replay window for the length of the TTL. A store that must
+    /// survive restarts (or span replicas) has to be backed by shared,
+    /// durable state; see `crate::auth::replay` for the reference store's
+    /// documented tier limit.
     async fn check_and_record(&self, event_id: &str) -> Result<(), ReplayError>;
 }

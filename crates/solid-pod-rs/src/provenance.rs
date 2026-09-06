@@ -549,6 +549,308 @@ impl ProvenanceLog {
             created: rec.created,
         })
     }
+
+    /// Record a write and return a typed [`ProvenanceReceipt`] instead of a
+    /// `Result` (ADR-2004).
+    ///
+    /// Where [`record`](Self::record) raises a git-mark failure as an error —
+    /// which the server could only log and swallow, leaving the caller unable
+    /// to tell a marked write from an unmarked one — this reports each tier's
+    /// outcome separately:
+    ///
+    /// * the git-mark succeeded, failed (`mark_error`), or was not reached;
+    /// * the anchor succeeded, failed (`anchor_error`), was not requested, or
+    ///   was requested with no anchorer wired.
+    ///
+    /// A failed anchor never suppresses a successful git-mark: the receipt
+    /// carries the mark **and** the anchor error, so the caller sees exactly
+    /// the tier it actually got. Never returns an error — the LDP write has
+    /// already succeeded and provenance must not change its status.
+    pub async fn record_receipt(&self, rec: WriteRecord<'_>) -> ProvenanceReceipt {
+        let resource = path_to_resource(rec.path);
+
+        // Cheap tier — always attempted.
+        let git = match self
+            .marker
+            .mark_write(rec.repo, rec.path, rec.agent_did, rec.message)
+            .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                // The bytes are stored but nothing records the write. This is
+                // the case that used to vanish into a `warn!` line.
+                return ProvenanceReceipt {
+                    resource,
+                    mark: None,
+                    anchor: None,
+                    mark_error: Some(e.to_string()),
+                    anchor_error: None,
+                    skipped: None,
+                };
+            }
+        };
+
+        // Expensive tier — opt-in, and never able to invalidate the mark.
+        let (anchor, anchor_error) = if rec.policy.anchors_inline(rec.high_value) {
+            match &self.anchorer {
+                Some(a) => match a.anchor(rec.ticker, &git.commit_sha, rec.network).await {
+                    Ok(anchor) => (Some(anchor), None),
+                    Err(e) => (None, Some(e.to_string())),
+                },
+                None => (
+                    None,
+                    Some("anchor requested by policy but no anchorer is configured".to_string()),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+
+        ProvenanceReceipt {
+            resource,
+            mark: Some(git),
+            anchor,
+            mark_error: None,
+            anchor_error,
+            skipped: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Provenance receipts (ADR-2004)
+// ---------------------------------------------------------------------------
+
+/// How far a write got through the provenance pipeline.
+///
+/// The three tiers are genuinely different claims, and collapsing them is how a
+/// pod ends up asserting more provenance than it holds. A resource whose bytes
+/// merely landed in storage has **no** provenance; one with a local git commit
+/// has a *local, rewritable* claim; one with a confirmed Bitcoin anchor has an
+/// *externally timestamped* claim that no single operator can revise.
+///
+/// Ordered weakest-to-strongest, so `receipt.stage() >= ProvenanceStage::LocalMarkCommitted`
+/// is a meaningful test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProvenanceStage {
+    /// The write was not eligible for marking (see [`ProvenanceSkip`]). No
+    /// provenance is claimed and none was attempted.
+    Skipped,
+    /// The resource bytes are in storage and nothing more. Reached when the
+    /// git-mark was attempted and **failed** — the LDP write still succeeded,
+    /// so this is a partial, not an error.
+    ResourceStored,
+    /// A local git commit records the write. Rewritable by whoever controls
+    /// the repository.
+    LocalMarkCommitted,
+    /// A Bitcoin anchoring transaction was produced but is not yet confirmed,
+    /// so the timestamp is not yet final.
+    AnchorSubmitted,
+    /// The anchoring transaction is confirmed at a known block height. The
+    /// strongest claim this crate makes.
+    AnchorConfirmed,
+}
+
+impl ProvenanceStage {
+    /// Stable lower-case identifier, used for the HTTP receipt header and any
+    /// machine-readable manifest.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProvenanceStage::Skipped => "skipped",
+            ProvenanceStage::ResourceStored => "resource-stored",
+            ProvenanceStage::LocalMarkCommitted => "local-mark-committed",
+            ProvenanceStage::AnchorSubmitted => "anchor-submitted",
+            ProvenanceStage::AnchorConfirmed => "anchor-confirmed",
+        }
+    }
+}
+
+impl std::fmt::Display for ProvenanceStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why a write was not marked at all.
+///
+/// Distinct from a *failure*: these are configurations in which marking is
+/// correctly not attempted, so they must not be reported as provenance faults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProvenanceSkip {
+    /// No data root is configured, so no pod repo can be located.
+    NotConfigured,
+    /// The pod is not git-backed (no `.git` at the pod root) — in-memory and
+    /// cloud-backed pods.
+    NotGitBacked,
+    /// A control-plane or provenance sidecar (`*.acl`, `*.meta`, `*.prov.ttl`).
+    /// Marking these would either recurse or record control traffic as content.
+    ExcludedPath,
+    /// A container path, which is not a file write.
+    Container,
+    /// The resource path did not resolve to a `{pod}/{rest}` pair.
+    UnresolvablePath,
+}
+
+impl ProvenanceSkip {
+    /// Stable lower-case identifier for the receipt header.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProvenanceSkip::NotConfigured => "not-configured",
+            ProvenanceSkip::NotGitBacked => "not-git-backed",
+            ProvenanceSkip::ExcludedPath => "excluded-path",
+            ProvenanceSkip::Container => "container",
+            ProvenanceSkip::UnresolvablePath => "unresolvable-path",
+        }
+    }
+}
+
+impl std::fmt::Display for ProvenanceSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The typed outcome of recording provenance for one write (ADR-2004).
+///
+/// Before this existed, the server composed the write and the mark, logged any
+/// marking failure at `warn`, and returned `201 Created` — so a caller could
+/// not distinguish "stored and provably marked" from "stored, marking silently
+/// failed". The receipt makes that difference an explicit, inspectable result.
+///
+/// Constructing one never fails: the LDP write has already succeeded by the
+/// time provenance runs, and a provenance fault must not change the write's
+/// status. The fault is *reported*, not raised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvenanceReceipt {
+    /// Pod-relative resource path the receipt describes.
+    pub resource: String,
+    /// The git-mark, when one was committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<GitMark>,
+    /// The Bitcoin anchor, when one was produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<BlockTrailAnchor>,
+    /// Why the git-mark failed, when it did. Populating this is what makes a
+    /// failed mark visible to the caller instead of log-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_error: Option<String>,
+    /// Why the anchor failed, when one was attempted and did not succeed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_error: Option<String>,
+    /// Why marking was not attempted at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<ProvenanceSkip>,
+}
+
+impl ProvenanceReceipt {
+    /// A receipt for a write that was deliberately not marked.
+    #[must_use]
+    pub fn skipped(resource: impl Into<String>, why: ProvenanceSkip) -> Self {
+        Self {
+            resource: resource.into(),
+            mark: None,
+            anchor: None,
+            mark_error: None,
+            anchor_error: None,
+            skipped: Some(why),
+        }
+    }
+
+    /// The strongest provenance tier this write actually reached.
+    ///
+    /// An anchor counts as [`AnchorConfirmed`](ProvenanceStage::AnchorConfirmed)
+    /// only when it carries a block height; an unconfirmed anchoring
+    /// transaction is [`AnchorSubmitted`](ProvenanceStage::AnchorSubmitted),
+    /// because an unconfirmed transaction can still be replaced.
+    #[must_use]
+    pub fn stage(&self) -> ProvenanceStage {
+        if self.skipped.is_some() {
+            return ProvenanceStage::Skipped;
+        }
+        match (&self.mark, &self.anchor) {
+            (None, _) => ProvenanceStage::ResourceStored,
+            (Some(_), None) => ProvenanceStage::LocalMarkCommitted,
+            (Some(_), Some(a)) => {
+                if a.blockheight.is_some() {
+                    ProvenanceStage::AnchorConfirmed
+                } else {
+                    ProvenanceStage::AnchorSubmitted
+                }
+            }
+        }
+    }
+
+    /// `true` when a provenance tier was attempted and failed.
+    ///
+    /// A skipped write is **not** a failure. This is the predicate a caller
+    /// uses to decide whether to surface a warning to its own client.
+    #[must_use]
+    pub fn has_failure(&self) -> bool {
+        self.mark_error.is_some() || self.anchor_error.is_some()
+    }
+
+    /// The git commit SHA, when one was recorded.
+    #[must_use]
+    pub fn commit_sha(&self) -> Option<&str> {
+        self.mark.as_ref().map(|m| m.commit_sha.as_str())
+    }
+
+    /// Machine-readable summary for a response header or manifest entry.
+    ///
+    /// Shape: `<stage>` on success, `<stage>; skipped=<why>` when skipped, and
+    /// `<stage>; mark-error=…` / `; anchor-error=…` when a tier failed. Error
+    /// text is flattened to a single line so it is header-safe.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut out = self.stage().as_str().to_string();
+        if let Some(why) = self.skipped {
+            out.push_str("; skipped=");
+            out.push_str(why.as_str());
+        }
+        if let Some(e) = &self.mark_error {
+            out.push_str("; mark-error=");
+            out.push_str(&header_safe(e));
+        }
+        if let Some(e) = &self.anchor_error {
+            out.push_str("; anchor-error=");
+            out.push_str(&header_safe(e));
+        }
+        out
+    }
+}
+
+/// Flatten an error string so it can ride in an HTTP header value: collapse
+/// all whitespace runs to single spaces, drop anything outside printable
+/// US-ASCII, and bound the length.
+fn header_safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(180));
+    let mut last_space = false;
+    for ch in s.chars() {
+        let c = if ch.is_whitespace() { ' ' } else { ch };
+        if c == ' ' {
+            if last_space || out.is_empty() {
+                continue;
+            }
+            last_space = true;
+        } else {
+            if !('\x20'..='\x7e').contains(&c) || c == ';' || c == ',' {
+                continue;
+            }
+            last_space = false;
+        }
+        if out.chars().count() >= 180 {
+            break;
+        }
+        out.push(c);
+    }
+    let trimmed = out.trim_end().to_string();
+    if trimmed.is_empty() {
+        "unspecified".to_string()
+    } else {
+        trimmed
+    }
 }
 
 /// Normalise a repo-relative `path` into the pod-relative `resource` form a

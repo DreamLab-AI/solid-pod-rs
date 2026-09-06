@@ -275,6 +275,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::new(storage);
     state.data_root = data_root;
+
+    // ADR-2007: record which Bitcoin explorer — and therefore which network —
+    // this pod will anchor against, once, at startup. The endpoint is chosen
+    // from a single environment variable with a silent testnet4 default, so
+    // without this line an operator has no way to tell from the logs whether
+    // anchors are being written to the chain they intended.
+    solid_pod_rs_server::mempool::log_mempool_selection_once(
+        &solid_pod_rs_server::mempool::select_mempool_endpoint(state.mempool_url.as_deref()),
+    );
     #[cfg(feature = "quota")]
     if let (Some(root), limit) = (&state.data_root, cfg.security.default_quota_bytes) {
         if limit > 0 {

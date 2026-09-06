@@ -172,3 +172,6 @@ async-trait = "0.1"
 # did:nostr from the secret key (deterministic, no network).
 hex = "0.4"
 k256 = { version = "0.13", features = ["schnorr"] }
+# Local mock HTTP server for the mempool endpoint-selection tests (ADR-2007).
+# Keeps 404-vs-5xx behaviour assertable without touching a real explorer.
+wiremock = "0.6"

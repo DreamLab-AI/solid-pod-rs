@@ -1890,11 +1890,67 @@ pub fn is_rdf_content_type(content_type: &str) -> bool {
 /// of the supplied `content_type`, or `None` to leave the header
 /// unset. RDF variants always get [`CACHE_CONTROL_RDF`]; non-RDF
 /// payloads (binary blobs, images, etc.) are left to caller policy.
+///
+/// **Content type alone is not enough to decide cacheability.** A private
+/// JPEG served from an authenticated container is not RDF, so this returns
+/// `None` and the response carries no `Cache-Control` at all — which invites
+/// a shared cache to store and re-serve it. Use
+/// [`cache_control_for_response`] on any path where the response's audience
+/// is known; this function remains for callers that genuinely only know the
+/// media type.
 pub fn cache_control_for(content_type: &str) -> Option<&'static str> {
     if is_rdf_content_type(content_type) {
         Some(CACHE_CONTROL_RDF)
     } else {
         None
+    }
+}
+
+/// `Cache-Control` for a response that is not world-readable (ADR-2002).
+///
+/// `private` forbids a shared cache from storing it at all; `no-store`
+/// forbids any cache — shared or private — from writing it to disk. Applied
+/// together because a Solid pod's private resources are exactly the class of
+/// data that must not survive in an intermediary.
+pub const CACHE_CONTROL_PRIVATE: &str = "private, no-store";
+
+/// How a response's audience bears on its cacheability.
+///
+/// The distinction that matters is **who could have received this body**, not
+/// what type it is. A response produced under credentials, or one an
+/// anonymous client would not have been given, is specific to its requester
+/// and must never be re-served from a shared cache to someone else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseAudience {
+    /// An anonymous request would receive the same body — safe to cache
+    /// under the normal media-type policy.
+    Public,
+    /// The response was produced under credentials, or the resource is not
+    /// readable anonymously. Must be marked private and non-storable.
+    Private,
+}
+
+/// Return the `Cache-Control` value for a response, given both its media type
+/// and its audience (ADR-2002).
+///
+/// * [`Private`](ResponseAudience::Private) → [`CACHE_CONTROL_PRIVATE`],
+///   regardless of media type. This is the case the media-type-only policy
+///   missed: a private non-RDF body previously went out with no
+///   `Cache-Control` header, which under RFC 9111 leaves a shared cache free
+///   to treat it as heuristically cacheable and re-serve it to another user.
+/// * [`Public`](ResponseAudience::Public) → the RDF policy
+///   ([`CACHE_CONTROL_RDF`]) for RDF variants, or `None` for public binary
+///   payloads, where ordinary caching is desirable.
+///
+/// Always returns a value for private responses, so a caller that emits
+/// `Some(v)` cannot accidentally leave a private response unmarked.
+pub fn cache_control_for_response(
+    content_type: &str,
+    audience: ResponseAudience,
+) -> Option<&'static str> {
+    match audience {
+        ResponseAudience::Private => Some(CACHE_CONTROL_PRIVATE),
+        ResponseAudience::Public => cache_control_for(content_type),
     }
 }
 

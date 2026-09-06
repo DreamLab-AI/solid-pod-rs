@@ -219,12 +219,13 @@ pub use interop::{
 };
 pub use ldp::{
     apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch, cache_control_for,
-    evaluate_preconditions, is_rdf_content_type, link_headers, negotiate_format, not_found_headers,
-    options_for, parse_range_header, parse_range_header_v2, patch_dialect_from_mime,
-    server_managed_triples, slice_range, vary_header, ByteRange, ConditionalOutcome,
-    ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome, PatchDialect,
-    PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
-    CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
+    cache_control_for_response, evaluate_preconditions, is_rdf_content_type, link_headers,
+    negotiate_format, not_found_headers, options_for, parse_range_header, parse_range_header_v2,
+    patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
+    ConditionalOutcome, ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome,
+    PatchDialect, PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, ResponseAudience, Term,
+    Triple, ACCEPT_PATCH, ACCEPT_POST, CACHE_CONTROL_PRIVATE, CACHE_CONTROL_RDF,
+    SPARQL_UPDATE_MAX_BYTES,
 };
 pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
 pub use metrics::SecurityMetrics;
@@ -232,14 +233,16 @@ pub use multitenant::{PathResolver, PodResolver, ResolvedPath, SubdomainResolver
 pub use provenance::{
     prov_ttl, AnchorPolicy, BlockAnchorer, BlockTrailAnchor, BlocktrailEnvelope, BlocktrailTxo,
     ClosedEpoch, EpochAccumulator, GitMark, GitMarkEnvelope, GitMarker, MerkleProof,
-    ProvenanceError, ProvenanceLog, ProvenanceMark, WriteRecord,
+    ProvenanceError, ProvenanceLog, ProvenanceMark, ProvenanceReceipt, ProvenanceSkip,
+    ProvenanceStage, WriteRecord,
 };
 pub use security::{is_path_allowed, DotfileAllowlist, DotfileError, DotfilePathError};
 pub use wac::{
     check_origin, effective_acl_target, evaluate_access, evaluate_access_with_groups,
     extract_origin_patterns, method_to_mode, mode_name, parse_turtle_acl,
     protected_resource_for_acl, serialize_turtle_acl, wac_allow_header, AccessMode, AclDocument,
-    GroupMembership, Origin, OriginDecision, OriginPattern, StaticGroupMembership,
+    GroupMembership, InvalidPolicyReason, Origin, OriginDecision, OriginPattern, PolicyOutcome,
+    PolicyRead, PolicyStep, StaticGroupMembership,
 };
 pub use webid::{
     extract_nostr_pubkey, extract_oidc_issuer, generate_webid_html,

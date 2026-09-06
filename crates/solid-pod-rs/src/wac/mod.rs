@@ -141,9 +141,12 @@ pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
 pub use payment::{total_payment_cost, PaymentConditionBody, PaymentConditionEvaluator};
-pub use resolver::AclResolver;
+pub use resolver::{
+    acl_sidecar_key, classify_policy_read, parent_container, AclResolver, InvalidPolicyReason,
+    PolicyOutcome, PolicyRead, PolicyStep,
+};
 #[cfg(feature = "tokio-runtime")]
-pub use resolver::StorageAclResolver;
+pub use resolver::{resolve_policy_from_storage, StorageAclResolver};
 pub use serializer::serialize_turtle_acl;
 
 /// Access modes defined by WAC.

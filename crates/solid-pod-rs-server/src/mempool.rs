@@ -31,6 +31,14 @@
 //! `https://mempool.space/testnet4`. The reqwest `json` feature is *not*
 //! enabled crate-wide, so responses are read as text and parsed with
 //! `serde_json` (matching the proxy handler's manual-parse style).
+//!
+//! The endpoint choice is not silent: [`select_mempool_endpoint`] resolves the
+//! base URL, [`infer_network`] classifies the Bitcoin network it serves, and
+//! [`log_mempool_selection`] records both (plus whether the URL was
+//! operator-supplied or defaulted) in the startup log — with a warning when the
+//! pod would otherwise be anchoring against an unchosen or unclassifiable
+//! chain. [`MempoolSelection::to_manifest_json`] renders the same facts for a
+//! manifest (ADR-2007).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -47,6 +55,278 @@ pub const MEMPOOL_URL_ENV: &str = "JSS_PAY_MEMPOOL_URL";
 /// JSS default (`pay.js:243`, `mrc20.js:282`).
 pub const DEFAULT_MEMPOOL_URL: &str = "https://mempool.space/testnet4";
 
+// ---------------------------------------------------------------------------
+// Endpoint selection (ADR-2007) — pure, no I/O
+// ---------------------------------------------------------------------------
+//
+// The base URL alone does not tell an operator *why* the pod is pointed where
+// it is, nor which Bitcoin network that endpoint serves. A silent fall back to
+// the built-in testnet4 default could otherwise have the pod anchoring and
+// verifying against a chain nobody chose. The types below make the choice
+// explicit, classifiable and loggable without performing any I/O, so the
+// startup path can record it in the log and in a manifest.
+
+/// Where the mempool base URL came from.
+///
+/// [`MempoolConfigSource::Explicit`] means an operator supplied it (via
+/// [`MEMPOOL_URL_ENV`] or [`MempoolHttpClient::new`]);
+/// [`MempoolConfigSource::Default`] means nothing was configured and the
+/// built-in [`DEFAULT_MEMPOOL_URL`] was used. The distinction matters because a
+/// defaulted endpoint is an *unchosen* chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MempoolConfigSource {
+    /// The operator supplied the base URL.
+    Explicit,
+    /// Nothing was configured; [`DEFAULT_MEMPOOL_URL`] was used.
+    Default,
+}
+
+impl MempoolConfigSource {
+    /// Lower-case wire name (`"explicit"` / `"default"`) used in logs and the
+    /// manifest JSON.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Default => "default",
+        }
+    }
+}
+
+impl std::fmt::Display for MempoolConfigSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The Bitcoin network a mempool endpoint is understood to serve.
+///
+/// [`BitcoinNetwork::Unknown`] is deliberate: an unrecognised operator-supplied
+/// explorer is *not* assumed to be mainnet (or anything else). Guessing here
+/// would reintroduce exactly the silent-wrong-chain risk this type exists to
+/// remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitcoinNetwork {
+    /// Bitcoin mainnet.
+    Mainnet,
+    /// The legacy testnet3 network (`/testnet` or `/testnet3`).
+    Testnet3,
+    /// The testnet4 network (the crate default).
+    Testnet4,
+    /// The signet test network.
+    Signet,
+    /// A local regtest node (loopback host with no network in the path).
+    Regtest,
+    /// Not classifiable from the URL — treat as unverified.
+    Unknown,
+}
+
+impl BitcoinNetwork {
+    /// Lower-case wire name used in logs and the manifest JSON.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mainnet => "mainnet",
+            Self::Testnet3 => "testnet3",
+            Self::Testnet4 => "testnet4",
+            Self::Signet => "signet",
+            Self::Regtest => "regtest",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for BitcoinNetwork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Classify the Bitcoin network a mempool base URL serves, purely from the URL.
+///
+/// The trailing path segment is matched case-insensitively against the
+/// mempool.space layout:
+///
+/// | Base URL                         | Network    |
+/// |----------------------------------|------------|
+/// | `https://mempool.space`          | `Mainnet`  |
+/// | `https://mempool.space/testnet4` | `Testnet4` |
+/// | `https://mempool.space/testnet`  | `Testnet3` |
+/// | `https://mempool.space/testnet3` | `Testnet3` |
+/// | `https://mempool.space/signet`   | `Signet`   |
+/// | `http://127.0.0.1:3006`          | `Regtest`  |
+/// | anything else                    | `Unknown`  |
+///
+/// A loopback host is taken to be a local regtest node *unless* its path names a
+/// network explicitly (`http://localhost:3006/signet` is `Signet`). Anything
+/// unrecognised is [`BitcoinNetwork::Unknown`] — never a guess.
+#[must_use]
+pub fn infer_network(base_url: &str) -> BitcoinNetwork {
+    let trimmed = base_url.trim().trim_end_matches('/');
+
+    // Split scheme / authority / path by hand: the base may legitimately be
+    // scheme-relative in a fixture, and a full URL parser would reject it.
+    let after_scheme = match trimmed.find("://") {
+        Some(i) => &trimmed[i + 3..],
+        None => trimmed,
+    };
+    let (authority, path) = match after_scheme.find('/') {
+        Some(i) => (&after_scheme[..i], &after_scheme[i + 1..]),
+        None => (after_scheme, ""),
+    };
+
+    // Last non-empty path segment, ignoring any query/fragment tail.
+    let path = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let last_segment = path.rsplit('/').find(|seg| !seg.is_empty()).unwrap_or("");
+
+    match last_segment.to_ascii_lowercase().as_str() {
+        "testnet4" => return BitcoinNetwork::Testnet4,
+        "testnet" | "testnet3" => return BitcoinNetwork::Testnet3,
+        "signet" => return BitcoinNetwork::Signet,
+        "regtest" => return BitcoinNetwork::Regtest,
+        "mainnet" | "bitcoin" => return BitcoinNetwork::Mainnet,
+        _ => {}
+    }
+
+    // Host (minus any userinfo / port) drives the remaining cases.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6 literal: keep the address, drop the port.
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    let host_lower = host.to_ascii_lowercase();
+
+    let is_loopback = host_lower == "localhost"
+        || host_lower == "::1"
+        || host_lower.starts_with("127.")
+        || host_lower.ends_with(".localhost");
+    if is_loopback {
+        // A local node with no network in the path is a regtest node.
+        return BitcoinNetwork::Regtest;
+    }
+
+    // A bare mempool.space-style host with no network path is mainnet.
+    if path.is_empty() && (host_lower == "mempool.space" || host_lower.ends_with(".mempool.space"))
+    {
+        return BitcoinNetwork::Mainnet;
+    }
+
+    BitcoinNetwork::Unknown
+}
+
+/// The resolved mempool endpoint: which URL, which chain, and why.
+///
+/// Produced by [`select_mempool_endpoint`] /
+/// [`select_mempool_endpoint_from_env`] and carried on [`MempoolHttpClient`] so
+/// the choice can be logged at startup ([`log_mempool_selection`]) and surfaced
+/// in a manifest ([`MempoolSelection::to_manifest_json`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolSelection {
+    /// The base URL actually in use, trailing slash trimmed.
+    pub base_url: String,
+    /// The Bitcoin network inferred from `base_url`.
+    pub network: BitcoinNetwork,
+    /// Whether `base_url` was operator-supplied or the built-in default.
+    pub source: MempoolConfigSource,
+}
+
+impl MempoolSelection {
+    /// Render the selection as manifest JSON:
+    /// `{"base_url": …, "network": …, "source": "explicit"|"default"}`.
+    #[must_use]
+    pub fn to_manifest_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "base_url": self.base_url,
+            "network": self.network.as_str(),
+            "source": self.source.as_str(),
+        })
+    }
+}
+
+/// Resolve the mempool endpoint from an optional configured value.
+///
+/// A `configured` value that is `None`, empty or whitespace-only is treated as
+/// absent (matching the historical `JSS_PAY_MEMPOOL_URL` filter), yielding
+/// [`DEFAULT_MEMPOOL_URL`] with [`MempoolConfigSource::Default`]. Any trailing
+/// `/` is trimmed so `{base}/api/...` joins cleanly. Pure — no environment or
+/// network access.
+#[must_use]
+pub fn select_mempool_endpoint(configured: Option<&str>) -> MempoolSelection {
+    let (raw, source) = match configured.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => (v, MempoolConfigSource::Explicit),
+        None => (DEFAULT_MEMPOOL_URL, MempoolConfigSource::Default),
+    };
+    let base_url = raw.trim_end_matches('/').to_string();
+    let network = infer_network(&base_url);
+    MempoolSelection {
+        base_url,
+        network,
+        source,
+    }
+}
+
+/// Resolve the mempool endpoint from [`MEMPOOL_URL_ENV`], delegating the (pure)
+/// decision to [`select_mempool_endpoint`].
+#[must_use]
+pub fn select_mempool_endpoint_from_env() -> MempoolSelection {
+    let configured = std::env::var(MEMPOOL_URL_ENV).ok();
+    select_mempool_endpoint(configured.as_deref())
+}
+
+/// Record the selected endpoint in the startup log.
+///
+/// Emits exactly one `INFO` on target `solid_pod_rs_server::mempool` carrying
+/// the structured fields `base_url`, `network` and `source`, so an operator can
+/// tell from the log which chain the pod anchors and verifies against. When the
+/// network could not be classified, or the endpoint was defaulted rather than
+/// chosen, an additional `WARN` names [`MEMPOOL_URL_ENV`] as the fix.
+pub fn log_mempool_selection(sel: &MempoolSelection) {
+    tracing::info!(
+        target: "solid_pod_rs_server::mempool",
+        base_url = %sel.base_url,
+        network = sel.network.as_str(),
+        source = sel.source.as_str(),
+        "mempool endpoint selected"
+    );
+    if sel.network == BitcoinNetwork::Unknown || sel.source == MempoolConfigSource::Default {
+        tracing::warn!(
+            target: "solid_pod_rs_server::mempool",
+            base_url = %sel.base_url,
+            network = sel.network.as_str(),
+            source = sel.source.as_str(),
+            env_var = MEMPOOL_URL_ENV,
+            "pod is using an unverified or defaulted Bitcoin endpoint; anchors may be \
+             written to or verified against an unintended chain — set {} to pin the \
+             explorer, and therefore the network, explicitly",
+            MEMPOOL_URL_ENV
+        );
+    }
+}
+
+/// Emit [`log_mempool_selection`] at most once for the lifetime of the
+/// process.
+///
+/// `MempoolHttpClient::from_env` is called per request on the payment and
+/// provenance routes, so logging unconditionally there would repeat the
+/// startup record on every request. The selection is process-global (it comes
+/// from an environment variable), so one record is exactly the right number:
+/// it lands in the startup log the first time the endpoint is resolved, and
+/// `solid-pod-rs-server`'s `main` calls this explicitly at boot so the record
+/// appears even on a pod that never serves a payment route.
+///
+/// Callers that want the value rather than the log should read
+/// [`MempoolHttpClient::selection`] or call [`select_mempool_endpoint`].
+pub fn log_mempool_selection_once(sel: &MempoolSelection) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| log_mempool_selection(sel));
+}
+
 /// A [`MempoolLookup`] backed by the mempool.space REST API over `reqwest`.
 ///
 /// Cheap to clone (holds an `Arc`-internal `reqwest::Client` and the base
@@ -58,6 +338,10 @@ pub struct MempoolHttpClient {
     /// Base URL with any trailing slash trimmed (so `{base}/api/...` joins
     /// cleanly regardless of how the operator wrote the env value).
     base: String,
+    /// The resolved endpoint choice — URL, inferred network, and where the URL
+    /// came from — so the selection is recordable rather than an invisible
+    /// default (ADR-2007).
+    selection: MempoolSelection,
 }
 
 impl MempoolHttpClient {
@@ -65,28 +349,55 @@ impl MempoolHttpClient {
     /// `https://mempool.space/testnet4`). A trailing `/` is trimmed.
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
-        let base = base_url.into().trim_end_matches('/').to_string();
+        let raw = base_url.into();
+        let base = raw.trim_end_matches('/').to_string();
+        // An explicit constructor argument is operator-chosen by definition,
+        // even when it happens to equal DEFAULT_MEMPOOL_URL.
+        let selection = MempoolSelection {
+            network: infer_network(&base),
+            base_url: base,
+            source: MempoolConfigSource::Explicit,
+        };
+        Self::from_selection(selection)
+    }
+
+    /// Construct from an already-resolved [`MempoolSelection`]. Does not log —
+    /// the caller owns whether this choice is recorded (see
+    /// [`log_mempool_selection`]).
+    #[must_use]
+    pub fn from_selection(selection: MempoolSelection) -> Self {
         Self {
             client: reqwest::Client::new(),
-            base,
+            base: selection.base_url.clone(),
+            selection,
         }
     }
 
     /// Construct from `JSS_PAY_MEMPOOL_URL`, falling back to
     /// [`DEFAULT_MEMPOOL_URL`] (testnet4).
+    ///
+    /// The resolved endpoint is logged exactly once via
+    /// [`log_mempool_selection`], so the startup log always records which
+    /// explorer — and therefore which Bitcoin network — the pod is using, with
+    /// a warning when that endpoint was defaulted or is unclassifiable.
     #[must_use]
     pub fn from_env() -> Self {
-        let base = std::env::var(MEMPOOL_URL_ENV)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_MEMPOOL_URL.to_string());
-        Self::new(base)
+        let selection = select_mempool_endpoint_from_env();
+        log_mempool_selection_once(&selection);
+        Self::from_selection(selection)
     }
 
     /// The configured base URL (trailing slash trimmed).
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    /// The resolved endpoint selection: base URL, inferred Bitcoin network, and
+    /// whether the URL was operator-supplied or defaulted.
+    #[must_use]
+    pub fn selection(&self) -> &MempoolSelection {
+        &self.selection
     }
 
     /// Check whether a transaction is known without collapsing an HTTP 404

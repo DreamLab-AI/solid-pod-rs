@@ -156,8 +156,11 @@ use solid_pod_rs::{
     auth::{nip98, replay::ReplayStore},
     config::sources::parse_size,
     interop,
-    ldp::{self, LdpContainerOps, PatchCreateOutcome},
+    ldp::{
+        self, cache_control_for_response, LdpContainerOps, PatchCreateOutcome, ResponseAudience,
+    },
     mashlib::{self, MashlibConfig},
+    provenance::{ProvenanceReceipt, ProvenanceSkip},
     security::DotfileAllowlist,
     storage::Storage,
     wac::{
@@ -838,10 +841,14 @@ async fn enforce_write_ctx(
     // holds an `Arc<dyn Storage>`; `find_effective_acl_dyn` wraps it in a
     // trait-object-friendly adapter so the resolver runs against the
     // effective resource (the sidecar's governed resource, or `path`).
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
-        Ok(doc) => doc,
-        Err(e) => return Err(to_actix(e)),
-    };
+    // ADR-2005: resolve with typed outcomes. A missing policy inherits (the
+    // walk already did that); an invalid or unreadable one denies here and is
+    // never allowed to fall through to a broader ancestor grant.
+    let outcome = resolve_policy_dyn(&*state.storage, &resource).await;
+    if outcome.is_failure() {
+        return Err(policy_failure_to_actix(&outcome, &resource));
+    }
+    let acl_doc = outcome.document().cloned();
 
     // Resolve the principal's satoshi balance from the Web Ledger so a
     // sat-priced resource (`acl:PaymentCondition`) is actually gated.
@@ -978,7 +985,7 @@ async fn enforce_read(
     state: &AppState,
     path: &str,
     agent_uri: Option<&str>,
-) -> Result<(), ActixError> {
+) -> Result<ResponseAudience, ActixError> {
     enforce_read_ctx(state, path, agent_uri, None).await
 }
 
@@ -989,7 +996,7 @@ async fn enforce_read_ctx(
     path: &str,
     agent_uri: Option<&str>,
     request_origin: Option<&str>,
-) -> Result<(), ActixError> {
+) -> Result<ResponseAudience, ActixError> {
     let origin = request_origin.and_then(wac::Origin::parse);
     // P0-3: reading an `.acl`/`.meta` sidecar discloses the full
     // authorization graph of the resource it governs — every WebID,
@@ -1003,10 +1010,13 @@ async fn enforce_read_ctx(
     // `(protected_resource, Control)`, gating ACL disclosure on Control
     // exactly as JSS does (`auth/middleware.js:93`).
     let (resource, eff_mode) = effective_acl_target(path, AccessMode::Read);
-    let acl_doc = match find_effective_acl_dyn(&*state.storage, &resource).await {
-        Ok(doc) => doc,
-        Err(e) => return Err(to_actix(e)),
-    };
+    // ADR-2005: see `enforce_write_ctx` — invalid/unavailable policy denies
+    // rather than inheriting an ancestor's broader grant.
+    let outcome = resolve_policy_dyn(&*state.storage, &resource).await;
+    if outcome.is_failure() {
+        return Err(policy_failure_to_actix(&outcome, &resource));
+    }
+    let acl_doc = outcome.document().cloned();
     let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
     let ctx = RequestContext {
         web_id: agent_uri,
@@ -1047,7 +1057,34 @@ async fn enforce_read_ctx(
         )
         .await?;
     }
-    Ok(())
+    // ADR-2002: classify the response's audience so the caller can mark it
+    // uncacheable. The question is not "what media type is this?" but "could
+    // an anonymous client have received the same body?" — so re-evaluate the
+    // SAME already-resolved ACL with no principal. Pure; no extra I/O.
+    //
+    // A sidecar read (elevated to Control) is never public regardless of what
+    // the ACL says, and a payment-gated read fails the anonymous evaluation
+    // (no balance), so both correctly classify as private.
+    let anon_ctx = RequestContext {
+        web_id: None,
+        client_id: None,
+        issuer: None,
+        payment_balance_sats: None,
+    };
+    let anonymous_would_be_granted = wac::evaluate_access_ctx_with_registry(
+        acl_doc.as_ref(),
+        &anon_ctx,
+        &resource,
+        eff_mode,
+        origin.as_ref(),
+        &groups,
+        &registry,
+    );
+    Ok(if anonymous_would_be_granted && resource.as_str() == path {
+        ResponseAudience::Public
+    } else {
+        ResponseAudience::Private
+    })
 }
 
 /// Debit `cost` satoshis from `did`'s Web Ledger entry and persist the
@@ -1112,6 +1149,82 @@ fn set_updates_via(rsp: &mut HttpResponse, base_url: &str) {
     }
 }
 
+/// Surface a [`ProvenanceReceipt`] to the caller on the write's response
+/// (ADR-2004).
+///
+/// The LDP write has already succeeded, so the status code must not change —
+/// but the client is entitled to know which provenance tier its write actually
+/// reached. `X-Provenance` carries the stage (`resource-stored`,
+/// `local-mark-committed`, `anchor-submitted`, `anchor-confirmed`, `skipped`)
+/// plus any failure detail; `X-Provenance-Commit` carries the git SHA when one
+/// exists. A failed mark is therefore visible in the response rather than only
+/// in the server log.
+fn set_provenance_headers(rsp: &mut HttpResponse, receipt: &ProvenanceReceipt) {
+    if let Ok(v) = header::HeaderValue::from_str(&receipt.summary()) {
+        rsp.headers_mut()
+            .insert(header::HeaderName::from_static("x-provenance"), v);
+    }
+    if let Some(sha) = receipt.commit_sha() {
+        if let Ok(v) = header::HeaderValue::from_str(sha) {
+            rsp.headers_mut()
+                .insert(header::HeaderName::from_static("x-provenance-commit"), v);
+        }
+    }
+}
+
+/// Apply the ADR-2002 cache policy to a response.
+///
+/// A response that an anonymous client would not have received is marked
+/// `private, no-store` so no shared cache may store or re-serve it, and
+/// `Vary: Authorization` is set so a cache keyed on the request cannot fuse
+/// an authenticated response with an anonymous one. Public responses keep the
+/// media-type policy (RDF gets `private, no-cache, must-revalidate`; public
+/// binaries are left to ordinary caching).
+///
+/// Never overwrites a `Cache-Control` a handler has already set deliberately
+/// (the mashlib HTML wrapper sets `no-store` of its own).
+fn set_cache_policy(rsp: &mut HttpResponse, content_type: &str, audience: ResponseAudience) {
+    if audience == ResponseAudience::Private {
+        // Vary matters even when the body is uncacheable: an intermediary
+        // that ignores `no-store` must at least not key this response for an
+        // anonymous requester.
+        append_vary(rsp, "Authorization");
+    }
+    if rsp.headers().contains_key(header::CACHE_CONTROL) {
+        return;
+    }
+    if let Some(value) = cache_control_for_response(content_type, audience) {
+        rsp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static(value),
+        );
+    }
+}
+
+/// Add `field` to the response's `Vary` header, preserving any existing value.
+fn append_vary(rsp: &mut HttpResponse, field: &str) {
+    let existing = rsp
+        .headers()
+        .get(header::VARY)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if existing
+        .split(',')
+        .any(|f| f.trim().eq_ignore_ascii_case(field))
+    {
+        return;
+    }
+    let merged = if existing.trim().is_empty() {
+        field.to_string()
+    } else {
+        format!("{existing}, {field}")
+    };
+    if let Ok(v) = header::HeaderValue::from_str(&merged) {
+        rsp.headers_mut().insert(header::VARY, v);
+    }
+}
+
 async fn handle_get(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -1129,7 +1242,7 @@ async fn handle_get(
     // both resource GETs and the RDF container listing below, and — since
     // HEAD is routed to this same handler — HEAD requests too. Without it
     // a private resource is world-readable.
-    enforce_read_ctx(&state, &path, agent.as_deref(), req_origin(&req)).await?;
+    let audience = enforce_read_ctx(&state, &path, agent.as_deref(), req_origin(&req)).await?;
 
     let wac_allow = wac::wac_allow_header(None, agent.as_deref(), &path);
 
@@ -1151,6 +1264,7 @@ async fn handle_get(
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
                     .body(inject_live_reload(&body, state.live_reload));
+                set_cache_policy(&mut rsp, "text/html", audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
@@ -1183,6 +1297,7 @@ async fn handle_get(
                 .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
                 .insert_header(("Cache-Control", "no-store"))
                 .body(inject_live_reload(html, state.live_reload));
+            set_cache_policy(&mut rsp, "text/html", audience);
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state.nodeinfo.base_url);
             set_link_headers(&mut rsp, &path);
@@ -1194,6 +1309,7 @@ async fn handle_get(
             header::CONTENT_TYPE,
             header::HeaderValue::from_static("application/ld+json"),
         );
+        set_cache_policy(&mut rsp, "application/ld+json", audience);
         set_wac_allow(&mut rsp, &wac_allow);
         set_updates_via(&mut rsp, &state.nodeinfo.base_url);
         set_link_headers(&mut rsp, &path);
@@ -1230,6 +1346,7 @@ async fn handle_get(
                     .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
                     .insert_header(("Cache-Control", "no-store"))
                     .body(inject_live_reload(html, state.live_reload));
+                set_cache_policy(&mut rsp, "text/html", audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
@@ -1257,6 +1374,7 @@ async fn handle_get(
                 if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                     rsp.headers_mut().insert(header::ETAG, etag);
                 }
+                set_cache_policy(&mut rsp, negotiated_ct, audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
@@ -1278,6 +1396,7 @@ async fn handle_get(
             if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                 rsp.headers_mut().insert(header::ETAG, etag);
             }
+            set_cache_policy(&mut rsp, &meta.content_type, audience);
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state.nodeinfo.base_url);
             set_link_headers(&mut rsp, &path);
@@ -1371,11 +1490,12 @@ async fn handle_put(
     // git-mark (Phase 2): commit + PROV-O sidecar on git-backed pods. Runs
     // AFTER the write succeeded; additive + best-effort (errors swallowed),
     // git-backed-only, never changes the response.
-    git_mark_write(&state, &path, agent.as_deref(), "PUT").await;
+    let provenance = git_mark_write(&state, &path, agent.as_deref(), "PUT").await;
     let mut rsp = HttpResponse::Created().finish();
     if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
         rsp.headers_mut().insert(header::ETAG, etag);
     }
+    set_provenance_headers(&mut rsp, &provenance);
     set_link_headers(&mut rsp, &path);
     Ok(rsp)
 }
@@ -1483,7 +1603,7 @@ async fn handle_post(
     let meta = write.map_err(to_actix)?;
     // git-mark (Phase 2): commit + PROV-O sidecar for the newly-created child.
     // Additive + best-effort, git-backed-only.
-    git_mark_write(&state, &target, agent.as_deref(), "POST").await;
+    let provenance = git_mark_write(&state, &target, agent.as_deref(), "POST").await;
     let mut rsp = HttpResponse::Created().finish();
     if let Ok(loc) = header::HeaderValue::from_str(&target) {
         rsp.headers_mut().insert(header::LOCATION, loc);
@@ -1491,6 +1611,7 @@ async fn handle_post(
     if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
         rsp.headers_mut().insert(header::ETAG, etag);
     }
+    set_provenance_headers(&mut rsp, &provenance);
     set_link_headers(&mut rsp, &target);
     Ok(rsp)
 }
@@ -1579,8 +1700,10 @@ async fn handle_patch(
                         .await;
                     finish_quota_reservation(&state, quota, write.is_ok()).await;
                     let _ = write.map_err(to_actix)?;
-                    git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
-                    return Ok(HttpResponse::NoContent().finish());
+                    let provenance = git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
+                    let mut rsp = HttpResponse::NoContent().finish();
+                    set_provenance_headers(&mut rsp, &provenance);
+                    return Ok(rsp);
                 }
             };
             let outcome = out?;
@@ -1611,8 +1734,10 @@ async fn handle_patch(
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
-            git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
-            Ok(HttpResponse::NoContent().finish())
+            let provenance = git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
+            let mut rsp = HttpResponse::NoContent().finish();
+            set_provenance_headers(&mut rsp, &provenance);
+            Ok(rsp)
         }
         Err(PodError::NotFound(_)) => {
             // PATCH against an absent resource — create it.
@@ -1643,8 +1768,10 @@ async fn handle_patch(
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
-            git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
-            Ok(HttpResponse::Created().finish())
+            let provenance = git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
+            let mut rsp = HttpResponse::Created().finish();
+            set_provenance_headers(&mut rsp, &provenance);
+            Ok(rsp)
         }
         Err(e) => Err(to_actix(e)),
     }
@@ -1784,62 +1911,80 @@ fn seed_graph_from_patch_target(current_body: &[u8]) -> Result<ldp::Graph, Actix
 }
 
 /// Walk the storage tree from `path` upward, returning the first
-/// `*.acl` document that parses as JSON-LD or Turtle. Object-safe
-/// equivalent of `StorageAclResolver::find_effective_acl` — the latter
-/// is generic over a concrete `Storage`, whereas the binary holds an
+/// `*.acl` document that parses as JSON-LD or Turtle.
+///
+/// Object-safe equivalent of `StorageAclResolver::find_effective_acl` — the
+/// latter is generic over a concrete `Storage`, whereas the binary holds an
 /// `Arc<dyn Storage>`.
+///
+/// **ADR-2005.** The walk itself is no longer duplicated here. Both this
+/// function and `StorageAclResolver` now delegate to the single implementation
+/// in `solid_pod_rs::wac::resolve_policy_from_storage`, so the native and
+/// object-safe paths cannot drift apart on the missing / invalid / unavailable
+/// distinction. This wrapper keeps the historical `Result<Option<_>, _>` shape
+/// for callers that do not need the typed outcome; a malformed or unreadable
+/// `.acl` now surfaces as `Err` instead of silently inheriting an ancestor's
+/// broader grant.
 pub(crate) async fn find_effective_acl_dyn(
     storage: &dyn Storage,
     resource_path: &str,
 ) -> Result<Option<wac::AclDocument>, PodError> {
-    let mut path = resource_path.to_string();
-    // P2: the first probe is the resource's OWN `.acl` (direct); later
-    // iterations walk up to ANCESTOR containers, whose ACLs are inherited
-    // and must honour only `acl:default` rules. Tag the resolved doc so
-    // the evaluator can distinguish the two.
-    let mut inherited = false;
-    loop {
-        let acl_key = if path == "/" {
-            "/.acl".to_string()
-        } else {
-            format!("{}.acl", path.trim_end_matches('/'))
-        };
-        if let Ok((body, meta)) = storage.get(&acl_key).await {
-            match parse_jsonld_acl(&body) {
-                Ok(mut doc) => {
-                    doc.inherited = inherited;
-                    return Ok(Some(doc));
-                }
-                Err(PodError::BadRequest(_)) => {
-                    return Err(PodError::BadRequest("ACL document exceeds bounds".into()))
-                }
-                Err(_) => {}
-            }
-            let ct = meta.content_type.to_ascii_lowercase();
-            let looks_turtle = ct.starts_with("text/turtle")
-                || ct.starts_with("application/turtle")
-                || ct.starts_with("application/x-turtle");
-            let text = std::str::from_utf8(&body).unwrap_or("");
-            if looks_turtle || text.contains("@prefix") || text.contains("acl:Authorization") {
-                if let Ok(mut doc) = parse_turtle_acl(text) {
-                    doc.inherited = inherited;
-                    return Ok(Some(doc));
-                }
-            }
+    resolve_policy_dyn(storage, resource_path)
+        .await
+        .into_result()
+}
+
+/// Typed-outcome resolution against a trait-object backend (ADR-2005).
+///
+/// The enforcement paths use this directly so they can deny on
+/// `Invalid` / `Unavailable` rather than inheriting past them.
+pub(crate) async fn resolve_policy_dyn(
+    storage: &dyn Storage,
+    resource_path: &str,
+) -> wac::PolicyOutcome {
+    wac::resolve_policy_from_storage(storage, resource_path).await
+}
+
+/// Map a failed [`wac::PolicyOutcome`] onto the response the WAC gate must
+/// return, and log it.
+///
+/// `Invalid` is the operator's own unparseable policy: deny with 403, exactly
+/// as if the policy had granted nothing. Inheriting past it (the pre-ADR-2005
+/// behaviour) would hand the caller an ancestor's broader rights.
+/// `Unavailable` is a backend fault: the policy is unknown, so the request
+/// cannot be authorised — 503, which is retryable and not mistakable for a
+/// deliberate denial.
+fn policy_failure_to_actix(outcome: &wac::PolicyOutcome, resource: &str) -> ActixError {
+    match outcome {
+        wac::PolicyOutcome::Invalid {
+            policy_path,
+            reason,
+        } => {
+            tracing::warn!(
+                target: "solid_pod_rs_server::wac",
+                resource = %resource,
+                policy = %policy_path,
+                "denying: effective ACL is invalid and MUST NOT inherit: {reason}"
+            );
+            actix_web::error::ErrorForbidden("access forbidden: governing ACL is invalid")
         }
-        if path == "/" || path.is_empty() {
-            break;
+        wac::PolicyOutcome::Unavailable {
+            policy_path,
+            detail,
+        } => {
+            tracing::error!(
+                target: "solid_pod_rs_server::wac",
+                resource = %resource,
+                policy = %policy_path,
+                "denying: effective ACL could not be read: {detail}"
+            );
+            actix_web::error::ErrorServiceUnavailable(
+                "access control unavailable: governing ACL could not be read",
+            )
         }
-        // Every subsequent ACL is resolved from an ancestor.
-        inherited = true;
-        let trimmed = path.trim_end_matches('/');
-        path = match trimmed.rfind('/') {
-            Some(0) => "/".to_string(),
-            Some(pos) => trimmed[..pos].to_string(),
-            None => "/".to_string(),
-        };
+        // Not a failure — callers only reach here via `is_failure()`.
+        _ => actix_web::error::ErrorInternalServerError("policy resolution error"),
     }
-    Ok(None)
 }
 
 async fn handle_delete(
@@ -3314,7 +3459,12 @@ pub(crate) fn pod_repo_path(state: &AppState, pubkey: &str) -> Option<PathBuf> {
 /// (`*.acl`, `*.meta`, `*.prov.ttl`) are skipped — marking a `.prov.ttl` would
 /// recurse, and ACL/meta writes are control-plane, not content.
 #[cfg(feature = "git")]
-async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&str>, message: &str) {
+async fn git_mark_write(
+    state: &AppState,
+    resource_path: &str,
+    agent: Option<&str>,
+    message: &str,
+) -> ProvenanceReceipt {
     use solid_pod_rs::provenance::{prov_ttl, AnchorPolicy, ProvenanceLog};
     use solid_pod_rs_git::mark::ShellGitMarker;
 
@@ -3324,16 +3474,16 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
         || resource_path.ends_with(".meta")
         || resource_path.ends_with(".prov.ttl")
     {
-        return;
+        return ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::ExcludedPath);
     }
     // Containers (trailing slash) are not file writes — nothing to commit.
     if resource_path.ends_with('/') {
-        return;
+        return ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::Container);
     }
 
     // data_root is required to locate the pod repo on disk.
     let Some(data_root) = state.data_root.as_ref() else {
-        return;
+        return ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::NotConfigured);
     };
 
     // The pod is the first path segment; the repo lives at data_root/{pod}.
@@ -3342,7 +3492,7 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
     let pod = segments.next().unwrap_or("");
     let rel = segments.next().unwrap_or("");
     if pod.is_empty() || rel.is_empty() {
-        return;
+        return ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::UnresolvablePath);
     }
     let repo = data_root.join(pod);
 
@@ -3350,7 +3500,7 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
     // are skipped silently — this is the runtime guard that keeps memory /
     // cloud pods unaffected even when the `git` feature is compiled in.
     if !repo.join(".git").is_dir() {
-        return;
+        return ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::NotGitBacked);
     }
 
     let agent_did = agent.unwrap_or("urn:solid:anonymous");
@@ -3411,20 +3561,44 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
         network: &network,
         created,
     };
-    let mut mark = match log.record(write_record).await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(
-                target: "solid_pod_rs_server::git_mark",
-                resource = %resource_path,
-                "provenance record failed (swallowed, write already succeeded): {e}"
-            );
-            return;
-        }
+    // ADR-2004: `record_receipt` reports each tier separately instead of
+    // collapsing a failed git-mark into an error the caller could only log and
+    // discard. The write has already succeeded; what changes here is that the
+    // caller now learns WHICH provenance tier it actually got.
+    let mut receipt = log.record_receipt(write_record).await;
+    // `record_receipt` only sees the repo-relative path; restore the full
+    // pod-relative resource path (`/{pod}/{rel}`).
+    receipt.resource = resource_path.to_string();
+
+    let Some(git) = receipt.mark.clone() else {
+        // The bytes are stored but nothing records the write. Still not an
+        // HTTP error (the LDP write succeeded), but no longer invisible: the
+        // typed receipt goes back to the handler, which surfaces it.
+        tracing::warn!(
+            target: "solid_pod_rs_server::git_mark",
+            resource = %resource_path,
+            "provenance record failed (write already succeeded): {}",
+            receipt.mark_error.as_deref().unwrap_or("unspecified")
+        );
+        return receipt;
     };
-    // `record` only sees the repo-relative path; restore the full pod-relative
-    // resource path (`/{pod}/{rel}`) for the PROV-O sidecar + notification.
-    mark.resource = resource_path.to_string();
+    if let Some(err) = &receipt.anchor_error {
+        // A failed anchor never suppresses the git-mark, but it must not be
+        // silently downgraded to "marked" either.
+        tracing::warn!(
+            target: "solid_pod_rs_server::git_mark",
+            resource = %resource_path,
+            commit = %git.commit_sha,
+            "block-trail anchor failed (git-mark stands): {err}"
+        );
+    }
+    let mark = solid_pod_rs::provenance::ProvenanceMark {
+        resource: resource_path.to_string(),
+        git: git.clone(),
+        anchor: receipt.anchor.clone(),
+        agent_did: agent_did.to_string(),
+        created,
+    };
 
     // Epoch policy: batch the freshly-produced commit SHA; anchor the batch
     // root once when the epoch fills (best-effort — a failed batch anchor never
@@ -3469,18 +3643,22 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
         tracing::warn!(
             target: "solid_pod_rs_server::git_mark",
             sidecar = %sidecar,
-            "provenance sidecar write failed (swallowed): {e}"
+            "provenance sidecar write failed: {e}"
         );
-        return;
+        // The commit stands, so the receipt keeps its `local-mark-committed`
+        // stage; the sidecar fault is reported alongside it.
+        receipt.mark_error = Some(format!("PROV-O sidecar write failed: {e}"));
+        return receipt;
     }
 
     tracing::debug!(
         target: "solid_pod_rs_server::git_mark",
         resource = %resource_path,
         commit = %mark.git.commit_sha,
-        anchored = mark.anchor.is_some(),
+        stage = %receipt.stage(),
         "provenance recorded"
     );
+    receipt
 }
 
 /// No-op shim when the `git` feature is disabled, so the write handlers can
@@ -3489,10 +3667,11 @@ async fn git_mark_write(state: &AppState, resource_path: &str, agent: Option<&st
 #[inline]
 async fn git_mark_write(
     _state: &AppState,
-    _resource_path: &str,
+    resource_path: &str,
     _agent: Option<&str>,
     _message: &str,
-) {
+) -> ProvenanceReceipt {
+    ProvenanceReceipt::skipped(resource_path, ProvenanceSkip::NotConfigured)
 }
 
 #[cfg(feature = "git")]
@@ -4158,7 +4337,12 @@ async fn handle_git(
         )
         .await
     } else {
-        enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin).await
+        // Only the denial matters on this path; discard the read gate's
+        // cache-audience classification (ADR-2002), which is a response
+        // concern the git transport does not have.
+        enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin)
+            .await
+            .map(|_audience| ())
     };
     if let Err(e) = wac {
         // JSS #548: the WAC gate's 401/402/403 must carry the git CORS
