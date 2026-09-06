@@ -237,7 +237,7 @@ pub enum PolicyRead<'a> {
         content_type: &'a str,
     },
     /// The read itself failed (I/O error, timeout, permission denied, a KV
-    /// error that is not "key absent"). Never treat this as [`Absent`].
+    /// error that is not "key absent"). Never treat this as [`PolicyRead::Absent`].
     Failed(String),
 }
 

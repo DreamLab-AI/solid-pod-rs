@@ -24,7 +24,7 @@
 //!   stick a signer to one replica or accept a per-replica replay window.
 //! * **Restart**: the cache is in memory only. A restart forgets every id, so
 //!   the replay window reopens for one TTL. Durable replay defence needs a
-//!   shared store behind the same [`ReplayStore`] seam.
+//!   shared store behind the same [`crate::auth::replay_store::ReplayStore`] seam.
 //!
 //! A shared/Redis-backed store is out of scope for this tier; the ceilings
 //! above are the documented, deliberate limits — replay is nonetheless made
@@ -42,7 +42,7 @@
 //! This store does the second. `check_and_record` first reclaims entries that
 //! have genuinely expired (they can no longer be replayed, because the NIP-98
 //! freshness check would reject the token anyway); if every live entry is
-//! still inside its window it returns [`ReplayError::CapacityExhausted`] and
+//! still inside its window it returns [`crate::auth::replay_store::ReplayError::CapacityExhausted`] and
 //! the request is treated as unauthenticated. **An unexpired entry is never
 //! evicted**, so a capacity-one cache cannot be made to accept the same token
 //! twice inside the window — the probe that previously demonstrated the gap.
@@ -52,7 +52,7 @@
 //! to capacity and cause legitimate requests to be refused. That is a
 //! availability failure, which is recoverable; accepting a replayed
 //! credential is an authentication failure, which is not. Size the cache with
-//! [`sizing_floor`] so the refusal path is not reached in normal operation.
+//! [`crate::auth::replay::sizing_floor()`] so the refusal path is not reached in normal operation.
 
 #![cfg(feature = "nip98-replay")]
 

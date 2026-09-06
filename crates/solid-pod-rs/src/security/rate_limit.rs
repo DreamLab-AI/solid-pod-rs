@@ -226,7 +226,53 @@ mod lru_impl {
                 .unwrap_or(&self.default_policy)
         }
 
-        fn check_sync(&self, key: &RateLimitKey<'_>, now: Instant) -> RateLimitDecision {
+        /// Clock-injected form of [`RateLimiter::check`]: evaluate the
+        /// sliding window as if the request arrived at `now`, recording the
+        /// hit on an `Allow`.
+        ///
+        /// [`RateLimiter::check`] is exactly `check_at(key, Instant::now())`.
+        /// This entry point is public so callers — and tests — can drive the
+        /// window deterministically instead of sleeping through wall-clock
+        /// time, which is inherently racy under load or instrumentation
+        /// (coverage runs in particular).
+        ///
+        /// `now` is expected to be non-decreasing across calls for a given
+        /// key. A `now` that moves backwards is handled safely (saturating
+        /// arithmetic) but yields a window that has not advanced.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "rate-limit")] {
+        /// use std::net::{IpAddr, Ipv4Addr};
+        /// use std::time::{Duration, Instant};
+        /// use solid_pod_rs::security::rate_limit::{
+        ///     LruRateLimiter, RateLimitDecision, RateLimitKey, RateLimitSubject,
+        /// };
+        ///
+        /// let limiter =
+        ///     LruRateLimiter::with_policy(vec![("write".to_string(), 1, Duration::from_secs(60))]);
+        /// let key = RateLimitKey {
+        ///     route: "write",
+        ///     subject: RateLimitSubject::Ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
+        /// };
+        ///
+        /// let t0 = Instant::now();
+        /// assert_eq!(limiter.check_at(&key, t0), RateLimitDecision::Allow);
+        /// // Second hit inside the window is denied — no sleeping required.
+        /// assert!(matches!(
+        ///     limiter.check_at(&key, t0 + Duration::from_millis(1)),
+        ///     RateLimitDecision::Deny { .. }
+        /// ));
+        /// // Once the window has fully elapsed the quota rolls over.
+        /// assert_eq!(
+        ///     limiter.check_at(&key, t0 + Duration::from_secs(61)),
+        ///     RateLimitDecision::Allow
+        /// );
+        /// # }
+        /// ```
+        #[must_use]
+        pub fn check_at(&self, key: &RateLimitKey<'_>, now: Instant) -> RateLimitDecision {
             let policy = self.policy_for(key.route);
             let canonical = key.canonical();
 
@@ -270,7 +316,7 @@ mod lru_impl {
             // Synchronous under the hood — the mutex section is O(1)
             // amortised. Exposed async so future backends (Redis,
             // sharded) slot in without a trait change.
-            self.check_sync(key, Instant::now())
+            self.check_at(key, Instant::now())
         }
     }
 
@@ -313,10 +359,10 @@ mod lru_impl {
             // First 60 should pass under the default policy.
             let now = Instant::now();
             for _ in 0..60 {
-                assert_eq!(limiter.check_sync(&key, now), RateLimitDecision::Allow);
+                assert_eq!(limiter.check_at(&key, now), RateLimitDecision::Allow);
             }
             // 61st denies.
-            let d = limiter.check_sync(&key, now);
+            let d = limiter.check_at(&key, now);
             assert!(matches!(d, RateLimitDecision::Deny { .. }));
         }
 
