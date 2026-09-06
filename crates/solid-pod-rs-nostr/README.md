@@ -1,6 +1,6 @@
 # solid-pod-rs-nostr
 
-**Status: 0.5.0-alpha.7 — functional did:nostr + embedded relay.**
+**Status: 0.5.0-alpha.9 — functional did:nostr + embedded relay.**
 2,177 LOC, 45 tests. Integrators may depend on this crate today.
 
 Note: the did:nostr bidirectional resolver also ships inside the core

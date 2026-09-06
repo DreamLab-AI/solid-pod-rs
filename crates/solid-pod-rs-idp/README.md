@@ -1,6 +1,6 @@
 # solid-pod-rs-idp
 
-**Status: 0.5.0-alpha.7 — Solid-OIDC provider.**
+**Status: 0.5.0-alpha.9 — Solid-OIDC provider.**
 
 Rust port of the JSS identity provider (`JavaScriptSolidServer/src/idp/*`).
 This crate owns the **protocol** surface; transport framing is the
@@ -139,7 +139,7 @@ registration, and credentials pre-wired:
 
 ```toml
 [dependencies]
-solid-pod-rs-idp = { version = "0.5.0-alpha.7", features = ["axum-binder"] }
+solid-pod-rs-idp = { version = "0.5.0-alpha.9", features = ["axum-binder"] }
 ```
 
 `/idp/auth` and `/idp/token` are NOT on the binder — their request

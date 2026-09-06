@@ -180,7 +180,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.7", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.9", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run
@@ -230,7 +230,7 @@ Full documentation follows the [Diátaxis](https://diataxis.fr/) framework and l
 ## Status & remaining work (2026-08-19)
 
 Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
-`workspace.package.version` = **`0.5.0-alpha.7`** at time of writing.
+`workspace.package.version` = **`0.5.0-alpha.9`** at time of writing.
 
 - **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
 - **97.6% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 230 rows tracked through JSS `0.0.220` (`f9f7a4d`) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.

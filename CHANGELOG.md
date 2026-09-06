@@ -4,6 +4,45 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0-alpha.9] - 2026-09-06
+
+A closeout and CI-hygiene release. The public surface gains the OIDC
+compatibility matrix, WAC policy outcomes and provenance receipts; the
+registry set is brought back into step (every sibling crate had stayed at
+`0.5.0-alpha.7` on crates.io while the root crate moved to `alpha.8`). All
+eight workspace crates are re-pinned to `0.5.0-alpha.9`; the superseded
+registry versions are yanked.
+
+### Added
+
+- **OIDC compatibility matrix, WAC policy outcomes, provenance receipts.**
+  Cache-control and mempool tests; the ADR pack and estate closeout records
+  (`40f160c`).
+- **`RateLimiter::check_at(key, now)`.** The LRU limiter's clock-parameterised
+  check is public, with a runnable example; `check` is exactly
+  `check_at(key, Instant::now())`. Tests drive virtual time and no longer
+  sleep, which also fixed a wall-clock flake under tarpaulin (`62376e9`).
+
+### Fixed
+
+- **`chacha20` 0.10.2.** Both `0.10.0` and `0.10.1` were yanked upstream;
+  the lockfile now resolves the clean patch, so `cargo deny` and
+  `cargo audit` pass again (`62376e9`).
+- **rustdoc intra-doc links.** Four links that only fail under
+  `-D rustdoc::broken-intra-doc-links` on stable: a bare variant name in
+  `wac/resolver.rs`, and three short names in the `auth::replay` module docs,
+  which rustdoc resolves in the parent module's scope because `auth/mod.rs`
+  also documents the `pub mod` declaration (`62376e9`).
+
+### Documentation
+
+- ADR corpus consolidated into a living ground truth with a thin ledger
+  (`e093e88`, `d6ac7f5`); ADR-061 records the LAN Bitcoin node anchoring
+  and dual-network posture (`f5a4d72`, `0ccad60`).
+- Release CI gates use real action SHAs and the root `deny.toml`
+  (`db96c3c`); the Codecov upload is non-fatal, tarpaulin `--fail-under`
+  is the coverage gate (`75287ea`).
+
 ## [0.5.0-alpha.8] - 2026-08-20
 
 A feature-parity and hardening bump. The public surface loses the unfinished

@@ -1,6 +1,6 @@
 # solid-pod-rs-git
 
-**Status: 0.5.0-alpha.7 — functional Git HTTP backend.** Integrators may
+**Status: 0.5.0-alpha.9 — functional Git HTTP backend.** Integrators may
 depend on this crate today; see the workspace audit for current quality gates.
 
 ## Target scope
