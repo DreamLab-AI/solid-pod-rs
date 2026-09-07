@@ -12,7 +12,7 @@ owner: jjohare
 review_trigger: the LAN Bitcoin node passes its cutover checklist, or telemetry justifies a fallback chain
 repo: solid-pod-rs
 domain: BASELINE-solid-pod-rs.md
-lineage: Distils archived ADR-061 (LAN Bitcoin node substrate — non-goals: no ordered multi-URL fallback, LAN URL is deployment config not a crate default) and ADR-059 D3 (the mempool write side the anchor consumes).
+lineage: "Distils archived ADR-061 (LAN Bitcoin node substrate — non-goals: no ordered multi-URL fallback, LAN URL is deployment config not a crate default) and ADR-059 D3 (the mempool write side the anchor consumes)."
 ---
 
 # ADR-2007 — Anchor against one configured explorer URL, public default, no silent fallback
