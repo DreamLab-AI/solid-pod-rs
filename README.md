@@ -235,14 +235,23 @@ Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
 - **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
 - **97.6% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 230 rows tracked through JSS `0.0.220` (`f9f7a4d`) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
 - **Provenance is git-mark-first.** git-marks are always-on; Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr) is validated against the official test vectors.
-- **Security audit is not green.** At this checkout, formatting, strict Clippy,
-  compilation, and the complete all-feature workspace test command pass, but
-  `cargo audit --deny warnings` fails on `RUSTSEC-2026-0258` in both shipped
-  HTTP/2 stacks. Reproduced critical findings include filesystem symlink root
-  escape, anonymous MCP reads/WAC sidecar bypass, forged IdP identity, and
-  non-atomic payment state. Filesystem writes also violate the advertised
-  atomic storage contract. Keep MCP disabled; do not expose the optional IdP
-  router or carry value through payment routes until the findings are fixed.
+- **Supply-chain gates are green; the code audit is not.** As of 2026-09-21,
+  formatting, strict Clippy, compilation, the complete all-feature workspace
+  test command, `cargo audit --deny warnings` and `cargo deny --all-features
+  check` all pass, so the CI badge above is the whole truth about those gates.
+  Both advisory gates run on every push and carry exactly two dated, justified
+  exceptions with no in-semver fix available — `RUSTSEC-2026-0258` (h2 0.3,
+  patched only on the 0.4 line, reached solely through `actix-http`, with
+  actix-web taken `default-features = false` so no HTTP/2 listener is enabled)
+  and `RUSTSEC-2023-0071` (rsa 0.9 Marvin, used for public-key verification
+  only, never private-key decryption). Rationale and review dates live in
+  [`deny.toml`](deny.toml) and [`.cargo/audit.toml`](.cargo/audit.toml).
+  **The code audit findings are still open**: reproduced critical findings
+  include filesystem symlink root escape, anonymous MCP reads/WAC sidecar
+  bypass, forged IdP identity, and non-atomic payment state. Filesystem writes
+  also violate the advertised atomic storage contract. Keep MCP disabled; do
+  not expose the optional IdP router or carry value through payment routes
+  until the findings are fixed.
   See the [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
   for evidence, affected optional surfaces, and remediation priority.
 

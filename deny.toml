@@ -45,10 +45,14 @@ ignore = [
     # (public-key ops); the attack targets private-key decryption timing, which
     # this codebase never performs. Revisit when openidconnect drops `rsa`.
     "RUSTSEC-2023-0071",
-    # `h2` 0.3 is retained by Actix's optional rustls integration. The normal
-    # listener does not enable Actix's `http2` feature, all request bodies are
-    # capped, and deployments terminate HTTP/2 at the reverse proxy. Revisit
-    # by 2026-09-20 or when Actix migrates this integration to h2 0.4.
+    # `h2` 0.3 is pulled unconditionally by `actix-http` 3.13.3. The advisory is
+    # patched only at `>= 0.4.16`, a different major line, so there is no
+    # in-semver fix to take: the sole resolution is an upstream Actix migration.
+    # Re-verified 2026-09-21 (`cargo tree -e features -i h2@0.3.27`: the single
+    # path is actix-http). `actix-web` is taken with `default-features = false`
+    # so the HTTP/2 listener is never enabled, all request bodies are capped,
+    # and deployments terminate HTTP/2 at the reverse proxy. Revisit by
+    # 2026-12-20 or when Actix migrates this integration to h2 >= 0.4.16.
     "RUSTSEC-2026-0258",
 ]
 

@@ -4,6 +4,30 @@ All notable changes to solid-pod-rs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security
+
+- **`rustls` 0.23.45.** RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted
+  across encryption-level boundaries) turned the CI `cargo-audit` and
+  `cargo-deny` jobs red on a docs-only commit, because the advisory database
+  moves independently of the tree. The lockfile now resolves the patched
+  in-semver release; both advisory gates pass again.
+
+### Changed
+
+- **Advisory exceptions re-verified and re-dated (2026-09-21).**
+  `RUSTSEC-2026-0258` is patched only at `h2 >= 0.4.16`, a different major line
+  from the `h2` 0.3 that `actix-http` 3.13.3 pulls unconditionally, so there is
+  no in-semver fix to take; `actix-web` is taken with `default-features =
+  false`, so no HTTP/2 listener is enabled. Rationale corrected and review moved
+  to 2026-12-20 in both `deny.toml` and `.cargo/audit.toml`.
+- **README told the truth about the audit gates.** The status section claimed
+  `cargo audit --deny warnings` fails on `RUSTSEC-2026-0258`; that advisory has
+  been a dated, justified exception in both gates since 2026-08-20 and the gates
+  pass. The still-open *code* audit findings are unchanged and now stated
+  separately from the supply-chain gates.
+
 ## [0.5.0-alpha.9] - 2026-09-06
 
 A closeout and CI-hygiene release. The public surface gains the OIDC

@@ -1,10 +1,11 @@
 [advisories]
-# 2026-08-20: Actix Web 4.14.1's optional rustls listener still selects
-# actix-http's h2 0.3 line; no compatible patched 0.3 release exists. The
-# server does not enable Actix's `http2` feature in its normal build, all
-# request bodies are capped, and reverse proxies should enforce connection
-# frame/rate limits. Remove this exception as soon as Actix migrates its TLS
-# integration to h2 >=0.4.16. Review no later than 2026-09-20.
+# Re-verified 2026-09-21: actix-http 3.13.3 pulls h2 0.3 unconditionally, and
+# RUSTSEC-2026-0258 is patched only at >=0.4.16 -- a different major line, so
+# there is no in-semver fix available to take. actix-web is taken with
+# default-features = false, so the HTTP/2 listener is never enabled; all request
+# bodies are capped, and reverse proxies should enforce connection frame/rate
+# limits. Remove this exception as soon as Actix migrates its TLS integration to
+# h2 >=0.4.16. Review no later than 2026-12-20.
 ignore = [
     "RUSTSEC-2026-0258",
     # 2026-08-20: rsa 0.9 has no fixed release. It is used here for public-key
