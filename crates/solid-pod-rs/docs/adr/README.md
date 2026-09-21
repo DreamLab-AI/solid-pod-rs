@@ -26,7 +26,7 @@ redirect table).
 (`node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr` — it fails CI on
 invalid frontmatter).
 
-_7 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
+_8 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
 
 | ID | Title | Date | Decision | Impl | Activation | Supersedes | Superseded by | Owner | Repo |
 |----|-------|------|----------|------|------------|------------|---------------|-------|------|
@@ -37,3 +37,4 @@ _7 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-r
 | [ADR-2005](ADR-2005-fail-closed-untrusted-parsing.md) | Parse untrusted access-control input fail-closed and bounded | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
 | [ADR-2006](ADR-2006-nip98-replaystore-seam.md) | Single-source NIP-98 and expose a ReplayStore seam, not a cross-tier store | 2026-08-31 | accepted | complete | staged | — | — | jjohare | solid-pod-rs |
 | [ADR-2007](ADR-2007-mempool-single-url-no-fallback.md) | Anchor against one configured explorer URL, public default, no silent fallback | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
+| [ADR-2008](ADR-2008-port-bitcoin-tx-to-rust-bitcoin-and-make-the-web-ledger-a-chain-view.md) | Port bitcoin_tx.rs and mrc20.rs to rust-bitcoin, make WebLedger a derived view over the sidestr chain, remove credit/debit from the public API and delete the TXO stand-in deposit | 2026-09-21 | proposed | none | inactive | — | — | jjohare | solid-pod-rs |
