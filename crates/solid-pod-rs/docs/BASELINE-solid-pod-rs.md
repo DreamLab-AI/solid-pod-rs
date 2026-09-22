@@ -1,9 +1,9 @@
 ---
 title: solid-pod-rs Architecture Baseline
 doc_id: SPR-BASELINE
-version: 0.1.0
+version: 0.1.1
 status: active-normative
-verified_commit: 0ccad60
+verified_commit: 045c24e
 sources:
   - crates/solid-pod-rs/src/lib.rs
   - crates/solid-pod-rs/src/oidc/mod.rs
@@ -19,7 +19,7 @@ sources:
   - crates/solid-pod-rs-git/src/auth.rs
   - crates/solid-pod-rs-server/Cargo.toml
   - Cargo.toml
-date: 2026-08-31
+date: 2026-09-22
 ---
 
 # solid-pod-rs Architecture Baseline
@@ -41,8 +41,8 @@ never as authority.
 The workspace ships eight crates (`Cargo.toml`), library-first: `solid-pod-rs`
 (the core library), the embedded HTTP server `solid-pod-rs-server`, and the
 siblings `-git`, `-idp`, `-activitypub`, `-nostr`, `-didkey`, `-forge`.
-Workspace version is `0.5.0-alpha.8` (`Cargo.toml:15`) — four alphas past the
-`0.5.0-alpha.4` at which legacy ADR-060 was written, and eight past the
+Workspace version is `0.5.0-alpha.9` (`Cargo.toml:15`) — five alphas past the
+`0.5.0-alpha.4` at which legacy ADR-060 was written, and nine past the
 `0.5.0-alpha.0` legacy ADR-059 set as its acceptance tag.
 
 ### NIP-98 authentication (single-sourced)
@@ -56,11 +56,12 @@ policy (`solid-pod-rs-git/src/auth.rs:144,157`), and `solid-pod-rs-idp` reuses
 `verify_schnorr_signature` (`solid-pod-rs-idp/src/schnorr.rs:11`).
 
 Replay protection is a single-use nonce cache, `Nip98ReplayCache`
-(`auth/replay.rs:70`), now formalised behind a `trait ReplayStore`
-(`auth/replay_store.rs:68`) with `Nip98ReplayCache` as the reference implementor
-(`auth/replay.rs:178`). The cache is **process-local**: replay protection does
+(`auth/replay.rs:117`), now formalised behind a `trait ReplayStore`
+(`auth/replay_store.rs:90`) with `Nip98ReplayCache` as the reference implementor
+(`auth/replay.rs:235`). The cache is **process-local**: replay protection does
 not span replicas, and the out-of-repo forum/CF edge tier keeps its own
-datastore — the documented edge-local exception (`auth/replay.rs:20,174`).
+datastore — the documented edge-local exception (`auth/replay_store.rs:19-32`,
+`auth/replay.rs:231`).
 
 ### OIDC / DPoP surface
 
@@ -79,7 +80,7 @@ enumerated is unshipped (see divergences).
   (`security/dotfile.rs:24`) — `.account` is present.
 - Pod-label sanitisation scrubs `..` with an **iterative double-pass**
   `scrub_dotdot` loop that runs until the string stops changing, defeating the
-  `....//` bypass (`multitenant.rs:181-198`), guarded further by an explicit
+  `....//` bypass (`multitenant.rs:184-193`), guarded further by an explicit
   `!safe.contains("..")` check (`multitenant.rs:118`).
 - WAC ACL parsing enforces a byte cap `MAX_ACL_BYTES` (`JSS_MAX_ACL_BYTES`,
   default 1 MiB) at the parse boundary, rejecting oversized bodies before serde
@@ -105,14 +106,14 @@ enumerated is unshipped (see divergences).
 The provenance composition shipped (legacy ADR-059 Phase 5, commit `182ed31`):
 `ProvenanceLog::record` in `crates/solid-pod-rs/src/provenance.rs` is the single
 canonical write path, invoked from the server's `git_mark_write`
-(`solid-pod-rs-server/src/lib.rs:3317`) on every LDP `PUT`/`POST`/`PATCH`
-(`lib.rs:1374,1486,1582`). The "SINGLE canonical path" comment sits at
-`lib.rs:3400`. It composes a cheap git-mark (always) with an opt-in Bitcoin
+(`solid-pod-rs-server/src/lib.rs:3462`) on every LDP `PUT`/`POST`/`PATCH`
+(`lib.rs:1493,1606,1703-1771`). The "SINGLE canonical path" comment sits at
+`lib.rs:3550`. It composes a cheap git-mark (always) with an opt-in Bitcoin
 block-trail anchor (per resolved `AnchorPolicy`).
 
 **But it is off in a default build.** The server's default feature set is empty
 (`solid-pod-rs-server/Cargo.toml:123`), so `git_mark_write` compiles to the
-no-op shim `#[cfg(not(feature = "git"))]` (`lib.rs:3490`) and a default build
+no-op shim `#[cfg(not(feature = "git"))]` (`lib.rs:3668`) and a default build
 records **zero** provenance marks. Marks require `--features git`.
 
 **Outcomes are typed and reported** (ADR-2004, 2026-09-05).
@@ -149,8 +150,8 @@ to store and re-serve it.
 
 ### Non-destructive PATCH
 
-`handle_patch` (`solid-pod-rs-server/src/lib.rs:1498`) seeds the working graph
-from the stored resource via `seed_graph_from_patch_target` (`lib.rs:1769`)
+`handle_patch` (`solid-pod-rs-server/src/lib.rs:1619`) seeds the working graph
+from the stored resource via `seed_graph_from_patch_target` (`lib.rs:1896`)
 before applying the patch, failing closed on an unparseable existing body. This
 is the REC-1 fix (commit `791977a`).
 
@@ -168,11 +169,11 @@ is the REC-1 fix (commit `791977a`).
 2. **Legacy ADR-058's security "gaps" are all closed.** ADR-058 lists
    `.account` allowlist (P1), iterative `..` sanitisation (P0) and size-capped
    ACL parse (`safeJsonParse`, P0) as gaps; all three shipped
-   (`security/dotfile.rs:24`, `multitenant.rs:181-198`, `wac/parser.rs:23-39`).
+   (`security/dotfile.rs:24`, `multitenant.rs:184-193`, `wac/parser.rs:23-39`).
    ADR-058 was never updated post-Sprint 12.
 3. **Provenance is off by default (legacy ADR-059 D1).** The "always-on
    git-mark" wording is contradicted by the empty default feature set
-   (`solid-pod-rs-server/Cargo.toml:123`, no-op shim `lib.rs:3490`). Every
+   (`solid-pod-rs-server/Cargo.toml:123`, no-op shim `lib.rs:3668`). Every
    provenance claim must carry the `--features git` caveat.
 4. **No pod-wide `_prov` enumeration (REC-11).** The provenance query surface is
    point-lookup only — `GET /{pod}/_prov/{commit_sha}` plus per-resource
@@ -203,10 +204,12 @@ is the REC-1 fix (commit `791977a`).
    `mempool.space/testnet4`. The LAN URL is deployment config, gated on the
    acceptance checklist, not a crate default.
 7. **Legacy ADR line citations rotted.** `solid-pod-rs-server/src/lib.rs` grew
-   to ~5,059 lines; ADR-060's cited offsets (`git_mark_write` @2838,
+   to ~5,243 lines; ADR-060's cited offsets (`git_mark_write` @2838,
    `handle_patch` @1210, `seed_graph_from_patch_target` @1467, "SINGLE canonical
-   path" @2917) no longer match the code (actual: 3317, 1498, 1769, 3400). This
-   baseline supersedes those numbers.
+   path" @2917) no longer match the code (actual at `verified_commit`: 3462,
+   1619, 1896, 3550). This baseline supersedes those numbers; the 0.1.0 baseline's
+   own offsets (3317, 1498, 1769, 3400, shim @3490) were re-recorded on
+   2026-09-22.
 
 ## Invariants (must not silently change)
 

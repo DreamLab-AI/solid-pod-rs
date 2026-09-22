@@ -114,6 +114,8 @@ return 404 regardless of storage-layer presence:
 - `.meta` — RDF metadata sidecars.
 - `.well-known` — the standard discovery tree.
 - `.quota.json` — per-pod quota sidecar (when `quota` is enabled).
+- `.acl.meta` — meta sidecar of an ACL document.
+- `.account` — IdP account endpoints (login, registration, password reset).
 
 The allowlist is enforced at the storage boundary (`security::dotfile`)
 and again by the server's `DotfileGuard` middleware.

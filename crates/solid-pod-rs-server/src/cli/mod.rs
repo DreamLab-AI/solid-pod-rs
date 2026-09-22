@@ -1,6 +1,7 @@
 //! Operator CLI subcommands — Sprint 11 rows 138, 163, 168.
 //!
-//! Three thin wrappers over library primitives:
+//! Three thin wrappers over library primitives, plus the `install`
+//! subcommand (JSS `src/cli/install.js` port, see [`run_install`](crate::cli::run_install)):
 //!
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|

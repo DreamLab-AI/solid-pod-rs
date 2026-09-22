@@ -5,7 +5,7 @@ trait, and function exported from `lib.rs` is listed. Private items
 are not documented here.
 
 - Crate root: [`src/lib.rs`](../../src/lib.rs)
-- Crate version: `0.5.0-alpha.7`
+- Crate version: `0.5.0-alpha.9`
 
 ## Modules
 

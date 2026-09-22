@@ -58,9 +58,10 @@ status mapping.
 ### `401`
 
 ```
-WWW-Authenticate: Nostr
-WWW-Authenticate: DPoP algs="ES256 RS256"
+WWW-Authenticate: Nostr realm="Solid", DPoP realm="Solid", Bearer realm="Solid"
 ```
+
+(the bundled server emits the three schemes as one comma-joined challenge)
 
 ## Request headers the server honours
 
@@ -185,8 +186,9 @@ A first push to a not-yet-initialised git-backed pod auto-runs
 ## Admin / provisioning endpoints
 
 These endpoints are only present in the `solid-pod-rs-server` binary and
-require the `git` feature (or the standalone binary build with admin routes
-compiled in).  They are **not** part of the core library surface.
+are registered unconditionally (no feature gate); the `git init` step runs
+only when the binary is built with `--features git`. They are **not** part
+of the core library surface.
 
 ### `POST /_admin/provision/{pubkey}`
 
@@ -195,23 +197,24 @@ Creates a new pod for the given owner public key.
 | Attribute | Value |
 |---|---|
 | Auth | PSK — `X-Pod-Admin-Key: <secret>` header. Requests without a valid key receive `403 Forbidden`. The key must match `SOLID_ADMIN_KEY` / `--admin-key`. |
-| Feature gate | Compiled only when `--features git` is passed (or the default server build that includes it). |
+| Feature gate | None for the route; the `git init` step requires `--features git` (this binary ships `default = []`). |
 | Path parameter | `pubkey` — hex-encoded Nostr/secp256k1 public key of the future pod owner. |
 | Request body | None. |
 
 **Response `200 OK`:**
 
 ```json
-{ "podUrl": "https://pods.example.com/<pubkey>/", "ok": true }
+{ "podUrl": "https://pods.example.com/pods/<pubkey>/", "ok": true }
 ```
 
 **What it does:**
 
-1. Creates the pod directory under the configured storage root.
+1. Creates the pod directory at `pods/{pubkey}/` under the configured storage root.
 2. Writes an owner-only `.acl` granting full control to the pubkey.
-3. Runs `git init -b main` and sets `receive.denyCurrentBranch=updateInstead`
-   so the pod directory is a bare-ish working-tree repo that can receive
-   `git push` over HTTP via `/_git/{pubkey}/`.
+3. (`--features git` only) Runs `git init -b main` and sets
+   `receive.denyCurrentBranch=updateInstead` so the pod directory is a
+   bare-ish working-tree repo that can receive `git push` over HTTP via the
+   smart-protocol routes at `/pods/{pubkey}/info/refs` etc.
 
 **Error responses:**
 
@@ -228,26 +231,31 @@ with a firewall; the PSK is a defence-in-depth measure, not a public API.
 
 ## Git Control Panel endpoints
 
-Present only when built with `--features git`.
+The panel REST API (`GET /pods/{pubkey}/_git/{status,log,diff,branches}`,
+`POST /pods/{pubkey}/_git/{stage,unstage,commit,…}`) is present only when
+built with `--features git`; the preflight handler below is registered
+unconditionally.
 
-### `OPTIONS /_git/{pubkey}/{tail}`
+### `OPTIONS /pods/{pubkey}/_git/{tail}`
 
-CORS preflight handler for the Git HTTP smart-protocol routes used by the
+CORS preflight handler for the git control-panel routes used by the
 forum's VS Code-style Source Control panel.
 
 | Attribute | Value |
 |---|---|
 | Auth | None — OPTIONS responses are unauthenticated by design. |
-| Feature gate | `git` feature. |
-| Path | `/_git/{pubkey}/{tail}` — matches any sub-path under a pubkey's git namespace. |
+| Feature gate | None (registered before the `git` feature block). |
+| Path | `/pods/{pubkey}/_git/{tail}` — matches any sub-path under a pubkey's git-panel namespace. |
 | Request body | None. |
 
-**Response `204 No Content`** with the following headers:
+**Response `204 No Content`** with the shared CORS header set
+(`add_cors_headers`):
 
 ```
 Access-Control-Allow-Origin:  <origin> | *
-Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type, Authorization, X-Pod-Admin-Key
+Access-Control-Allow-Methods: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS
+Access-Control-Allow-Headers: Accept, Authorization, Content-Type, DPoP, Git-Protocol, If-Match, If-None-Match, Link, Range, Slug, Origin
+Access-Control-Expose-Headers: Accept-Patch, Accept-Post, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Link, Location, Updates-Via, WAC-Allow, X-Cost, X-Balance, X-Pay-Currency
 Access-Control-Max-Age:       86400
 ```
 

@@ -10,7 +10,7 @@ or plug `Provider` into any router you like).
 ## What landed in Sprint 10
 
 Parity rows flipped from `missing` → `present` (tracked in
-`../../docs/PARITY-CHECKLIST.md`):
+`../solid-pod-rs/PARITY-CHECKLIST.md`):
 
 | Row | Endpoint / feature                   | JSS ref                        |
 |----:|--------------------------------------|--------------------------------|
@@ -182,7 +182,8 @@ should be zero):
 
 ## Tests
 
-91 unit tests cover:
+The unit suite (84 tests in `src/` at 2026-09-22, plus the
+`key_provisioning_smoke` integration test) covers:
 
 - Discovery document shape (`webid` in scopes, `none` auth method,
   DPoP algs, PKCE S256, issuer trailing-slash normalisation).

@@ -41,16 +41,18 @@ unchanged.
 | `JSS_BASE_URL`         | URL | `config::ConfigLoader` | Externally visible base URL. |
 | `JSS_STORAGE_ROOT`     | path | `config::ConfigLoader` | Filesystem root for the FS backend. |
 | `JSS_OIDC_ISSUER`      | URL | `config::ConfigLoader` | Identity provider discovery URL. |
-| `JSS_WORKERS`          | usize, default CPUs | `config::ConfigLoader` | actix-web worker count. |
-| `JSS_LOG_LEVEL`        | string | `config::ConfigLoader` | `trace` / `debug` / `info` / `warn` / `error`. |
 | `JSS_LIVE_RELOAD`      | bool, default `false` | `solid-pod-rs-server` | Injects the development reload WebSocket script into HTML responses. Do not enable it on a public production service. |
-| `JSS_DISABLE_DOTFILES` | bool | `config::ConfigLoader` | If set, no dotfiles served even on allowlist. |
 | `JSS_MAX_ACL_BYTES`    | bytes, default `1048576` (1 MiB) | `wac::parse_turtle_acl_with_limit`, `wac::parse_jsonld_acl_with_limits` | Maximum ACL document size before rejection (CWE-400 DoS protection). Added Sprint 12. |
+| `JSS_MAX_ACL_JSON_DEPTH` | integer, default `32` | `wac::parse_jsonld_acl` | Maximum JSON-LD nesting depth accepted for an ACL document. |
 | `DOTFILE_ALLOWLIST`    | comma-separated | `security::dotfile::DotfileAllowlist::from_env` | Override the default dotfile allowlist (`.acl`, `.meta`, `.account`). |
 
 None of the `POD_*` vars above are parsed by the library. The `JSS_*`
 vars are consumed by the config loader when the `config-loader` feature
-is enabled. This table is a suggested vocabulary so multi-pod
+is enabled; the loader's complete `JSS_*` table lives in
+[`src/config/sources.rs`](../../src/config/sources.rs). `JSS_WORKERS`,
+`JSS_LOG_LEVEL` and `JSS_DISABLE_DOTFILES` are JSS-only names with no Rust
+consumer — use `RUST_LOG` for log filtering and `DOTFILE_ALLOWLIST` for the
+dotfile policy. This table is a suggested vocabulary so multi-pod
 deployments can share config conventions.
 
 ## solid-pod-rs-server (alpha.15+)

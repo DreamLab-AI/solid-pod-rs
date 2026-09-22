@@ -22,10 +22,11 @@ solid-pod-rs = "0.5.0-alpha.9"
 
 ```rust,no_run
 use solid_pod_rs::storage::fs::FsBackend;
-use std::path::PathBuf;
 
-let storage = FsBackend::new(PathBuf::from("./pod-root"));
+# async fn demo() -> Result<(), solid_pod_rs::PodError> {
+let storage = FsBackend::new("./pod-root").await?;
 // Compose with your framework; see examples/embed_in_actix.rs.
+# Ok(()) }
 ```
 
 ## What's new in 0.5.0-alpha.0 (2026-06-13, provenance primitives — ADR-059)
@@ -44,7 +45,7 @@ the [master plan](docs/design/provenance-upgrade-master-plan.md).
   `provenance`; native `GitMarker` in `solid-pod-rs-git`, no-op on wasm.
   **Not a default build:** `solid-pod-rs-server` ships `default = []`
   (`Cargo.toml:123`), so without `--features git` `git_mark_write` compiles to a
-  no-op shim (`lib.rs:3490`) and records zero marks. See
+  no-op shim (`lib.rs:3668`) and records zero marks. See
   [BASELINE divergence #3](docs/BASELINE-solid-pod-rs.md).
 - **block-trails** (high-value, opt-in, feature `mrc20`) — a Bitcoin-taproot
   -anchored, hash-chained MRC20 state trail. Verify **and** write side
@@ -117,7 +118,7 @@ a small WAC Turtle serializer quirk is tracked in
 | `oidc`                  | off     | Solid-OIDC 0.1 + DPoP.                        |
 | `dpop-replay-cache`     | off     | DPoP `jti` replay cache (pulls `oidc`).       |
 | `nip98-schnorr`         | off     | BIP-340 Schnorr signature verification for NIP-98 via `verify_raw()` (raw 32-byte message, no tagged pre-hash). Verification is unconditional and fail-closed — without this feature the verifier returns `PodError::Unsupported` rather than accepting a forged pubkey. |
-| `nip98-replay`          | off     | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU on the canonical event id; closes the ±120s replay window. |
+| `nip98-replay`          | off     | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU on the canonical event id; closes the ±60 s (120 s total) replay window. |
 | `acl-origin`            | off     | WAC `acl:origin` enforcement (request `Origin` threaded into the evaluator by `solid-pod-rs-server`). |
 | `security-primitives`   | off     | SSRF guard + dotfile allowlist.               |
 | `legacy-notifications`  | off     | `solid-0.1` WebSocket adapter (SolidOS).      |
@@ -156,13 +157,15 @@ Seven sibling crates live alongside the core library in the eight-crate
 workspace. All compile and pass the workspace test suite; feature-specific
 deployment readiness still follows each crate's own status notes.
 
-| Crate                      | LOC   | Parity rows            | JSS source refs                     |
+| Crate                      | LOC (`src/`, 2026-09-22) | Parity rows            | JSS source refs                     |
 |----------------------------|-------|------------------------|-------------------------------------|
-| `solid-pod-rs-activitypub` | 4,453 | 102–108, 131, 169–172  | `src/ap/{index,routes/inbox,routes/outbox,store}.js` |
-| `solid-pod-rs-git`         | 1,685 | 69, 100                | `src/handlers/git.js`               |
-| `solid-pod-rs-idp`         | 6,160 | 74–81, 130             | `src/idp/{index,provider,passkey,interactions,credentials}.js` |
-| `solid-pod-rs-nostr`       | 2,177 | 89, 90, 101, 132       | `src/{did/resolver,nostr/relay,auth/did-nostr}.js`  |
-| `solid-pod-rs-didkey`      | 1,167 | 153                    | W3C did:key spec + LWS 1.0 SSI     |
+| `solid-pod-rs-server`      | 11,436 | server/operator rows  | `bin/jss.js`, `src/server.js`       |
+| `solid-pod-rs-activitypub` | 3,615 | 102–108, 131, 169–172  | `src/ap/{index,routes/inbox,routes/outbox,store}.js` |
+| `solid-pod-rs-git`         | 3,240 | 69, 100                | `src/handlers/git.js`               |
+| `solid-pod-rs-forge`       | 5,376 | forge extension rows   | JSS `forge` plugin (behaviour only) |
+| `solid-pod-rs-idp`         | 6,080 | 74–81, 130             | `src/idp/{index,provider,passkey,interactions,credentials}.js` |
+| `solid-pod-rs-nostr`       | 2,666 | 89, 90, 101, 132       | `src/{did/resolver,nostr/relay,auth/did-nostr}.js`  |
+| `solid-pod-rs-didkey`      | 864   | 153                    | W3C did:key spec + LWS 1.0 SSI     |
 
 The did:nostr resolver shipped in Sprint 6 lives inside the core
 library (`interop::did_nostr` under `did-nostr`) as well as the
@@ -206,8 +209,8 @@ flowchart TD
 - **NIP-98 single-use replay guard** (`nip98-replay`) — the verifier
   returns a signature-bound canonical event id, and
   `auth::replay::Nip98ReplayCache` (a bounded process-local LRU) rejects a
-  re-presented token, closing the ±120s window the stateless verifier
-  leaves open. Wired into every request by `solid-pod-rs-server`.
+  re-presented token, closing the ±60 s (120 s total) window the stateless
+  verifier leaves open. Wired into every request by `solid-pod-rs-server`.
 - **WAC `acl:origin` enforcement** (`acl-origin`) — the request `Origin`
   header is threaded into the evaluator by `solid-pod-rs-server`, so an
   ACL bearing `acl:origin` triples gates cross-origin reads and writes.
@@ -225,7 +228,7 @@ flowchart TD
   endpoints are rejected on every outbound fetch (JWKS discovery,
   webhook delivery, did:nostr resolution). DNS-rebinding is closed by
   pinning the resolved IP on the per-call reqwest client.
-- **Dotfile allowlist** — only `.acl`, `.meta`, `.well-known`,
+- **Dotfile allowlist** — only `.acl`, `.meta`, `.acl.meta`, `.well-known`,
   `.quota.json`, and `.account` are served. All other dotfiles return
   404 regardless of storage-layer presence.
 - **RFC 7638 canonical JWK thumbprints** — replaces the previous

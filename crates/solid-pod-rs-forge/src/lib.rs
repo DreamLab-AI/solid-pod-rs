@@ -7,8 +7,11 @@
 //! ([`solid_pod_rs_git`]), write-as-commit provenance and Bitcoin
 //! anchoring ([`solid_pod_rs::provenance`], [`solid_pod_rs::mrc20`]),
 //! NIP-98 auth ([`solid_pod_rs::auth::nip98`]), `did:nostr` identity
-//! ([`solid_pod_rs::did_nostr_types`]), and WAC gating (enforced by the
-//! embedding server before [`ForgeService::handle`] is reached).
+//! ([`solid_pod_rs::did_nostr_types`]), and access gating enforced by the
+//! embedding server before [`ForgeService::handle`] is reached (the bundled
+//! `solid-pod-rs-server` applies this crate's fail-closed
+//! namespace-ownership guard, [`ownership`], rather than the pod's WAC
+//! evaluator).
 //!
 //! ## IP posture
 //!
@@ -37,8 +40,10 @@
 //! The crate is framework-agnostic: [`ForgeService::handle`] consumes a
 //! [`ForgeRequest`] and produces a [`ForgeResponse`]; the embedding
 //! server (actix/axum/hyper) translates its native types at the edge and
-//! WAC-gates the forge scope *before* dispatch — exactly as the server's
-//! `handle_git` gates before invoking [`solid_pod_rs_git::GitHttpService`].
+//! gates the forge scope *before* dispatch — the same shape as the server's
+//! `handle_git`, which WAC-gates before invoking
+//! [`solid_pod_rs_git::GitHttpService`]; the forge scope uses the
+//! [`ownership`] guard instead.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

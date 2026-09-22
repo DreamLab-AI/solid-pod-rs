@@ -3,7 +3,7 @@
 **Status: 0.5.0-alpha.9 — functional Git HTTP backend.** Integrators may
 depend on this crate today; see the workspace audit for current quality gates.
 
-## Target scope
+## Scope
 
 - Git HTTP smart-protocol backend (`info/refs`, `upload-pack`,
   `receive-pack`) mounted as a pod sub-scope.
@@ -15,11 +15,12 @@ depend on this crate today; see the workspace audit for current quality gates.
 - WAC integration so repo `.git/` trees honour the enclosing pod's
   ACL.
 
-Target LOC: ~450 + 12 integration tests at first landing.
+Shipped: 3,240 LOC (`src/`, 2026-09-22), 60 unit tests plus the
+`git_service_sprint10` integration suite.
 
 ## Parity rows
 
-Rows that will close when this crate lands (see
+Rows closed by this crate (see
 [`../solid-pod-rs/PARITY-CHECKLIST.md`](../solid-pod-rs/PARITY-CHECKLIST.md)):
 
 - **69** — `Basic nostr:<token>` HTTP Basic bridge to NIP-98.

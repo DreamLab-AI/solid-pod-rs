@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- **Docs re-aligned to the code at `045c24e` (2026-09-22).** Every checkable
+  claim in the READMEs, crate-level rustdoc, `docs/` reference and the
+  architecture baseline was verified against the tree: stale `file:line`
+  citations in `BASELINE-solid-pod-rs.md` re-recorded (`verified_commit`
+  now `045c24e`, version `0.1.1`); the server README no longer claims the
+  `git` feature is on by default or that `dpop-replay-cache` /
+  `nip98-schnorr` are opt-in; the admin-provision `podUrl` and git-panel
+  routes are documented at their real `/pods/{pubkey}/…` paths; the NIP-98
+  freshness window is stated as ±60 s; sibling-crate LOC and test counts
+  refreshed; `solid-pod-rs-forge` marks forks/PRs, NIP-34 announce and
+  anchoring as planned rather than shipped; broken in-repo link to the
+  archived ADR-059 fixed; phantom `standalone` example and the JSS-only
+  `JSS_WORKERS` / `JSS_LOG_LEVEL` / `JSS_DISABLE_DOTFILES` variables removed
+  from the docs.
+
 ### Security
 
 - **`rustls` 0.23.45.** RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted
