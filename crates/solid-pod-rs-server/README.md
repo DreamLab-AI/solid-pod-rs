@@ -5,14 +5,14 @@ JSS replacement that runs as a single static-ish Rust binary.
 
 ## Install
 
-Once published to crates.io (target: v0.4.0):
+From crates.io (published; every workspace crate is at `0.5.0-alpha.9`):
 
 ```bash
 cargo install solid-pod-rs-server
 solid-pod-rs-server --config config.json
 ```
 
-Until then, build from source:
+Or build from source:
 
 ```bash
 cargo build --release -p solid-pod-rs-server
@@ -146,7 +146,8 @@ Verification is hardened three ways (closeout 0.5.0-alpha.4):
 - **Single-use replay guard** — every accepted NIP-98 token id is recorded in
   a shared process-local `Nip98ReplayCache`; a re-presented token is treated as
   unauthenticated (`extract_pubkey` returns `None`) so the WAC gate denies with
-  `401`, closing the ±120s replay window the stateless verifier leaves open.
+  `401`, closing the ±60 s (120 s total) replay window the stateless verifier
+  leaves open.
   Tunable via `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`;
   per-process (multi-replica deployments share no state).
 - **Fail-open compile guard** — the binary references a `const fn` that exists
@@ -169,14 +170,16 @@ The optional `export-jsonld` build adds `GET /api/exports/all`, an
 ### Provision endpoint
 
 `POST /_admin/provision/{pubkey}` creates a new pod for a Nostr pubkey in one
-atomic step: pod directory, owner-only `.acl`, and a `git init` that sets
+atomic step: pod directory (under `data_root/pods/{pubkey}/`), owner-only
+`.acl`, and — when built with `--features git` — a `git init` that sets
 `receive.denyCurrentBranch=updateInstead` so the pod is immediately pushable
-over HTTP via `/_git/{pubkey}/`.
+over git smart-HTTP at `/pods/{pubkey}/info/refs`. The endpoint itself is
+registered unconditionally.
 
 ```bash
 curl -X POST https://pods.example.com/_admin/provision/<hex-pubkey> \
      -H "X-Pod-Admin-Key: $SOLID_ADMIN_KEY"
-# → { "podUrl": "https://pods.example.com/<hex-pubkey>/", "ok": true }
+# → { "podUrl": "https://pods.example.com/pods/<hex-pubkey>/", "ok": true }
 ```
 
 This endpoint is the CF Workers ↔ agentbox handshake: `auth-worker` calls it
@@ -192,8 +195,9 @@ openssl rand -hex 32
 
 ### CORS allowlist for the forum git client
 
-The forum's Source Control panel (`components/git_panel.rs`) drives
-`/_git/{pubkey}/` over HTTP from a cross-origin browser context.
+The forum's Source Control panel (`components/git_panel.rs`) drives the git
+control-panel REST API at `/pods/{pubkey}/_git/{status,log,diff,stage,unstage,commit,branches,…}`
+over HTTP from a cross-origin browser context.
 `SOLID_ALLOWED_ORIGINS` / `--allowed-origins` is a comma-separated list of
 origins that will receive `Access-Control-Allow-Origin` headers.
 
@@ -204,8 +208,10 @@ SOLID_ALLOWED_ORIGINS=https://dreamlab-ai.com,https://pods.dreamlab-ai.com
 # Development default — empty = wildcard (*)
 ```
 
-OPTIONS preflights for `/_git/{pubkey}/**` are handled automatically
-(feature `git` required, which is on by default in this binary).
+OPTIONS preflights for `/pods/{pubkey}/_git/**` are handled automatically
+and are registered unconditionally; the panel routes themselves require
+`--features git` (this binary ships `default = []`, so `git` is **not** on by
+default).
 
 ### Deployment
 
@@ -315,7 +321,8 @@ runtime error telling the operator to rebuild with `--features install`.
 
 ## Feature flags
 
-This binary enables the following `solid-pod-rs` features by default:
+This binary always enables the following `solid-pod-rs` features through its
+dependency declaration (`Cargo.toml`):
 
 | Feature | Purpose |
 |---|---|
@@ -323,10 +330,19 @@ This binary enables the following `solid-pod-rs` features by default:
 | `memory-backend` | In-memory storage (test / dev) |
 | `config-loader` | F6 layered config loader |
 | `legacy-notifications` | F3 `solid-0.1` WS notifications adapter |
+| `dpop-replay-cache` | DPoP `jti` replay cache (pulls `oidc`) |
+| `embedded-docs` | Embedded Diátaxis docs for the MCP docs tools |
+| `mrc20` | Block-trail anchor verification + taproot tx build/sign |
+| `nip98-schnorr` | BIP-340 Schnorr verification for NIP-98 |
+| `nip98-replay` | NIP-98 single-use replay guard |
+| `acl-origin` | WAC `acl:origin` enforcement |
 
-Other feature flags (`oidc`, `dpop-replay-cache`, and `nip98-schnorr`) can be
-opted into by the operator via a custom build. No stock object-store backend
-ships; unknown storage types are rejected during configuration loading.
+The binary's own feature set is empty by default (`default = []`); `tls`,
+`git`, `forge`, `forge-anchoring`, `forge-announce`, `install`, `rate-limit`,
+`quota`, `did-nostr`, `security-primitives`, `provision-keys`,
+`nip05-endpoint` and `export-jsonld` are opt-in at build time. No stock
+object-store backend ships; unknown storage types are rejected during
+configuration loading.
 
 ## Licence
 
@@ -335,8 +351,11 @@ network service triggers AGPL §13 source-disclosure obligations.
 
 ## Sibling crates (all functional)
 
-- [`solid-pod-rs-activitypub`](../solid-pod-rs-activitypub/) — ActivityPub federation (4,453 LOC)
-- [`solid-pod-rs-git`](../solid-pod-rs-git/) — Git HTTP backend (1,685 LOC)
-- [`solid-pod-rs-idp`](../solid-pod-rs-idp/) — Solid-OIDC identity provider (6,160 LOC)
-- [`solid-pod-rs-nostr`](../solid-pod-rs-nostr/) — did:nostr + embedded Nostr relay (2,177 LOC)
-- [`solid-pod-rs-didkey`](../solid-pod-rs-didkey/) — did:key (Ed25519/P-256/secp256k1) + JWT (1,167 LOC)
+`src/` line counts as of 2026-09-22:
+
+- [`solid-pod-rs-activitypub`](../solid-pod-rs-activitypub/) — ActivityPub federation (3,615 LOC)
+- [`solid-pod-rs-git`](../solid-pod-rs-git/) — Git HTTP backend (3,240 LOC)
+- [`solid-pod-rs-forge`](../solid-pod-rs-forge/) — pod-native git forge (5,376 LOC)
+- [`solid-pod-rs-idp`](../solid-pod-rs-idp/) — Solid-OIDC identity provider (6,080 LOC)
+- [`solid-pod-rs-nostr`](../solid-pod-rs-nostr/) — did:nostr + embedded Nostr relay (2,666 LOC)
+- [`solid-pod-rs-didkey`](../solid-pod-rs-didkey/) — did:key (Ed25519/P-256/secp256k1) + JWT (864 LOC)

@@ -59,7 +59,7 @@ document**, or every request will 401. See
 | `JSS_READ_ONLY`                          | enforce at the HTTP framework layer | — |
 | `JSS_NOTIFICATIONS`                      | notification feature selection and server wiring | WebSocket, webhook, and legacy adapters are separate Rust features |
 | `JSS_NOSTR` / `JSS_ACTIVITYPUB`          | sibling crates / compile-time features | Rebuild required; there is no runtime plugin loader |
-| `JSS_MASHLIB`                            | core `mashlib` feature and server route wiring | Compile-time rather than runtime selection |
+| `JSS_MASHLIB`                            | `JSS_MASHLIB` / `--mashlib` on the bundled server (plus `JSS_MASHLIB_CDN`, `JSS_MASHLIB_MODULE`) | Runtime flag, same name; core `mashlib` module is always compiled |
 | `JSS_BODY_LIMIT`                         | `server.body_cap` (`JSS_MAX_REQUEST_BODY` alias) | Rust default 50 MiB; JSS `0.0.220` default 20 MB |
 | `JSS_MCP`                                | server MCP enable flag | Off by default |
 

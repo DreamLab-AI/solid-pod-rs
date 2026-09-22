@@ -6,15 +6,17 @@
 //! to a specific HTTP framework. Wire it into actix-web, axum, hyper, or
 //! anything else; the crate never mounts routes itself. On top of the Solid
 //! core it adds two composable **provenance primitives** ([`provenance`]):
-//! cheap, always-on **git-marks** (every pod write captured as a git commit
-//! + a PROV-O sidecar) and expensive, opt-in **block-trails** (a
-//! Bitcoin-taproot-anchored, hash-chained state trail — [`mrc20`] /
-//! `bitcoin_tx`) — and a routed, sovereign HTTP-402 economy: a `did:nostr`-keyed
+//! cheap **git-marks** (every pod write captured as a git commit + a PROV-O
+//! sidecar; always on once the server is built with `--features git`) and
+//! expensive, opt-in **block-trails** (a Bitcoin-taproot-anchored,
+//! hash-chained state trail — [`mrc20`] / `bitcoin_tx`) — and a routed,
+//! sovereign HTTP-402 economy: a `did:nostr`-keyed
 //! [Web Ledger](payments), `acl:PaymentCondition` ([`wac`]) access gating, an MRC20
 //! deposit path, and a peer order book + constant-product AMM ([`trading`]).
 //! The HTTP routing for the 402 economy and the `_prov` provenance API lives in
 //! the sibling [`solid-pod-rs-server`](https://docs.rs/solid-pod-rs-server). See
-//! [ADR-059](https://docs.rs/crate/solid-pod-rs/latest/source/docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md).
+//! [legacy ADR-059](https://docs.rs/crate/solid-pod-rs/latest/source/docs/archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md)
+//! (archived; `docs/BASELINE-solid-pod-rs.md` is authoritative).
 //!
 //! For a turnkey binary, use the sibling crate
 //! [`solid-pod-rs-server`](https://docs.rs/solid-pod-rs-server).
@@ -33,7 +35,7 @@
 //! | `oidc` | off | Solid-OIDC 0.1 + DPoP. |
 //! | `dpop-replay-cache` | off | DPoP `jti` replay cache (pulls `oidc`). |
 //! | `nip98-schnorr` | off | BIP-340 signature verification for NIP-98. Verification is **unconditional and fail-closed**: without this feature the verifier returns [`PodError::Unsupported`] rather than accepting a forged pubkey after structural checks alone. |
-//! | `nip98-replay` | off | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU keyed on the canonical event id; closes the ±120s replay window the stateless verifier leaves open. |
+//! | `nip98-replay` | off | NIP-98 single-use replay guard (`auth::replay::Nip98ReplayCache`) — bounded process-local LRU keyed on the canonical event id; closes the ±60 s (120 s total) replay window the stateless verifier leaves open. |
 //! | `jss-v04` | off | JSS-parity umbrella (ADR-056); no-op alone — sub-features below switch one bounded context each on. |
 //! | `acl-origin` | off | WAC `acl:origin` enforcement (pulls `jss-v04`). Wired into the request path in `solid-pod-rs-server` (the request `Origin` is threaded into the evaluator `RequestContext`). Note: `acl:origin` is the only WAC 2.0 condition satisfiable end-to-end today — `client_id`/`issuer` conditions still evaluate deny (no authenticated OIDC client_id/issuer is surfaced into the context yet). |
 //! | `security-primitives` | off | SSRF guard + dotfile allowlist (pulls `jss-v04`). |

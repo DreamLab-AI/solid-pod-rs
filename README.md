@@ -185,10 +185,11 @@ solid-pod-rs = { version = "0.5.0-alpha.9", features = ["fs-backend", "oidc"] }
 
 ```rust,no_run
 use solid_pod_rs::storage::fs::FsBackend;
-use std::path::PathBuf;
 
-let storage = FsBackend::new(PathBuf::from("./pod-root"));
+# async fn demo() -> Result<(), solid_pod_rs::PodError> {
+let storage = FsBackend::new("./pod-root").await?;
 // Wire your HTTP framework of choice; see examples/embed_in_actix.rs.
+# Ok(()) }
 ```
 
 All configuration keys accept either a JSON/TOML file entry or a `JSS_*` environment variable — names identical to JSS, so existing deployment scripts work unchanged. See [`env-vars.md`](crates/solid-pod-rs/docs/reference/env-vars.md) for the full list.
@@ -203,7 +204,7 @@ Each subsystem below is a one-paragraph summary; the linked docs carry the row-l
 
 **WAC — Web Access Control.** Deny by default: no ACL means no access. `.acl` sidecars specify who (by WebID, agent class, or group) may Read / Write / Append / Control, inheriting down the container tree via `acl:default`. Parser bounds cap Turtle at 1 MiB and JSON-LD depth at 32 levels (CWE-400). See [`wac-modes.md`](crates/solid-pod-rs/docs/reference/wac-modes.md) and [`debug-acl-denials.md`](crates/solid-pod-rs/docs/how-to/debug-acl-denials.md).
 
-**Provenance & trust ledger.** A pod records who changed what, when, and on whose authority. **git-marks** (cheap, always-on) turn every write into a git commit persisted as a PROV-O sidecar. **block-trails** (opt-in) anchor a hash-chained state trail to Bitcoin taproot, batched under an epoch Merkle root so one transaction notarises an epoch of writes. Default network is `testnet4`; mainnet is an explicit operator choice. See [ADR-059](crates/solid-pod-rs/docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and the [provenance upgrade master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md).
+**Provenance & trust ledger.** A pod records who changed what, when, and on whose authority. **git-marks** (cheap; always on once the server is built with `--features git` — the binary ships `default = []`) turn every write into a git commit persisted as a PROV-O sidecar. **block-trails** (opt-in) anchor a hash-chained state trail to Bitcoin taproot, batched under an epoch Merkle root so one transaction notarises an epoch of writes. Default network is `testnet4`; mainnet is an explicit operator choice. See [legacy ADR-059](crates/solid-pod-rs/docs/archive/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) (archived; the [architecture baseline](crates/solid-pod-rs/docs/BASELINE-solid-pod-rs.md) is authoritative) and the [provenance upgrade master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md).
 
 **Payments & web ledger.** solid-pod-rs inherits JSS's HTTP-402 economy: a `PaymentCondition` in a WAC ACL gates a resource behind a price, the client pays, the read succeeds. Settlement is sovereign and Bitcoin-native (sats, no EVM), sharing one verified taproot core with block-trail anchors — deposits, withdrawals, a routed order book and constant-product AMM, all through `PaymentStore` as the sole ledger I/O path, with replay protection on every settlement proof.
 
@@ -234,7 +235,7 @@ Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
 
 - **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
 - **97.6% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 230 rows tracked through JSS `0.0.220` (`f9f7a4d`) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
-- **Provenance is git-mark-first.** git-marks are always-on; Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr) is validated against the official test vectors.
+- **Provenance is git-mark-first.** git-marks are always on in a `--features git` build (and a no-op without it); Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr) is validated against the official test vectors.
 - **Supply-chain gates are green; the code audit is not.** As of 2026-09-21,
   formatting, strict Clippy, compilation, the complete all-feature workspace
   test command, `cargo audit --deny warnings` and `cargo deny --all-features

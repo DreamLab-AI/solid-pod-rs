@@ -32,12 +32,12 @@
 //! enabled crate-wide, so responses are read as text and parsed with
 //! `serde_json` (matching the proxy handler's manual-parse style).
 //!
-//! The endpoint choice is not silent: [`select_mempool_endpoint`] resolves the
-//! base URL, [`infer_network`] classifies the Bitcoin network it serves, and
-//! [`log_mempool_selection`] records both (plus whether the URL was
+//! The endpoint choice is not silent: [`select_mempool_endpoint`](crate::mempool::select_mempool_endpoint) resolves the
+//! base URL, [`infer_network`](crate::mempool::infer_network) classifies the Bitcoin network it serves, and
+//! [`log_mempool_selection`](crate::mempool::log_mempool_selection) records both (plus whether the URL was
 //! operator-supplied or defaulted) in the startup log — with a warning when the
 //! pod would otherwise be anchoring against an unchosen or unclassifiable
-//! chain. [`MempoolSelection::to_manifest_json`] renders the same facts for a
+//! chain. [`MempoolSelection::to_manifest_json`](crate::mempool::MempoolSelection::to_manifest_json) renders the same facts for a
 //! manifest (ADR-2007).
 
 use async_trait::async_trait;

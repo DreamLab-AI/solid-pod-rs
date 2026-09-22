@@ -3,7 +3,8 @@
 **Status: 0.5.0-alpha.9 — functional ActivityPub federation crate.**
 
 Rust port of the JSS ActivityPub surface (`JavaScriptSolidServer/src/ap/*`).
-4,453 LOC across 9 modules; 53 tests. Integrators may take a dependency
+3,615 LOC across 9 modules; 94 unit tests plus the `federation_flows`
+integration suite (counts at 2026-09-22). Integrators may take a dependency
 today.
 
 ## What ships
@@ -17,8 +18,8 @@ today.
 | `http_sig` | `HttpSignatureVerifier` + `HttpActorKeyResolver` implementing draft-cavage v12 over RSA-SHA256. |
 | `store` | SQLite-backed follower/following/outbox/delivery-queue persistence. Actor cache with 24-hour freshness. |
 | `error` | Typed error hierarchy (`InboxError`, `OutboxError`, `DeliveryError`, `StoreError`). |
-| `webfinger` | AP-specific WebFinger JRD rendering. |
-| `nodeinfo` | NodeInfo 2.1 document emission. |
+| `discovery` | NodeInfo 2.1 document emission + WebFinger JRD re-export from the core crate. |
+| `ssrf` | Outbound-delivery SSRF guard (private / metadata address classes). |
 
 ## Federation flow
 

@@ -1,6 +1,6 @@
 # solid-pod-rs — benchmarks
 
-Four criterion-based benches live in `crates/solid-pod-rs/benches/`.
+Five criterion-based benches live in `crates/solid-pod-rs/benches/`.
 Each is registered as `harness = false` so criterion drives the
 executable directly.
 
@@ -12,6 +12,7 @@ cargo bench -p solid-pod-rs --bench storage_backend_bench
 cargo bench -p solid-pod-rs --bench wac_eval_bench
 cargo bench -p solid-pod-rs --bench ldp_content_negotiation_bench
 cargo bench -p solid-pod-rs --bench nip98_verify_bench
+cargo bench -p solid-pod-rs --bench dpop_replay_bench   # requires --features dpop-replay-cache
 
 # Run everything
 cargo bench -p solid-pod-rs
@@ -57,6 +58,17 @@ linear scan in `StaticGroupMembership`.
 | Valid token, no body | <10 µs |
 | Valid token, body with SHA-256 check | <30 µs (dominated by SHA-256) |
 | Tampered body, fail path | <30 µs (fails at hash compare) |
+
+### `dpop_replay_bench`
+
+Requires `--features dpop-replay-cache`. Exercises the `DpopReplayCache`
+hot path (`check_and_record`), which sits on every DPoP-authenticated
+request.
+
+| Scenario | Target |
+|----------|--------|
+| Fresh `jti`, single-threaded (`dpop_replay_fresh`) | <1 µs at 10k steady-state entries |
+| 10 tasks × 1 000 unique `jti`s (`dpop_replay_concurrent`) | mutex-contention cost on the shared cache |
 
 ## Hardware context
 

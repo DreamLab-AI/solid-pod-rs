@@ -102,8 +102,8 @@ Repository: [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dre
 - LDP semantics (containers, Link headers, PATCH).
 - WAC evaluator.
 - NIP-98 + Solid-OIDC verification.
-- In-memory and filesystem backends. S3 is configuration/dependency
-  scaffolding only; no implementation ships yet.
+- In-memory and filesystem backends. No object-store backend ships; the
+  former S3 dependency scaffold was removed in 0.5.0-alpha.8.
 - Solid Notifications 0.2 channel managers.
 - DID:nostr resolution + WebID generation.
 - did:key resolution (Ed25519, P-256, secp256k1).

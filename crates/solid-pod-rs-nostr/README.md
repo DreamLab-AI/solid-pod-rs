@@ -1,14 +1,16 @@
 # solid-pod-rs-nostr
 
 **Status: 0.5.0-alpha.9 — functional did:nostr + embedded relay.**
-2,177 LOC, 45 tests. Integrators may depend on this crate today.
+2,666 LOC (`src/`), 63 unit tests plus the `did_nostr_resolver` and
+`relay_nip11` integration suites (counts at 2026-09-22). Integrators may
+depend on this crate today.
 
 Note: the did:nostr bidirectional resolver also ships inside the core
 library at `interop::did_nostr` (feature `did-nostr`). This sibling
 crate adds the **embedded relay** and the Tier 3 DID surface on top
 of that core resolver.
 
-## Target scope
+## Scope
 
 - did:nostr DID Document publication at
   `/.well-known/did/nostr/:pubkey.json` (Tier 1 / Tier 3) — Tier 1
@@ -20,11 +22,9 @@ of that core resolver.
   (`auth::nip98::verify_schnorr_signature` under `nip98-schnorr`);
   this crate does not re-implement it.
 
-Target LOC: 800–1,200 at first landing.
-
 ## Parity rows
 
-Rows that will close when this crate lands (see
+Rows closed by this crate (see
 [`../solid-pod-rs/PARITY-CHECKLIST.md`](../solid-pod-rs/PARITY-CHECKLIST.md)):
 
 - **89** — Embedded Nostr relay (NIP-01).

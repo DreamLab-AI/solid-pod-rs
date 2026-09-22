@@ -1,6 +1,6 @@
 # Solid-OIDC compatibility matrix
 
-**Version: `solid-pod-rs` 0.5.0-alpha.8** (workspace `Cargo.toml`,
+**Version: `solid-pod-rs` 0.5.0-alpha.9** (workspace `Cargo.toml`,
 `[workspace.package] version`). This matrix describes the OIDC surface
 of *that* crate version. It is the compatibility contract referenced by
 [ADR-2003](../adr/ADR-2003-solid-oidc-01-defer-lws10.md) — "Hold the

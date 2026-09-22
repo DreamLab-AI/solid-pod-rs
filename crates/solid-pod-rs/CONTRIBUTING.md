@@ -16,9 +16,10 @@ and themselves. Concurrency-safety is required.
 
 ## Parity checklist
 
-Any feature port from the JavaScriptSolidServer reference (under
-`references/javascript-solid-server/`) must update
-`PARITY-CHECKLIST.md` to reflect its new status.
+Any feature port from the JavaScriptSolidServer reference (upstream
+`gh-pages`; the pinned comparator commit and package version are recorded
+at the top of `PARITY-CHECKLIST.md` — there is no vendored checkout in this
+repository) must update `PARITY-CHECKLIST.md` to reflect its new status.
 
 ## Testing
 

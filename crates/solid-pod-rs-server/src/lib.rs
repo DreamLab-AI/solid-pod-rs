@@ -89,7 +89,7 @@
 //!
 //! - **NIP-98 single-use replay guard** — every request runs through a
 //!   shared process-local `Nip98ReplayCache`, so a captured token cannot be
-//!   replayed within the ±120s NIP-98 tolerance window (`extract_pubkey`
+//!   replayed within the ±60 s NIP-98 tolerance window (`extract_pubkey`
 //!   returns `None` on a replayed id → the WAC gate denies with 401). TTL /
 //!   size via `SOLID_POD_NIP98_REPLAY_TTL_SECS` / `SOLID_POD_NIP98_REPLAY_MAX_SIZE`.
 //!   The cache is per-process; multi-replica deployments share no state.
