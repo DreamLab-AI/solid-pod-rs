@@ -20,7 +20,7 @@ New to Solid, RDF/JSON-LD, WAC, or did:nostr? The concepts live in one place: th
 
 ## Part of VisionFlow
 
-solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/DreamLab-AI/VisionFlow) — a seven-repo mesh for human–AI coordination built on one identity spine: `did:nostr` as login, WAC principal, provenance author, DID subject, and payment account, all from a single keypair. Pods are the canonical store the other components read from and write to. The mesh pairs that data sovereignty with a shared formal semantic layer — OWL 2 EL reasoning in VisionClaw bounds what agents assert, the arrangement the industry now calls neurosymbolic — so a pod holds data whose meaning is checked, not merely stored.
+solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/DreamLab-AI/VisionFlow) — an eight-repo mesh for human–AI coordination built on one identity spine: `did:nostr` as login, WAC principal, provenance author, DID subject, and payment account, all from a single keypair. Pods are the canonical store the other components read from and write to. The mesh pairs that data sovereignty with a shared formal semantic layer — OWL 2 EL reasoning in VisionClaw bounds what agents assert, the arrangement the industry now calls neurosymbolic — so a pod holds data whose meaning is checked, not merely stored.
 
 | Repository | Role |
 |:-----------|:-----|
@@ -28,6 +28,7 @@ solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/
 | [DreamLab-AI/VisionClaw](https://github.com/DreamLab-AI/VisionClaw) | Flagship engine — ontology-grounded immersive 3D knowledge graph, OWL 2 EL + Whelk, GPU physics. |
 | [DreamLab-AI/agentbox](https://github.com/DreamLab-AI/agentbox) | Sovereign agent runtime — Nix container, did:nostr agent identities, RuVector memory, Solid-pod bridge. |
 | **[DreamLab-AI/solid-pod-rs](https://github.com/DreamLab-AI/solid-pod-rs)** | **The personal-data-sovereignty layer — this repo.** |
+| [DreamLab-AI/sidestr-rs](https://github.com/DreamLab-AI/sidestr-rs) | Rust port of Melvin Carvalho's sidestr sidechains, AGPL-3.0-only: the economic engine for did:nostr agents. A did:nostr key is a sidechain wallet. |
 | [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Nostr-native forum + relay — the human+agent communication and governance substrate. |
 | [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website) | DreamLab AI company website — the commercial face. |
 | [DreamLab-AI/knowledgeGraph](https://github.com/DreamLab-AI/knowledgeGraph) | narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D; main also releases that corpus and its build pipeline as open data, 7,457 pages under ODbL-1.0. |
@@ -87,6 +88,14 @@ Each sibling in its own words:
 <br/>
 
 > **Your LLM doesn't know your data — Loom makes any LLM answer from it, verifiably.** Point any OpenAI-compatible client at one URL and every answer is grounded in your curated, reasoner-checked private corpus: recall on in-domain questions rises from as low as 0.15 to ~0.94, faster than the bare model, with every claim traceable to a corpus generation. The model is just a URL behind the door — swap it for the next one and nothing else changes, because the knowledge lives in the corpus you govern, not the weights you rent.
+
+</details>
+
+<details>
+<summary><b>sidestr-rs</b> — <em>economic engine for did:nostr agents — a did:nostr key is a sidechain wallet</em></summary>
+<br/>
+
+> **Rust port of Melvin Carvalho's sidestr sidechains, AGPL-3.0-only: the economic engine for `did:nostr` agents. A `did:nostr` key is a sidechain wallet.**
 
 </details>
 
