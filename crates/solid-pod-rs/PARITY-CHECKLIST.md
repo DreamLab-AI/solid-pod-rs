@@ -28,9 +28,10 @@ and our status against it.
 
 ---
 
-## Current state (2026-08-20, alpha.7 — JSS `f9f7a4d`/0.0.220)
+## Current state (2026-09-24, alpha.9 — JSS `e7e0525`, package 0.0.220)
 
-**230 rows tracked** across 22 functional sections. §21 records the JSS
+**232 rows tracked** across 23 functional sections. §23 records the one-commit
+`0.0.220` → `e7e0525` delta (#619), both rows present. §21 records the JSS
 v0.0.197 → v0.0.204 delta. §22 audits every portable behaviour in the
 v0.0.204 → v0.0.220 delta, including the runtime-plugin cluster, body-limit
 and port behaviour, NIP-98 raw-byte hashing, sidecar Control enforcement,
@@ -40,27 +41,27 @@ and the DID Core-first context update.
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.6%** raw checklist gate — 206/211 classified in-scope rows |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.7%** raw checklist gate — 208/213 classified in-scope rows |
 | Half-credit (partial-parity counted 0.5) | **98.8%** raw checklist gate |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
-> **Authoritative figure.** The **97.6% strict** value is the current gate
-> over all 230 tracked rows: 206 passing rows ÷ 211 classified in-scope rows.
+> **Authoritative figure.** The **97.7% strict** value is the current gate
+> over all 232 tracked rows: 208 passing rows ÷ 213 classified in-scope rows.
 > The denominator excludes explicitly deferred, wontfix-in-crate,
 > and not-applicable/present-by-absence rows. It supersedes the
 > Sprint 12–14 headline figures (~98–99%), which were computed against the
 > smaller 132–137-row denominators before §19–§21 added rows and the
 > counts were reconciled — the strict percentage *dropped* only because the
 > denominator grew, not because parity regressed. `README.md` and
-> `GAP-ANALYSIS.md` are aligned to this 97.6% figure.
+> `GAP-ANALYSIS.md` are aligned to this 97.7% figure.
 
 ### By status
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 182 | Includes present-by-absence classifications |
+| present | 184 | Includes present-by-absence classifications; +2 at §23 |
 | partial-parity | 5 | -5 |
 | semantic-difference | 5 | — |
 | missing | 0 | -4 |
@@ -69,7 +70,7 @@ and the DID Core-first context update.
 | wontfix-in-crate | 3 | — |
 | not-applicable / present-by-absence | 13 | +13 (Node/Fastify/browser/tunnel/runtime-plugin constructs) |
 | other/unclassified | 10 | Architectural and test-meta rows excluded from the denominator |
-| **Total** | **230** | Comparator fetched directly from upstream `gh-pages` at `f9f7a4d`, package `0.0.220`, on 2026-08-19 |
+| **Total** | **232** | Comparator fetched directly from upstream `gh-pages` at `e7e0525`, package `0.0.220`, on 2026-09-24 |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -566,6 +567,19 @@ many commits are version bumps or tests for the behaviours below.
 | 228 | Plugin roster via `api.plugins` | `18ee785`, #610/#612 | Cargo metadata/features describe compiled extensions | not applicable | Cargo manifests | No loaded-plugin runtime roster. |
 | 229 | Derive plugin id from parent directory for generic basenames | `cdfeda8`, #596/#613 | No runtime plugin identifiers | not applicable | — | Node module-loader fix. |
 | 230 | DID document context begins with DID Core `did/v1` | `f13526f`, #618; release `f9f7a4d` | Canonical three-context CG 0.1.1 renderer | present | `did_nostr_types::render_did_document` | Rust and JSS `0.0.220` now agree. |
+
+## 23. JSS 0.0.220 → `e7e0525` delta (unreleased head, audited 2026-09-24)
+
+Comparator: upstream `JavaScriptSolidServer/JavaScriptSolidServer` `gh-pages` at
+`e7e0525` (package still `0.0.220`), fetched 2026-09-24. One commit, #619, both
+halves of which were found while hardening this port and landed upstream from it.
+Upstream has no sidestr code at this head, so the estate's sidestr wallet
+lives downstream in nostr-rust-forum (its ADR-2015), not here.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 231 | Atomic quota reservation: check-and-commit under a per-pod lock on PUT/POST, released on a failed write | `e7e0525`, #619 (`reserveQuota`, `withPodLock`) | `QuotaPolicy::reserve` is the write-path primitive; `FsQuotaStore` serialises it | present | `src/quota/mod.rs:73`, `:272`; `tests/quota_race.rs` | JSS adopted the Rust shape; the commit cites `QuotaPolicy::reserve`. |
+| 232 | Idempotent deposit credit: the ledger and the "already credited" key commit together | `e7e0525`, #619 (`creditOnce`, `credited`) | Ledger and replay set live in one `state.json`, committed with one observer-atomic `Storage::put`; `GET /pay/.balance` only reads | present | `solid-pod-rs-server/src/handlers/pay.rs:87-130` (`PaymentState`), `:363-381` (`handle_balance`) | The double-credit window JSS closed never existed here: balance reads never credit, and a deposit's credit and replay key share one write. |
 
 ---
 

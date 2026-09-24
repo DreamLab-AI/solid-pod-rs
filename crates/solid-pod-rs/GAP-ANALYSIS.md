@@ -2,11 +2,11 @@
 
 > Comparison against JavaScriptSolidServer (JSS). The row-per-feature table
 > lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
-> Re-synchronised 2026-08-19 against upstream `gh-pages` `f9f7a4d`, package
-> `0.0.220`. The tracker now contains 230 rows and reports **97.6% strict
-> classified in-scope parity** (206/211 rows) and ~100% of the
+> Re-synchronised 2026-09-24 against upstream `gh-pages` `e7e0525`, package
+> `0.0.220`. The tracker now contains 232 rows and reports **97.7% strict
+> classified in-scope parity** (208/213 rows) and ~100% of the
 > spec-normative surface. Section 22 records the complete `0.0.204 → 0.0.220`
-> progression. No row remains classified as missing: live reload, development
+> progression; section 23 the one-commit `e7e0525` delta (#619). No row remains classified as missing: live reload, development
 > bearer tokens, the external CTH runner, and busy-port shifting now ship. The runtime-plugin
 > cluster is deliberately not applicable to a statically linked Cargo feature
 > architecture.
@@ -925,9 +925,9 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **97.6% strict parity** (206/211 classified in-scope rows,
+solid-pod-rs has **97.7% strict parity** (208/213 classified in-scope rows,
 derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) and **~100%
-spec-normative parity** as of the 2026-08-19 JSS `0.0.220` sync. Six net-new features push us **ahead** of
+spec-normative parity** as of the 2026-09-24 JSS `e7e0525` sync. Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL
