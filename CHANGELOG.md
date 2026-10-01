@@ -23,10 +23,12 @@ re-pinned to `0.5.0-alpha.10`.
   and `format_multibase_sec1(&[u8])` emit `fe70102…`/`fe70103…` by the key's
   actual parity; `render_did_document_published(&k256::PublicKey)` renders the
   controller-published document. `parse_multibase_sec1` decodes the full point
-  a document carries (the point to tweak for key arithmetic on a published
-  document); `NostrPubkey::from_public_key` / `to_even_public_key` convert
-  between the identifier and points (the latter is the `0x02` lift used when
-  only the identifier is known).
+  a document carries, parity kept; `NostrPubkey::from_public_key` /
+  `to_even_public_key` convert between the identifier and points (an
+  identifier denotes the `0x02` point). Reading and encoding agree with
+  `basePoint()` / `multikey()` in sidestr/spec PR #28, checked against its
+  `keys-vectors.json` encoding fields. No key-arithmetic (tweak) API is added;
+  that waits for PR #28 to merge.
 - **Upstream conformance vectors.** `tests/fixtures/did-nostr/` vendors
   `test-vectors-generated.json` from nostrcg/did-nostr@`4ea80d8`;
   `tests/did_nostr_vectors.rs` runs `decode_even_parity`, `decode_odd_parity`,

@@ -29,7 +29,7 @@
 //! - [`parse_multibase_schnorr`]   — decoder to the x-only identifier;
 //!   accepts both parity prefixes.
 //! - [`parse_multibase_sec1`]      — decoder to the full point the document
-//!   carries (for key arithmetic on a published document).
+//!   carries, parity kept.
 //! - [`is_valid_hex_pubkey`]   — 64-char lowercase hex validation.
 //! - [`verify_webid_tag`]      — checks a tag value against a pubkey.
 //!
@@ -49,11 +49,12 @@
 //! 3. **Verifiers** — accept both prefixes; the x-coordinate is the
 //!    identifier either way ([`parse_multibase_schnorr`]).
 //!
-//! **Key arithmetic.** Code that tweaks a key works on the full point: with a
-//! published document, the point the document carries
-//! ([`parse_multibase_sec1`]); with only the identifier, the `0x02` point
-//! ([`NostrPubkey::to_even_public_key`]), and a holder whose secret `d` gives
-//! an odd-y point uses `n − d` once so that the `0x02` point is exactly theirs.
+//! **Reading a key as a point.** An identifier (`did:nostr:<x>` or a bare x)
+//! denotes the `0x02` point ([`NostrPubkey::to_even_public_key`]); a Multikey
+//! keeps its own parity ([`parse_multibase_sec1`]); a full point is encoded
+//! as `fe701` ‖ its compressed SEC1 bytes ([`format_multibase_public_key`]).
+//! This agrees with `basePoint()` / `multikey()` in sidestr/spec PR #28. This
+//! module provides no key arithmetic (tweaks); that is being specified there.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -106,12 +107,10 @@ impl NostrPubkey {
         Self(x)
     }
 
-    /// The `0x02` (even-y) point for this identifier — BIP-340 `lift_x`.
+    /// The `0x02` (even-y) point this identifier denotes — BIP-340 `lift_x`.
     ///
-    /// This is the point to tweak when only the identifier is known. A holder
-    /// whose secret `d` yields the odd-y point must use `n − d` once so that
-    /// this point is exactly theirs (did:nostr parity model, nostrcg/did-nostr
-    /// #145).
+    /// An identifier carries no parity, so it is read as the even-y point
+    /// (did:nostr parity model, nostrcg/did-nostr#145).
     ///
     /// # Errors
     ///
@@ -559,9 +558,8 @@ pub fn parse_multibase_schnorr(s: &str) -> Result<NostrPubkey, PodError> {
 
 /// Decode a `publicKeyMultibase` string to the **full point** it carries.
 ///
-/// Use this when doing key arithmetic on a published document: the parity
-/// model says to tweak the point the document carries, not the even-y lift.
-/// For the identifier alone use [`parse_multibase_schnorr`] (and
+/// The parity byte is kept: `fe70103…` yields the odd-y point, not the
+/// even-y lift. For the identifier alone use [`parse_multibase_schnorr`] (and
 /// [`NostrPubkey::to_even_public_key`] if a point is needed).
 ///
 /// # Errors

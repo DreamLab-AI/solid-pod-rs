@@ -213,27 +213,6 @@ fn offline_resolution_of_odd_key_still_emits_0x02() {
 }
 
 #[test]
-fn odd_y_holder_negates_secret_to_own_the_0x02_point() {
-    // Key arithmetic with only the identifier: tweak the 0x02 point; a holder
-    // whose secret gives odd y uses n − d once, after which tweaks agree.
-    use k256::{NonZeroScalar, ProjectivePoint, Scalar};
-
-    let sk = secret_with_parity(0x03);
-    let id = NostrPubkey::from_public_key(&sk.public_key());
-    let even = id.to_even_public_key().unwrap();
-
-    let d_neg = -*sk.to_nonzero_scalar().as_ref();
-    let t = Scalar::from(42u64);
-    let tweaked_secret = NonZeroScalar::new(d_neg + t).unwrap();
-    let tweaked_point = ProjectivePoint::from(*even.as_affine()) + ProjectivePoint::GENERATOR * t;
-
-    assert_eq!(
-        (ProjectivePoint::GENERATOR * *tweaked_secret).to_affine(),
-        tweaked_point.to_affine()
-    );
-}
-
-#[test]
 fn sec1_encoder_rejects_malformed_points() {
     let pk = secret_with_parity(0x02).public_key();
     let uncompressed = pk.to_encoded_point(false);
@@ -242,4 +221,78 @@ fn sec1_encoder_rejects_malformed_points() {
     bad_tag[0] = 0x04;
     bad_tag[1..].copy_from_slice(&pk.to_encoded_point(true).as_bytes()[1..]);
     assert!(format_multibase_sec1(&bad_tag).is_err());
+}
+
+// ── Agreement with sidestr/spec PR #28 (keys.mjs) ───────────────────────
+//
+// Encoding fields only (secret → point → did / multikey, and the identifier
+// read as the 02 point), copied from `siding/test/keys-vectors.json` at
+// sidestr/spec PR #28 head `bd1d692d90348d16944f7b13cf043197274c436e`
+// (open, unmerged). The tweak / chain / signing-key fields are not used: key
+// arithmetic is out of scope until that PR merges.
+
+struct KeysCase {
+    secret: &'static str,
+    point: &'static str,
+    did: &'static str,
+    multikey: &'static str,
+    normalized_point: &'static str,
+}
+
+const KEYS_CASES: [KeysCase; 2] = [
+    // evenSecret (its point is in fact odd-y)
+    KeysCase {
+        secret: "1111111111111111111111111111111111111111111111111111111111111111",
+        point: "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        did: "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        multikey: "fe701034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        normalized_point: "024f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    },
+    // oddSecret
+    KeysCase {
+        secret: "0000000000000000000000000000000000000000000000000000000000000006",
+        point: "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
+        did: "did:nostr:fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
+        multikey: "fe70103fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
+        normalized_point: "02fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
+    },
+];
+
+#[test]
+fn full_point_encoding_matches_keys_mjs_multikey() {
+    for c in &KEYS_CASES {
+        let sk = SecretKey::from_slice(&hex::decode(c.secret).unwrap()).unwrap();
+        let pk = sk.public_key();
+        assert_eq!(hex::encode(pk.to_encoded_point(true).as_bytes()), c.point);
+        // multikey(P) = 'fe701' + compressed hex.
+        assert_eq!(format_multibase_public_key(&pk), c.multikey);
+        assert_eq!(
+            format_multibase_sec1(&hex::decode(c.point).unwrap()).unwrap(),
+            c.multikey
+        );
+        let id = NostrPubkey::from_public_key(&pk);
+        assert_eq!(format!("did:nostr:{}", id.to_hex()), c.did);
+        assert_eq!(render_did_document_published(&pk)["id"], c.did);
+    }
+}
+
+#[test]
+fn decoding_matches_keys_mjs_base_point() {
+    for c in &KEYS_CASES {
+        // A Multikey keeps its own parity.
+        let from_mk = parse_multibase_sec1(c.multikey).unwrap();
+        assert_eq!(
+            hex::encode(from_mk.to_encoded_point(true).as_bytes()),
+            c.point
+        );
+        // did:nostr:<x> is read as the 02 point.
+        let id = NostrPubkey::from_hex(c.did.strip_prefix("did:nostr:").unwrap()).unwrap();
+        let even = id.to_even_public_key().unwrap();
+        assert_eq!(
+            hex::encode(even.to_encoded_point(true).as_bytes()),
+            c.normalized_point
+        );
+        // And the x-only identifier is the same either way.
+        assert_eq!(parse_multibase_schnorr(c.multikey).unwrap(), id);
+    }
 }
