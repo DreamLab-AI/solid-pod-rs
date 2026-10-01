@@ -16,10 +16,17 @@
 //! compatibility.
 
 // Re-export canonical types from the core crate.
+//
+// Parity model (nostrcg/did-nostr#145, closing #144): `render_did_document`
+// / `format_multibase_schnorr` are the identifier-only form and emit `0x02`;
+// `render_did_document_published` / `format_multibase_public_key` /
+// `format_multibase_sec1` encode a controller's full key and emit `0x03` for
+// odd y; `parse_multibase_schnorr` accepts both and yields the x-only key.
 pub use solid_pod_rs::did_nostr_types::{
-    did_nostr_uri, format_multibase_schnorr, is_valid_hex_pubkey, parse_multibase_schnorr,
-    render_did_document, render_did_document_tier1, render_did_document_tier3, verify_webid_tag,
-    well_known_path, NostrPubkey, ServiceEntry,
+    did_nostr_uri, format_multibase_public_key, format_multibase_schnorr, format_multibase_sec1,
+    is_valid_hex_pubkey, parse_multibase_schnorr, parse_multibase_sec1, render_did_document,
+    render_did_document_published, render_did_document_tier1, render_did_document_tier3,
+    verify_webid_tag, well_known_path, NostrPubkey, ServiceEntry,
 };
 
 #[cfg(test)]
@@ -146,6 +153,11 @@ mod tests {
         assert_eq!(a, a.to_lowercase());
         // ACCEPT path: round-trips to the identical key (I2).
         assert_eq!(parse_multibase_schnorr(&a).unwrap(), pk);
+        // Verifiers accept the odd-parity prefix and read the same x.
+        assert_eq!(
+            parse_multibase_schnorr(&format!("fe70103{PK_HEX}")).unwrap(),
+            pk
+        );
         // Reject the pre-pivot z-base58 form.
         assert!(
             parse_multibase_schnorr("zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme").is_err()

@@ -156,7 +156,8 @@ pub mod webid;
 // `did-nostr-types`-gated module.
 //
 // Canonical did:nostr types (NostrPubkey, DID-Doc renderers, ServiceEntry)
-// behind a lightweight feature flag. No runtime deps — wasm32 / CF Workers
+// behind a lightweight feature flag. No async runtime; the only extra dep is
+// pure-Rust `k256` (full-point Multikey encoding) — wasm32 / CF Workers
 // consumers get these via `core`.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "did-nostr-types")]

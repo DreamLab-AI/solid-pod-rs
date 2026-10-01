@@ -100,13 +100,14 @@ pub fn generate_webid_html_with_issuer(
     // `bip340-pub`, the 32-byte x-only form) + the 64-char x-only hex.
     //
     // D-2 (ADR-124 §7) — `feb` is the DELIBERATE WebID-side standard and is
-    // INTENTIONALLY distinct from the DID-document `fe70102`
-    // (`secp256k1-pub` = `0xe7` over the 33-byte SEC1-compressed even-y
-    // point). The two surfaces use two different W3C-registered multicodecs
-    // by design:
+    // INTENTIONALLY distinct from the DID-document `fe70102`/`fe70103`
+    // (`secp256k1-pub` = `0xe7` over the 33-byte SEC1-compressed point).
+    // The two surfaces use two different W3C-registered multicodecs by
+    // design:
     //   - DID doc  (did_nostr_types::format_multibase_schnorr): `fe70102`
     //     — secp256k1-pub, 33-byte compressed (02 ‖ X), the create-agent /
-    //     did-nostr-CG canonical form.
+    //     did-nostr-CG form from the identifier alone; a controller-published
+    //     doc may carry 03 ‖ X for an odd-y key (nostrcg/did-nostr#145).
     //   - WebID CID v1 profile (here): `feb` — bip340-pub, 32-byte x-only,
     //     the Controlled-Identifier-document form.
     // Both round-trip to the same raw x-only pubkey, so I1/I2 hold across

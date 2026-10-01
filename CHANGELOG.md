@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.10] - 2026-10-01
+
+Tracks the did:nostr parity model as reconciled upstream in
+[nostrcg/did-nostr#145](https://github.com/nostrcg/did-nostr/pull/145)
+(closing [#144](https://github.com/nostrcg/did-nostr/issues/144)): the
+identifier is the x-only key; a resolver holding only the identifier emits
+`0x02`; a document the controller publishes MAY carry `0x03` when it holds the
+full key and y is odd; verifiers accept both. All eight workspace crates are
+re-pinned to `0.5.0-alpha.10`.
+
+### Added
+
+- **Full-key Multikey encoding** (`did_nostr_types`, re-exported by
+  `solid-pod-rs-nostr::did`): `format_multibase_public_key(&k256::PublicKey)`
+  and `format_multibase_sec1(&[u8])` emit `fe70102…`/`fe70103…` by the key's
+  actual parity; `render_did_document_published(&k256::PublicKey)` renders the
+  controller-published document. `parse_multibase_sec1` decodes the full point
+  a document carries (the point to tweak for key arithmetic on a published
+  document); `NostrPubkey::from_public_key` / `to_even_public_key` convert
+  between the identifier and points (the latter is the `0x02` lift used when
+  only the identifier is known).
+- **Upstream conformance vectors.** `tests/fixtures/did-nostr/` vendors
+  `test-vectors-generated.json` from nostrcg/did-nostr@`4ea80d8`;
+  `tests/did_nostr_vectors.rs` runs `decode_even_parity`, `decode_odd_parity`,
+  the key-transformation, minimal-document and error vectors, plus encode tests
+  for odd-y full keys.
+
+### Changed
+
+- **`solid-pod-rs-git::write_agent_identity` publishes the controller's
+  parity.** When the secret key is supplied, `agent.did.json` is rendered from
+  the full key, so an odd-y key yields `fe70103…`. A secret that is malformed or
+  whose public key does not match `pubkey_hex` is now refused (nothing is
+  written) rather than silently git-configured beside a document for another
+  key. Without a secret the document is unchanged (`fe70102…`).
+- **Feature `did-nostr-types` now pulls `k256`** (pure Rust, wasm32-safe) for
+  point validation and full-key encoding.
+- **Docs no longer call `0x02` invariant.** `MULTIKEY_PREFIX`,
+  `format_multibase_schnorr`, `render_did_document`, the interop/WebID notes
+  and the git identity invariants now describe `0x02` as the identifier-only
+  default and `0x03` as permitted for controller-published documents.
+
 ### Security
 
 - **`rustls` 0.23.45.** RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted
@@ -333,8 +375,10 @@ together, so all seven crates now carry the canonical Multikey + CID work.
 ### Added
 - **Odd-parity Multikey accept** — `parse_multibase_schnorr` now accepts the
   odd-y compressed prefix `fe70103` (`MULTIKEY_PREFIX_ODD`) on decode, per the
-  CID guidance that implementations SHOULD handle both parities; canonical
-  even-y `fe70102` is still the only form produced on encode. New
+  CID guidance that implementations SHOULD handle both parities; at this
+  release even-y `fe70102` was the only form produced on encode (superseded in
+  0.5.0-alpha.10, which adds the controller-published `fe70103` form per
+  nostrcg/did-nostr#145). New
   `parse_multibase_accepts_odd_parity` round-trip test.
 
 ## [0.5.0-alpha.2] - 2026-06-15

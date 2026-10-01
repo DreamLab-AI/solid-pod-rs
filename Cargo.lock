@@ -3768,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "actix-web",
  "async-trait",
@@ -3818,7 +3818,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-activitypub"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-didkey"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3865,7 +3865,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-forge"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3888,12 +3888,13 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-git"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
  "hex",
+ "k256",
  "serde",
  "serde_json",
  "sha2",
@@ -3902,11 +3903,12 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
 name = "solid-pod-rs-idp"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3939,7 +3941,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-nostr"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3961,7 +3963,7 @@ dependencies = [
 
 [[package]]
 name = "solid-pod-rs-server"
-version = "0.5.0-alpha.9"
+version = "0.5.0-alpha.10"
 dependencies = [
  "actix-http",
  "actix-web",

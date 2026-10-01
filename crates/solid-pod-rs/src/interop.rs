@@ -323,6 +323,11 @@ pub mod did_nostr {
     /// spec (<https://nostrcg.github.io/did-nostr/>). The 2019 suite +
     /// `publicKeyHex` + `z`-base58 multibase are dropped. No dual-publish.
     ///
+    /// Built from the hex identifier alone, so the parity byte is `02` (the
+    /// even-y lift every resolver computes). A controller publishing from its
+    /// full key may carry `03` instead — see
+    /// `did_nostr_types::render_did_document_published` (nostrcg/did-nostr#145).
+    ///
     /// `also_known_as` is surfaced as a top-level `alsoKnownAs` link when
     /// non-empty — the spec's canonical location for cross-platform identity
     /// (WebID / ActivityPub / AT-proto).

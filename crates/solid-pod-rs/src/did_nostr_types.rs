@@ -20,12 +20,40 @@
 //!   (ADR-125; supersedes the 2019-suite renderers).
 //! - [`render_did_document_tier1`] — back-compat alias → [`render_did_document`].
 //! - [`render_did_document_tier3`] — back-compat: canonical doc + extensions.
-//! - [`format_multibase_schnorr`]  — `publicKeyMultibase` encoding
-//!   (`fe70102` + x-only hex, multicodec `secp256k1-pub` over the 33-byte
-//!   SEC1-compressed even-y point).
-//! - [`parse_multibase_schnorr`]   — round-trip decoder (ACCEPT path).
+//! - [`render_did_document_published`] — the document a controller publishes
+//!   from its full key; the parity byte follows the key's actual y.
+//! - [`format_multibase_schnorr`]  — `publicKeyMultibase` from the identifier
+//!   alone (`fe70102` + x-only hex: the `0x02` even-y lift).
+//! - [`format_multibase_public_key`] / [`format_multibase_sec1`] —
+//!   `publicKeyMultibase` from a full SEC1 point (`fe70102` or `fe70103`).
+//! - [`parse_multibase_schnorr`]   — decoder to the x-only identifier;
+//!   accepts both parity prefixes.
+//! - [`parse_multibase_sec1`]      — decoder to the full point the document
+//!   carries (for key arithmetic on a published document).
 //! - [`is_valid_hex_pubkey`]   — 64-char lowercase hex validation.
 //! - [`verify_webid_tag`]      — checks a tag value against a pubkey.
+//!
+//! ## Parity model
+//!
+//! Follows the did:nostr parity model as reconciled in
+//! [nostrcg/did-nostr#145](https://github.com/nostrcg/did-nostr/pull/145)
+//! (closing [#144](https://github.com/nostrcg/did-nostr/issues/144)):
+//!
+//! 1. **Identifier** — `did:nostr:<64-hex>` is the x-only BIP-340 key and
+//!    carries no parity.
+//! 2. **Multikey** — a resolver holding only the identifier (minimal /
+//!    offline resolution) emits `0x02`, the BIP-340 even-y lift
+//!    ([`render_did_document`]). A document the controller publishes (HTTP or
+//!    relay resolution) MAY carry `0x03` when the controller holds the full
+//!    key and its y is odd ([`render_did_document_published`]).
+//! 3. **Verifiers** — accept both prefixes; the x-coordinate is the
+//!    identifier either way ([`parse_multibase_schnorr`]).
+//!
+//! **Key arithmetic.** Code that tweaks a key works on the full point: with a
+//! published document, the point the document carries
+//! ([`parse_multibase_sec1`]); with only the identifier, the `0x02` point
+//! ([`NostrPubkey::to_even_public_key`]), and a holder whose secret `d` gives
+//! an odd-y point uses `n − d` once so that the `0x02` point is exactly theirs.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -57,6 +85,66 @@ impl NostrPubkey {
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
+
+    /// The x-only identifier of a full secp256k1 public key.
+    ///
+    /// Drops the parity: an odd-y key and its even-y negation share the same
+    /// `did:nostr` identifier.
+    ///
+    /// ```
+    /// use k256::SecretKey;
+    /// use solid_pod_rs::did_nostr_types::NostrPubkey;
+    ///
+    /// let sk = SecretKey::from_slice(&[0x11; 32]).unwrap();
+    /// let id = NostrPubkey::from_public_key(&sk.public_key());
+    /// assert_eq!(id.to_hex().len(), 64);
+    /// ```
+    pub fn from_public_key(pk: &k256::PublicKey) -> Self {
+        let sec1 = compressed_sec1(pk);
+        let mut x = [0u8; 32];
+        x.copy_from_slice(&sec1[1..]);
+        Self(x)
+    }
+
+    /// The `0x02` (even-y) point for this identifier — BIP-340 `lift_x`.
+    ///
+    /// This is the point to tweak when only the identifier is known. A holder
+    /// whose secret `d` yields the odd-y point must use `n − d` once so that
+    /// this point is exactly theirs (did:nostr parity model, nostrcg/did-nostr
+    /// #145).
+    ///
+    /// # Errors
+    ///
+    /// [`PodError::BadRequest`] if `x` is not the x-coordinate of a point on
+    /// secp256k1 (including `x ≥ p`).
+    ///
+    /// ```
+    /// use solid_pod_rs::did_nostr_types::NostrPubkey;
+    ///
+    /// let id = NostrPubkey::from_hex(
+    ///     "124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2",
+    /// ).unwrap();
+    /// let point = id.to_even_public_key().unwrap();
+    /// assert_eq!(NostrPubkey::from_public_key(&point), id);
+    /// assert!(NostrPubkey([0u8; 32]).to_even_public_key().is_err());
+    /// ```
+    pub fn to_even_public_key(&self) -> Result<k256::PublicKey, PodError> {
+        let mut sec1 = [0u8; 33];
+        sec1[0] = 0x02;
+        sec1[1..].copy_from_slice(&self.0);
+        k256::PublicKey::from_sec1_bytes(&sec1).map_err(|_| {
+            PodError::BadRequest("did:nostr key: x is not on the secp256k1 curve".into())
+        })
+    }
+}
+
+/// 33-byte SEC1-compressed encoding (`0x02`/`0x03` ‖ X) of a public key.
+fn compressed_sec1(pk: &k256::PublicKey) -> [u8; 33] {
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    let ep = pk.to_encoded_point(true);
+    let mut out = [0u8; 33];
+    out.copy_from_slice(ep.as_bytes());
+    out
 }
 
 // ── URI helpers ──────────────────────────────────────────────────────
@@ -134,11 +222,53 @@ const KEY_FRAGMENT: &str = "#key1";
 ///
 /// `publicKeyMultibase` is `f` (base16-lower multibase) ‖ `e701`
 /// (`varint(0xe7)` = `secp256k1-pub`) ‖ `02 ‖ X` (the 33-byte SEC1-compressed
-/// even-y point — `0x02` is load-bearing multicodec payload, invariant for
-/// BIP-340 `lift_x`). It round-trips byte-for-byte to the same x-only key as
-/// the `did:nostr:<hex>` body. Per ADR-074 D1 (I4) the `did:nostr:<hex>`
-/// string is unchanged.
+/// even-y point). `0x02` is what a resolver holding only the identifier
+/// emits — the BIP-340 `lift_x` default. A controller that holds its full key
+/// may publish `0x03` instead when its y is odd: see
+/// [`render_did_document_published`] (nostrcg/did-nostr#144/#145). The
+/// multibase body round-trips to the same x-only key as the `did:nostr:<hex>`
+/// body. Per ADR-074 D1 (I4) the `did:nostr:<hex>` string is unchanged.
 pub fn render_did_document(pk: &NostrPubkey) -> Value {
+    render_with_multibase(pk, format_multibase_schnorr(&pk.0))
+}
+
+/// Render the minimal `did:nostr` document a **controller publishes** from
+/// its full public key (HTTP or relay resolution).
+///
+/// Identical to [`render_did_document`] except that `publicKeyMultibase`
+/// carries the key's actual parity: `fe70102…` for even y, `fe70103…` for
+/// odd y — for example a key derived by additive tweaking, whose parity is
+/// not predictable in advance. The `did:nostr:<hex>` identifier is the x-only
+/// key either way. Use [`render_did_document`] when only the identifier is
+/// known (minimal / offline resolution always emits `0x02`).
+///
+/// Per the did:nostr parity model (nostrcg/did-nostr#145, closing #144) a
+/// controller-published document MAY carry `0x03`, and every verifier MUST
+/// accept both prefixes.
+///
+/// ```
+/// use k256::SecretKey;
+/// use solid_pod_rs::did_nostr_types::{
+///     parse_multibase_schnorr, render_did_document_published, NostrPubkey,
+/// };
+///
+/// let pk = SecretKey::from_slice(&[0x11; 32]).unwrap().public_key();
+/// let doc = render_did_document_published(&pk);
+/// let mb = doc["verificationMethod"][0]["publicKeyMultibase"].as_str().unwrap();
+/// assert!(mb.starts_with("fe70102") || mb.starts_with("fe70103"));
+/// // The identifier is the x-only key whichever prefix was emitted.
+/// assert_eq!(parse_multibase_schnorr(mb).unwrap(), NostrPubkey::from_public_key(&pk));
+/// ```
+pub fn render_did_document_published(pk: &k256::PublicKey) -> Value {
+    render_with_multibase(
+        &NostrPubkey::from_public_key(pk),
+        format_multibase_public_key(pk),
+    )
+}
+
+/// Shared body of the minimal document; `multibase` is the already-encoded
+/// `publicKeyMultibase` for `pk`.
+fn render_with_multibase(pk: &NostrPubkey, multibase: String) -> Value {
     let did = did_nostr_uri(pk);
     json!({
         "@context": [
@@ -152,7 +282,7 @@ pub fn render_did_document(pk: &NostrPubkey) -> Value {
             "id": format!("{did}{KEY_FRAGMENT}"),
             "type": "Multikey",
             "controller": did,
-            "publicKeyMultibase": format_multibase_schnorr(&pk.0),
+            "publicKeyMultibase": multibase,
         }],
         "authentication": [KEY_FRAGMENT],
         "assertionMethod": [KEY_FRAGMENT]
@@ -259,75 +389,201 @@ fn render_service_entries(services: &[ServiceEntry]) -> Value {
 
 // ── Multibase encoding ───────────────────────────────────────────────
 
-/// The fixed `publicKeyMultibase` prefix: `f` (base16-lower multibase) ‖
-/// `e701` (`varint(0xe7)` = `secp256k1-pub`) ‖ `02` (SEC1 even-y compressed
-/// prefix). The 64-char x-only hex body follows. ADR-125 §2.1 / I2.
+/// The `publicKeyMultibase` prefix for an even-y key: `f` (base16-lower
+/// multibase) ‖ `e701` (`varint(0xe7)` = `secp256k1-pub`) ‖ `02` (SEC1 even-y
+/// compressed prefix). The 64-char x-only hex body follows. ADR-125 §2.1 / I2.
+///
+/// This is the only prefix a resolver holding just the identifier can emit.
 pub const MULTIKEY_PREFIX: &str = "fe70102";
 
-/// Alternate prefix with odd-y parity byte (`0x03`). The spec says
-/// "Implementations SHOULD handle both cases" — we accept `fe70103` on
-/// decode but always produce the canonical even-y `fe70102` on encode.
+/// The `publicKeyMultibase` prefix for an odd-y key (`0x03` parity byte).
+///
+/// Emitted only by [`format_multibase_public_key`] /
+/// [`format_multibase_sec1`] when a controller publishes its own document
+/// from a full key whose y is odd; always accepted on decode
+/// (nostrcg/did-nostr#145).
 pub const MULTIKEY_PREFIX_ODD: &str = "fe70103";
 
-/// Fixed total length of a canonical `publicKeyMultibase` string:
-/// `fe70102`(7) + 64 hex chars = 71. ADR-125 §2.1.
+/// Fixed total length of a `publicKeyMultibase` string: the 7-char prefix
+/// (`fe70102` or `fe70103`) + 64 hex chars = 71. ADR-125 §2.1.
 pub const MULTIKEY_LEN: usize = 71;
 
-/// Build a `publicKeyMultibase` string for a BIP-340 x-only pubkey (I2).
+/// Build the `publicKeyMultibase` for a did:nostr **identifier** (minimal /
+/// offline resolution).
 ///
 /// Layout: `"f"` (base16-lower multibase) ‖ `hex(e701 ‖ 02 ‖ X)`, i.e. the
 /// literal `"fe70102"` followed by the 64-char lowercase x-only hex.
 ///
 /// - `e701` = unsigned-varint of multicodec `0xe7` (`secp256k1-pub`).
-/// - `02 ‖ X` = the **33-byte SEC1-compressed even-y point**. The `0x02`
-///   parity byte is load-bearing multicodec payload (the `secp256k1-pub`
-///   codec is defined over the compressed key), invariant because BIP-340
-///   `lift_x` always selects even-y.
+/// - `02 ‖ X` = the 33-byte SEC1-compressed **even-y** point. With only the
+///   32-byte identifier, the even-y lift (BIP-340 `lift_x`) is the point every
+///   resolver computes, so this function always emits `0x02`.
+///
+/// A controller holding its full key uses [`format_multibase_public_key`]
+/// instead, which emits `0x03` for an odd-y key.
 ///
 /// Fixed [`MULTIKEY_LEN`] (71) chars, lowercase. Round-trips to the identical
-/// key via [`parse_multibase_schnorr`]. No key bytes change (I2). Callers that
-/// need the raw hex can use `NostrPubkey::to_hex`.
+/// key via [`parse_multibase_schnorr`]. No key bytes change (I2).
+///
+/// ```
+/// use solid_pod_rs::did_nostr_types::format_multibase_schnorr;
+///
+/// let x = hex::decode("124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2")
+///     .unwrap();
+/// assert_eq!(
+///     format_multibase_schnorr(&x.try_into().unwrap()),
+///     "fe70102124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2",
+/// );
+/// ```
 pub fn format_multibase_schnorr(pk: &[u8; 32]) -> String {
     // f + e701 + 02 + <x-only-hex-lower>. hex::encode is lowercase.
     format!("{MULTIKEY_PREFIX}{}", hex::encode(pk))
 }
 
-/// Decode a canonical `publicKeyMultibase` string back to the x-only key
-/// (the ACCEPT path — strict round-trip with [`format_multibase_schnorr`]).
+/// Build the `publicKeyMultibase` for a controller's **full** public key.
 ///
-/// Validates, in order: the `fe70102` or `fe70103` prefix (base16-lower ‖
-/// `varint(secp256k1-pub)` ‖ even-y or odd-y compressed prefix), the fixed
-/// [`MULTIKEY_LEN`], lowercase hex, and that the 33-byte multicodec payload
-/// frames as `02 ‖ X` or `03 ‖ X`. Returns the 32-byte x-only `X`.
+/// Emits `fe70102 ‖ X` when y is even and `fe70103 ‖ X` when y is odd — the
+/// SEC1-compressed point under the `secp256k1-pub` multicodec. This is the
+/// form a document published by the controller (HTTP or relay resolution) MAY
+/// carry (nostrcg/did-nostr#145); the identifier is X in both cases.
 ///
-/// The spec says "Implementations SHOULD handle both cases" (even-y `0x02`
-/// and odd-y `0x03`). Both decode to the same x-only key.
+/// ```
+/// use k256::SecretKey;
+/// use solid_pod_rs::did_nostr_types::{format_multibase_public_key, MULTIKEY_LEN};
 ///
-/// Rejects (each an I2 violation): base58btc (`z…`); the missing-parity
-/// `fe701<x>` 67-char form; uppercase hex under `f`;
-/// any non-71 length; retained `publicKeyHex`-style raw hex.
-pub fn parse_multibase_schnorr(s: &str) -> Result<NostrPubkey, PodError> {
+/// let pk = SecretKey::from_slice(&[0x11; 32]).unwrap().public_key();
+/// let mb = format_multibase_public_key(&pk);
+/// assert_eq!(mb.len(), MULTIKEY_LEN);
+/// let negated = -*pk.as_affine();
+/// let other = k256::PublicKey::from_affine(negated).unwrap();
+/// // Negation flips the parity byte and keeps X.
+/// assert_ne!(mb[..7], format_multibase_public_key(&other)[..7]);
+/// assert_eq!(mb[7..], format_multibase_public_key(&other)[7..]);
+/// ```
+pub fn format_multibase_public_key(pk: &k256::PublicKey) -> String {
+    format!("fe701{}", hex::encode(compressed_sec1(pk)))
+}
+
+/// Build the `publicKeyMultibase` for a controller's full key given as a
+/// 33-byte SEC1-compressed point (`0x02`/`0x03` ‖ X).
+///
+/// The point is validated with `k256` before encoding; the parity byte is
+/// preserved. See [`format_multibase_public_key`].
+///
+/// # Errors
+///
+/// [`PodError::BadRequest`] if `compressed` is not exactly 33 bytes, does not
+/// start with `0x02`/`0x03`, or is not a point on secp256k1.
+///
+/// ```
+/// use solid_pod_rs::did_nostr_types::format_multibase_sec1;
+///
+/// let mut sec1 = [0u8; 33];
+/// sec1[0] = 0x03;
+/// sec1[1..].copy_from_slice(
+///     &hex::decode("124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2").unwrap(),
+/// );
+/// assert_eq!(
+///     format_multibase_sec1(&sec1).unwrap(),
+///     "fe70103124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2",
+/// );
+/// assert!(format_multibase_sec1(&sec1[..32]).is_err());
+/// ```
+pub fn format_multibase_sec1(compressed: &[u8]) -> Result<String, PodError> {
+    if compressed.len() != 33 || !matches!(compressed[0], 0x02 | 0x03) {
+        return Err(PodError::BadRequest(
+            "publicKeyMultibase: expected a 33-byte SEC1-compressed point (02/03 ‖ X)".into(),
+        ));
+    }
+    let pk = k256::PublicKey::from_sec1_bytes(compressed).map_err(|_| {
+        PodError::BadRequest("publicKeyMultibase: point is not on the secp256k1 curve".into())
+    })?;
+    Ok(format_multibase_public_key(&pk))
+}
+
+/// Split a `publicKeyMultibase` into its parity byte and x-only key,
+/// validating prefix, length and lowercase hex.
+fn split_multikey(s: &str) -> Result<(u8, NostrPubkey), PodError> {
     if s.len() != MULTIKEY_LEN {
         return Err(PodError::BadRequest(format!(
             "publicKeyMultibase: expected {MULTIKEY_LEN} chars, got {}",
             s.len()
         )));
     }
-    // Lowercase + exact prefix in one pass (uppercase under `f` is malformed).
-    // Accept both even-y (02) and odd-y (03) parity — the spec says
-    // "Implementations SHOULD handle both cases".
-    let body = s.strip_prefix(MULTIKEY_PREFIX)
-        .or_else(|| s.strip_prefix(MULTIKEY_PREFIX_ODD))
-        .ok_or_else(|| PodError::BadRequest(format!(
+    let (parity, body) = if let Some(body) = s.strip_prefix(MULTIKEY_PREFIX) {
+        (0x02, body)
+    } else if let Some(body) = s.strip_prefix(MULTIKEY_PREFIX_ODD) {
+        (0x03, body)
+    } else {
+        return Err(PodError::BadRequest(format!(
             "publicKeyMultibase: expected `{MULTIKEY_PREFIX}` or `{MULTIKEY_PREFIX_ODD}` prefix (got `{}`)",
-            &s[..s.len().min(7)]
-        )))?;
+            s.get(..7).unwrap_or(s)
+        )));
+    };
+    // Uppercase under the lowercase `f` indicator is malformed.
     if body.chars().any(|c| c.is_ascii_uppercase()) {
         return Err(PodError::BadRequest(
             "publicKeyMultibase: uppercase hex under `f` indicator is malformed".into(),
         ));
     }
-    NostrPubkey::from_hex(body)
+    Ok((parity, NostrPubkey::from_hex(body)?))
+}
+
+/// Decode a `publicKeyMultibase` string to the x-only did:nostr key.
+///
+/// Validates, in order: the fixed [`MULTIKEY_LEN`], the `fe70102` or
+/// `fe70103` prefix (base16-lower ‖ `varint(secp256k1-pub)` ‖ even-y or odd-y
+/// compressed prefix), and lowercase hex. Returns the 32-byte x-only `X`.
+///
+/// Both prefixes are accepted and decode to the same key: the x-coordinate is
+/// the identifier either way, and a BIP-340 signature verifies against the
+/// same X whichever prefix the document carries (did:nostr test vectors
+/// `decode_even_parity` / `decode_odd_parity`; nostrcg/did-nostr#145).
+///
+/// Rejects (each an I2 violation): base58btc (`z…`); the missing-parity
+/// `fe701<x>` form; uppercase hex under `f`; any non-71 length; retained
+/// `publicKeyHex`-style raw hex.
+///
+/// ```
+/// use solid_pod_rs::did_nostr_types::parse_multibase_schnorr;
+///
+/// let x = "124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2";
+/// let even = parse_multibase_schnorr(&format!("fe70102{x}")).unwrap();
+/// let odd = parse_multibase_schnorr(&format!("fe70103{x}")).unwrap();
+/// assert_eq!(even, odd);
+/// assert_eq!(even.to_hex(), x);
+/// ```
+pub fn parse_multibase_schnorr(s: &str) -> Result<NostrPubkey, PodError> {
+    split_multikey(s).map(|(_, pk)| pk)
+}
+
+/// Decode a `publicKeyMultibase` string to the **full point** it carries.
+///
+/// Use this when doing key arithmetic on a published document: the parity
+/// model says to tweak the point the document carries, not the even-y lift.
+/// For the identifier alone use [`parse_multibase_schnorr`] (and
+/// [`NostrPubkey::to_even_public_key`] if a point is needed).
+///
+/// # Errors
+///
+/// Every error of [`parse_multibase_schnorr`], plus [`PodError::BadRequest`]
+/// if X is not on secp256k1.
+///
+/// ```
+/// use solid_pod_rs::did_nostr_types::{format_multibase_public_key, parse_multibase_sec1};
+///
+/// let mb = "fe70103124c0fa99407182ece5a24fad9b7f6674902fc422843d3128d38a0afbee0fdd2";
+/// let point = parse_multibase_sec1(mb).unwrap();
+/// assert_eq!(format_multibase_public_key(&point), mb);
+/// ```
+pub fn parse_multibase_sec1(s: &str) -> Result<k256::PublicKey, PodError> {
+    let (parity, pk) = split_multikey(s)?;
+    let mut sec1 = [0u8; 33];
+    sec1[0] = parity;
+    sec1[1..].copy_from_slice(&pk.0);
+    k256::PublicKey::from_sec1_bytes(&sec1).map_err(|_| {
+        PodError::BadRequest("publicKeyMultibase: point is not on the secp256k1 curve".into())
+    })
 }
 
 // ── Validation helpers ───────────────────────────────────────────────

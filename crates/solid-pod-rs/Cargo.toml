@@ -186,7 +186,12 @@ webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand", "
 # `solid_pod_rs::interop::did_nostr`. No new crate dependencies: uses
 # the reqwest + serde + url stack already pulled in by the library,
 # and std::sync::RwLock for the cache.
-did-nostr-types = []
+#
+# `did-nostr-types` (the wasm32-safe types underneath) pulls `k256` so a
+# controller can encode its full SEC1 point (0x02/0x03 by actual parity,
+# nostrcg/did-nostr#145) and decoders can validate points. k256 is pure Rust
+# and builds for wasm32-unknown-unknown.
+did-nostr-types = ["dep:k256"]
 # MRC20 token state chain verification with BIP-341 taproot key chaining.
 # Pure logic (JCS, state validation, deposit verification) is always compiled.
 # This feature enables anchor verification: taproot address derivation and
