@@ -12,6 +12,7 @@ description = "Rust-native Solid Pod server library — LDP, WAC, WebID, Solid-O
 keywords = ["solid", "pod", "wac", "ldp", "webid"]
 categories = ["web-programming::http-server"]
 readme = "README.md"
+exclude = [".claude-flow", "**/.claude-flow"]
 
 [lib]
 name = "solid_pod_rs"
