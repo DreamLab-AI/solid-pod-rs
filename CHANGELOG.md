@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **The TXO stand-in deposit (ADR-2008 D6).** `POST /pay/.deposit` no
+  longer has a branch that credited `(vout + 1) * 1000` sats for any
+  parseable `txid:vout`. That free-money oracle is deleted, together with
+  its gate (`AppState::deposit_txo_standin_enabled`, `--deposit-txo-standin`,
+  `DEPOSIT_TXO_STANDIN_ENABLED`). Any non-MRC20 deposit body now gets 501
+  and credits nothing. MRC20 deposits are unchanged. `payments::parse_txo_uri`
+  stays as a pure parser (nostr-bbs-pod-worker uses it). This is breaking for
+  `solid-pod-rs-server`: the public `AppState` field and the CLI flag are gone.
+
 ### Changed
 
 - **Bitcoin primitives come from rust-bitcoin (ADR-2008 D1-D2).**

@@ -252,19 +252,6 @@ pub struct AppState {
     /// Tests point this at a local fixture server so they never reach
     /// mempool.space; production leaves it `None`.
     pub mempool_url: Option<String>,
-    /// Gate for the **unverified** `POST /pay/.deposit` TXO stand-in branch
-    /// (`(vout + 1) * 1000` sats credited with NO chain/UTXO verification —
-    /// only a replay guard on the `txid:vout` pair). OFF by default: this is
-    /// a free-money oracle unless the operator opts in behind a real UTXO
-    /// existence+value+ownership check. When `false`, the TXO branch returns
-    /// 501 Not Implemented; the genuinely-verified MRC20 deposit path stays
-    /// live regardless.
-    ///
-    /// Configured via `--deposit-txo-standin` / `DEPOSIT_TXO_STANDIN_ENABLED`.
-    /// Enabling in production is UNSAFE until the stand-in valuation is
-    /// replaced with a live UTXO check (mempool read of the referenced
-    /// output's value + scriptPubKey ownership).
-    pub deposit_txo_standin_enabled: bool,
 }
 
 #[cfg(test)]
@@ -385,9 +372,6 @@ impl AppState {
             admin_key: None,
             mcp_enabled: false,
             mempool_url: None,
-            // OFF by default — the unverified TXO deposit branch is a
-            // free-money oracle until backed by a real UTXO check.
-            deposit_txo_standin_enabled: false,
         }
     }
 }

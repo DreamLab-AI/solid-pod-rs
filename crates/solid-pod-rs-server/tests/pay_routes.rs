@@ -5,9 +5,9 @@
 //! fully deterministic with no network access:
 //!
 //! * `GET  /pay/.balance` — authed `did:nostr` resolves a ledger balance.
-//! * `POST /pay/.deposit` — a TXO URI credits the balance.
-//! * **Replay** — a second deposit of the SAME `txid:vout` is rejected and
-//!   does NOT double-credit (the headline Phase-0 guarantee).
+//! * `POST /pay/.deposit` — a TXO body is refused and credits nothing (the
+//!   unverified stand-in is deleted; MRC20 deposits are covered in
+//!   `pay_mrc20_routes.rs`).
 //! * `POST /pay/.sell` + `GET /pay/.offers` + `POST /pay/.swap` — an
 //!   order-book round-trip settling against the Web Ledger.
 //! * `POST /pay/.pool` — an AMM add-liquidity then swap.
@@ -24,7 +24,6 @@ use actix_web::test;
 use serde_json::Value;
 use solid_pod_rs::auth::nip98;
 use solid_pod_rs::storage::memory::MemoryBackend;
-use solid_pod_rs::storage::Storage;
 use solid_pod_rs_server::{build_app, AppState};
 
 // A fixed 32-byte secret key (64 hex). Deterministic — the derived pubkey
@@ -114,119 +113,56 @@ async fn balance_for_authed_did_zero_then_credited() {
 }
 
 // ---------------------------------------------------------------------------
-// Deposit + replay
+// Deposit
 // ---------------------------------------------------------------------------
 
-async fn read_balance(storage: &dyn Storage, did: &str) -> u64 {
-    let (bytes, _) = storage
-        .get("/.well-known/webledgers/webledgers.json")
-        .await
-        .unwrap();
-    let ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
-    ledger.get_balance(did)
-}
-
-/// The unverified TXO stand-in is OFF by default (free-money oracle guard):
-/// a TXO deposit must return 501 and credit nothing.
+/// The TXO stand-in deposit is deleted (ADR-2008 D6), not merely off: no
+/// switch on `AppState` or the CLI can turn it back on, and every TXO body
+/// shape the stand-in used to credit is refused with 501, crediting nothing
+/// and recording no replay key.
 #[actix_web::test]
-async fn deposit_txo_standin_disabled_by_default_returns_501() {
+async fn txo_deposit_is_gone_and_credits_nothing() {
     let st = state();
-    assert!(
-        !st.deposit_txo_standin_enabled,
-        "TXO stand-in must default to OFF"
-    );
-    let app = test::init_service(build_app(st)).await;
-
-    let txid = "c".repeat(64);
-    let txo = format!("{txid}:0");
-    let (auth, _did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
-    let req = test::TestRequest::post()
-        .uri("/pay/.deposit")
-        .insert_header((header::AUTHORIZATION, auth))
-        .insert_header((header::CONTENT_TYPE, "text/plain"))
-        .set_payload(txo)
-        .to_request();
-    let rsp = test::call_service(&app, req).await;
-    assert_eq!(
-        rsp.status().as_u16(),
-        501,
-        "unverified TXO deposit must be disabled by default"
-    );
-}
-
-#[actix_web::test]
-async fn deposit_credits_balance() {
-    let mut st = state();
-    st.deposit_txo_standin_enabled = true;
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
 
     let txid = "a".repeat(64);
-    let txo = format!("{txid}:0"); // vout 0 → (0+1)*1000 = 1000 sats
-    let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
+    let bodies = [
+        (format!("{txid}:0"), "text/plain"),
+        (format!("txo:btc:{txid}:1"), "text/plain"),
+        (format!("{{\"txo\":\"{txid}:2\"}}"), "application/json"),
+        (
+            format!("{{\"txo_uri\":\"{txid}:3\",\"amount_sats\":5000}}"),
+            "application/json",
+        ),
+    ];
+    for (body, content_type) in bodies {
+        let (auth, _did) = nip98_auth("POST", "/pay/.deposit", Some(body.as_bytes()));
+        let req = test::TestRequest::post()
+            .uri("/pay/.deposit")
+            .insert_header((header::AUTHORIZATION, auth))
+            .insert_header((header::CONTENT_TYPE, content_type))
+            .set_payload(body.clone())
+            .to_request();
+        let rsp = test::call_service(&app, req).await;
+        assert_eq!(rsp.status().as_u16(), 501, "{body}: must be refused");
+        let json: Value = test::read_body_json(rsp).await;
+        assert!(json.get("deposited").is_none(), "{body}: no credit");
+        assert!(
+            json["error"].as_str().unwrap_or("").contains("MRC20"),
+            "{body}: refusal points at the verified path, got {json}"
+        );
+    }
 
-    let req = test::TestRequest::post()
-        .uri("/pay/.deposit")
-        .insert_header((header::AUTHORIZATION, auth))
-        .insert_header((header::CONTENT_TYPE, "text/plain"))
-        .set_payload(txo)
-        .to_request();
-    let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 200);
-    let json: Value = test::read_body_json(rsp).await;
-    assert_eq!(json["deposited"], 1000);
-    assert_eq!(json["balance"], 1000);
-    assert_eq!(read_balance(storage.as_ref(), &did).await, 1000);
-}
-
-/// Headline Phase-0 guarantee: a second deposit of the SAME txid:vout is
-/// rejected and the balance is NOT credited twice.
-#[actix_web::test]
-async fn deposit_replay_is_rejected_and_does_not_double_credit() {
-    let mut st = state();
-    st.deposit_txo_standin_enabled = true;
-    let storage = st.storage.clone();
-    let app = test::init_service(build_app(st)).await;
-
-    let txid = "b".repeat(64);
-    let txo = format!("{txid}:1"); // vout 1 → 2000 sats
-
-    // First deposit — succeeds.
-    let (auth1, did) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
-    let req = test::TestRequest::post()
-        .uri("/pay/.deposit")
-        .insert_header((header::AUTHORIZATION, auth1))
-        .insert_header((header::CONTENT_TYPE, "text/plain"))
-        .set_payload(txo.clone())
-        .to_request();
-    let rsp = test::call_service(&app, req).await;
-    assert_eq!(rsp.status().as_u16(), 200);
-    assert_eq!(read_balance(storage.as_ref(), &did).await, 2000);
-
-    // Second deposit of the SAME output — rejected (400), balance unchanged.
-    let (auth2, _) = nip98_auth("POST", "/pay/.deposit", Some(txo.as_bytes()));
-    let req = test::TestRequest::post()
-        .uri("/pay/.deposit")
-        .insert_header((header::AUTHORIZATION, auth2))
-        .insert_header((header::CONTENT_TYPE, "text/plain"))
-        .set_payload(txo)
-        .to_request();
-    let rsp = test::call_service(&app, req).await;
-    assert_eq!(
-        rsp.status().as_u16(),
-        400,
-        "duplicate txid:vout must be rejected (replay guard)"
-    );
-    let json: Value = test::read_body_json(rsp).await;
-    assert!(
-        json["error"].as_str().unwrap_or("").contains("Replay"),
-        "expected a replay error, got: {json}"
-    );
-    assert_eq!(
-        read_balance(storage.as_ref(), &did).await,
-        2000,
-        "replayed deposit must NOT double-credit"
-    );
+    for path in [
+        "/.well-known/webledgers/webledgers.json",
+        "/.well-known/webledgers/state.json",
+    ] {
+        assert!(
+            storage.get(path).await.is_err(),
+            "a refused deposit must not create {path} (no credit, no replay key)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -133,7 +133,7 @@ feature flag). Backed by `handlers::pay` and the `solid-pod-rs`
 |---|---|---|---|
 | GET  | `/pay/.info`          | none   | Payment discovery (cost, chains, pay-token). |
 | GET  | `/pay/.balance`       | NIP-98 | The caller's Web-Ledger balance — `{did, balance, cost, unit}`. |
-| POST | `/pay/.deposit`       | NIP-98 | Credit a deposit. TXO body (`"<txid>:<vout>"` / `{"txo":…}`) or MRC20 body (`{"type":"mrc20", state, prevState, anchor}`, mempool-verified). Replay-guarded. |
+| POST | `/pay/.deposit`       | NIP-98 | Credit an MRC20 deposit (`{"type":"mrc20", state, prevState, anchor}`, mempool-verified, replay-guarded). Any other body → 501; the unverified TXO stand-in is deleted (ADR-2008 D6). |
 | GET  | `/pay/.address`       | none   | Derive a deposit address. `?user=<did:nostr:…>&chain=<id>` for a per-user tweaked address; both optional. |
 | GET  | `/pay/.offers`        | none   | List open sell orders. Optional `?sell=<cur>&buy=<cur>`. |
 | POST | `/pay/.sell`          | NIP-98 | Place a sell order (`sell_currency`, `sell_amount`, `buy_currency`, `price`). |

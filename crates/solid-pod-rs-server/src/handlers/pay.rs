@@ -16,7 +16,7 @@
 //! [`PaymentStore`] implementation — replacing the inline
 //! `Storage::get`/`put` ledger plumbing that the WAC enforcement path
 //! uses. The store also wires the previously-defined-but-never-called
-//! replay protection (`check_replay`/`record_replay`) so a TXO deposit
+//! replay protection (`check_replay`/`record_replay`) so an MRC20 deposit
 //! cannot be credited twice.
 //!
 //! ## Mirrored JSS routes (`JavaScriptSolidServer/src/handlers/pay.js`)
@@ -24,18 +24,19 @@
 //! | Method | Route          | JSS source        |
 //! |--------|----------------|-------------------|
 //! | GET    | `/pay/.balance`| `pay.js:307-373`  |
-//! | POST   | `/pay/.deposit`| `pay.js:440-474`  |
+//! | POST   | `/pay/.deposit`| `pay.js:384-438` (MRC20 only) |
 //! | GET    | `/pay/.offers` | `pay.js:1176-…`   |
 //! | POST   | `/pay/.sell`   | `pay.js:906-961`  |
 //! | POST   | `/pay/.swap`   | `pay.js:964-1058` |
 //! | GET    | `/pay/.pool`   | `pay.js:1060-…`   |
 //! | POST   | `/pay/.pool`   | `pay.js:1080-1289`|
 //!
-//! ## Scope (Phase 0)
+//! ## Scope
 //!
-//! TXO deposits are **parse + credit + replay-guard only** — no mempool
-//! verification (Phase 3) and no Bitcoin TX build/broadcast (Phase 4).
-//! The order-book / AMM model is the library's richer currency-pair
+//! Deposits are MRC20-only and verified against the chain before any
+//! credit. JSS's TXO deposit (`pay.js:440-474`) is deliberately not
+//! mirrored: the Phase-0 stand-in that credited unverified TXOs is deleted
+//! (ADR-2008 D6). The order-book / AMM model is the library's richer currency-pair
 //! variant rather than JSS's single-MRC20-token model, so `.sell` /
 //! `.swap` / `.pool` carry explicit currency fields.
 
@@ -50,7 +51,7 @@ use solid_pod_rs::bitcoin_tx::{
 };
 use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor, Mrc20State};
 use solid_pod_rs::payments::{
-    balance_response, parse_txo_uri, payment_required_body, PaymentError, PaymentStore, WebLedger,
+    balance_response, payment_required_body, PaymentError, PaymentStore, WebLedger,
 };
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
@@ -382,15 +383,8 @@ async fn handle_balance(
 }
 
 // ---------------------------------------------------------------------------
-// POST /pay/.deposit  (TXO path only — pay.js:440-474)
+// POST /pay/.deposit  (MRC20 only — pay.js:384-438)
 // ---------------------------------------------------------------------------
-
-/// JSON or text/plain deposit body. JSS accepts a bare `"<txid>:<vout>"`
-/// string or `{"txo": "<txid>:<vout>"}`.
-#[derive(Debug, Deserialize)]
-struct DepositBody {
-    txo: String,
-}
 
 /// The `anchor` block of an MRC20 deposit — the portable proof needed to
 /// re-derive the taproot address and check the chain (JSS `pay.js:402-411`).
@@ -417,22 +411,16 @@ struct Mrc20DepositBody {
     anchor: Mrc20AnchorBody,
 }
 
-/// `POST /pay/.deposit`. Two paths, discriminated by body:
+/// `POST /pay/.deposit`: an MRC20 token deposit
+/// (`Content-Type: application/json`, `{type:"mrc20", …}`). The block-trail
+/// anchor is verified against live mempool state via [`verify_mrc20_anchor`]
+/// and [`MempoolHttpClient`], replay-guarded on the `JCS(state)` hash, and
+/// only then is the verified transfer amount credited (JSS `pay.js:384-438`).
 ///
-/// * **MRC20** (`Content-Type: application/json`, `{type:"mrc20", …}`) —
-///   verify the block-trail anchor against live mempool state via
-///   [`verify_mrc20_anchor`] + [`MempoolHttpClient`], replay-guard on the
-///   `JCS(state)` hash, then credit the verified transfer amount (Phase 3,
-///   JSS `pay.js:384-438`).
-/// * **TXO** (text/plain or `{"txo":…}`) — the Phase-0 stand-in path. It is
-///   UNVERIFIED (credits `(vout + 1) * 1000` sats with only a replay guard),
-///   so it is **off by default** and returns 501 unless the operator sets
-///   `deposit_txo_standin_enabled` (`DEPOSIT_TXO_STANDIN_ENABLED`).
-///
-/// The TXO path remains a deterministic stand-in for the mempool-read sat
-/// value (`(vout + 1) * 1000`); its real mempool valuation is a later step,
-/// which is why it must not be active in a default/production build. The MRC20
-/// path is the one that genuinely round-trips to the chain here.
+/// Every other body is refused with 501 and credits nothing. The former
+/// Phase-0 TXO stand-in, which credited `(vout + 1) * 1000` sats for any
+/// parseable `txid:vout` behind an operator flag, is deleted (ADR-2008 D6):
+/// a pod must not carry a reachable free-money oracle, default-off or not.
 async fn handle_deposit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -444,79 +432,14 @@ async fn handle_deposit(
     };
     let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
 
-    // MRC20 path: a JSON body tagged `type: "mrc20"`. Probe cheaply for the
-    // tag before committing to full deserialisation so a TXO JSON body
-    // (`{"txo":…}`) still falls through to the Phase-0 path.
     if body_is_mrc20(&body) {
         return handle_mrc20_deposit(&did, &state, &body).await;
     }
 
-    // TXO stand-in path (Phase 0): OFF by default. The branch below credits
-    // `(vout + 1) * 1000` sats for any client-supplied `txid:vout` with NO
-    // chain/UTXO verification — only a replay guard on the exact pair. That is
-    // a free-money oracle, so it is gated behind an explicit opt-in
-    // (`--deposit-txo-standin` / `DEPOSIT_TXO_STANDIN_ENABLED`). Enabling it
-    // requires a real UTXO existence+value+ownership check first. The verified
-    // MRC20 path above stays live regardless of this flag.
-    if !state.deposit_txo_standin_enabled {
-        return Ok(HttpResponse::NotImplemented().json(serde_json::json!({
-            "error": "Unverified TXO deposits are disabled on this pod. Use the verified \
-                      MRC20 deposit path (POST a `{\"type\":\"mrc20\", …}` body), or ask the \
-                      operator to enable the stand-in (DEPOSIT_TXO_STANDIN_ENABLED) — which \
-                      is only safe once backed by a live UTXO existence/value/ownership check."
-        })));
-    }
-
-    // Accept either a bare TXO URI (text/plain) or {"txo": "..."} (JSON).
-    let raw = String::from_utf8_lossy(&body);
-    let txo_uri = match serde_json::from_slice::<DepositBody>(&body) {
-        Ok(b) => b.txo,
-        Err(_) => raw.trim().to_string(),
-    };
-
-    let txo = match parse_txo_uri(&txo_uri) {
-        Ok(t) => t,
-        Err(e) => return Ok(payment_error_response(e)),
-    };
-
-    // Replay key: txid:vout — one credit per output, ever.
-    let replay_key = format!("{}:{}", txo.txid, txo.vout);
-    let store = StoragePaymentStore::new(&*state.storage);
-
-    let mut payment_state = match store.read_state().await {
-        Ok(state) => state,
-        Err(e) => return Ok(payment_error_response(e)),
-    };
-    if payment_state.replay.iter().any(|key| key == &replay_key) {
-        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Replay: this output has already been used for a deposit",
-            "txid": txo.txid,
-            "vout": txo.vout,
-        })));
-    }
-
-    // Phase 0: deterministic stand-in for the mempool-read UTXO value.
-    let amount: u64 = ((txo.vout as u64) + 1) * 1000;
-
-    // Credit via the PaymentStore (sole ledger I/O path), then record the
-    // replay key so a re-POST of the same TXO is rejected above.
-    payment_state.ledger.credit(&did, amount);
-    payment_state.replay.push(replay_key);
-    if let Err(e) = store.commit_state(&mut payment_state).await {
-        return Ok(payment_error_response(e));
-    }
-
-    let balance = payment_state.ledger.get_balance(&did);
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .json(serde_json::json!({
-            "did": did,
-            "deposited": amount,
-            "balance": balance,
-            "unit": "sat",
-            "txid": txo.txid,
-            "vout": txo.vout,
-        })))
+    Ok(HttpResponse::NotImplemented().json(serde_json::json!({
+        "error": "Only verified MRC20 deposits are accepted: POST a \
+                  `{\"type\":\"mrc20\", …}` body. Unverified TXO deposits are not supported.",
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +448,7 @@ async fn handle_deposit(
 
 /// Cheap discriminator: does the body deserialise to an object whose
 /// `type` is `"mrc20"`? Avoids committing to full `Mrc20DepositBody`
-/// parsing for a TXO body. Any non-JSON / non-tagged body returns `false`.
+/// parsing for any other body. Any non-JSON / non-tagged body returns `false`.
 fn body_is_mrc20(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
@@ -555,7 +478,7 @@ fn pod_issuer_pubkey(state: &AppState) -> Option<String> {
 /// 1. require an issuer pubkey configured on the pod (`payAddress` parity);
 /// 2. derive the pod's generic deposit address `bt_address(issuer, [], net)`
 ///    — the `toAddress` transfers must target;
-/// 3. **replay-guard** on `JCS(state)` (reuse the Phase-0 replay set) so a
+/// 3. **replay-guard** on `JCS(state)` (the shared replay set) so a
 ///    state can't be credited twice;
 /// 4. [`verify_mrc20_anchor`] — state-chain integrity + taproot re-derivation
 ///    + a live mempool UTXO check via [`MempoolHttpClient`];
@@ -595,9 +518,9 @@ async fn handle_mrc20_deposit(
         Err(e) => return Ok(payment_error_response(e)),
     };
 
-    // (3) Replay guard on the canonical state hash. Reuses the Phase-0
-    // replay set; keyed `mrc20:<sha256(JCS(state))>` so it can't collide
-    // with a TXO `txid:vout` key.
+    // (3) Replay guard on the canonical state hash, keyed
+    // `mrc20:<sha256(JCS(state))>`. The prefix also keeps it distinct from
+    // `txid:vout` keys the deleted TXO stand-in left in older replay sets.
     let state_value = match serde_json::to_value(&deposit.state) {
         Ok(v) => v,
         Err(e) => {

@@ -84,7 +84,7 @@ resolves the caller to `did:nostr:<pubkey>`.
 |---|---|---|
 | `/pay/.info` | GET | Payment discovery (cost, chains, pay-token). |
 | `/pay/.balance` | GET | The caller's Web-Ledger balance. |
-| `/pay/.deposit` | POST | Credit a deposit — TXO **or** MRC20 (below). |
+| `/pay/.deposit` | POST | Credit a chain-verified MRC20 deposit (below). |
 | `/pay/.address` | GET | Derive a (per-user tweaked) deposit address. |
 | `/pay/.offers` | GET | List open sell orders (public; optional pair filter). |
 | `/pay/.sell` | POST | Place a sell order (order book). |
@@ -94,31 +94,31 @@ resolves the caller to `did:nostr:<pubkey>`.
 | `/pay/.withdraw` | POST | Withdraw a sat balance as portable MRC20 tokens. |
 | `/pay/.withdraw-sats` | POST | Withdraw sats as a fresh TXO voucher. |
 
-### Deposits — TXO and MRC20
+### Deposits — MRC20 only
 
-`POST /pay/.deposit` has two paths, discriminated by the body:
+`POST /pay/.deposit` accepts one body, an MRC20 deposit
+(`{"type":"mrc20", state, prevState, anchor}`), and verifies a block-trail
+anchor before any credit. The handler derives the pod's deposit address
+from its issuer pubkey (`mrc20::bt_address`), replay-guards on the
+canonical `sha256(JCS(state))`, then runs `mrc20::verify_mrc20_anchor`,
+which composes the taproot crypto with a **live mempool UTXO lookup** via
+the native `MempoolHttpClient` (`JSS_PAY_MEMPOOL_URL`, default
+mempool.space testnet4). Only on a verified transfer is the amount
+credited. In tests an explicit `mempool_url` points at a local fixture
+server so CI never reaches mempool.space.
 
-- **TXO** (a bare `"<txid>:<vout>"` string or `{"txo": …}`) — parse the
-  TXO URI, replay-guard on `txid:vout`, credit, record the replay key.
-- **MRC20** (`{"type":"mrc20", state, prevState, anchor}`) — verify a
-  block-trail anchor. The handler derives the pod's deposit address from
-  its issuer pubkey (`mrc20::bt_address`), replay-guards on the canonical
-  `sha256(JCS(state))`, then runs `mrc20::verify_mrc20_anchor`, which
-  composes the taproot crypto with a **live mempool UTXO lookup** via the
-  native `MempoolHttpClient` (`JSS_PAY_MEMPOOL_URL`, default
-  mempool.space testnet4). Only on a verified transfer is the amount
-  credited. In tests an explicit `mempool_url` points at a local fixture
-  server so CI never reaches mempool.space.
+Any other body is refused with 501. The Phase-0 TXO stand-in, which
+credited `(vout + 1) * 1000` sats for any parseable `txid:vout` with no
+chain check, is deleted (ADR-2008 D6): it was a free-money oracle even
+behind its default-off flag.
 
 ### Replay protection (now wired)
 
 Replay protection (`check_replay` / `record_replay`) was *defined but
-never called* before ADR-059 — a duplicate TXO or MRC20-state deposit
-could double-credit. It is now wired into the deposit path through the
-`StoragePaymentStore`: every credited deposit records a replay key (TXO
-keyed `txid:vout`, MRC20 keyed `mrc20:<state-hash>` so the two namespaces
-cannot collide), and a re-POST of the same output/state is rejected before
-any credit.
+never called* before ADR-059 — a duplicate deposit could double-credit.
+It is now wired into the deposit path through the `StoragePaymentStore`:
+every credited deposit records a replay key (`mrc20:<state-hash>`), and a
+re-POST of the same state is rejected before any credit.
 
 ### Per-user deposit addresses
 
@@ -157,8 +157,9 @@ resource debit the same balance.
 
 `/pay/.buy`, `/pay/.withdraw`, and `/pay/.withdraw-sats` exercise the
 Bitcoin write-side (`bitcoin_tx`, feature `mrc20`, non-wasm): P2TR output
-construction, BIP-341 TapSighash, BIP-340 Schnorr signing — the
-byte-for-byte JSS `token.js` port. `.buy` mints/transfers the pod's
+construction, BIP-341 TapSighash, BIP-340 Schnorr signing, all from
+rust-bitcoin and libsecp256k1 (ADR-2008), byte-for-byte with JSS
+`token.js`. `.buy` mints/transfers the pod's
 pay-token to the buyer against their sat balance; `.withdraw` exports a
 sat balance as portable MRC20 tokens with an independently-verifiable
 proof; `.withdraw-sats` builds a fresh TXO voucher. In every case the

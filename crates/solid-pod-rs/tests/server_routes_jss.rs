@@ -61,7 +61,6 @@ async fn make_state() -> AppState {
     let mut state = AppState {
         live_reload: false,
         quota: None,
-        deposit_txo_standin_enabled: false,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
         body_cap: 10_000_000,

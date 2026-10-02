@@ -57,7 +57,7 @@ feature-level status table.
 | WebFinger / NIP-05                      | full (via ActivityPub + Nostr features) | full |
 | Git smart-HTTP clone/push               | full      | full (**WAC-gated** — Read for fetch, Write for push; auto-init on first push) |
 | HTTP 402 Web Ledger + `PaymentCondition`| full      | full          |
-| `/pay/.balance` `.deposit` `.address`   | full      | full (TXO + mempool-verified MRC20; replay-guarded) |
+| `/pay/.balance` `.deposit` `.address`   | full      | partial by design (mempool-verified MRC20 only; replay-guarded; JSS's TXO deposit is not mirrored, ADR-2008 D6) |
 | Order book (`/pay/.sell` `.swap` `.offers`) | full  | full (currency-pair model; routed) |
 | AMM pool (`/pay/.pool`)                 | full      | full (constant-product `x·y=k`, 30 bps; routed) |
 | Bitcoin write-side (`/pay/.buy` `.withdraw` `.withdraw-sats`) | full | full (P2TR / BIP-341 / BIP-340, byte-parity with `token.js`) |
