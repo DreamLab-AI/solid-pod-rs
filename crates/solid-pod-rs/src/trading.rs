@@ -26,9 +26,12 @@ use crate::payments::{PaymentError, WebLedger};
 
 /// Extension methods on [`WebLedger`] for currency-specific operations.
 ///
-/// The base `WebLedger` API (`credit`, `debit`, `get_balance`) operates on
-/// the default satoshi balance. Trading requires per-currency balances, so
-/// these helpers work through the `LedgerAmount::Multi` representation.
+/// The base `WebLedger` balance (`get_balance`) is the default satoshi
+/// balance. Trading requires per-currency balances, so these helpers work
+/// through the `LedgerAmount::Multi` representation. The credit and debit
+/// helpers are crate-private: outside this crate a balance is raised only
+/// by [`WebLedger::credit_by_outpoint`], which records the deposit's
+/// outpoint as its receipt.
 impl WebLedger {
     /// Get a DID's balance in a specific currency.
     pub fn get_currency_balance(&self, did: &str, currency: &str) -> u64 {
@@ -40,7 +43,7 @@ impl WebLedger {
     }
 
     /// Credit a DID in a specific currency.
-    pub fn credit_currency(&mut self, did: &str, currency: &str, amount: u64) {
+    pub(crate) fn credit_currency(&mut self, did: &str, currency: &str, amount: u64) {
         use crate::payments::{CurrencyAmount, LedgerAmount, LedgerEntry};
 
         self.updated = now_secs();
@@ -84,7 +87,7 @@ impl WebLedger {
     }
 
     /// Debit a DID in a specific currency.
-    pub fn debit_currency(
+    pub(crate) fn debit_currency(
         &mut self,
         did: &str,
         currency: &str,

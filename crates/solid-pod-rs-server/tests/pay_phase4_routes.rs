@@ -101,13 +101,16 @@ async fn state_with_minted_trail(
         rate: 1,
         supply: 1000,
         issuer: issuer_pubkey(),
+        accepted_issuers: Vec::new(),
     });
     st.mempool_url = Some(mempool_url);
 
-    // Seed the user's ledger balance (idiomatic: WebLedger + credit).
+    // Seed the user's ledger balance: a sat deposit receipted by an outpoint.
     let did = format!("did:nostr:{}", user_pubkey());
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
-    ledger.credit(&did, user_balance);
+    ledger
+        .credit_by_outpoint(&did, "satoshi", &"ee".repeat(32), 0, user_balance)
+        .unwrap();
     storage
         .put(
             "/.well-known/webledgers/webledgers.json",

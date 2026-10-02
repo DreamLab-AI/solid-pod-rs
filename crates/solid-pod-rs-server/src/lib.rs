@@ -1075,7 +1075,7 @@ async fn enforce_read_ctx(
 /// updated ledger document, deducting exactly once for a granted
 /// payment-gated request.
 ///
-/// Reads [`WEBLEDGER_PATH`], applies [`WebLedger::debit`] (which fails
+/// Reads [`WEBLEDGER_PATH`], applies [`WebLedger::charge`] (which fails
 /// closed on an insufficient or missing balance), and writes the ledger
 /// back. A read, debit, or write failure returns `Err` so the caller can
 /// deny the request rather than serve it unpaid.
@@ -1093,7 +1093,8 @@ async fn debit_ledger(
         .map_err(|e| PaymentError::Store(e.to_string()))?;
     let mut ledger: WebLedger = serde_json::from_slice(&bytes)
         .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}")))?;
-    ledger.debit(did, cost)?;
+    // The access fee is spent, not refunded: the request is served.
+    let _charge = ledger.charge(did, cost)?;
     let body = serde_json::to_vec(&ledger)
         .map_err(|e| PaymentError::Store(format!("serialise ledger: {e}")))?;
     storage
@@ -4792,15 +4793,16 @@ mod payment_gating_tests {
     use solid_pod_rs::payments::WebLedger;
     use solid_pod_rs::storage::memory::MemoryBackend;
 
-    const PRINCIPAL: &str = "did:nostr:alice";
+    const PRINCIPAL: &str =
+        "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
 
-    /// Turtle ACL granting `did:nostr:alice` Write on `/premium/inbox`
+    /// Turtle ACL granting `PRINCIPAL` Write on `/premium/inbox`
     /// only when a `PaymentCondition` of 100 sats is satisfied.
     const PAID_WRITE_ACL: &str = r#"
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
 
 <#paid-write> a acl:Authorization ;
-    acl:agent <did:nostr:alice> ;
+    acl:agent <did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa> ;
     acl:accessTo </premium/inbox> ;
     acl:mode acl:Write ;
     acl:condition [
@@ -4812,7 +4814,9 @@ mod payment_gating_tests {
     async fn seed_ledger(storage: &dyn Storage, did: &str, sats: u64) {
         let mut ledger = WebLedger::new("Test Pod Credits");
         if sats > 0 {
-            ledger.credit(did, sats);
+            ledger
+                .credit_by_outpoint(did, "satoshi", &"ab".repeat(32), 0, sats)
+                .unwrap();
         }
         let body = serde_json::to_vec(&ledger).unwrap();
         storage
@@ -4993,7 +4997,7 @@ mod payment_gating_tests {
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
 
 <#paid-read> a acl:Authorization ;
-    acl:agent <did:nostr:alice> ;
+    acl:agent <did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa> ;
     acl:accessTo </premium/feed> ;
     acl:mode acl:Read ;
     acl:condition [
@@ -5050,7 +5054,7 @@ mod payment_gating_tests {
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
 
 <#alice> a acl:Authorization ;
-    acl:agent <did:nostr:alice> ;
+    acl:agent <did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa> ;
     acl:accessTo </private/secret> ;
     acl:default </private/> ;
     acl:mode acl:Read, acl:Write, acl:Control .

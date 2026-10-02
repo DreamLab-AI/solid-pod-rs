@@ -377,20 +377,23 @@ async fn handle_anchor(
     // (4) Payment gate: charge the pod's configured anchor price. Debit BEFORE
     // the on-chain action; if anchoring then fails, refund (credit back).
     let price = anchor_price_sats(&state);
-    if price > 0 {
-        if let Err(rsp) = debit(&state, &did, price).await {
-            return Ok(rsp);
+    let charge = if price > 0 {
+        match debit(&state, &did, price).await {
+            Ok(charge) => Some(charge),
+            Err(rsp) => return Ok(rsp),
         }
-    }
+    } else {
+        None
+    };
 
     // (5) Anchor the commit SHA on the trail (the expensive tier). The anchored
     // state_hash IS the git commit SHA — binding git ↔ Bitcoin (§2.3).
     let anchor = match anchorer.anchor(&ticker, &resolved.hash, &network).await {
         Ok(a) => a,
         Err(e) => {
-            // Refund the debit — no anchor was produced.
-            if price > 0 {
-                let _ = credit(&state, &did, price).await;
+            // Refund the charge — no anchor was produced.
+            if let Some(charge) = charge {
+                let _ = refund(&state, charge).await;
             }
             return Ok(prov_err(&format!("anchor failed: {e}"), 502));
         }
@@ -468,10 +471,15 @@ fn anchor_price_sats(state: &AppState) -> u64 {
         })
 }
 
-/// Debit the caller's Web Ledger by `sats`, mapping insufficient-balance to a
+/// Charge the caller's Web Ledger `sats`, mapping insufficient-balance to a
 /// 402 and other failures to a 500. Uses the same `StoragePaymentStore` ledger
-/// path as `/pay/*` so balances are consistent.
-async fn debit(state: &AppState, did: &str, sats: u64) -> Result<(), HttpResponse> {
+/// path as `/pay/*` so balances are consistent. The returned
+/// [`Charge`](solid_pod_rs::payments::Charge) is what [`refund`] gives back.
+async fn debit(
+    state: &AppState,
+    did: &str,
+    sats: u64,
+) -> Result<solid_pod_rs::payments::Charge, HttpResponse> {
     use crate::handlers::pay::StoragePaymentStore;
     use solid_pod_rs::payments::{PaymentError, PaymentStore};
 
@@ -480,32 +488,30 @@ async fn debit(state: &AppState, did: &str, sats: u64) -> Result<(), HttpRespons
         .read_ledger()
         .await
         .map_err(|e| prov_err(&format!("ledger read failed: {e}"), 500))?;
-    if let Err(e) = ledger.debit(did, sats) {
-        return Err(match e {
-            PaymentError::InsufficientBalance { balance, cost } => HttpResponse::PaymentRequired()
-                .json(serde_json::json!({
-                    "error": "Insufficient balance to anchor",
-                    "balance": balance,
-                    "cost": cost,
-                })),
-            other => prov_err(&format!("debit failed: {other}"), 500),
-        });
-    }
+    let charge = ledger.charge(did, sats).map_err(|e| match e {
+        PaymentError::InsufficientBalance { balance, cost } => HttpResponse::PaymentRequired()
+            .json(serde_json::json!({
+                "error": "Insufficient balance to anchor",
+                "balance": balance,
+                "cost": cost,
+            })),
+        other => prov_err(&format!("debit failed: {other}"), 500),
+    })?;
     store
         .write_ledger(&ledger)
         .await
         .map_err(|e| prov_err(&format!("ledger write failed: {e}"), 500))?;
-    Ok(())
+    Ok(charge)
 }
 
-/// Credit the caller's Web Ledger by `sats` (the anchor-failure refund).
-async fn credit(state: &AppState, did: &str, sats: u64) -> Result<(), String> {
+/// Give back a [`debit`]'s charge (the anchor-failure refund).
+async fn refund(state: &AppState, charge: solid_pod_rs::payments::Charge) -> Result<(), String> {
     use crate::handlers::pay::StoragePaymentStore;
     use solid_pod_rs::payments::PaymentStore;
 
     let store = StoragePaymentStore::new(&*state.storage);
     let mut ledger = store.read_ledger().await.map_err(|e| e.to_string())?;
-    ledger.credit(did, sats);
+    ledger.refund(charge);
     store.write_ledger(&ledger).await.map_err(|e| e.to_string())
 }
 

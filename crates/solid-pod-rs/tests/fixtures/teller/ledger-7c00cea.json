@@ -1,0 +1,64 @@
+{
+  "teller": "solidpayorg/teller 7c00cea lib/teller.mjs",
+  "genesisJcs": "{\"confirmations\":1,\"created\":1759300000,\"currency\":\"satoshi\",\"name\":\"Pod Credits\",\"operator\":\"did:nostr:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"}",
+  "ledgerHash": "6edef538d26a824df5cad902ffd2d767639dddec256af206f4fafb2777cb78fe",
+  "results": {
+    "firstCredit": {
+      "applied": true
+    },
+    "secondCredit": {
+      "applied": false,
+      "why": "already credited"
+    },
+    "debit": {
+      "applied": true
+    }
+  },
+  "balance": 30000,
+  "total": 30000,
+  "document": {
+    "@context": "https://w3id.org/webledgers",
+    "type": "WebLedger",
+    "id": "urn:webledgers:6edef538d26a824df5cad902ffd2d767639dddec256af206f4fafb2777cb78fe",
+    "hash": "6edef538d26a824df5cad902ffd2d767639dddec256af206f4fafb2777cb78fe",
+    "name": "Pod Credits",
+    "defaultCurrency": "satoshi",
+    "genesis": {
+      "operator": "did:nostr:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "name": "Pod Credits",
+      "currency": "satoshi",
+      "created": 1759300000,
+      "confirmations": 1
+    },
+    "updated": 1759300003,
+    "entries": [
+      {
+        "type": "Entry",
+        "url": "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "amount": "30000"
+      }
+    ],
+    "deposits": [
+      {
+        "outpoint": "abababababababababababababababababababababababababababababababab:0",
+        "account": "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "value": 50000,
+        "height": 152100,
+        "at": 1759300001
+      }
+    ],
+    "applied": [
+      "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    ],
+    "payouts": [
+      {
+        "id": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "account": "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "value": 20000,
+        "to": "tb1pexample",
+        "txid": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "at": 1759300003
+      }
+    ]
+  }
+}

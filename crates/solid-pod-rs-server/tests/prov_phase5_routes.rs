@@ -219,12 +219,15 @@ async fn git_pod_with_trail(
         rate: 5, // anchor price defaults to the token rate (5 sats)
         supply: 1000,
         issuer: issuer_pubkey(),
+        accepted_issuers: Vec::new(),
     });
 
     // Seed the owner's ledger balance.
     let did = format!("did:nostr:{}", owner_xonly());
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
-    ledger.credit(&did, owner_balance);
+    ledger
+        .credit_by_outpoint(&did, "satoshi", &"ee".repeat(32), 0, owner_balance)
+        .unwrap();
     state
         .storage
         .put(
