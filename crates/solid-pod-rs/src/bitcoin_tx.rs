@@ -8,7 +8,10 @@
 //! [`transfer_token_with_key`](crate::bitcoin_tx::transfer_token_with_key)
 //! and [`anchor_state`](crate::bitcoin_tx::anchor_state) composers that the
 //! server's `BlockAnchorer::anchor` and the `/pay/.buy` / `/pay/.withdraw`
-//! routes call.
+//! routes call, and the git-mark composers
+//! [`gitmark_genesis`](crate::bitcoin_tx::gitmark_genesis) /
+//! [`gitmark_advance`](crate::bitcoin_tx::gitmark_advance) (each state the
+//! commit as text, blocktrails/git-mark b852d7d) that new trails use.
 //!
 //! # Crypto provenance — nothing hand-rolled
 //!
@@ -63,9 +66,13 @@ use bitcoin::{
 };
 use serde_json::json;
 
+use crate::blocktrail::{
+    is_gitmark_commit, network_for_txo_chain, txo_chain_for_network, Blocktrail, BlocktrailTxo,
+};
 use crate::mrc20::{
-    bt_address, bt_derive_chained_privkey, bt_derive_chained_pubkey, jcs, sha256_hex,
-    MempoolLookup, Mrc20Op, Mrc20State, Mrc20Trail, MRC20_PROFILE, TRANSFER_OP,
+    bt_address, bt_base_point, bt_derive_chained_privkey, bt_derive_chained_pubkey, jcs,
+    sha256_hex, MempoolLookup, Mrc20Op, Mrc20State, Mrc20Trail, TxIn as TxInView, TxInfo,
+    TxOut as TxOutView, MRC20_PROFILE, TRANSFER_OP,
 };
 use crate::payments::PaymentError;
 
@@ -163,6 +170,8 @@ pub struct TxOutput {
 /// match JSS byte-for-byte even when nonces differ.
 #[derive(Debug, Clone)]
 pub struct BuiltTx {
+    /// The transaction id (display order, 64 hex), as a broadcast returns it.
+    pub txid: String,
     /// Fully-signed, broadcastable transaction (segwit-serialised) as hex.
     pub raw_hex: String,
     /// Unsigned (legacy, witness-stripped) serialisation as hex — the
@@ -350,6 +359,7 @@ pub fn build_transaction(
     }
 
     Ok(BuiltTx {
+        txid: tx.compute_txid().to_string(),
         raw_hex: serialize_hex(&tx),
         unsigned_hex,
         sighashes: sighashes.iter().map(hex::encode).collect(),
@@ -809,6 +819,237 @@ pub async fn anchor_state(
         state_jcs: new_jcs,
         address: new_addr,
         output_amount,
+    })
+}
+
+// ── git-mark trails (blocktrails/git-mark b852d7d) ──────────────────────
+
+/// Outcome of a git-mark genesis or advance: the transaction to broadcast and
+/// the trail with its new mark.
+#[derive(Debug, Clone)]
+pub struct GitmarkUpdate {
+    /// The signed transaction creating the new mark.
+    pub tx: BuiltTx,
+    /// The trail with the new commit and mark appended (its `txo` entry names
+    /// [`BuiltTx::txid`]).
+    pub trail: Blocktrail,
+    /// The new mark.
+    pub txo: BlocktrailTxo,
+    /// The new mark's address on the trail's network.
+    pub address: String,
+    /// The new mark's value in sats.
+    pub output_amount: u64,
+}
+
+fn check_commit(commit: &str) -> Result<(), PaymentError> {
+    if is_gitmark_commit(commit) {
+        Ok(())
+    } else {
+        Err(invalid(
+            "a git-mark state is a commit hash: 40 (or 64) lowercase hex characters",
+        ))
+    }
+}
+
+/// Start a git-mark trail: spend `voucher` to the first mark, the voucher
+/// key's point tweaked by `commit` (blocktrails/git-mark b852d7d `genesis`).
+///
+/// The voucher's key is the trail's base key: its full compressed point is the
+/// trail's `pubkeyBase`, and it is never an output itself. The genesis mark
+/// carries the first commit, as git-mark's does; the state is the commit as
+/// text, with no MRC20 wrapper. `network` is this crate's network name
+/// (`testnet4`, `mainnet`, `gitmark`, …); the trail records the matching TXO
+/// chain token ([`txo_chain_for_network`]). Broadcasting is the caller's.
+///
+/// # Errors
+///
+/// [`PaymentError::InvalidState`] for a commit that is not 40 (or 64)
+/// lowercase hex, a bad voucher key, an unreadable voucher output, or a
+/// voucher too small for the fee.
+pub async fn gitmark_genesis(
+    voucher: &TxoVoucher,
+    commit: &str,
+    network: &str,
+    fee_sats: u64,
+    mempool: &dyn MempoolLookup,
+) -> Result<GitmarkUpdate, PaymentError> {
+    check_commit(commit)?;
+    let privkey = hex::decode(&voucher.privkey)
+        .map_err(|e| PaymentError::InvalidState(format!("bad voucher key: {e}")))?;
+    let sk = parse_secret(&privkey)?;
+    let base = hex::encode(sk.public_key(&Secp256k1::signing_only()).serialize());
+    let commits = vec![commit.to_string()];
+
+    let script_pubkey = fetch_output_spk(mempool, &voucher.txid, voucher.vout).await?;
+    let output_amount = checked_output(voucher.amount, fee_sats)?;
+    let tx = build_transaction(
+        &[TxInput {
+            txid: voucher.txid.clone(),
+            vout: voucher.vout,
+            amount: voucher.amount,
+            script_pubkey,
+        }],
+        &[TxOutput {
+            amount: output_amount,
+            script_pubkey: p2tr_script(&chained_xonly(&base, &commits)?)?,
+        }],
+        &privkey,
+    )?;
+
+    let chain = txo_chain_for_network(network);
+    let txo = BlocktrailTxo::new(chain.clone(), tx.txid.clone(), 0)
+        .with_amount(output_amount)
+        .with_commit(commit);
+    Ok(GitmarkUpdate {
+        address: bt_address(&base, &commits, network)?,
+        trail: Blocktrail::gitmark(base, chain, commits, vec![txo.clone()]),
+        txo,
+        tx,
+        output_amount,
+    })
+}
+
+/// Advance a git-mark trail by one commit: spend its newest mark to the next
+/// one, `P' = P + TapTweak(x(P) || sha256(commit as text))·G` on the full point
+/// (blocktrails/git-mark b852d7d `advance`).
+///
+/// `privkey_hex` is the base key's secret, the one whose point is the trail's
+/// `pubkeyBase`; the newest mark is spent with that secret plus every tweak so
+/// far. Before building anything the newest mark's output on-chain is checked
+/// against the key the trail's states derive, so a trail that does not commit
+/// to its own states is never extended. The new mark pays to output 0 and
+/// carries `commit`; broadcasting is the caller's.
+///
+/// # Errors
+///
+/// [`PaymentError::InvalidState`] for a bad commit, a trail with no base key,
+/// no marks, or states that do not match its marks, a secret that is not the
+/// base key's, a newest mark whose output is not the derived key, or an
+/// output too small for the fee.
+pub async fn gitmark_advance(
+    trail: &Blocktrail,
+    privkey_hex: &str,
+    commit: &str,
+    fee_sats: u64,
+    mempool: &dyn MempoolLookup,
+) -> Result<GitmarkUpdate, PaymentError> {
+    check_commit(commit)?;
+    let base = trail
+        .pubkey_base
+        .as_deref()
+        .ok_or_else(|| invalid("the trail has no base key (pubkeyBase)"))?;
+    let base_point = bt_base_point(base)?;
+    let privkey = hex::decode(privkey_hex).map_err(|e| invalid(format!("bad privkey hex: {e}")))?;
+    let own = parse_secret(&privkey)?
+        .public_key(&Secp256k1::signing_only())
+        .serialize();
+    if own != base_point {
+        return Err(invalid("the secret is not the trail's base key"));
+    }
+    let head = trail
+        .txo
+        .last()
+        .ok_or_else(|| invalid("the trail has no marks: start it with gitmark_genesis"))?;
+    let commits = trail.state_strings().map_err(invalid)?;
+    let chain = trail
+        .chain
+        .clone()
+        .or_else(|| head.chain.clone())
+        .ok_or_else(|| invalid("the trail names no chain"))?;
+    let network = network_for_txo_chain(&chain);
+
+    // The newest mark must be the key the states so far derive.
+    let script_pubkey = fetch_output_spk(mempool, &head.txid, head.vout).await?;
+    if script_pubkey != p2tr_script(&chained_xonly(base, &commits)?)? {
+        return Err(invalid(format!(
+            "mark {} ({}) is not the key the trail's states derive: refusing to extend it",
+            commits.len() - 1,
+            head.outpoint()
+        )));
+    }
+    let input_amount = match head.amount {
+        Some(a) => a,
+        None => mempool
+            .tx(&head.txid)
+            .await?
+            .vout
+            .get(head.vout as usize)
+            .map(|o| o.value)
+            .ok_or_else(|| invalid(format!("output {} not found", head.outpoint())))?,
+    };
+
+    let mut next = commits.clone();
+    next.push(commit.to_string());
+    let output_amount = checked_output(input_amount, fee_sats)?;
+    let tx = build_transaction(
+        &[TxInput {
+            txid: head.txid.clone(),
+            vout: head.vout,
+            amount: input_amount,
+            script_pubkey,
+        }],
+        &[TxOutput {
+            amount: output_amount,
+            script_pubkey: p2tr_script(&chained_xonly(base, &next)?)?,
+        }],
+        &bt_derive_chained_privkey(privkey_hex, &commits)?,
+    )?;
+
+    let txo = BlocktrailTxo::new(chain, tx.txid.clone(), 0)
+        .with_amount(output_amount)
+        .with_commit(commit);
+    let mut updated = trail.clone();
+    // A trail that listed no states took them from its marks: write them out.
+    updated.states = next
+        .iter()
+        .cloned()
+        .map(serde_json::Value::String)
+        .collect();
+    updated.txo.push(txo.clone());
+    Ok(GitmarkUpdate {
+        address: bt_address(base, &next, &network)?,
+        trail: updated,
+        txo,
+        tx,
+        output_amount,
+    })
+}
+
+/// Read a raw transaction (hex, as [`BuiltTx::raw_hex`] or a node gives it)
+/// into the [`TxInfo`] view a [`MempoolLookup`] returns, unconfirmed.
+///
+/// For an in-memory chain (tests, an offline verifier fed raw transactions):
+/// the txid, every input's spent outpoint and every output's value and
+/// `scriptPubKey`, decoded by rust-bitcoin.
+///
+/// # Errors
+///
+/// [`PaymentError::InvalidState`] when the hex is not a transaction.
+pub fn decode_tx_info(raw_hex: &str) -> Result<TxInfo, PaymentError> {
+    let bytes = hex::decode(raw_hex).map_err(|e| invalid(format!("bad tx hex: {e}")))?;
+    let tx: Transaction = bitcoin::consensus::deserialize(&bytes)
+        .map_err(|e| invalid(format!("not a transaction: {e}")))?;
+    Ok(TxInfo {
+        txid: tx.compute_txid().to_string(),
+        vin: tx
+            .input
+            .iter()
+            .map(|i| TxInView {
+                txid: i.previous_output.txid.to_string(),
+                vout: i.previous_output.vout,
+            })
+            .collect(),
+        vout: tx
+            .output
+            .iter()
+            .map(|o| TxOutView {
+                value: o.value.to_sat(),
+                scriptpubkey: Some(hex::encode(o.script_pubkey.as_bytes())),
+                scriptpubkey_address: None,
+            })
+            .collect(),
+        confirmed: false,
+        block_height: None,
     })
 }
 

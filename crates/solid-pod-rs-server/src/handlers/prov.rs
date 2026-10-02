@@ -11,7 +11,8 @@
 //!    payment-gated *explicit upgrade* of an existing git-mark to a Bitcoin
 //!    block-trail anchor (the high-value opt-in). Debits the caller's Web
 //!    Ledger by the pod's configured anchor price, anchors the commit SHA on
-//!    the pod's trail via [`MempoolBlockAnchorer`], and rewrites the resource's
+//!    the pod's trail (via [`GitmarkAnchorer`], or [`MempoolBlockAnchorer`]
+//!    for an MRC20 trail already issued), and rewrites the resource's
 //!    `.prov.ttl` sidecar to carry the anchor.
 //! 3. **Composition helpers for the LDP write hook** — [`resolve_anchor_policy`]
 //!    reads a resource's effective ACL and maps a `ProvenanceAnchor` condition
@@ -35,8 +36,8 @@ use solid_pod_rs::provenance::{
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::wac::{anchor_mode_of, AnchorMode};
 
-use crate::mempool::{MempoolBlockAnchorer, MempoolHttpClient};
-use crate::trail_store::load_trail;
+use crate::mempool::{GitmarkAnchorer, MempoolBlockAnchorer, MempoolHttpClient};
+use crate::trail_store::{load_gitmark_trail, load_trail, DEFAULT_GITMARK_TRAIL};
 use crate::{extract_pubkey_with_body, pod_repo_path, require_pod_owner_with_body, AppState};
 
 /// Default epoch close threshold (commit count) when the operator has not
@@ -110,37 +111,47 @@ pub(crate) async fn resolve_anchor_policy(
 }
 
 /// Build the optional expensive-tier anchorer for a pod, or `None` when the
-/// pod is not configured for Bitcoin anchoring (no pay-token / no trail minted)
-/// — in which case [`ProvenanceLog`](solid_pod_rs::provenance::ProvenanceLog)
-/// degrades to git-mark-only.
+/// pod has no trail to anchor on — in which case
+/// [`ProvenanceLog`](solid_pod_rs::provenance::ProvenanceLog) degrades to
+/// git-mark-only.
 ///
-/// Returns the anchorer plus the resolved `(ticker, network)` so the caller
-/// anchors against the right trail. The trail must already be minted on the
-/// pod (its `network` is authoritative).
+/// The trail is named by `ticker_override`, else the pay-token ticker, else
+/// [`DEFAULT_GITMARK_TRAIL`]. An MRC20 trail already issued under that name
+/// keeps [`MempoolBlockAnchorer`] (its marks and `urn:mono:op:anchor` states
+/// are never moved); otherwise a git-mark trail of that name, the profile new
+/// trails use, gets a [`GitmarkAnchorer`]. Returns the anchorer plus the
+/// resolved `(ticker, network)`; the trail's own network is authoritative.
 pub(crate) async fn build_anchorer(
     state: &AppState,
     ticker_override: Option<&str>,
 ) -> Option<(Arc<dyn BlockAnchorer>, String, String)> {
-    // The pod must have a configured pay-token (its trail backs the anchor).
-    let token = state.pay_config.token.as_ref()?;
+    let token = state.pay_config.token.as_ref();
     let ticker = ticker_override
         .filter(|t| !t.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| token.ticker.clone());
-    if ticker.is_empty() {
-        return None;
-    }
+        .or_else(|| token.map(|t| t.ticker.clone()).filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| DEFAULT_GITMARK_TRAIL.to_string());
 
-    // The trail must be minted on this pod (load its network).
-    let trail = load_trail(&state.storage, &ticker).await.ok().flatten()?;
-    let network = trail.network.clone();
-
-    let mempool = match &state.mempool_url {
+    let mempool = || match &state.mempool_url {
         Some(url) => MempoolHttpClient::new(url.clone()),
         None => MempoolHttpClient::from_env(),
     };
-    let anchorer = MempoolBlockAnchorer::with_storage(mempool, state.storage.clone());
-    Some((Arc::new(anchorer), ticker, network))
+
+    // An issued MRC20 trail (it needs the pod's pay-token) keeps its profile.
+    if token.is_some() {
+        if let Some(trail) = load_trail(&state.storage, &ticker).await.ok().flatten() {
+            let anchorer = MempoolBlockAnchorer::with_storage(mempool(), state.storage.clone());
+            return Some((Arc::new(anchorer), ticker, trail.network));
+        }
+    }
+
+    // Otherwise the git-mark profile, when the trail has been started.
+    let trail = load_gitmark_trail(&state.storage, &ticker)
+        .await
+        .ok()
+        .flatten()?;
+    let anchorer = GitmarkAnchorer::with_storage(mempool(), state.storage.clone());
+    Some((Arc::new(anchorer), ticker, trail.network()))
 }
 
 /// Load the persisted per-pod pending epoch batch (the commit SHAs awaiting a

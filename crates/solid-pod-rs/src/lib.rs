@@ -137,6 +137,7 @@ pub mod auth;
 /// gates it: it compiles to nothing on wasm or without the `mrc20` feature, so
 /// the tx-building never leaks into the wasm `core` surface (ADR-059 D4).
 pub mod bitcoin_tx;
+pub mod blocktrail;
 pub mod config;
 pub mod error;
 pub mod interop;
@@ -213,6 +214,7 @@ pub use auth::nip98::Nip98Verifier;
 pub use auth::self_signed::{
     CidVerifier, ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
 };
+pub use blocktrail::{Blocktrail, MarkReport, MarkStatus, TrailReport, TrailVerdict};
 pub use error::PodError;
 pub use interop::{
     dev_session, nip05_document, verify_nip05, webfinger_response, well_known_solid, DevSession,

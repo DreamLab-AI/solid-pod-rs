@@ -10,10 +10,12 @@
 //!   append-only, tamper-evident ordering for free. The native implementation
 //!   of [`GitMarker`] lives in `solid-pod-rs-git::mark` (it shells to `git`);
 //!   wasm consumers compile against a no-op marker.
-//! - **block-trail anchor** (expensive, opt-in): a Bitcoin-anchored MRC20 state
-//!   whose taproot UTXO externally timestamps a record ([`BlockTrailAnchor`]).
+//! - **block-trail anchor** (expensive, opt-in): a mark on a Bitcoin-anchored
+//!   trail whose taproot output externally timestamps a record
+//!   ([`BlockTrailAnchor`]). New trails use the git-mark profile (the commit as
+//!   the state); the MRC20 trails already issued keep their MRC20 anchor state.
 //!   Reserved for high-value records. The [`BlockAnchorer`] trait is defined
-//!   here; a real implementation lands in Phase 4 (`bitcoin_tx.rs` + mempool).
+//!   here and implemented server-side over `bitcoin_tx.rs` and the mempool.
 //!
 //! A [`ProvenanceMark`] always carries a [`GitMark`] and *optionally* a
 //! [`BlockTrailAnchor`]. The anchor's `state_hash` commits to the git SHA (or an
@@ -90,10 +92,10 @@ pub struct GitMark {
 /// adopts this shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitMarkEnvelope {
-    /// `gitmark:<commit_sha>:<vout>` — the single-use-seal coordinate.
+    /// `gitmark:<commit_sha>:<vout>` — the mark's coordinate.
     #[serde(rename = "@id")]
     pub id: String,
-    /// `gitmark:<first-commit-sha>:0` — the trail's genesis seal.
+    /// `gitmark:<first-commit-sha>:0` — the trail's genesis mark.
     pub genesis: String,
     /// Short human name for the mark (e.g. the package/pod nickname).
     pub nick: String,
@@ -107,7 +109,7 @@ impl GitMark {
     /// Project this internal [`GitMark`] onto the canonical 5-key
     /// `gitmark.json` envelope (ADR-124, C7).
     ///
-    /// - `vout` is the seal output index for this mark's `@id`
+    /// - `vout` is the output index of this mark's `@id`
     ///   (`gitmark:<commit_sha>:<vout>`).
     /// - `genesis_sha` is the trail's first commit SHA; pass this mark's own
     ///   `commit_sha` for the genesis mark (then `genesis == @id`).
@@ -149,17 +151,24 @@ impl GitMark {
     }
 }
 
-/// The expensive-tier Bitcoin anchor for a record.
+/// The expensive-tier Bitcoin anchor for a record: the newest mark of a
+/// trail, with the proof that lets anyone check every mark before it.
 ///
-/// Reuses the existing [`crate::mrc20`] crypto (`Mrc20State`, `bt_address`,
-/// `verify_mrc20_anchor`) — no crypto is re-implemented here. The
-/// `state_strings` carry the portable, independently-verifiable proof.
+/// Reuses the existing [`crate::mrc20`] crypto (`bt_address`,
+/// `bt_trail_outputs`) — no crypto is re-implemented here. `pubkey` and
+/// `state_strings` are the portable, independently-verifiable proof: from them
+/// every mark's output key is recomputed, and the walk back from
+/// `txid:vout` (`blocktrail::verify_anchor_chain`, feature `mrc20`) checks each one
+/// on-chain. The trail is either an MRC20 trail (each state an MRC20 state's
+/// JCS, this anchor's own an `urn:mono:op:anchor` state) or a git-mark trail
+/// (each state a commit hash as text).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockTrailAnchor {
     /// Trail ticker / identifier.
     pub ticker: String,
-    /// `sha256_hex(jcs(state))` — links into the MRC20 trail and commits to
-    /// the git SHA (or an epoch Merkle root).
+    /// What this mark anchors: the git commit SHA (or an epoch Merkle root).
+    /// An MRC20 trail binds it in its anchor state's `anchor` field; a
+    /// git-mark trail takes it as the state itself.
     pub state_hash: String,
     /// Bitcoin transaction id of the anchoring UTXO.
     pub txid: String,
@@ -172,7 +181,8 @@ pub struct BlockTrailAnchor {
     /// Confirmation height; `None` until the anchoring tx confirms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blockheight: Option<u64>,
-    /// Portable, independently-verifiable proof — the serialised states.
+    /// Portable, independently-verifiable proof — every state of the trail up
+    /// to this mark, as the strings that are hashed.
     #[serde(default)]
     pub state_strings: Vec<String>,
     /// Issuer's compressed pubkey (66-char hex). Together with
@@ -186,82 +196,17 @@ pub struct BlockTrailAnchor {
     pub pubkey: Option<String>,
 }
 
-/// A single UTXO step in a [`BlocktrailEnvelope`] `txo[]` chain — the
-/// BIP-341 single-use-seal coordinate (`<txid>:<vout>`) plus its
-/// confirmation status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlocktrailTxo {
-    /// `<txid>:<vout>` — the seal output this state was sealed under.
-    pub outpoint: String,
-    /// Confirmation height; `None` until the sealing tx confirms.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blockheight: Option<u64>,
-}
+pub use crate::blocktrail::{Blocktrail, BlocktrailTxo};
 
-/// The on-disk `blocktrails.json` envelope — the 4th web-contract layer
-/// (ADR-124 §2.2). The `gitmark.json` substrate anchors the reducer/state/
-/// ledger layers; `blocktrails.json` is the **trail** layer.
+/// The on-disk `blocktrails.json` envelope: the trail layer beside the
+/// `gitmark.json` substrate (ADR-124 §2.2).
 ///
-/// Per the reconciliation (C6): this shape is reconstructed from the
-/// `webcontracts.org` / "Melvo Predicts" reference pattern — it is NOT
-/// byte-verifiable against a fetchable create-agent artefact (the
-/// create-agent repo contains only `gitmark.json`). Only `gitmark.json` is
-/// "verbatim".
-///
-/// Shape: `@type "Blocktrail"`, `profile "gitmark"` (the anchoring
-/// substrate), a BIP-341 single-use-seal chain expressed as `states[]`
-/// (the commit SHAs — the ledger states, in order) paired with `txo[]` (the
-/// UTXO chain that seals them). `genesis` ties back to the `gitmark.json`
-/// genesis seal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlocktrailEnvelope {
-    /// `gitmark:<first-commit-sha>:0` — the genesis seal (shared with the
-    /// `gitmark.json` `genesis`).
-    #[serde(rename = "@id")]
-    pub id: String,
-    /// Always `"Blocktrail"`.
-    #[serde(rename = "@type")]
-    pub type_: String,
-    /// Anchoring substrate profile — always `"gitmark"` here.
-    pub profile: String,
-    /// `gitmark:<first-commit-sha>:0`.
-    pub genesis: String,
-    /// The ledger states in order — commit SHAs the trail notarises.
-    pub states: Vec<String>,
-    /// The BIP-341 single-use-seal UTXO chain sealing `states[]` (1:1 order).
-    pub txo: Vec<BlocktrailTxo>,
-}
-
-impl BlocktrailEnvelope {
-    /// Build a `Blocktrail` over an ordered set of commit SHAs (`states`)
-    /// and their sealing UTXO chain (`txo`), profiled on the `gitmark`
-    /// substrate (ADR-124 §2.2, C6 reference shape).
-    ///
-    /// `genesis_sha` is the trail's first commit SHA; the envelope's `@id`
-    /// and `genesis` are both `gitmark:<genesis_sha>:0`.
-    #[must_use]
-    pub fn new_gitmark_profile(
-        genesis_sha: &str,
-        states: Vec<String>,
-        txo: Vec<BlocktrailTxo>,
-    ) -> Self {
-        let genesis = format!("gitmark:{genesis_sha}:0");
-        Self {
-            id: genesis.clone(),
-            type_: "Blocktrail".to_string(),
-            profile: "gitmark".to_string(),
-            genesis,
-            states,
-            txo,
-        }
-    }
-
-    /// Serialise to the canonical `blocktrails.json` text.
-    pub fn to_blocktrails_json(&self) -> Result<String, ProvenanceError> {
-        serde_json::to_string_pretty(self)
-            .map_err(|e| ProvenanceError::Store(format!("blocktrails.json serialise: {e}")))
-    }
-}
+/// Now the shared [`Blocktrail`] type, in the shape blocktrails/spec's gitmark
+/// profile §5.2 gives and blocktrails/git-mark writes (`@type`, `version`,
+/// `profile`, `pubkeyBase`, `chain`, `states`, `txo` as TXO URIs). Files in
+/// the earlier shape this alias named (`@id`, `genesis`, `txo` entries of the
+/// form `{outpoint, blockheight}`) still parse, and serialise back as read.
+pub type BlocktrailEnvelope = Blocktrail;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -328,13 +273,14 @@ pub trait GitMarker: Send + Sync {
 
 /// Expensive tier. Server-side (mempool + Bitcoin TX), behind feature `mrc20`.
 ///
-/// Defined here; a real implementation lands in Phase 4 (`bitcoin_tx.rs`).
+/// Defined here; implemented server-side over `bitcoin_tx.rs` by
+/// `solid-pod-rs-server::mempool::GitmarkAnchorer` (new trails: git-mark
+/// profile) and `MempoolBlockAnchorer` (the MRC20 trails already issued).
 #[async_trait::async_trait(?Send)]
 pub trait BlockAnchorer: Send + Sync {
     /// Anchor `state_hash` under `ticker` on `network`, returning the produced
-    /// [`BlockTrailAnchor`]. Implemented by
-    /// `solid-pod-rs-server::mempool::MempoolBlockAnchorer` (builds + broadcasts
-    /// a taproot MRC20 anchoring tx via `bitcoin_tx.rs`).
+    /// [`BlockTrailAnchor`]: build and broadcast the transaction that spends
+    /// the trail's newest mark to the next one.
     async fn anchor(
         &self,
         ticker: &str,
@@ -342,9 +288,10 @@ pub trait BlockAnchorer: Send + Sync {
         network: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError>;
 
-    /// Verify a previously-produced anchor against the chain / fixtures
-    /// (re-derives the taproot address from the portable proof, then confirms a
-    /// UTXO sits at it).
+    /// Verify a previously-produced anchor against the chain / fixtures:
+    /// re-derive the taproot address from the portable proof, then walk the
+    /// trail back from the anchor's outpoint, checking that every mark exists,
+    /// carries the key its states derive and spends the one before it.
     async fn verify(&self, anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError>;
 }
 
@@ -942,7 +889,7 @@ pub struct EpochAccumulator {
     threshold: usize,
 }
 
-/// The sealed result of closing an epoch: the Merkle root to anchor plus the
+/// The result of closing an epoch: the Merkle root to anchor plus the
 /// batch of commit SHAs it commits to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedEpoch {
@@ -1003,7 +950,7 @@ impl EpochAccumulator {
         Some(hex::encode(merkle_root(&leaves)))
     }
 
-    /// Seal the epoch: compute the root, return it with the batched commit SHAs,
+    /// Close the epoch: compute the root, return it with the batched commit SHAs,
     /// and **drain** the accumulator so a fresh epoch begins. Returns `None`
     /// (and drains nothing) for an empty epoch.
     pub fn close(&mut self) -> Option<ClosedEpoch> {
@@ -1321,53 +1268,94 @@ mod tests {
         assert_eq!(v["repository"], "./");
     }
 
-    #[test]
-    fn blocktrail_envelope_shape() {
-        // C6 webcontracts reference shape: @type Blocktrail, profile gitmark,
-        // states[] = commit SHAs, txo[] = UTXO chain.
-        let g = sample_git();
-        let txo = vec![BlocktrailTxo {
-            outpoint: format!("{}:0", "ab".repeat(32)),
-            blockheight: Some(840_000),
-        }];
-        let bt =
-            BlocktrailEnvelope::new_gitmark_profile(&g.commit_sha, vec![g.commit_sha.clone()], txo);
-        assert_eq!(bt.type_, "Blocktrail");
-        assert_eq!(bt.profile, "gitmark");
-        assert_eq!(bt.id, format!("gitmark:{}:0", g.commit_sha));
-        assert_eq!(bt.genesis, bt.id);
-        assert_eq!(bt.states, vec![g.commit_sha.clone()]);
-        assert_eq!(bt.txo.len(), 1);
-
-        // JSON shape: @type / profile / states / txo present.
-        let v: serde_json::Value =
-            serde_json::from_str(&bt.to_blocktrails_json().unwrap()).unwrap();
-        assert_eq!(v["@type"], "Blocktrail");
-        assert_eq!(v["profile"], "gitmark");
-        assert!(v["states"].is_array());
-        assert!(v["txo"].is_array());
-        assert_eq!(v["txo"][0]["outpoint"], format!("{}:0", "ab".repeat(32)));
+    /// The envelope this module wrote before the §5.2 shape, byte for byte as
+    /// `to_blocktrails_json` produced it: `@id`, `genesis`, `txo` entries
+    /// `{outpoint, blockheight}`, no base key.
+    fn legacy_envelope_json(commit: &str) -> String {
+        format!(
+            r#"{{
+  "@id": "gitmark:{commit}:0",
+  "@type": "Blocktrail",
+  "profile": "gitmark",
+  "genesis": "gitmark:{commit}:0",
+  "states": [
+    "{commit}"
+  ],
+  "txo": [
+    {{
+      "outpoint": "{txid}:0",
+      "blockheight": 840000
+    }}
+  ]
+}}"#,
+            txid = "ab".repeat(32)
+        )
     }
 
     #[test]
-    fn blocktrail_envelope_round_trips() {
-        let bt = BlocktrailEnvelope::new_gitmark_profile(
-            &"cd".repeat(20),
-            vec!["aa".repeat(20), "bb".repeat(20)],
-            vec![
-                BlocktrailTxo {
-                    outpoint: "t0:0".into(),
-                    blockheight: None,
-                },
-                BlocktrailTxo {
-                    outpoint: "t1:0".into(),
-                    blockheight: Some(1),
-                },
-            ],
+    fn legacy_blocktrail_envelope_still_parses_and_round_trips() {
+        let g = sample_git();
+        let old = legacy_envelope_json(&g.commit_sha);
+        let bt: BlocktrailEnvelope = serde_json::from_str(&old).unwrap();
+        assert_eq!(bt.type_, "Blocktrail");
+        assert_eq!(bt.profile.as_deref(), Some("gitmark"));
+        assert_eq!(
+            bt.id.as_deref(),
+            Some(format!("gitmark:{}:0", g.commit_sha).as_str())
         );
-        let json = serde_json::to_string(&bt).unwrap();
-        let back: BlocktrailEnvelope = serde_json::from_str(&json).unwrap();
-        assert_eq!(bt, back);
+        assert_eq!(bt.genesis, bt.id);
+        assert_eq!(
+            bt.states,
+            vec![serde_json::Value::String(g.commit_sha.clone())]
+        );
+        assert!(bt.is_legacy());
+        assert_eq!(bt.txo[0].txid, "ab".repeat(32));
+        assert_eq!(bt.txo[0].blockheight, Some(840_000));
+        assert!(bt.txo[0].chain.is_none());
+        // written back exactly as read: no file on disk is rewritten
+        assert_eq!(bt.to_blocktrails_json().unwrap(), old);
+    }
+
+    #[test]
+    fn new_blocktrail_envelope_has_the_section_5_2_shape() {
+        let g = sample_git();
+        let txo = BlocktrailTxo::new("tbtc4", "ab".repeat(32), 0)
+            .with_amount(999_700)
+            .with_commit(g.commit_sha.clone());
+        let bt = Blocktrail::gitmark(
+            "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+            "tbtc4",
+            vec![g.commit_sha.clone()],
+            vec![txo],
+        );
+        assert!(!bt.is_legacy());
+        let v: serde_json::Value =
+            serde_json::from_str(&bt.to_blocktrails_json().unwrap()).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut want = vec![
+            "@type",
+            "version",
+            "profile",
+            "pubkeyBase",
+            "chain",
+            "states",
+            "txo",
+        ];
+        let mut got = keys.clone();
+        want.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(got, want);
+        assert_eq!(v["version"], "0.0.3");
+        assert_eq!(
+            v["txo"][0],
+            format!(
+                "txo:tbtc4:{}:0?amount=999700&commit={}",
+                "ab".repeat(32),
+                g.commit_sha
+            )
+        );
+        let back: BlocktrailEnvelope = serde_json::from_value(v).unwrap();
+        assert_eq!(back, bt);
     }
 
     #[test]

@@ -89,34 +89,115 @@ fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String)
 // Fixture mempool HTTP server (no mempool.space)
 // ---------------------------------------------------------------------------
 
-/// Spawn a local HTTP server that answers `GET /api/address/{addr}/utxo`.
-/// If `addr` is one of `utxo_addresses` it returns the same one-element UTXO
-/// list (one coin, `abab…:0`); for any other address an empty list `[]`.
-/// Returns the base URL.
+/// The on-chain side of a fixture trail: one transaction per state, each
+/// paying the key its prefix of states derives and spending the one before.
+#[derive(Clone)]
+struct ChainFixture {
+    /// The head mark's txid (its output 0 is the UTXO at the trail address).
+    head: String,
+    /// mempool.space `GET /api/tx/{txid}` bodies for every mark.
+    txs: Vec<(String, Value)>,
+}
+
+/// Every trail [`build_trail_fixture`] built, by its anchor address, so the
+/// fixture mempool can serve the whole chain behind an address.
+fn chains() -> &'static std::sync::Mutex<std::collections::HashMap<String, ChainFixture>> {
+    static CHAINS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, ChainFixture>>,
+    > = std::sync::OnceLock::new();
+    CHAINS.get_or_init(Default::default)
+}
+
+fn register_chain(issuer: &str, state_strings: &[String], address: &str) {
+    let outputs = solid_pod_rs::mrc20::bt_trail_outputs(issuer, state_strings).unwrap();
+    let mut prev = "ff".repeat(32);
+    let mut txs = Vec::new();
+    for (i, x) in outputs.iter().enumerate() {
+        let txid = solid_pod_rs::mrc20::sha256_hex(&format!("{address} mark {i}"));
+        txs.push((
+            txid.clone(),
+            json!({
+                "txid": txid,
+                "vin": [{"txid": prev, "vout": 0}],
+                "vout": [{"scriptpubkey": format!("5120{}", hex::encode(x)), "value": 9700}],
+                "status": {"confirmed": true, "block_height": 42000 + i},
+            }),
+        ));
+        prev = txid;
+    }
+    chains()
+        .lock()
+        .unwrap()
+        .insert(address.to_string(), ChainFixture { head: prev, txs });
+}
+
+/// Spawn a local HTTP server that answers `GET /api/address/{addr}/utxo` and
+/// `GET /api/tx/{txid}`: each address in `utxo_addresses` holds the head mark
+/// of the trail built for it, and every mark of those trails is served, so
+/// the deposit's per-link walk finds the whole chain. Any other address has
+/// no UTXO. Returns the base URL.
 async fn spawn_fixture_mempool(
     utxo_addresses: Vec<String>,
 ) -> (String, actix_web::dev::ServerHandle) {
+    let pairs = utxo_addresses.into_iter().map(|a| (a.clone(), a)).collect();
+    spawn_fixture_mempool_with(pairs).await
+}
+
+/// [`spawn_fixture_mempool`] where each `(address, trail_address)` pair puts
+/// the head mark of the trail built for `trail_address` at `address`.
+async fn spawn_fixture_mempool_with(
+    utxos: Vec<(String, String)>,
+) -> (String, actix_web::dev::ServerHandle) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let utxo_addresses = web::Data::new(utxo_addresses);
+    let registry = chains().lock().unwrap().clone();
+    let mut heads = std::collections::HashMap::new();
+    let mut txs = std::collections::HashMap::new();
+    for (address, trail) in utxos {
+        let chain = registry
+            .get(&trail)
+            .expect("trail built by build_trail_fixture");
+        heads.insert(address, chain.head.clone());
+        txs.extend(chain.txs.iter().cloned());
+    }
+    let heads = web::Data::new(heads);
+    let txs = web::Data::new(txs);
 
     let server = actix_web::HttpServer::new(move || {
-        App::new().app_data(utxo_addresses.clone()).route(
-            "/api/address/{addr}/utxo",
-            web::get().to(
-                |path: web::Path<String>, want: web::Data<Vec<String>>| async move {
-                    let addr = path.into_inner();
-                    let matches = want.get_ref().contains(&addr);
-                    if matches {
-                        HttpResponse::Ok().content_type("application/json").body(
-                            r#"[{"txid":"abababababababababababababababababababababababababababababababab","vout":0,"value":9700,"status":{"confirmed":true,"block_height":42000}}]"#,
-                        )
-                    } else {
-                        HttpResponse::Ok().content_type("application/json").body("[]")
-                    }
-                },
-            ),
-        )
+        App::new()
+            .app_data(heads.clone())
+            .app_data(txs.clone())
+            .route(
+                "/api/address/{addr}/utxo",
+                web::get().to(
+                    |path: web::Path<String>,
+                     heads: web::Data<std::collections::HashMap<String, String>>| async move {
+                        let body = match heads.get(&path.into_inner()) {
+                            Some(txid) => json!([{
+                                "txid": txid, "vout": 0, "value": 9700,
+                                "status": {"confirmed": true, "block_height": 42000},
+                            }])
+                            .to_string(),
+                            None => "[]".to_string(),
+                        };
+                        HttpResponse::Ok().content_type("application/json").body(body)
+                    },
+                ),
+            )
+            .route(
+                "/api/tx/{txid}",
+                web::get().to(
+                    |path: web::Path<String>,
+                     txs: web::Data<std::collections::HashMap<String, Value>>| async move {
+                        match txs.get(&path.into_inner()) {
+                            Some(tx) => HttpResponse::Ok()
+                                .content_type("application/json")
+                                .body(tx.to_string()),
+                            None => HttpResponse::NotFound().body("Transaction not found"),
+                        }
+                    },
+                ),
+            )
     })
     .listen(listener)
     .unwrap()
@@ -191,6 +272,7 @@ fn build_trail_fixture(
     let state_strings = vec![genesis_jcs, transfer_jcs];
     // Where the anchoring UTXO must live (full chain → derived address).
     let anchor_address = bt_address(&issuer, &state_strings, NETWORK).unwrap();
+    register_chain(&issuer, &state_strings, &anchor_address);
 
     (
         genesis,
@@ -231,6 +313,7 @@ fn mrc20_deposit_body_by(
 async fn mrc20_deposit_credits_when_utxo_present() {
     let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
     // Fixture mempool returns a UTXO at the derived anchor address.
+    let head = chains().lock().unwrap()[&anchor_address].head.clone();
     let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
 
     let st = state_with_issuer(Some(mempool_url));
@@ -258,7 +341,7 @@ async fn mrc20_deposit_credits_when_utxo_present() {
     assert_eq!(j["balance"], 100);
     assert_eq!(j["unit"], "token");
     assert_eq!(j["ticker"], "TEST");
-    assert_eq!(j["outpoint"], format!("{}:0", "ab".repeat(32)));
+    assert_eq!(j["outpoint"], format!("{head}:0"));
 
     // Ledger actually credited — in the TEST balance, never in sats — with
     // the anchor outpoint as the deposit's receipt.
@@ -270,10 +353,7 @@ async fn mrc20_deposit_credits_when_utxo_present() {
         "a token deposit never credits sats"
     );
     assert_eq!(ledger.deposits().len(), 1);
-    assert_eq!(
-        ledger.deposits()[0].outpoint,
-        format!("{}:0", "ab".repeat(32))
-    );
+    assert_eq!(ledger.deposits()[0].outpoint, format!("{head}:0"));
     assert_eq!(ledger.deposits()[0].currency.as_deref(), Some("TEST"));
 
     // A fresh ledger is born with teller's genesis identity, operator the
@@ -541,11 +621,14 @@ async fn mrc20_credit_leaves_the_sat_balance_unchanged() {
 #[actix_web::test]
 async fn mrc20_same_anchor_outpoint_twice_credits_once() {
     // Two different states (different state hashes, different anchor
-    // addresses) whose anchors the mempool shows holding the SAME coin.
+    // addresses) whose anchors the mempool shows holding the SAME coin. The
+    // per-link walk already refuses the second: that coin is the first
+    // trail's mark, not a key the second trail's states derive.
     let (g1, t1, s1, a1, _) = build_mrc20_fixture(100);
     let (g2, t2, s2, a2, _) = build_mrc20_fixture(60);
     assert_ne!(a1, a2);
-    let (mempool_url, handle) = spawn_fixture_mempool(vec![a1, a2]).await;
+    let (mempool_url, handle) =
+        spawn_fixture_mempool_with(vec![(a1.clone(), a1.clone()), (a2, a1)]).await;
     let st = state_with_issuer(Some(mempool_url));
     let storage = st.storage.clone();
     let app = test::init_service(build_app(st)).await;
@@ -557,7 +640,7 @@ async fn mrc20_same_anchor_outpoint_twice_credits_once() {
     assert_eq!(status, 400, "a used outpoint must be refused: {j}");
     let error = j["error"].as_str().unwrap();
     assert!(
-        error.contains("Replay") && error.contains("outpoint"),
+        (error.contains("Replay") && error.contains("outpoint")) || error.contains("link by link"),
         "{error}"
     );
 

@@ -15,7 +15,8 @@
 //!   blocktrails/verify checks a trail with (`bt_trail_outputs`,
 //!   `bt_verify_trail_outputs`).
 //! - Bech32m (BIP-350) taproot addresses, via rust-bitcoin.
-//! - Full anchor verification against mempool UTXOs.
+//! - Anchor verification against the chain, every link of the trail walked
+//!   back from the head UTXO ([`crate::blocktrail`]).
 //!
 //! @see <https://blocktrails.org/>
 //! @see JSS `src/mrc20.js`, `src/token.js`
@@ -326,15 +327,29 @@ pub struct TxOut {
     pub scriptpubkey_address: Option<String>,
 }
 
+/// One input of a transaction returned inside [`TxInfo::vin`]: the output it
+/// spends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxIn {
+    /// Transaction id of the output spent (64-char hex).
+    pub txid: String,
+    /// Index of the output spent within `txid`.
+    pub vout: u32,
+}
+
 /// Minimal view of a transaction returned by [`MempoolLookup::tx`].
 ///
 /// Mirrors mempool.space `GET /api/tx/{txid}` (JSS `token.js:270-275`):
-/// the `vout` array (for `scriptpubkey` lookup) and the confirmation
-/// `status`.
+/// the `vin` array (the outputs it spends, which is how a verifier checks
+/// that a mark spends the one before it), the `vout` array (for
+/// `scriptpubkey` lookup) and the confirmation `status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxInfo {
     /// Transaction id (64-char hex).
     pub txid: String,
+    /// The outputs this transaction spends, in input order.
+    #[serde(default)]
+    pub vin: Vec<TxIn>,
     /// The transaction's outputs, indexed by `vout`.
     #[serde(default)]
     pub vout: Vec<TxOut>,
@@ -728,9 +743,12 @@ mod anchor {
     ///
     /// Takes the issuer's base key (a 66-char compressed point as stored
     /// trails carry it, or any form [`bt_base_point`] reads), the full
-    /// sequence of state strings (JCS for MRC20 states), and the network.
-    /// The output key is `x(P_k)` itself, with no further BIP-341 tweak:
-    /// `bc` on `"mainnet"`, `tb` for every other network name.
+    /// sequence of state strings (JCS for MRC20 states, the commit as text
+    /// for a git-mark trail), and the network. The output key is `x(P_k)`
+    /// itself, with no further BIP-341 tweak. The human-readable part is `bc`
+    /// on `"mainnet"`, `gm` on `"gitmark"` (the sidestr git-mark chain, as
+    /// blocktrails/git-mark b852d7d `NETWORK_HRP` has it), and `tb` for every
+    /// other network name.
     ///
     /// # Examples
     ///
@@ -743,6 +761,7 @@ mod anchor {
     ///     bt_address(g, &states, "testnet4").unwrap(),
     ///     "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e"
     /// );
+    /// assert!(bt_address(g, &states, "gitmark").unwrap().starts_with("gm1p"));
     /// ```
     pub fn bt_address(
         pubkey_hex: &str,
@@ -757,10 +776,20 @@ mod anchor {
     }
 
     /// Encode the BIP-350 (bech32m) P2TR address paying `x_only` directly as
-    /// the output key: `bc` on `"mainnet"`, `tb` for every other network name.
+    /// the output key: `bc` on `"mainnet"`, `gm` on `"gitmark"`, `tb` for
+    /// every other network name.
     fn taproot_address(x_only: &[u8], network: &str) -> Result<String, PaymentError> {
         let key = XOnlyPublicKey::from_slice(x_only)
             .map_err(|e| PaymentError::InvalidState(format!("bad x-only key: {e}")))?;
+        if network == crate::blocktrail::GITMARK_NETWORK {
+            // Not a Bitcoin network, so not one of rust-bitcoin's known HRPs:
+            // the same witness-v1 program under the `gm` HRP, encoded by the
+            // bech32 crate rust-bitcoin itself uses.
+            let hrp = bitcoin::bech32::Hrp::parse("gm")
+                .map_err(|e| PaymentError::InvalidState(format!("bad hrp: {e}")))?;
+            return bitcoin::bech32::segwit::encode_v1(hrp, &key.serialize())
+                .map_err(|e| PaymentError::InvalidState(format!("bech32m: {e}")));
+        }
         let hrp = if network == "mainnet" {
             KnownHrp::Mainnet
         } else {
@@ -800,6 +829,81 @@ mod anchor {
                 scal(&"f".repeat(64)).as_deref(),
                 Some("000000000000000000000000000000014551231950b75fc4402da1732fc9bebe")
             );
+        }
+
+        /// blocktrails/git-mark b852d7d: the `gitmark` network encodes with
+        /// the `gm` HRP, the same witness program as `tb` and `bc`. Its own
+        /// trail (base, commits, addresses) and the live outputs under `gm`,
+        /// from `tests/fixtures/blocktrails/verify-trail-vectors.json`.
+        #[test]
+        fn bt_address_gitmark_uses_gm() {
+            let v: Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/blocktrails/verify-trail-vectors.json"
+            ))
+            .unwrap();
+            for (network, ours) in [
+                ("gitmark", "gitmark"),
+                ("tbtc4", "testnet4"),
+                ("mainnet", "mainnet"),
+            ] {
+                let net = &v["gitMark"]["networks"][network];
+                let base = net["pubkeyBase"].as_str().unwrap();
+                let commits: Vec<String> = net["commits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| c.as_str().unwrap().to_string())
+                    .collect();
+                for (i, want) in net["addresses"].as_array().unwrap().iter().enumerate() {
+                    assert_eq!(
+                        bt_address(base, &commits[..=i], ours).unwrap(),
+                        want.as_str().unwrap(),
+                        "{network} mark {i}"
+                    );
+                }
+            }
+            let live: Vec<[u8; 32]> = v["gitMark"]["liveVerify"]["expected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| h32(x.as_str().unwrap()))
+                .collect();
+            let gm = v["gitMark"]["liveGm"].as_array().unwrap();
+            assert_eq!(gm.len(), live.len());
+            for (i, want) in gm.iter().enumerate() {
+                let want = want.as_str().unwrap();
+                assert!(want.starts_with("gm1p"));
+                assert_eq!(taproot_address(&live[i], "gitmark").unwrap(), want);
+            }
+            // bc and tb are untouched
+            let x = live[0];
+            assert!(taproot_address(&x, "mainnet").unwrap().starts_with("bc1p"));
+            assert_eq!(
+                taproot_address(&x, "testnet4").unwrap(),
+                v["gitMark"]["liveTb"][0].as_str().unwrap()
+            );
+        }
+
+        /// `int(h) mod n` for hashes at and above the group order, against
+        /// sidestr/spec `keys.mjs` `taggedScalar` (e8deb63) run with its tagged
+        /// hash replaced by `h`, so the reduction is the reference's own
+        /// (`tests/fixtures/blocktrails/verify-trail-vectors.json`).
+        #[test]
+        fn scalar_mod_n_matches_keys_mjs() {
+            let v: Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/blocktrails/verify-trail-vectors.json"
+            ))
+            .unwrap();
+            let cases = v["scalarModN"].as_array().unwrap();
+            assert!(cases
+                .iter()
+                .any(|c| c["hash"].as_str().unwrap() > N_HEX && !c["scalar"].is_null()));
+            for c in cases {
+                let h = c["hash"].as_str().unwrap();
+                let want = c["scalar"].as_str();
+                let got = scalar_mod_n(h32(h)).map(|s| hex::encode(s.to_be_bytes()));
+                assert_eq!(got.as_deref(), want, "int({h}) mod n");
+            }
         }
 
         /// The base-key forms of sidestr/spec `keys.mjs` `basePoint`.
@@ -861,24 +965,42 @@ mod anchor {
         }
     }
 
-    /// Verify an MRC20 deposit is anchored to a confirmed/in-mempool Bitcoin UTXO.
+    /// Verify an MRC20 deposit is anchored on Bitcoin, every link of its trail
+    /// checked.
     ///
-    /// This is the full, independently-verifiable anchor check (JSS
-    /// `mrc20.js:279-335`): it composes
+    /// The independently-verifiable anchor check (JSS `mrc20.js:279-335`),
+    /// with the head-only UTXO lookup replaced by the per-link walk of
+    /// blocktrails/verify 043e7af. It composes
     ///
     /// 1. state-chain integrity + transfer extraction ([`verify_mrc20_deposit`]),
     /// 2. `stateStrings`/pubkey shape validation and the last-string↔`JCS(state)` bind,
     /// 3. taproot address re-derivation ([`bt_address`]) from the *portable*
-    ///    proof (`pubkey` + `state_strings`), then
+    ///    proof (`pubkey` + `state_strings`),
     /// 4. a **mempool UTXO lookup** at that derived address via the supplied
-    ///    [`MempoolLookup`].
+    ///    [`MempoolLookup`], which finds the head mark, and then
+    /// 5. the walk back from that head
+    ///    ([`verify_anchor_chain`](crate::blocktrail::verify_anchor_chain)):
+    ///    every earlier mark's output must be the key its prefix of states
+    ///    derives, and each mark must spend the one before it.
     ///
-    /// The earlier shape, which returned the derived address and left the
-    /// UTXO lookup "to the caller", is replaced: the lookup is now part of
-    /// verification, so a verified result genuinely means *anchored on
-    /// Bitcoin*. Pass a server-side `MempoolHttpClient` on native, or a
-    /// fixture implementation in tests — the crypto and the chain read
-    /// compose in one place.
+    /// Step 5 is what the head alone cannot show: a UTXO at the head address
+    /// proves only that the head key was paid, not that each earlier state was
+    /// committed by its own mark, in order, before it.
+    ///
+    /// As before, a head still in the mempool is accepted: the result carries
+    /// the full [`TrailReport`](crate::blocktrail::TrailReport) (per-mark
+    /// confirmation and block heights) for a caller that wants
+    /// [`is_verified`](crate::blocktrail::TrailReport::is_verified) rather
+    /// than [`is_intact`](crate::blocktrail::TrailReport::is_intact). Pass a
+    /// server-side `MempoolHttpClient` on native, or a fixture implementation
+    /// in tests.
+    ///
+    /// # Errors
+    ///
+    /// [`PaymentError::InvalidState`] for a broken state chain, no transfer to
+    /// `to_address`, a malformed proof, no UTXO at the derived address, or a
+    /// trail whose walk from every UTXO there finds a mark that is missing,
+    /// does not commit to its state, or does not spend its predecessor.
     pub async fn verify_mrc20_anchor(
         state: &Mrc20State,
         prev_state: &Mrc20State,
@@ -915,8 +1037,8 @@ mod anchor {
 
         let address = bt_address(pubkey_hex, state_strings, network)?;
 
-        // Mempool lookup: the anchor is only valid if a UTXO actually
-        // exists at the derived taproot address (JSS `mrc20.js:315-327`).
+        // Mempool lookup: the head mark is a UTXO at the derived taproot
+        // address (JSS `mrc20.js:315-327`).
         let utxos = mempool.address_utxos(&address).await?;
         if utxos.is_empty() {
             return Err(PaymentError::InvalidState(format!(
@@ -924,19 +1046,54 @@ mod anchor {
             )));
         }
 
-        Ok(Mrc20AnchorResult {
-            amount: deposit.amount,
-            ticker: deposit.ticker,
-            address,
-            utxos,
-        })
+        // Every link: walk back from a UTXO at the head address. Any one whose
+        // whole chain holds anchors the deposit.
+        let mut failure = None;
+        for utxo in &utxos {
+            let report = crate::blocktrail::verify_anchor_chain(
+                pubkey_hex,
+                state_strings,
+                &utxo.txid,
+                utxo.vout,
+                mempool,
+            )
+            .await?;
+            if report.is_intact() {
+                return Ok(Mrc20AnchorResult {
+                    amount: deposit.amount,
+                    ticker: deposit.ticker,
+                    address,
+                    utxos,
+                    report,
+                });
+            }
+            if failure.is_none() {
+                failure = report.first_failure().map(|m| {
+                    format!(
+                        "mark {} ({}): {}",
+                        m.index,
+                        if m.txid.is_empty() {
+                            "unreached"
+                        } else {
+                            &m.txid
+                        },
+                        m.status
+                    )
+                });
+            }
+        }
+        Err(PaymentError::InvalidState(format!(
+            "the anchor's trail does not verify link by link: {}",
+            failure.unwrap_or_else(|| "no mark reached".into())
+        )))
     }
 
     /// Result of anchor verification.
     ///
     /// Carries the verified transfer amount/ticker, the derived taproot
-    /// `address`, and the `utxos` found there (so callers can inspect
-    /// confirmation depth without a second round-trip).
+    /// `address`, the `utxos` found there, and the per-link `report` of the
+    /// trail walked back from the UTXO that verified (so callers can inspect
+    /// every mark's confirmation without a second round-trip).
     #[derive(Debug, Clone)]
     pub struct Mrc20AnchorResult {
         /// Total amount transferred to the deposit address.
@@ -947,6 +1104,8 @@ mod anchor {
         pub address: String,
         /// UTXOs found at `address`.
         pub utxos: Vec<Utxo>,
+        /// The trail, mark by mark, walked back from the head UTXO.
+        pub report: crate::blocktrail::TrailReport,
     }
 }
 
@@ -1282,22 +1441,24 @@ mod tests {
             hex::encode(sk.public_key().to_sec1_bytes())
         }
 
-        /// Fixture [`MempoolLookup`] backed by an in-memory address→UTXO map
-        /// — NO network. Lets the anchor crypto + lookup be exercised
-        /// deterministically (any UTXO present ⇒ anchored; absent ⇒ not).
+        /// Fixture [`MempoolLookup`] backed by in-memory address→UTXO and
+        /// txid→transaction maps — NO network. Lets the anchor crypto, the
+        /// head lookup and the per-link walk be exercised deterministically.
         struct FixtureMempool {
             utxos: HashMap<String, Vec<Utxo>>,
+            txs: HashMap<String, TxInfo>,
         }
         impl FixtureMempool {
             fn empty() -> Self {
                 Self {
                     utxos: HashMap::new(),
+                    txs: HashMap::new(),
                 }
             }
-            /// Register one UTXO at `address` (value/vout arbitrary but plausible).
+            /// Register one UTXO at `address` with no transaction behind it.
             fn with_utxo_at(address: &str) -> Self {
-                let mut utxos = HashMap::new();
-                utxos.insert(
+                let mut me = Self::empty();
+                me.utxos.insert(
                     address.to_string(),
                     vec![Utxo {
                         txid: "ab".repeat(32),
@@ -1307,7 +1468,47 @@ mod tests {
                         block_height: Some(840_000),
                     }],
                 );
-                Self { utxos }
+                me
+            }
+            /// A whole trail on-chain: one transaction per state, each paying
+            /// the key its prefix of states derives and spending the one
+            /// before; the head's output is the UTXO at the derived address.
+            fn with_chain(pubkey: &str, state_strings: &[String]) -> Self {
+                let mut me = Self::empty();
+                let outputs = bt_trail_outputs(pubkey, state_strings).unwrap();
+                let mut prev = "ff".repeat(32);
+                for (i, x) in outputs.iter().enumerate() {
+                    let txid = sha256_hex(&format!("mark {i}"));
+                    me.txs.insert(
+                        txid.clone(),
+                        TxInfo {
+                            txid: txid.clone(),
+                            vin: vec![TxIn {
+                                txid: prev,
+                                vout: 0,
+                            }],
+                            vout: vec![TxOut {
+                                value: 9700 - 300 * i as u64,
+                                scriptpubkey: Some(format!("5120{}", hex::encode(x))),
+                                scriptpubkey_address: None,
+                            }],
+                            confirmed: true,
+                            block_height: Some(840_000 + i as u64),
+                        },
+                    );
+                    prev = txid;
+                }
+                me.utxos.insert(
+                    bt_address(pubkey, state_strings, "testnet4").unwrap(),
+                    vec![Utxo {
+                        txid: prev,
+                        vout: 0,
+                        value: 9700,
+                        confirmed: true,
+                        block_height: Some(840_001),
+                    }],
+                );
+                me
             }
         }
         #[async_trait::async_trait(?Send)]
@@ -1316,12 +1517,10 @@ mod tests {
                 Ok(self.utxos.get(address).cloned().unwrap_or_default())
             }
             async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError> {
-                Ok(TxInfo {
-                    txid: txid.to_string(),
-                    vout: vec![],
-                    confirmed: true,
-                    block_height: Some(840_000),
-                })
+                self.txs
+                    .get(txid)
+                    .cloned()
+                    .ok_or_else(|| PaymentError::InvalidState(format!("tx {txid} not found")))
             }
         }
 
@@ -1552,7 +1751,8 @@ mod tests {
             assert!(err.contains("3 marks and 2 states"), "{err}");
         }
 
-        /// Every network name other than `"mainnet"` encodes with the `tb` HRP.
+        /// Every network name other than `"mainnet"` and `"gitmark"` encodes
+        /// with the `tb` HRP.
         #[test]
         fn bt_address_non_mainnet_uses_tb() {
             let base = compressed_pub(TEST_PRIVKEY);
@@ -1697,15 +1897,16 @@ mod tests {
 
         // ── Mempool-composed verification (fixture, no live chain) ──────
 
-        /// TRUE path: a UTXO exists at the derived taproot address ⇒ the
-        /// anchor verifies and reports the transfer amount.
+        /// TRUE path: the head UTXO sits at the derived taproot address and
+        /// every mark behind it commits to its state ⇒ the anchor verifies and
+        /// reports the transfer amount.
         #[test]
         fn verify_anchor_true_when_utxo_present() {
             let (genesis, next, state_strings) = valid_chain();
             let pubkey = test_pubkey_compressed();
-            // Derive the SAME address the verifier will, and seed it.
+            // Derive the SAME address the verifier will; the chain ends there.
             let address = bt_address(&pubkey, &state_strings, "testnet4").unwrap();
-            let mp = FixtureMempool::with_utxo_at(&address);
+            let mp = FixtureMempool::with_chain(&pubkey, &state_strings);
 
             let result = block_on(verify_mrc20_anchor(
                 &next,
@@ -1722,6 +1923,81 @@ mod tests {
             assert_eq!(result.address, address);
             assert_eq!(result.utxos.len(), 1);
             assert!(result.utxos[0].confirmed);
+            assert!(result.report.is_verified());
+            assert_eq!(result.report.marks.len(), 2);
+        }
+
+        /// A UTXO at the head address with no trail behind it (the head was
+        /// the only thing the earlier check looked at) no longer verifies.
+        #[test]
+        fn verify_anchor_false_when_head_has_no_history() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let address = bt_address(&pubkey, &state_strings, "testnet4").unwrap();
+            let mp = FixtureMempool::with_utxo_at(&address);
+            let err = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("link by link"), "{err}");
+        }
+
+        /// An intermediate mark that is not the key its state derives is
+        /// refused, though the head is right.
+        #[test]
+        fn verify_anchor_false_when_an_earlier_mark_does_not_commit() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mut mp = FixtureMempool::with_chain(&pubkey, &state_strings);
+            let genesis_txid = sha256_hex("mark 0");
+            mp.txs.get_mut(&genesis_txid).unwrap().vout[0].scriptpubkey =
+                Some(format!("5120{}", "22".repeat(32)));
+            let err = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("mark 0") && err.contains("wrong key"), "{err}");
+        }
+
+        /// A head still in the mempool is accepted, as before; its report says
+        /// so (intact, not yet verified).
+        #[test]
+        fn verify_anchor_accepts_a_pending_head() {
+            let (genesis, next, state_strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mut mp = FixtureMempool::with_chain(&pubkey, &state_strings);
+            let head = sha256_hex("mark 1");
+            mp.txs.get_mut(&head).unwrap().confirmed = false;
+            let result = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &state_strings,
+                "testnet4",
+                &mp,
+            ))
+            .unwrap();
+            assert!(result.report.is_intact());
+            assert!(!result.report.is_verified());
+            assert_eq!(
+                result.report.marks[1].status,
+                crate::blocktrail::MarkStatus::Unconfirmed
+            );
         }
 
         /// FALSE path: crypto is valid but NO UTXO sits at the derived

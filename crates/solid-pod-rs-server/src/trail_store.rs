@@ -17,6 +17,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+use solid_pod_rs::blocktrail::{network_for_txo_chain, Blocktrail};
 use solid_pod_rs::mrc20::{Mrc20State, Mrc20Trail};
 use solid_pod_rs::payments::PaymentError;
 use solid_pod_rs::storage::Storage;
@@ -116,6 +117,101 @@ pub async fn save_trail(
         )
         .await
         .map_err(|e| PaymentError::Store(format!("save trail: {e}")))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Git-mark trails (new trails' profile)
+// ---------------------------------------------------------------------------
+
+/// The trail name a pod anchors under when nothing names one.
+pub const DEFAULT_GITMARK_TRAIL: &str = "prov";
+
+/// Pod-storage path of a git-mark trail file (with its base secret). The name
+/// is lower-cased, as [`trail_path`] does for tickers.
+#[must_use]
+pub fn gitmark_trail_path(name: &str) -> String {
+    format!("/.well-known/gitmark/{}.json", name.to_lowercase())
+}
+
+/// Pod-storage path of a git-mark trail's public `blocktrails.json` (no
+/// secret), the file a verifier reads.
+#[must_use]
+pub fn gitmark_blocktrails_path(name: &str) -> String {
+    format!(
+        "/.well-known/gitmark/{}/blocktrails.json",
+        name.to_lowercase()
+    )
+}
+
+/// A persisted git-mark trail: the public [`Blocktrail`] (§5.2 shape) plus
+/// the base key's secret, which spends each mark to the next.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredGitmarkTrail {
+    /// The trail's name (what an anchor's `ticker` names).
+    pub name: String,
+    /// The base key's secret (64-char hex). **Secret**: never in the public
+    /// `blocktrails.json`.
+    pub privkey: String,
+    /// The trail as a verifier reads it.
+    pub trail: Blocktrail,
+    /// Creation timestamp, set by the caller.
+    #[serde(default)]
+    pub date_created: String,
+}
+
+impl StoredGitmarkTrail {
+    /// The network name of the trail's chain (`testnet4` for `tbtc4`), as
+    /// [`solid_pod_rs::mrc20::bt_address`] takes it; empty when it names none.
+    #[must_use]
+    pub fn network(&self) -> String {
+        self.trail
+            .chain
+            .as_deref()
+            .map(network_for_txo_chain)
+            .unwrap_or_default()
+    }
+}
+
+/// Load the git-mark trail `name`, or `None` if there is none.
+pub async fn load_gitmark_trail(
+    storage: &Arc<dyn Storage>,
+    name: &str,
+) -> Result<Option<StoredGitmarkTrail>, PaymentError> {
+    match storage.get(&gitmark_trail_path(name)).await {
+        Ok((bytes, _meta)) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| PaymentError::Store(format!("malformed git-mark trail {name}: {e}"))),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Persist a git-mark trail and publish its `blocktrails.json` beside it.
+pub async fn save_gitmark_trail(
+    storage: &Arc<dyn Storage>,
+    stored: &StoredGitmarkTrail,
+) -> Result<(), PaymentError> {
+    let body = serde_json::to_vec_pretty(stored)
+        .map_err(|e| PaymentError::Store(format!("serialise git-mark trail: {e}")))?;
+    storage
+        .put(
+            &gitmark_trail_path(&stored.name),
+            Bytes::from(body),
+            "application/json",
+        )
+        .await
+        .map_err(|e| PaymentError::Store(format!("save git-mark trail: {e}")))?;
+    let public = serde_json::to_vec_pretty(&stored.trail)
+        .map_err(|e| PaymentError::Store(format!("serialise blocktrails.json: {e}")))?;
+    storage
+        .put(
+            &gitmark_blocktrails_path(&stored.name),
+            Bytes::from(public),
+            "application/json",
+        )
+        .await
+        .map_err(|e| PaymentError::Store(format!("save blocktrails.json: {e}")))?;
     Ok(())
 }
 
@@ -223,5 +319,43 @@ mod tests {
         assert_eq!(t.current_txid, "ff".repeat(32));
         assert_eq!(t.current_amount, 9400);
         assert_eq!(t.states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn gitmark_trail_round_trips_and_publishes_no_secret() {
+        use solid_pod_rs::blocktrail::BlocktrailTxo;
+        let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let commit = "9adc596cfd1100333393a12f2f41b2d820f16d0b";
+        let stored = StoredGitmarkTrail {
+            name: "Prov".into(),
+            privkey: "07".repeat(32),
+            trail: Blocktrail::gitmark(
+                "02".to_string() + &"ab".repeat(32),
+                "tbtc4",
+                vec![commit.into()],
+                vec![BlocktrailTxo::new("tbtc4", "cd".repeat(32), 0).with_commit(commit)],
+            ),
+            date_created: "2026-10-02T00:00:00Z".into(),
+        };
+        assert_eq!(stored.network(), "testnet4");
+        save_gitmark_trail(&storage, &stored).await.unwrap();
+        let back = load_gitmark_trail(&storage, "prov").await.unwrap().unwrap();
+        assert_eq!(back.trail, stored.trail);
+        assert_eq!(back.privkey, stored.privkey);
+        let (public, _) = storage
+            .get(&gitmark_blocktrails_path("PROV"))
+            .await
+            .unwrap();
+        let public = String::from_utf8(public.to_vec()).unwrap();
+        assert!(
+            !public.contains(&stored.privkey),
+            "the secret is never published"
+        );
+        let parsed: Blocktrail = serde_json::from_str(&public).unwrap();
+        assert_eq!(parsed, stored.trail);
+        assert!(load_gitmark_trail(&storage, "none")
+            .await
+            .unwrap()
+            .is_none());
     }
 }
