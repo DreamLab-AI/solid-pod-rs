@@ -77,6 +77,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   payout receipt, is kept for operator review instead of being compensated.
 - The `/pay/.balance` and `/pay/.address` docs no longer claim an
   auto-detect scan: the balance is read from the ledger only.
+- **Breaking (`solid-pod-rs-server`): the paying routes take a did:nostr
+  account only.** `/pay/.deposit`, `/pay/.buy`, `/pay/.withdraw` and
+  `/pay/.withdraw-sats` now answer 400 (`an account is a did:nostr
+  identifier`) for a principal teller's `accountOf` rejects, which includes
+  the https WebID a dev bearer token yields. NIP-98 callers are unaffected.
+- CI runs doctests: `cargo test --doc` per core feature set and
+  `cargo test --workspace --doc`. `--all-targets` skips doctests, so the
+  `compile_fail` gate keeping `WebLedger::credit`/`debit` crate-private and
+  the teller genesis-hash doctest were not running; `tests/ci_doctest_gate.rs`
+  fails if the workflow drops them again.
 
 ### Security
 

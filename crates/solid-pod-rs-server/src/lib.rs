@@ -4793,23 +4793,39 @@ mod payment_gating_tests {
     use solid_pod_rs::payments::WebLedger;
     use solid_pod_rs::storage::memory::MemoryBackend;
 
-    const PRINCIPAL: &str =
-        "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+    /// The paying principal's DID, spelt once so the ACL fixtures below
+    /// cannot drift from [`PRINCIPAL`]. Teller's `accountOf` only accepts a
+    /// `did:nostr:<64 hex>` account, so every ledger-seeding fixture uses one.
+    macro_rules! principal {
+        () => {
+            "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+        };
+    }
+
+    const PRINCIPAL: &str = principal!();
+
+    /// A second, valid `did:nostr:<64 hex>` account that is not `PRINCIPAL`.
+    const OTHER_PRINCIPAL: &str =
+        "did:nostr:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     /// Turtle ACL granting `PRINCIPAL` Write on `/premium/inbox`
     /// only when a `PaymentCondition` of 100 sats is satisfied.
-    const PAID_WRITE_ACL: &str = r#"
+    const PAID_WRITE_ACL: &str = concat!(
+        r#"
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
 
 <#paid-write> a acl:Authorization ;
-    acl:agent <did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa> ;
+    acl:agent <"#,
+        principal!(),
+        r#"> ;
     acl:accessTo </premium/inbox> ;
     acl:mode acl:Write ;
     acl:condition [
         a acl:PaymentCondition ;
         acl:costSats 100
     ] .
-"#;
+"#
+    );
 
     async fn seed_ledger(storage: &dyn Storage, did: &str, sats: u64) {
         let mut ledger = WebLedger::new("Test Pod Credits");
@@ -4851,11 +4867,34 @@ mod payment_gating_tests {
     #[actix_web::test]
     async fn resolve_balance_zero_when_no_entry() {
         let storage = MemoryBackend::new();
-        seed_ledger(&storage, "did:nostr:bob", 500).await;
+        seed_ledger(&storage, OTHER_PRINCIPAL, 500).await;
         assert_eq!(
             resolve_balance_sats(&storage, Some(PRINCIPAL)).await,
             Some(0)
         );
+    }
+
+    /// Regression guard for the fixtures themselves: every account the
+    /// ledger is seeded with must be one teller's `accountOf` accepts
+    /// (`did:nostr:<64 hex>`), and every ACL fixture that names the paying
+    /// principal must name exactly `PRINCIPAL`. A short `did:nostr:bob`
+    /// seed or an ACL left on `did:nostr:alice` panics or silently denies.
+    #[test]
+    fn fixtures_use_teller_accounts_and_grant_the_principal() {
+        use solid_pod_rs::payments::account_of;
+        for did in [PRINCIPAL, OTHER_PRINCIPAL] {
+            assert_eq!(account_of(did).unwrap(), did, "{did} must be canonical");
+        }
+        assert_ne!(PRINCIPAL, OTHER_PRINCIPAL);
+        assert!(account_of("did:nostr:bob").is_err());
+        let agent = format!("acl:agent <{PRINCIPAL}>");
+        for (name, acl) in [
+            ("PAID_WRITE_ACL", PAID_WRITE_ACL),
+            ("WRITE_NOT_CONTROL_ACL", WRITE_NOT_CONTROL_ACL),
+        ] {
+            assert!(acl.contains(&agent), "{name} must grant PRINCIPAL");
+        }
+        assert!(!WRITE_NOT_CONTROL_ACL.contains("did:nostr:alice"));
     }
 
     /// Anonymous (no principal) → `None`, so a PaymentCondition fails closed.
@@ -5117,13 +5156,16 @@ mod payment_gating_tests {
     // -----------------------------------------------------------------
 
     /// ACL granting `writer` Write (but NOT Control) on `/shared/`, and
-    /// the owner `alice` full Control. A Write-only principal must not be
-    /// able to rewrite the ACL (privilege escalation).
-    const WRITE_NOT_CONTROL_ACL: &str = r#"
+    /// the owner (`PRINCIPAL`) full Control. A Write-only principal must
+    /// not be able to rewrite the ACL (privilege escalation).
+    const WRITE_NOT_CONTROL_ACL: &str = concat!(
+        r#"
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
 
 <#owner> a acl:Authorization ;
-    acl:agent <did:nostr:alice> ;
+    acl:agent <"#,
+        principal!(),
+        r#"> ;
     acl:accessTo </shared/doc> ;
     acl:default </shared/> ;
     acl:mode acl:Read, acl:Write, acl:Control .
@@ -5133,7 +5175,8 @@ mod payment_gating_tests {
     acl:accessTo </shared/doc> ;
     acl:default </shared/> ;
     acl:mode acl:Read, acl:Write .
-"#;
+"#
+    );
 
     async fn seed_shared_acl(storage: &dyn Storage) {
         // P0-2 resolves the protected resource `/shared/` and the
@@ -5184,7 +5227,7 @@ mod payment_gating_tests {
             enforce_write(&state, "/shared/.acl", AccessMode::Write, Some(PRINCIPAL)).await;
         assert!(
             result.is_ok(),
-            "alice holds Control — must be allowed to PUT /shared/.acl"
+            "the owner holds Control — must be allowed to PUT /shared/.acl"
         );
     }
 
