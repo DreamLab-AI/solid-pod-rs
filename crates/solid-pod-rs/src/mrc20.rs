@@ -484,8 +484,40 @@ mod anchor {
         } else {
             return Err(PaymentError::InvalidState("unexpected key length".into()));
         };
+        taproot_address(x_only, network)
+    }
+
+    /// Encode a P2TR address for an x-only output key: `bc` on `"mainnet"`,
+    /// `tb` for every other network name.
+    fn taproot_address(x_only: &[u8], network: &str) -> Result<String, PaymentError> {
         let hrp = if network == "mainnet" { "bc" } else { "tb" };
         Ok(bech32m_encode(hrp, 1, x_only))
+    }
+
+    #[cfg(test)]
+    mod vector_tests {
+        use super::*;
+
+        /// Every BIP-341 `scriptPubKey` vector carries the BIP-350 (bech32m)
+        /// mainnet address of its output key. Fixture: verbatim copy of
+        /// https://github.com/bitcoin/bips/blob/master/bip-0341/wallet-test-vectors.json.
+        #[test]
+        fn bip350_address_vectors() {
+            let v: Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/bitcoin/bip341_wallet_test_vectors.json"
+            ))
+            .unwrap();
+            let cases = v["scriptPubKey"].as_array().unwrap();
+            assert_eq!(cases.len(), 7);
+            for (i, c) in cases.iter().enumerate() {
+                let q = hex::decode(c["intermediary"]["tweakedPubkey"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    taproot_address(&q, "mainnet").unwrap(),
+                    c["expected"]["bip350Address"].as_str().unwrap(),
+                    "bip350Address vector {i}"
+                );
+            }
+        }
     }
 
     /// Verify an MRC20 deposit is anchored to a confirmed/in-mempool Bitcoin UTXO.
@@ -967,6 +999,149 @@ mod tests {
             let next = transfer_state(&genesis_hash);
             let next_jcs = jcs(&serde_json::to_value(&next).unwrap());
             (genesis, next, vec![genesis_jcs, next_jcs])
+        }
+
+        /// One pinned chained-derivation row (see [`CHAINED_GOLDEN`]).
+        type ChainedRow = (
+            &'static str,
+            &'static [&'static str],
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+        );
+
+        /// Chained-key outputs pinned from the pre-rust-bitcoin implementation
+        /// (k256 point/scalar arithmetic + hand-written bech32m, commit
+        /// 7a98bc0). The chained derivation is this project's construction,
+        /// so no published vector exists; these rows hold the port to
+        /// byte-identical output. Bases 1·G, 3·G and the BIP-340 vector-1 key;
+        /// the 3-state chain from 3·G passes through odd-Y points.
+        /// Columns: privkey, states, chained pubkey, chained privkey,
+        /// testnet address, mainnet address.
+        const CHAINED_GOLDEN: &[ChainedRow] = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                &[],
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq47zagq",
+                "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                &["s1"],
+                "02188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69",
+                "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66666",
+                "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e",
+                "bc1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035sjg8fqk",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                &["s1", "s2", "s3"],
+                "023a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460",
+                "8d50bb21b9e521b229c751dce1ed5720ff3b0cb0a21afba14a94c46bfc8bd482",
+                "tb1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqlg6upc",
+                "bc1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqgqvnmh",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                &["s1"],
+                "02587dcc33ef72f579de94e3046d2ae09e9cd2740bac64918a327b702d51964d92",
+                "ceaa29cc897a2ab6e94751c5bd66cf2297aff0611a941eeb351b3afd5f662f3f",
+                "tb1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfqskp92l",
+                "bc1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfq87h2ss",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                &["s1", "s2", "s3"],
+                "03894f27c061c57dc7b6791c42b9c38faa826d3f3a2785ceac707db887db38c0a0",
+                "a1e277eac1517681cc9c394d3e43e18b7efd1f377dbf387461bdc4764d3e6d66",
+                "tb1p398j0srpc47u0dner3ptnsu042px60e6y7zuatrs0kug0kecczsqvv3cjm",
+                "bc1p398j0srpc47u0dner3ptnsu042px60e6y7zuatrs0kug0kecczsqmy8hg5",
+            ),
+            (
+                "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+                &["s1", "s2", "s3"],
+                "02f283242cfe1a63c445c2a809a08068dffeb6d3220951136786e140808ee87307",
+                "4793128a0984fd7ec9eec4649530c3a59c47851eef73daf6a547f819fae097df",
+                "tb1p72pjgt87rf3ug3wz4qy6pqrgmlltd5ezp9g3xeuxu9qgprhgwvrss46m8z",
+                "bc1p72pjgt87rf3ug3wz4qy6pqrgmlltd5ezp9g3xeuxu9qgprhgwvrs8av5ad",
+            ),
+        ];
+
+        /// The same derivation over the real genesis→transfer JCS chain.
+        const CHAINED_GOLDEN_JCS: &[(&str, &str, &str, &str)] = &[
+            (
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "02e5c6ad36a3a79979a71f7879fa3b07454a1ef5883ba1695c89d1a7fc0e70f6dc",
+                "bbcb1e87c393cdcff150fd58245c29d011b0b41f7312b88148ec3b9d28cf3205",
+                "tb1puhr26d4r57vhnfcl0pul5wc8g49paavg8wskjhyf6xnlcrns7mwqj0wjc4",
+            ),
+            (
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                "03ae5d99603a017fd8e09699bb9ff122df512d3109a1490427664855edca72516b",
+                "ad7eced080c43f4c1f31a829adadeeeeab2005a0576c04fba1ba86700d97e4ac",
+                "tb1p4ewejcp6q9la3cyknxaelufzmagj6vgf59ysgfmxfp27mjnj294sf6ur8c",
+            ),
+        ];
+
+        fn compressed_pub(priv_hex: &str) -> String {
+            let sk = k256::SecretKey::from_slice(&hex::decode(priv_hex).unwrap()).unwrap();
+            hex::encode(sk.public_key().to_sec1_bytes())
+        }
+
+        #[test]
+        fn chained_derivation_matches_pinned_golden() {
+            for (priv_hex, states, pubk, privk, tb, bc) in CHAINED_GOLDEN {
+                let states: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+                let base = compressed_pub(priv_hex);
+                let ctx = format!("{priv_hex} over {} states", states.len());
+                assert_eq!(
+                    hex::encode(bt_derive_chained_pubkey(&base, &states).unwrap()),
+                    *pubk,
+                    "pubkey: {ctx}"
+                );
+                assert_eq!(
+                    hex::encode(bt_derive_chained_privkey(priv_hex, &states).unwrap()),
+                    *privk,
+                    "privkey: {ctx}"
+                );
+                assert_eq!(
+                    bt_address(&base, &states, "testnet4").unwrap(),
+                    *tb,
+                    "testnet: {ctx}"
+                );
+                assert_eq!(
+                    bt_address(&base, &states, "mainnet").unwrap(),
+                    *bc,
+                    "mainnet: {ctx}"
+                );
+            }
+            let (_, _, chain) = valid_chain();
+            for (priv_hex, pubk, privk, tb) in CHAINED_GOLDEN_JCS {
+                let base = compressed_pub(priv_hex);
+                assert_eq!(
+                    hex::encode(bt_derive_chained_pubkey(&base, &chain).unwrap()),
+                    *pubk
+                );
+                assert_eq!(
+                    hex::encode(bt_derive_chained_privkey(priv_hex, &chain).unwrap()),
+                    *privk
+                );
+                assert_eq!(bt_address(&base, &chain, "testnet4").unwrap(), *tb);
+            }
+        }
+
+        /// Every network name other than `"mainnet"` encodes with the `tb` HRP.
+        #[test]
+        fn bt_address_non_mainnet_uses_tb() {
+            let base = compressed_pub(TEST_PRIVKEY);
+            let states = vec!["s1".to_string()];
+            let tb = bt_address(&base, &states, "testnet4").unwrap();
+            for net in ["testnet", "signet", "regtest", "anything"] {
+                assert_eq!(bt_address(&base, &states, net).unwrap(), tb, "{net}");
+            }
         }
 
         #[test]

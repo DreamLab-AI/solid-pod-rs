@@ -269,6 +269,38 @@ pub struct BuiltTx {
     pub signing_xonly: String,
 }
 
+/// The secret scalar a key-path spend signs with (JSS `token.js:118-129`).
+///
+/// Untweaked: `privkey` itself. Tweaked: the BIP-341 key-path-only tweak
+/// `(negate_if_odd_y(d) + TapTweak(xonly(d))) mod n`. The result is *not*
+/// further normalised to even Y: that happens inside BIP-340 signing.
+fn keypath_signing_secret(privkey: &[u8], needs_tweak: bool) -> Result<[u8; 32], PaymentError> {
+    let sk = SecretKey::from_slice(privkey)
+        .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
+    let mut d = [0u8; 32];
+    d.copy_from_slice(privkey);
+    if !needs_tweak {
+        return Ok(d);
+    }
+    let internal_xonly = xonly_of(privkey)?;
+    let tweak = tagged_hash("TapTweak", &[&internal_xonly]);
+    let uncompressed = sk.public_key().to_encoded_point(false);
+    if uncompressed.as_bytes()[64] & 1 == 1 {
+        d = neg_mod_n(&d);
+    }
+    Ok(add_mod_n(&d, &tweak))
+}
+
+/// BIP-340 sign a 32-byte message with `aux_rand = 0^32`.
+fn schnorr_sign_zero_aux(secret: &[u8; 32], msg: &[u8; 32]) -> Result<[u8; 64], PaymentError> {
+    let key = SigningKey::from_bytes(secret)
+        .map_err(|e| PaymentError::InvalidState(format!("invalid signing scalar: {e}")))?;
+    let sig = key
+        .sign_raw(msg, &[0u8; 32])
+        .map_err(|e| PaymentError::InvalidState(format!("schnorr sign failed: {e}")))?;
+    Ok(sig.to_bytes())
+}
+
 // ── Core: from-scratch BIP-341 key-path taproot tx builder ──────────────
 
 /// Build and key-path-sign a taproot transaction (JSS `token.js:117-174`).
@@ -306,28 +338,7 @@ pub fn build_transaction(
     let untweaked_spk = p2tr_script(&internal_xonly)?; // 5120<internal xonly>
     let needs_tweak = inputs[0].script_pubkey != untweaked_spk;
 
-    let signing_scalar: [u8; 32] = if needs_tweak {
-        // d' = (negate_if_odd_y(d) + TapTweak(internalXOnly)) mod n.
-        // token.js:123-128 — the BIP-341 key-path-only tweak (no merkle root).
-        let tweak = tagged_hash("TapTweak", &[&internal_xonly]);
-        let mut d = [0u8; 32];
-        d.copy_from_slice(privkey);
-
-        // Negate d if the full pubkey's Y is odd (BIP-340 even-Y) —
-        // token.js:126-127 reads byte 64 of the uncompressed pubkey.
-        let sk = SecretKey::from_slice(privkey)
-            .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
-        let uncompressed = sk.public_key().to_encoded_point(false);
-        let y_is_odd = uncompressed.as_bytes()[64] & 1 == 1;
-        if y_is_odd {
-            d = neg_mod_n(&d);
-        }
-        add_mod_n(&d, &tweak)
-    } else {
-        let mut d = [0u8; 32];
-        d.copy_from_slice(privkey);
-        d
-    };
+    let signing_scalar = keypath_signing_secret(privkey, needs_tweak)?;
 
     // `k256`'s SigningKey::from performs the BIP-340 even-Y negation on the
     // scalar internally (identical to @noble) before signing.
@@ -402,11 +413,9 @@ pub fn build_transaction(
 
         let sighash = tagged_hash("TapSighash", &[&sig_msg]);
         // aux_rand = 0 → deterministic BIP-340 (see module docs).
-        let sig = signing_key
-            .sign_raw(&sighash, &[0u8; 32])
-            .map_err(|e| PaymentError::InvalidState(format!("schnorr sign failed: {e}")))?;
+        let sig = schnorr_sign_zero_aux(&signing_scalar, &sighash)?;
         sighashes.push(sighash);
-        signatures.push(sig.to_bytes().to_vec());
+        signatures.push(sig.to_vec());
     }
 
     // ── Assemble segwit tx (token.js:159-173) ──
@@ -1270,78 +1279,156 @@ mod tests {
         (inputs, outputs, privkey)
     }
 
-    // ── BIP-340 OFFICIAL TEST VECTORS (sighash + sign correctness) ───────
+    // ── BIP-340 OFFICIAL TEST VECTORS (the whole published CSV) ──────────
     //
-    // From the canonical BIP-340 test-vectors.csv. These validate the BIP-340
-    // signing primitive `k256` uses (with aux_rand=0) against the spec, which
-    // — together with the TapSighash bytes the golden checks — covers the
-    // "validate TapSighash + key-path schnorr signing against BIP-341 vectors"
-    // gate (the TapSighash is a tagged-hash of a defined preimage; the signing
-    // is BIP-340; both are pinned here).
+    // `tests/fixtures/bitcoin/bip340_test_vectors.csv` is a copy of
+    // https://github.com/bitcoin/bips/blob/master/bip-0340/test-vectors.csv
+    // (CRLF line endings normalised to LF; content unchanged).
+    // Every row with a secret key must sign byte-for-byte (with the row's
+    // aux_rand) and every row must verify or fail exactly as published. Rows
+    // 15-18 use non-32-byte messages; a key-path sighash is always 32 bytes,
+    // so the key-path verifier is checked on rows 0-14 only.
 
-    struct Bip340Vec {
-        sk: &'static str,
-        pk: &'static str,
-        aux: &'static str,
-        msg: &'static str,
-        sig: &'static str,
-    }
-
-    // Vectors 0,1,2,3 (the deterministic key-known vectors) from BIP-340.
-    const BIP340_VECTORS: &[Bip340Vec] = &[
-        Bip340Vec {
-            sk: "0000000000000000000000000000000000000000000000000000000000000003",
-            pk: "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9",
-            aux: "0000000000000000000000000000000000000000000000000000000000000000",
-            msg: "0000000000000000000000000000000000000000000000000000000000000000",
-            sig: "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0",
-        },
-        Bip340Vec {
-            sk: "B7E151628AED2A6ABF7158809CF4F3C762E7160F38B4DA56A784D9045190CFEF",
-            pk: "DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659",
-            aux: "0000000000000000000000000000000000000000000000000000000000000001",
-            msg: "243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89",
-            sig: "6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE33418906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A",
-        },
-        Bip340Vec {
-            sk: "C90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B14E5C9",
-            pk: "DD308AFEC5777E13121FA72B9CC1B7CC0139715309B086C960E18FD969774EB8",
-            aux: "C87AA53824B4D7AE2EB035A2B5BBBCCC080E76CDC6D1692C4B0B62D798E6D906",
-            msg: "7E2D58D8B3BCDF1ABADEC7829054F90DDA9805AAB56C77333024B9D0A508B75C",
-            sig: "5831AAEED7B44BB74E5EAB94BA9D4294C49BCF2A60728D8B4C200F50DD313C1BAB745879A5AD954A72C45A91C3A51D3C7ADEA98D82F8481E0E1E03674A6F3FB7",
-        },
-    ];
+    const BIP340_CSV: &str = include_str!("../tests/fixtures/bitcoin/bip340_test_vectors.csv");
 
     #[test]
     fn bip340_official_vectors_sign_and_verify() {
-        for (i, v) in BIP340_VECTORS.iter().enumerate() {
-            let sk_bytes = hex::decode(v.sk).unwrap();
-            let aux: [u8; 32] = hex::decode(v.aux).unwrap().try_into().unwrap();
-            let msg = hex::decode(v.msg).unwrap();
-            let sk = SigningKey::from_bytes(&sk_bytes).unwrap();
+        let mut signed = 0;
+        let mut checked = 0;
+        for line in BIP340_CSV.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let (idx, sk, pk, aux, msg, sig, ok) = (f[0], f[1], f[2], f[3], f[4], f[5], f[6]);
+            if msg.len() != 64 {
+                continue;
+            }
+            let expected = ok == "TRUE";
+            if !sk.is_empty() {
+                let secret: [u8; 32] = hex::decode(sk).unwrap().try_into().unwrap();
+                let aux: [u8; 32] = hex::decode(aux).unwrap().try_into().unwrap();
+                let msg_b: [u8; 32] = hex::decode(msg).unwrap().try_into().unwrap();
+                let key = SigningKey::from_bytes(&secret).unwrap();
+                assert_eq!(
+                    hex::encode_upper(key.verifying_key().to_bytes()),
+                    pk,
+                    "vector {idx}: public key"
+                );
+                let ours = key.sign_raw(&msg_b, &aux).unwrap().to_bytes();
+                assert_eq!(hex::encode_upper(ours), sig, "vector {idx}: signature");
+                signed += 1;
+            }
+            let verdict = verify_keypath_signature(
+                &pk.to_lowercase(),
+                &msg.to_lowercase(),
+                &sig.to_lowercase(),
+            )
+            .unwrap_or(false);
+            assert_eq!(verdict, expected, "vector {idx}: verification result");
+            checked += 1;
+        }
+        assert_eq!((signed, checked), (4, 15), "vector coverage changed");
+    }
 
-            // Public key matches the spec.
+    // ── BIP-341 OFFICIAL KEY-PATH SPENDING VECTORS ───────────────────────
+    //
+    // `tests/fixtures/bitcoin/bip341_wallet_test_vectors.json` is a verbatim
+    // copy of https://github.com/bitcoin/bips/blob/master/bip-0341/wallet-test-vectors.json.
+
+    const BIP341_JSON: &str =
+        include_str!("../tests/fixtures/bitcoin/bip341_wallet_test_vectors.json");
+
+    fn bip341() -> serde_json::Value {
+        serde_json::from_str(BIP341_JSON).unwrap()
+    }
+
+    /// Input 0 of `keyPathSpending` has no script tree (`merkleRoot: null`):
+    /// exactly the key-path-only tweak `build_transaction` applies. Its
+    /// published `tweakedPrivkey` pins the tweak arithmetic, including the
+    /// even-Y negation of the internal secret.
+    #[test]
+    fn bip341_keypath_tweaked_privkey_vector() {
+        let v = bip341();
+        let inputs = v["keyPathSpending"][0]["inputSpending"].as_array().unwrap();
+        let mut seen = 0;
+        for inp in inputs {
+            if !inp["given"]["merkleRoot"].is_null() {
+                continue;
+            }
+            let privkey = hex::decode(inp["given"]["internalPrivkey"].as_str().unwrap()).unwrap();
+            let tweaked = keypath_signing_secret(&privkey, true).unwrap();
             assert_eq!(
-                hex::encode_upper(sk.verifying_key().to_bytes()),
-                v.pk,
-                "vector {i}: pubkey"
+                hex::encode(tweaked),
+                inp["intermediary"]["tweakedPrivkey"].as_str().unwrap(),
+                "BIP-341 tweakedPrivkey"
             );
-            // Signature matches the spec byte-for-byte (BIP-340 with given aux).
-            let sig = sk.sign_raw(&msg, &aux).unwrap();
+            seen += 1;
+        }
+        assert_eq!(seen, 1, "expected exactly one key-path-only input");
+    }
+
+    /// Every `SIGHASH_DEFAULT` input in `keyPathSpending`: signing the published
+    /// `sigHash` with the published `tweakedPrivkey` and `aux_rand = 0` gives
+    /// the published 64-byte witness signature.
+    #[test]
+    fn bip341_keypath_default_signature_vector() {
+        let v = bip341();
+        let inputs = v["keyPathSpending"][0]["inputSpending"].as_array().unwrap();
+        let mut seen = 0;
+        for inp in inputs {
+            if inp["given"]["hashType"].as_u64().unwrap() != 0 {
+                continue;
+            }
+            let secret: [u8; 32] =
+                hex::decode(inp["intermediary"]["tweakedPrivkey"].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+            let sighash: [u8; 32] = hex::decode(inp["intermediary"]["sigHash"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let sig = schnorr_sign_zero_aux(&secret, &sighash).unwrap();
             assert_eq!(
-                hex::encode_upper(sig.to_bytes()),
-                v.sig,
-                "vector {i}: signature must match BIP-340 official vector"
+                hex::encode(sig),
+                inp["expected"]["witness"][0].as_str().unwrap(),
+                "BIP-341 SIGHASH_DEFAULT witness"
             );
-            // And it verifies.
-            assert!(
-                verify_keypath_signature(
-                    &hex::encode(sk.verifying_key().to_bytes()),
-                    &v.msg.to_lowercase(),
-                    &v.sig.to_lowercase()
-                )
-                .unwrap(),
-                "vector {i}: must verify"
+            seen += 1;
+        }
+        assert_eq!(seen, 1, "expected exactly one SIGHASH_DEFAULT input");
+    }
+
+    /// Every BIP-341 `scriptPubKey` vector: the P2TR script for the published
+    /// tweaked output key is the published `scriptPubKey`.
+    #[test]
+    fn bip341_scriptpubkey_vectors() {
+        let v = bip341();
+        let cases = v["scriptPubKey"].as_array().unwrap();
+        assert_eq!(cases.len(), 7);
+        for (i, c) in cases.iter().enumerate() {
+            let q = hex::decode(c["intermediary"]["tweakedPubkey"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                hex::encode(p2tr_script(&q).unwrap()),
+                c["expected"]["scriptPubKey"].as_str().unwrap(),
+                "scriptPubKey vector {i}"
+            );
+        }
+    }
+
+    /// The golden fixture records JSS's effective `signingKey` per case: the
+    /// tweak (case B) and the pass-through (cases A, C) must match it.
+    #[test]
+    fn golden_signing_key_matches_jss() {
+        let g = golden();
+        for case in ["caseA", "caseB", "caseC"] {
+            let c = &g[case];
+            let (inputs, _, privkey) = case_inputs(c);
+            let internal = p2tr_script(&xonly_of(&privkey).unwrap()).unwrap();
+            let needs_tweak = inputs[0].script_pubkey != internal;
+            let secret = keypath_signing_secret(&privkey, needs_tweak).unwrap();
+            assert_eq!(
+                hex::encode(secret),
+                c["signingKey"].as_str().unwrap(),
+                "{case} signingKey"
             );
         }
     }
