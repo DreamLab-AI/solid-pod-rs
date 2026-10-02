@@ -48,8 +48,9 @@ the [master plan](docs/design/provenance-upgrade-master-plan.md).
   [BASELINE divergence #3](docs/BASELINE-solid-pod-rs.md).
 - **block-trails** (high-value, opt-in, feature `mrc20`) — a Bitcoin-taproot
   -anchored, hash-chained MRC20 state trail. Verify **and** write side
-  (`bitcoin_tx.rs`: P2TR build, BIP-341 TapSighash, BIP-340 Schnorr signing) —
-  byte-parity with JSS `token.js`, validated against the official BIP-340/341
+  (`bitcoin_tx.rs`: P2TR build, BIP-341 TapSighash, BIP-340 Schnorr signing,
+  all from rust-bitcoin and libsecp256k1, nothing hand-rolled) — byte-parity
+  with JSS `token.js`, validated against the official BIP-340/341/350
   vectors. One instance of a general `ProvenanceTrail`; the payment token is
   another. Anchors run against **testnet4** via the public mempool API by
   default.

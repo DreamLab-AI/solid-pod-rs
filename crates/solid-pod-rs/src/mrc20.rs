@@ -7,11 +7,13 @@
 //!
 //! When the `mrc20` feature is enabled, also provides:
 //! - BIP-341 taproot key chaining for per-state P2TR address derivation.
-//! - Bech32m encoding for taproot addresses.
+//! - Bech32m (BIP-350) taproot addresses, via rust-bitcoin.
 //! - Full anchor verification against mempool UTXOs.
 //!
 //! @see <https://blocktrails.org/>
 //! @see JSS `src/mrc20.js`, `src/token.js`
+
+#![warn(missing_docs)]
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,7 +22,9 @@ use std::collections::BTreeMap;
 
 use crate::payments::PaymentError;
 
+/// The Blocktrails MRC20 profile identifier every state carries in `profile`.
 pub const MRC20_PROFILE: &str = "mono.mrc20.v0.1";
+/// The `op` value of a token transfer operation.
 pub const TRANSFER_OP: &str = "urn:mono:op:transfer";
 
 // ── RFC 8785 JSON Canonicalization Scheme ────────────────────────────
@@ -75,20 +79,30 @@ pub fn sha256_hex(input: &str) -> String {
 /// The genesis state has `prev = "0" * 64` and `seq = 0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mrc20State {
+    /// Profile identifier; must equal [`MRC20_PROFILE`].
     pub profile: String,
+    /// Hex SHA-256 of the previous state's JCS, or 64 zeros for genesis.
     pub prev: String,
+    /// Sequence number: 0 at genesis, +1 per state.
     pub seq: u64,
+    /// Token ticker symbol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticker: Option<String>,
+    /// Human-readable token name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Decimal places of the token amount.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u32>,
+    /// Total token supply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supply: Option<u64>,
+    /// Balances after this state, keyed by holder (compressed pubkey hex or DID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balances: Option<BTreeMap<String, u64>>,
+    /// Operations this state applies.
     pub ops: Vec<Mrc20Op>,
+    /// State hash this state notarises (anchor states only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
 }
@@ -96,11 +110,15 @@ pub struct Mrc20State {
 /// A single MRC20 operation within a state transition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mrc20Op {
+    /// Operation URN, e.g. [`TRANSFER_OP`].
     pub op: String,
+    /// Sending holder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// Receiving holder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
+    /// Amount moved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amt: Option<u64>,
 }
@@ -108,23 +126,36 @@ pub struct Mrc20Op {
 /// Persistent trail for a token's full state chain history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mrc20Trail {
+    /// Token ticker symbol.
     pub ticker: String,
+    /// Human-readable token name.
     pub name: String,
+    /// Total token supply.
     pub supply: u64,
+    /// Issuer's compressed pubkey hex: the base of the chained-key derivation.
     pub pubkey_base: String,
+    /// Every state from genesis to the head.
     pub states: Vec<Mrc20State>,
+    /// JCS of each state, in order; the chained-key derivation hashes these.
     pub state_strings: Vec<String>,
+    /// Txid of the UTXO currently anchoring the head.
     pub current_txid: String,
+    /// Output index of that UTXO.
     pub current_vout: u32,
+    /// Value of that UTXO, in sats.
     pub current_amount: u64,
+    /// Network name; `"mainnet"` selects `bc` addresses, anything else `tb`.
     pub network: String,
+    /// Creation timestamp, set by the caller.
     pub date_created: String,
 }
 
 /// Result of MRC20 deposit verification.
 #[derive(Debug, Clone)]
 pub struct Mrc20DepositResult {
+    /// Total amount transferred to the deposit address.
     pub amount: u64,
+    /// Ticker of the token transferred.
     pub ticker: String,
 }
 
@@ -306,165 +337,85 @@ pub trait MempoolLookup {
 #[cfg(feature = "mrc20")]
 mod anchor {
     use super::*;
-    use k256::elliptic_curve::ff::PrimeField;
-    use k256::ProjectivePoint;
-    use k256::Scalar;
-    use k256::SecretKey;
+    use bitcoin::hashes::{sha256, Hash, HashEngine};
+    use bitcoin::key::TweakedPublicKey;
+    use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, XOnlyPublicKey};
+    use bitcoin::taproot::TapTweakHash;
+    use bitcoin::{Address, KnownHrp};
 
-    fn tagged_hash(tag: &str, msgs: &[&[u8]]) -> [u8; 32] {
-        let tag_hash = Sha256::digest(tag.as_bytes());
-        let mut hasher = Sha256::new();
-        hasher.update(tag_hash);
-        hasher.update(tag_hash);
-        for msg in msgs {
-            hasher.update(msg);
-        }
-        hasher.finalize().into()
-    }
-
-    fn bytes_to_scalar(bytes: &[u8; 32]) -> Option<Scalar> {
-        let mut wide = k256::FieldBytes::default();
-        wide.copy_from_slice(bytes);
-        Option::from(Scalar::from_repr(wide))
-    }
-
-    /// Compute the BIP-341 TapTweak scalar for a compressed pubkey and state string.
+    /// The chaining scalar for one state:
+    /// `TaggedHash("TapTweak", x_only(current) || SHA-256(state)) mod n`.
     ///
-    /// `scalar = SHA-256_tagged("TapTweak", x_only || SHA-256(state)) mod N`
-    fn bt_scalar(pubkey_compressed: &[u8], state_jcs: &str) -> Option<Scalar> {
-        let x_only = if pubkey_compressed.len() == 33 {
-            &pubkey_compressed[1..]
-        } else if pubkey_compressed.len() == 32 {
-            pubkey_compressed
-        } else {
+    /// This is BIP-341's `TapTweak` tagged hash with `SHA-256(state)` in the
+    /// place of a script-tree root, computed with rust-bitcoin's
+    /// [`TapTweakHash`] engine. Unlike a BIP-341 output tweak it is added to
+    /// the full point `P` (its Y parity unchanged), not to `lift_x(x(P))`.
+    /// `current` must be a 33-byte compressed key; a hash at or above the
+    /// group order yields `None`.
+    fn bt_scalar(current_compressed: &[u8], state_jcs: &str) -> Option<Scalar> {
+        if current_compressed.len() != 33 {
             return None;
-        };
-        let state_hash = Sha256::digest(state_jcs.as_bytes());
-        let tweak_bytes = tagged_hash("TapTweak", &[x_only, &state_hash]);
-        bytes_to_scalar(&tweak_bytes)
+        }
+        let state_hash = sha256::Hash::hash(state_jcs.as_bytes());
+        let mut engine = TapTweakHash::engine();
+        engine.input(&current_compressed[1..]);
+        engine.input(state_hash.as_byte_array());
+        Scalar::from_be_bytes(TapTweakHash::from_engine(engine).to_byte_array()).ok()
     }
 
     /// Iteratively derive a chained public key through a sequence of state strings.
     ///
-    /// For each state, tweaks the current point by `G * bt_scalar(current, state)`.
+    /// For each state, tweaks the current point by `G * bt_scalar(current, state)`
+    /// and returns the final compressed (33-byte) key. With no states, the
+    /// base key's own bytes come back unchanged.
     pub fn bt_derive_chained_pubkey(
         pubkey_base_hex: &str,
         state_strings: &[String],
     ) -> Result<Vec<u8>, PaymentError> {
         let pubkey_bytes = hex::decode(pubkey_base_hex)
             .map_err(|e| PaymentError::InvalidState(format!("bad pubkey hex: {e}")))?;
-
-        let point = k256::PublicKey::from_sec1_bytes(&pubkey_bytes)
+        let mut point = PublicKey::from_slice(&pubkey_bytes)
             .map_err(|e| PaymentError::InvalidState(format!("bad pubkey: {e}")))?;
-        let mut p = ProjectivePoint::from(*point.as_affine());
+        let secp = Secp256k1::verification_only();
         let mut current_compressed = pubkey_bytes;
 
         for state_jcs in state_strings {
             let t = bt_scalar(&current_compressed, state_jcs)
                 .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
-            p += ProjectivePoint::GENERATOR * t;
-            let affine = p.to_affine();
-            let encoded = k256::PublicKey::from_affine(affine)
+            point = point
+                .add_exp_tweak(&secp, &t)
                 .map_err(|e| PaymentError::InvalidState(format!("point at infinity: {e}")))?;
-            current_compressed = encoded.to_sec1_bytes().to_vec();
+            current_compressed = point.serialize().to_vec();
         }
 
         Ok(current_compressed)
     }
 
     /// Derive a chained private key through a sequence of state strings.
+    ///
+    /// The secret-key counterpart of [`bt_derive_chained_pubkey`]: each
+    /// state adds the same scalar mod n. `privkey_hex` must be exactly 32
+    /// bytes of hex.
     pub fn bt_derive_chained_privkey(
         privkey_hex: &str,
         state_strings: &[String],
     ) -> Result<Vec<u8>, PaymentError> {
         let privkey_bytes = hex::decode(privkey_hex)
             .map_err(|e| PaymentError::InvalidState(format!("bad privkey hex: {e}")))?;
-
-        let sk = SecretKey::from_slice(&privkey_bytes)
+        let mut d = SecretKey::from_slice(&privkey_bytes)
             .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
-        let mut d = *sk.to_nonzero_scalar().as_ref();
-
-        let pubkey = sk.public_key();
-        let mut current_compressed = pubkey.to_sec1_bytes().to_vec();
+        let secp = Secp256k1::signing_only();
 
         for state_jcs in state_strings {
+            let current_compressed = d.public_key(&secp).serialize();
             let t = bt_scalar(&current_compressed, state_jcs)
                 .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
-            d += t;
-            let new_sk = SecretKey::new(d.into());
-            current_compressed = new_sk.public_key().to_sec1_bytes().to_vec();
+            d = d
+                .add_tweak(&t)
+                .map_err(|e| PaymentError::InvalidState(format!("zero chained key: {e}")))?;
         }
 
-        Ok(d.to_bytes().to_vec())
-    }
-
-    // ── Bech32m encoding ────────────────────────────────────────────
-
-    const BECH32_CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-    const BECH32M_CONST: u32 = 0x2bc830a3;
-
-    fn convert_bits(data: &[u8], from: u32, to: u32, pad: bool) -> Vec<u8> {
-        let mut acc: u32 = 0;
-        let mut bits: u32 = 0;
-        let maxv = (1u32 << to) - 1;
-        let mut ret = Vec::new();
-        for &v in data {
-            acc = (acc << from) | (v as u32);
-            bits += from;
-            while bits >= to {
-                bits -= to;
-                ret.push(((acc >> bits) & maxv) as u8);
-            }
-        }
-        if pad && bits > 0 {
-            ret.push(((acc << (to - bits)) & maxv) as u8);
-        }
-        ret
-    }
-
-    fn hrp_expand(hrp: &str) -> Vec<u8> {
-        let mut r: Vec<u8> = hrp.bytes().map(|b| b >> 5).collect();
-        r.push(0);
-        r.extend(hrp.bytes().map(|b| b & 31));
-        r
-    }
-
-    fn polymod(values: &[u8]) -> u32 {
-        const GEN: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-        let mut chk: u32 = 1;
-        for &v in values {
-            let b = chk >> 25;
-            chk = ((chk & 0x1ffffff) << 5) ^ (v as u32);
-            for (i, &g) in GEN.iter().enumerate() {
-                if (b >> i) & 1 != 0 {
-                    chk ^= g;
-                }
-            }
-        }
-        chk
-    }
-
-    fn bech32m_encode(hrp: &str, version: u8, program: &[u8]) -> String {
-        let conv = convert_bits(program, 8, 5, true);
-        let mut values = vec![version];
-        values.extend_from_slice(&conv);
-
-        let mut enc = hrp_expand(hrp);
-        enc.extend_from_slice(&values);
-        enc.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
-
-        let plm = polymod(&enc) ^ BECH32M_CONST;
-        let checksum: Vec<u8> = (0..6)
-            .map(|i| ((plm >> (5 * (5 - i))) & 31) as u8)
-            .collect();
-
-        let mut result = String::with_capacity(hrp.len() + 1 + values.len() + 6);
-        result.push_str(hrp);
-        result.push('1');
-        for &v in values.iter().chain(checksum.iter()) {
-            result.push(BECH32_CHARSET[v as usize] as char);
-        }
-        result
+        Ok(d.secret_bytes().to_vec())
     }
 
     /// Derive the taproot (P2TR) address for a state chain.
@@ -477,21 +428,25 @@ mod anchor {
         network: &str,
     ) -> Result<String, PaymentError> {
         let chained = bt_derive_chained_pubkey(pubkey_hex, state_strings)?;
-        let x_only = if chained.len() == 33 {
-            &chained[1..]
-        } else if chained.len() == 32 {
-            &chained[..]
-        } else {
+        if chained.len() != 33 {
             return Err(PaymentError::InvalidState("unexpected key length".into()));
-        };
-        taproot_address(x_only, network)
+        }
+        taproot_address(&chained[1..], network)
     }
 
-    /// Encode a P2TR address for an x-only output key: `bc` on `"mainnet"`,
-    /// `tb` for every other network name.
+    /// Encode the BIP-350 (bech32m) P2TR address paying `x_only` directly as
+    /// the output key: `bc` on `"mainnet"`, `tb` for every other network name.
     fn taproot_address(x_only: &[u8], network: &str) -> Result<String, PaymentError> {
-        let hrp = if network == "mainnet" { "bc" } else { "tb" };
-        Ok(bech32m_encode(hrp, 1, x_only))
+        let key = XOnlyPublicKey::from_slice(x_only)
+            .map_err(|e| PaymentError::InvalidState(format!("bad x-only key: {e}")))?;
+        let hrp = if network == "mainnet" {
+            KnownHrp::Mainnet
+        } else {
+            KnownHrp::Testnets
+        };
+        // The chained key is the final output key: no further BIP-341 tweak.
+        let output_key = TweakedPublicKey::dangerous_assume_tweaked(key);
+        Ok(Address::p2tr_tweaked(output_key, hrp).to_string())
     }
 
     #[cfg(test)]
@@ -598,9 +553,13 @@ mod anchor {
     /// confirmation depth without a second round-trip).
     #[derive(Debug, Clone)]
     pub struct Mrc20AnchorResult {
+        /// Total amount transferred to the deposit address.
         pub amount: u64,
+        /// Ticker of the token transferred.
         pub ticker: String,
+        /// Taproot address re-derived from the portable proof.
         pub address: String,
+        /// UTXOs found at `address`.
         pub utxos: Vec<Utxo>,
     }
 }

@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Bitcoin primitives come from rust-bitcoin (ADR-2008 D1-D2).**
+  `bitcoin_tx` and the `mrc20` anchor module no longer hand-roll any
+  Bitcoin or secp256k1 primitive. Transaction and CompactSize
+  serialisation, txid byte order, P2TR scripts, the BIP-341 `TapTweak` and
+  `TapSighash`, the key-path secret tweak and BIP-340 signing and
+  verification come from `bitcoin` 0.32.102 and its re-exported
+  `secp256k1` 0.29 (libsecp256k1). Bech32m addresses come from
+  `bitcoin::Address`. The hand-written mod-n arithmetic (`add_mod_n`,
+  `neg_mod_n`, `sub`), both tagged-hash helpers and the bech32m encoder are
+  deleted. The `mrc20` feature now enables `dep:bitcoin` instead of
+  `dep:k256` (k256 stays for NIP-98, LWS-CID and did:nostr).
+  Output is byte-identical: the three JSS golden cases, the published
+  BIP-340/341/350 vectors and pinned chained-key derivations all pass
+  unchanged.
+- Behaviour differences, all on malformed input: `build_transaction`,
+  `mint_token` and `bt_derive_chained_privkey` require an exactly 32-byte
+  secret key (a 24-31-byte key used to be left-padded, and in
+  `build_transaction` then panicked); `p2tr_script` and `bt_address` refuse
+  an x-only key that is not a curve point (a P2TR output to it is
+  unspendable); `verify_keypath_signature` refuses a sighash that is not 32
+  bytes; amounts above 21 million BTC are refused; the old 65,535-byte cap
+  on scripts and counts is gone.
+
 ## [0.5.0-alpha.10] - 2026-10-01
 
 Tracks the did:nostr parity model as reconciled upstream in

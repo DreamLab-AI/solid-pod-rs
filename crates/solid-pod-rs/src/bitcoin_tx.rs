@@ -1,57 +1,67 @@
 //! Bitcoin taproot transaction building — the **write-side** of block-trails.
 //!
 //! This is the Rust port of JSS `src/token.js` `buildTransaction`
-//! (lines 117-174): a from-scratch BIP-341 key-path taproot transaction
-//! builder with BIP-340 Schnorr signing. It produces broadcastable raw
-//! transactions for MRC20 mint/transfer and for anchoring an arbitrary
-//! block-trail state, plus the high-level [`mint_token`](crate::bitcoin_tx::mint_token),
+//! (lines 117-174): a BIP-341 key-path taproot transaction builder with
+//! BIP-340 Schnorr signing. It produces broadcastable raw transactions for
+//! MRC20 mint/transfer and for anchoring an arbitrary block-trail state, plus
+//! the high-level [`mint_token`](crate::bitcoin_tx::mint_token),
 //! [`transfer_token_with_key`](crate::bitcoin_tx::transfer_token_with_key)
-//! and [`anchor_state`](crate::bitcoin_tx::anchor_state) composers that the server's `BlockAnchorer::anchor`
-//! and the `/pay/.buy` / `/pay/.withdraw` routes call.
+//! and [`anchor_state`](crate::bitcoin_tx::anchor_state) composers that the
+//! server's `BlockAnchorer::anchor` and the `/pay/.buy` / `/pay/.withdraw`
+//! routes call.
 //!
-//! # Crypto provenance — no re-derivation
+//! # Crypto provenance — nothing hand-rolled
 //!
-//! The chained-key derivation, JCS, SHA-256 and bech32m all live in
-//! [`crate::mrc20`] and are reused verbatim (`bt_derive_chained_pubkey`,
+//! Every Bitcoin primitive comes from [`bitcoin`] (rust-bitcoin) and the
+//! libsecp256k1 binding it re-exports (ADR-2008 D1): transaction and
+//! CompactSize serialisation, txid byte order, P2TR script construction, the
+//! BIP-341 `TapTweak` and `TapSighash` tagged hashes, the key-path tweak of
+//! the secret key, and BIP-340 signing and verification. This module only
+//! decides *what* to build. The chained-key derivation and JCS live in
+//! [`crate::mrc20`] and are reused (`bt_derive_chained_pubkey`,
 //! `bt_derive_chained_privkey`, `bt_address`, [`jcs`](crate::mrc20::jcs),
 //! [`sha256_hex`](crate::mrc20::sha256_hex)).
-//! Only the *missing edges* are added here: P2TR script construction, the
-//! BIP-341 TapSighash, key-path Schnorr signing (with the optional default
-//! TapTweak for externally-funded inputs), and witness assembly.
 //!
-//! The signing stack is `k256` with the `schnorr` feature — the **same**
-//! secp256k1 implementation the crate already uses for `mrc20.rs` and NIP-98.
-//! No `rust-bitcoin` / `secp256k1-sys` is introduced.
+//! The port is held byte-identical to the previous hand-rolled builder by the
+//! cross-implementation golden fixture (`tests/fixtures/bitcoin/golden_tx.json`,
+//! generated from JSS) and by the published BIP-340 and BIP-341 test vectors.
 //!
 //! ## Signature determinism (cross-impl golden)
 //!
 //! JSS `schnorr.sign(sighash, key)` (`token.js:156`) supplies **no** aux_rand,
 //! so `@noble/curves` injects `randomBytes(32)` — production JSS tx hex is
 //! non-deterministic. BIP-340, however, is fully deterministic when
-//! `aux_rand = 0^32`. We sign with `SigningKey::sign_raw(sighash, &[0u8; 32])`,
-//! which makes our output reproducible *and* byte-for-byte identical to JSS
-//! when JSS is pinned to `aux_rand = 0` (the cross-impl golden fixture is
-//! generated that way). `k256::schnorr::SigningKey::from` performs the BIP-340
-//! even-Y scalar negation internally, exactly as `@noble` does, so passing the
-//! same `signingKey` scalar reproduces the same signature.
+//! `aux_rand = 0^32`. We sign with `aux_rand = 0^32`, which makes our output
+//! reproducible *and* byte-for-byte identical to JSS when JSS is pinned to
+//! `aux_rand = 0` (the cross-impl golden fixture is generated that way).
+//! libsecp256k1 performs the BIP-340 even-Y negation of the secret
+//! internally, exactly as `@noble` does.
 //!
 //! ## wasm32 boundary
 //!
-//! Transaction *building* is pure byte manipulation + `k256` signing, so it
-//! could compile to wasm — but it is gated `#[cfg(not(target_arch = "wasm32"))]`
-//! (and behind feature `mrc20`) per ADR-059 D4: the write-side is a native,
-//! server-only concern and must **not** leak into the wasm `core` surface. The
-//! [`MempoolBroadcast`](crate::bitcoin_tx::MempoolBroadcast) trait itself is pure (`?Send`, no I/O) — the concrete
-//! reqwest implementation lives server-side in `solid-pod-rs-server::mempool`,
-//! mirroring Phase 3's [`MempoolLookup`](crate::mrc20::MempoolLookup).
+//! The module is gated `#[cfg(not(target_arch = "wasm32"))]` (and behind
+//! feature `mrc20`) per ADR-059 D4: the write-side is a native, server-only
+//! concern and must **not** leak into the wasm `core` surface. The
+//! [`MempoolBroadcast`](crate::bitcoin_tx::MempoolBroadcast) trait itself is
+//! pure (`?Send`, no I/O) — the concrete reqwest implementation lives
+//! server-side in `solid-pod-rs-server::mempool`, mirroring Phase 3's
+//! [`MempoolLookup`](crate::mrc20::MempoolLookup).
 
 #![cfg(all(feature = "mrc20", not(target_arch = "wasm32")))]
+#![warn(missing_docs)]
 
-use k256::elliptic_curve::sec1::ToEncodedPoint;
-use k256::schnorr::SigningKey;
-use k256::SecretKey;
+use std::str::FromStr;
+
+use bitcoin::consensus::encode::serialize_hex;
+use bitcoin::hashes::Hash;
+use bitcoin::key::{Keypair, TapTweak, TweakedPublicKey};
+use bitcoin::secp256k1::{rand, schnorr, Message, Secp256k1, SecretKey, XOnlyPublicKey};
+use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+use bitcoin::{
+    absolute, transaction, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Witness,
+};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::mrc20::{
     bt_address, bt_derive_chained_privkey, bt_derive_chained_pubkey, jcs, sha256_hex,
@@ -59,162 +69,61 @@ use crate::mrc20::{
 };
 use crate::payments::PaymentError;
 
-/// secp256k1 group order `n` (JSS `token.js:21`).
-const SECP_N: [u8; 32] = [
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
-    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
-];
-
 /// Default fee in sats (JSS `token.js:278,369`).
 pub const DEFAULT_FEE_SATS: u64 = 300;
 /// Dust threshold in sats — an output at or below this is uneconomical
 /// (JSS `token.js:280,371`).
 pub const DUST_LIMIT_SATS: u64 = 546;
 
-// ── Byte / serialization helpers (token.js:24-70) ───────────────────────
+/// nSequence on every input: `0xfffffffd`, replace-by-fee signalled and no
+/// relative lock-time (JSS `token.js`).
+const INPUT_SEQUENCE: Sequence = Sequence::ENABLE_RBF_NO_LOCKTIME;
 
-fn write_u32_le(v: u32) -> [u8; 4] {
-    v.to_le_bytes()
+fn invalid(msg: impl std::fmt::Display) -> PaymentError {
+    PaymentError::InvalidState(msg.to_string())
 }
 
-fn write_u64_le(v: u64) -> [u8; 8] {
-    v.to_le_bytes()
-}
-
-/// CompactSize/VarInt encode (JSS `token.js:61-65`). Values above `0xffff`
-/// are rejected — taproot scripts and the counts we emit never exceed it.
-fn write_var_int(v: usize) -> Result<Vec<u8>, PaymentError> {
-    if v < 0xfd {
-        Ok(vec![v as u8])
-    } else if v <= 0xffff {
-        Ok(vec![0xfd, (v & 0xff) as u8, ((v >> 8) & 0xff) as u8])
-    } else {
-        Err(PaymentError::InvalidState("VarInt too large".into()))
-    }
-}
-
-/// Reverse a big-endian txid hex into the little-endian byte order used on
-/// the wire (JSS `token.js:66-70`).
-fn reverse_txid(txid_hex: &str) -> Result<Vec<u8>, PaymentError> {
-    let mut bytes = hex::decode(txid_hex)
-        .map_err(|e| PaymentError::InvalidState(format!("bad txid hex: {e}")))?;
-    if bytes.len() != 32 {
-        return Err(PaymentError::InvalidState(format!(
-            "txid must be 32 bytes, got {}",
-            bytes.len()
-        )));
-    }
-    bytes.reverse();
-    Ok(bytes)
-}
-
-fn sha256(data: &[u8]) -> [u8; 32] {
-    Sha256::digest(data).into()
-}
-
-/// BIP-340/341 tagged hash `SHA256(SHA256(tag) || SHA256(tag) || msg…)`
-/// (JSS `token.js:77-80`). Reused for both `TapTweak` and `TapSighash`.
-fn tagged_hash(tag: &str, msgs: &[&[u8]]) -> [u8; 32] {
-    let tag_hash = Sha256::digest(tag.as_bytes());
-    let mut h = Sha256::new();
-    h.update(tag_hash);
-    h.update(tag_hash);
-    for m in msgs {
-        h.update(m);
-    }
-    h.finalize().into()
-}
-
-// ── Big-endian scalar arithmetic mod n (token.js:33-40,124-128) ─────────
-//
-// `buildTransaction`'s tweak branch does `(d ± t) mod n` on raw 256-bit
-// integers. We mirror it with constant-width big-endian byte arithmetic so
-// the produced `signingKey` scalar is byte-identical to JSS before it is
-// handed to `k256` for the BIP-340 even-Y normalisation + sign.
-
-/// Big-endian compare: `a < b`?
-fn be_lt(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    for i in 0..32 {
-        if a[i] != b[i] {
-            return a[i] < b[i];
-        }
-    }
-    false
-}
-
-/// `(a + b) mod n` over big-endian 32-byte scalars.
-fn add_mod_n(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let mut carry = 0u16;
-    for i in (0..32).rev() {
-        let s = a[i] as u16 + b[i] as u16 + carry;
-        out[i] = (s & 0xff) as u8;
-        carry = s >> 8;
-    }
-    // A 256-bit add can overflow; if it did, or the result >= n, subtract n.
-    if carry != 0 || !be_lt(&out, &SECP_N) {
-        out = sub(&out, &SECP_N, carry as u8);
-    }
-    out
-}
-
-/// `n - a` over big-endian 32-byte scalars (used for the even-Y negation).
-fn neg_mod_n(a: &[u8; 32]) -> [u8; 32] {
-    sub(&SECP_N, a, 0)
-}
-
-/// `(a - b)` with an incoming borrow-as-carry from the add overflow path.
-/// Returns the wrapped difference; callers only invoke it when `a + carry*2^256 >= b`.
-fn sub(a: &[u8; 32], b: &[u8; 32], carry_in: u8) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let mut borrow = 0i16;
-    for i in (0..32).rev() {
-        let d = a[i] as i16 - b[i] as i16 - borrow;
-        if d < 0 {
-            out[i] = (d + 256) as u8;
-            borrow = 1;
-        } else {
-            out[i] = d as u8;
-            borrow = 0;
-        }
-    }
-    // `carry_in` represents the 2^256 bit that overflowed during the add;
-    // it cancels the final borrow.
-    debug_assert!(carry_in as i16 >= borrow, "scalar subtraction underflow");
-    out
-}
-
-// ── P2TR output script (token.js:112-114) ───────────────────────────────
-
-/// Build a P2TR (pay-to-taproot) output script: `OP_1 (0x51) PUSH32 (0x20)
-/// <x-only pubkey>` (JSS `token.js:112-114`). `xonly` must be 32 bytes.
-pub fn p2tr_script(xonly: &[u8]) -> Result<Vec<u8>, PaymentError> {
+/// Parse a 32-byte x-only public key, as BIP-340/341 define it.
+fn parse_xonly(xonly: &[u8]) -> Result<XOnlyPublicKey, PaymentError> {
     if xonly.len() != 32 {
-        return Err(PaymentError::InvalidState(format!(
+        return Err(invalid(format!(
             "x-only pubkey must be 32 bytes, got {}",
             xonly.len()
         )));
     }
-    let mut s = Vec::with_capacity(34);
-    s.push(0x51);
-    s.push(0x20);
-    s.extend_from_slice(xonly);
-    Ok(s)
+    XOnlyPublicKey::from_slice(xonly).map_err(|e| invalid(format!("bad x-only pubkey: {e}")))
 }
 
-/// Compressed-pubkey → x-only (drop the 0x02/0x03 prefix byte).
-fn xonly_of(privkey: &[u8]) -> Result<[u8; 32], PaymentError> {
-    let sk = SecretKey::from_slice(privkey)
-        .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
-    let compressed = sk.public_key().to_sec1_bytes();
-    if compressed.len() != 33 {
-        return Err(PaymentError::InvalidState(
-            "expected compressed pubkey".into(),
-        ));
+/// Parse a 32-byte secret key. Exactly 32 bytes are required: shorter
+/// slices are refused rather than left-padded.
+fn parse_secret(privkey: &[u8]) -> Result<SecretKey, PaymentError> {
+    if privkey.len() != 32 {
+        return Err(invalid(format!(
+            "privkey must be 32 bytes, got {}",
+            privkey.len()
+        )));
     }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&compressed[1..]);
-    Ok(out)
+    SecretKey::from_slice(privkey).map_err(|e| invalid(format!("bad privkey: {e}")))
+}
+
+// ── P2TR output script (token.js:112-114) ───────────────────────────────
+
+/// Build a P2TR (pay-to-taproot) output script, `OP_1 PUSH32 <x-only key>`
+/// (`5120…`, JSS `token.js:112-114`), for an output key that is already the
+/// final (tweaked or chained) key.
+///
+/// `xonly` must be 32 bytes and a valid secp256k1 x coordinate: an output to
+/// a non-point can never be spent, so it is refused.
+pub fn p2tr_script(xonly: &[u8]) -> Result<Vec<u8>, PaymentError> {
+    let key = parse_xonly(xonly)?;
+    Ok(ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(key)).into_bytes())
+}
+
+/// The x-only public key of `privkey`.
+fn xonly_of(privkey: &[u8]) -> Result<[u8; 32], PaymentError> {
+    let secp = Secp256k1::signing_only();
+    let sk = parse_secret(privkey)?;
+    Ok(sk.x_only_public_key(&secp).0.serialize())
 }
 
 // ── Transaction input / output value types ──────────────────────────────
@@ -226,7 +135,7 @@ fn xonly_of(privkey: &[u8]) -> Result<[u8; 32], PaymentError> {
 /// whether the default TapTweak must be applied (JSS `token.js:120`).
 #[derive(Debug, Clone)]
 pub struct TxInput {
-    /// Big-endian txid hex (64 chars) of the funding output.
+    /// Big-endian (display order) txid hex (64 chars) of the funding output.
     pub txid: String,
     /// Output index within `txid`.
     pub vout: u32,
@@ -272,221 +181,216 @@ pub struct BuiltTx {
 /// The secret scalar a key-path spend signs with (JSS `token.js:118-129`).
 ///
 /// Untweaked: `privkey` itself. Tweaked: the BIP-341 key-path-only tweak
-/// `(negate_if_odd_y(d) + TapTweak(xonly(d))) mod n`. The result is *not*
-/// further normalised to even Y: that happens inside BIP-340 signing.
+/// `(negate_if_odd_y(d) + TapTweak(xonly(d))) mod n`, computed by
+/// rust-bitcoin's [`TapTweak`] for [`Keypair`]. The result is *not* further
+/// normalised to even Y: that happens inside BIP-340 signing.
 fn keypath_signing_secret(privkey: &[u8], needs_tweak: bool) -> Result<[u8; 32], PaymentError> {
-    let sk = SecretKey::from_slice(privkey)
-        .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
-    let mut d = [0u8; 32];
-    d.copy_from_slice(privkey);
+    let secp = Secp256k1::new();
+    let keypair = Keypair::from_secret_key(&secp, &parse_secret(privkey)?);
     if !needs_tweak {
-        return Ok(d);
+        return Ok(keypair.secret_bytes());
     }
-    let internal_xonly = xonly_of(privkey)?;
-    let tweak = tagged_hash("TapTweak", &[&internal_xonly]);
-    let uncompressed = sk.public_key().to_encoded_point(false);
-    if uncompressed.as_bytes()[64] & 1 == 1 {
-        d = neg_mod_n(&d);
-    }
-    Ok(add_mod_n(&d, &tweak))
+    // `TapTweak::tap_tweak` for `Keypair` expects on an out-of-range tweak
+    // (probability ~2^-128); this is the same computation, made fallible.
+    let (internal, _parity) = keypair.x_only_public_key();
+    let tweak = bitcoin::taproot::TapTweakHash::from_key_and_tweak(internal, None).to_scalar();
+    let tweaked = keypair
+        .add_xonly_tweak(&secp, &tweak)
+        .map_err(|e| invalid(format!("taproot tweak failed: {e}")))?;
+    debug_assert_eq!(
+        tweaked.x_only_public_key().0,
+        internal.tap_tweak(&secp, None).0.to_x_only_public_key(),
+        "secret and public tweak must agree"
+    );
+    Ok(tweaked.secret_bytes())
 }
 
 /// BIP-340 sign a 32-byte message with `aux_rand = 0^32`.
 fn schnorr_sign_zero_aux(secret: &[u8; 32], msg: &[u8; 32]) -> Result<[u8; 64], PaymentError> {
-    let key = SigningKey::from_bytes(secret)
-        .map_err(|e| PaymentError::InvalidState(format!("invalid signing scalar: {e}")))?;
-    let sig = key
-        .sign_raw(msg, &[0u8; 32])
-        .map_err(|e| PaymentError::InvalidState(format!("schnorr sign failed: {e}")))?;
-    Ok(sig.to_bytes())
+    let secp = Secp256k1::signing_only();
+    let keypair = Keypair::from_seckey_slice(&secp, secret)
+        .map_err(|e| invalid(format!("invalid signing scalar: {e}")))?;
+    let sig = secp.sign_schnorr_with_aux_rand(&Message::from_digest(*msg), &keypair, &[0u8; 32]);
+    Ok(*sig.as_ref())
 }
 
-// ── Core: from-scratch BIP-341 key-path taproot tx builder ──────────────
+// ── Core: BIP-341 key-path taproot tx builder ───────────────────────────
 
 /// Build and key-path-sign a taproot transaction (JSS `token.js:117-174`).
 ///
 /// All inputs are signed with `privkey` (the JSS builder signs every input
 /// with one key — callers group UTXOs by key/tweak before calling, exactly
-/// as `pay.js` withdraw-sats does). For each input:
+/// as `pay.js` withdraw-sats does). The transaction is version 2, locktime
+/// 0, sequence `0xfffffffd` on every input, empty `scriptSig`s, and one
+/// 64-byte `SIGHASH_DEFAULT` key-path signature per witness.
 ///
-/// 1. `needs_tweak` is `true` unless the input's `scriptPubKey` is precisely
-///    `5120<xonly(privkey)>` — i.e. the output pays the **untweaked** internal
-///    key. MRC20 chained-key spends are untweaked (the chaining tweaks are
-///    already baked into `privkey`); externally-funded vouchers are tweaked
-///    (BIP-341 default/key-path-only TapTweak). (`token.js:118-129`)
-/// 2. The BIP-341 `TapSighash` is computed from the SHA-midstates over
-///    prevouts / amounts / scriptPubKeys / sequences / outputs
-///    (`token.js:136-156`), with `SIGHASH_DEFAULT` (0x00), version 2, locktime
-///    0, sequence `0xfffffffd`.
+/// 1. `needs_tweak` is `true` unless the first input's `scriptPubKey` is
+///    precisely `5120<xonly(privkey)>` — i.e. the output pays the
+///    **untweaked** internal key. MRC20 chained-key spends are untweaked (the
+///    chaining tweaks are already baked into `privkey`); externally-funded
+///    vouchers are tweaked (BIP-341 default/key-path-only TapTweak).
+///    (`token.js:118-129`)
+/// 2. Each input's BIP-341 `TapSighash` (`SIGHASH_DEFAULT`, committing to
+///    every prevout, amount and `scriptPubKey`) comes from rust-bitcoin's
+///    [`SighashCache`].
 /// 3. The sighash is signed with `aux_rand = 0` for deterministic BIP-340.
 ///
-/// The witness (one 64-byte key-path signature per input, `SIGHASH_DEFAULT`)
-/// and the segwit serialisation are then assembled (`token.js:159-173`).
+/// # Errors
+///
+/// [`PaymentError::InvalidState`] when there are no inputs, `privkey` is not
+/// a valid 32-byte secret key, a txid is not 64 hex characters, or an
+/// amount exceeds the 21-million-BTC money range.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "mrc20")] {
+/// use solid_pod_rs::bitcoin_tx::{
+///     build_transaction, p2tr_script, verify_keypath_signature, TxInput, TxOutput,
+/// };
+///
+/// let mut privkey = [0u8; 32];
+/// privkey[31] = 1; // secret key 1, internal key = G
+/// let g_x = hex::decode("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").unwrap();
+///
+/// let built = build_transaction(
+///     &[TxInput {
+///         txid: "aa".repeat(32),
+///         vout: 0,
+///         amount: 10_000,
+///         script_pubkey: p2tr_script(&g_x).unwrap(), // pays the untweaked key
+///     }],
+///     &[TxOutput { amount: 9_700, script_pubkey: p2tr_script(&g_x).unwrap() }],
+///     &privkey,
+/// )
+/// .unwrap();
+///
+/// assert!(built.raw_hex.starts_with("02000000000101")); // v2, segwit marker, 1 input
+/// assert!(verify_keypath_signature(&built.signing_xonly, &built.sighashes[0], &built.signatures[0]).unwrap());
+/// # }
+/// ```
 pub fn build_transaction(
     inputs: &[TxInput],
     outputs: &[TxOutput],
     privkey: &[u8],
 ) -> Result<BuiltTx, PaymentError> {
     if inputs.is_empty() {
-        return Err(PaymentError::InvalidState(
-            "transaction has no inputs".into(),
-        ));
+        return Err(invalid("transaction has no inputs"));
     }
 
-    // ── Determine the effective signing scalar (token.js:118-129) ──
-    let internal_xonly = xonly_of(privkey)?;
-    let untweaked_spk = p2tr_script(&internal_xonly)?; // 5120<internal xonly>
+    // ── Effective signing scalar (token.js:118-129) ──
+    let untweaked_spk = p2tr_script(&xonly_of(privkey)?)?; // 5120<internal xonly>
     let needs_tweak = inputs[0].script_pubkey != untweaked_spk;
+    let signing_secret = keypath_signing_secret(privkey, needs_tweak)?;
+    let secp = Secp256k1::signing_only();
+    let signing_xonly = Keypair::from_seckey_slice(&secp, &signing_secret)
+        .map_err(|e| invalid(format!("invalid signing scalar: {e}")))?
+        .x_only_public_key()
+        .0
+        .serialize();
 
-    let signing_scalar = keypath_signing_secret(privkey, needs_tweak)?;
-
-    // `k256`'s SigningKey::from performs the BIP-340 even-Y negation on the
-    // scalar internally (identical to @noble) before signing.
-    let signing_key = SigningKey::from_bytes(&signing_scalar)
-        .map_err(|e| PaymentError::InvalidState(format!("invalid signing scalar: {e}")))?;
-    let signing_xonly = signing_key.verifying_key().to_bytes();
-
-    let version: u32 = 2;
-    let locktime: u32 = 0;
-    let sequence: u32 = 0xfffffffd;
-
-    // Serialise outputs once (token.js:132-134).
-    let mut ser_outputs: Vec<Vec<u8>> = Vec::with_capacity(outputs.len());
-    for o in outputs {
-        let mut b = Vec::new();
-        b.extend_from_slice(&write_u64_le(o.amount));
-        b.extend_from_slice(&write_var_int(o.script_pubkey.len())?);
-        b.extend_from_slice(&o.script_pubkey);
-        ser_outputs.push(b);
-    }
-
-    // ── BIP-341 SHA midstates (token.js:136-144) ──
-    let mut prevouts = Vec::new();
+    // ── Unsigned transaction (token.js:131-144) ──
+    let mut tx_inputs = Vec::with_capacity(inputs.len());
+    let mut spent = Vec::with_capacity(inputs.len());
     for i in inputs {
-        prevouts.extend_from_slice(&reverse_txid(&i.txid)?);
-        prevouts.extend_from_slice(&write_u32_le(i.vout));
+        let txid = Txid::from_str(&i.txid).map_err(|e| invalid(format!("bad txid hex: {e}")))?;
+        tx_inputs.push(TxIn {
+            previous_output: OutPoint::new(txid, i.vout),
+            script_sig: ScriptBuf::new(),
+            sequence: INPUT_SEQUENCE,
+            witness: Witness::new(),
+        });
+        spent.push(TxOut {
+            value: amount(i.amount)?,
+            script_pubkey: ScriptBuf::from_bytes(i.script_pubkey.clone()),
+        });
     }
-    let sha_prevouts = sha256(&prevouts);
+    let tx_outputs = outputs
+        .iter()
+        .map(|o| {
+            Ok(TxOut {
+                value: amount(o.amount)?,
+                script_pubkey: ScriptBuf::from_bytes(o.script_pubkey.clone()),
+            })
+        })
+        .collect::<Result<Vec<_>, PaymentError>>()?;
+    let mut tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: tx_inputs,
+        output: tx_outputs,
+    };
+    // With every witness empty this is the legacy (witness-stripped) encoding.
+    let unsigned_hex = serialize_hex(&tx);
 
-    let mut amounts = Vec::new();
-    for i in inputs {
-        amounts.extend_from_slice(&write_u64_le(i.amount));
-    }
-    let sha_amounts = sha256(&amounts);
-
-    let mut spks = Vec::new();
-    for i in inputs {
-        spks.extend_from_slice(&write_var_int(i.script_pubkey.len())?);
-        spks.extend_from_slice(&i.script_pubkey);
-    }
-    let sha_scriptpubkeys = sha256(&spks);
-
-    let mut seqs = Vec::new();
-    for _ in inputs {
-        seqs.extend_from_slice(&write_u32_le(sequence));
-    }
-    let sha_sequences = sha256(&seqs);
-
-    let mut outs = Vec::new();
-    for so in &ser_outputs {
-        outs.extend_from_slice(so);
-    }
-    let sha_outputs = sha256(&outs);
-
-    // ── Per-input sighash + sign (token.js:146-157) ──
-    let mut sighashes: Vec<[u8; 32]> = Vec::with_capacity(inputs.len());
-    let mut signatures: Vec<Vec<u8>> = Vec::with_capacity(inputs.len());
-    for i in 0..inputs.len() {
-        let mut sig_msg = Vec::new();
-        // epoch (0x00) || hash_type (SIGHASH_DEFAULT 0x00) — token.js:149
-        sig_msg.extend_from_slice(&[0x00, 0x00]);
-        sig_msg.extend_from_slice(&write_u32_le(version));
-        sig_msg.extend_from_slice(&write_u32_le(locktime));
-        sig_msg.extend_from_slice(&sha_prevouts);
-        sig_msg.extend_from_slice(&sha_amounts);
-        sig_msg.extend_from_slice(&sha_scriptpubkeys);
-        sig_msg.extend_from_slice(&sha_sequences);
-        sig_msg.extend_from_slice(&sha_outputs);
-        // spend_type (0x00, key-path) || input_index — token.js:152-153
-        sig_msg.push(0x00);
-        sig_msg.extend_from_slice(&write_u32_le(i as u32));
-
-        let sighash = tagged_hash("TapSighash", &[&sig_msg]);
-        // aux_rand = 0 → deterministic BIP-340 (see module docs).
-        let sig = schnorr_sign_zero_aux(&signing_scalar, &sighash)?;
-        sighashes.push(sighash);
-        signatures.push(sig.to_vec());
+    // ── Per-input BIP-341 sighash + BIP-340 sign (token.js:146-157) ──
+    let prevouts = Prevouts::All(&spent);
+    let mut sighashes = Vec::with_capacity(inputs.len());
+    let mut signatures = Vec::with_capacity(inputs.len());
+    {
+        let mut cache = SighashCache::new(&tx);
+        for index in 0..inputs.len() {
+            let sighash = cache
+                .taproot_key_spend_signature_hash(index, &prevouts, TapSighashType::Default)
+                .map_err(|e| invalid(format!("taproot sighash: {e}")))?
+                .to_byte_array();
+            signatures.push(schnorr_sign_zero_aux(&signing_secret, &sighash)?);
+            sighashes.push(sighash);
+        }
     }
 
-    // ── Assemble segwit tx (token.js:159-173) ──
-    let mut parts = Vec::new();
-    parts.extend_from_slice(&write_u32_le(version));
-    parts.extend_from_slice(&[0x00, 0x01]); // segwit marker+flag
-    parts.extend_from_slice(&write_var_int(inputs.len())?);
-    for inp in inputs {
-        parts.extend_from_slice(&reverse_txid(&inp.txid)?);
-        parts.extend_from_slice(&write_u32_le(inp.vout));
-        parts.push(0x00); // empty scriptSig
-        parts.extend_from_slice(&write_u32_le(sequence));
+    // ── Witnesses: one 64-byte SIGHASH_DEFAULT signature each (token.js:159-173) ──
+    for (txin, sig) in tx.input.iter_mut().zip(&signatures) {
+        let signature = schnorr::Signature::from_slice(sig)
+            .map_err(|e| invalid(format!("bad signature: {e}")))?;
+        txin.witness = Witness::p2tr_key_spend(&bitcoin::taproot::Signature {
+            signature,
+            sighash_type: TapSighashType::Default,
+        });
     }
-    parts.extend_from_slice(&write_var_int(outputs.len())?);
-    for so in &ser_outputs {
-        parts.extend_from_slice(so);
-    }
-    // Witness: one item (the signature) per input — token.js:169-171.
-    for sig in &signatures {
-        parts.push(0x01); // witness stack items = 1
-        parts.extend_from_slice(&write_var_int(sig.len())?);
-        parts.extend_from_slice(sig);
-    }
-    parts.extend_from_slice(&write_u32_le(locktime));
-
-    // Unsigned (legacy, witness-stripped) serialisation — the nonce-independent
-    // skeleton used by the cross-impl golden's fallback assertion.
-    let mut uparts = Vec::new();
-    uparts.extend_from_slice(&write_u32_le(version));
-    uparts.extend_from_slice(&write_var_int(inputs.len())?);
-    for inp in inputs {
-        uparts.extend_from_slice(&reverse_txid(&inp.txid)?);
-        uparts.extend_from_slice(&write_u32_le(inp.vout));
-        uparts.push(0x00);
-        uparts.extend_from_slice(&write_u32_le(sequence));
-    }
-    uparts.extend_from_slice(&write_var_int(outputs.len())?);
-    for so in &ser_outputs {
-        uparts.extend_from_slice(so);
-    }
-    uparts.extend_from_slice(&write_u32_le(locktime));
 
     Ok(BuiltTx {
-        raw_hex: hex::encode(&parts),
-        unsigned_hex: hex::encode(&uparts),
+        raw_hex: serialize_hex(&tx),
+        unsigned_hex,
         sighashes: sighashes.iter().map(hex::encode).collect(),
         signatures: signatures.iter().map(hex::encode).collect(),
         signing_xonly: hex::encode(signing_xonly),
     })
 }
 
+/// A sats amount, checked against the Bitcoin money range.
+fn amount(sats: u64) -> Result<Amount, PaymentError> {
+    let a = Amount::from_sat(sats);
+    if a > Amount::MAX_MONEY {
+        return Err(invalid(format!("{sats} sats exceeds the money range")));
+    }
+    Ok(a)
+}
+
 /// Verify a 64-byte key-path Schnorr signature against an x-only pubkey and a
 /// 32-byte TapSighash — the offline correctness gate ("every signature our
-/// builder produces must verify"). Pure `k256` BIP-340 verification.
+/// builder produces must verify"). BIP-340 verification by libsecp256k1.
+///
+/// Returns `Ok(false)` for a well-formed signature that does not verify, and
+/// an error when any argument is malformed: bad hex, a key that is not a
+/// valid x-only point, a sighash that is not 32 bytes, or a signature that is
+/// not 64 bytes.
 pub fn verify_keypath_signature(
     xonly_hex: &str,
     sighash_hex: &str,
     sig_hex: &str,
 ) -> Result<bool, PaymentError> {
-    use k256::schnorr::{Signature, VerifyingKey};
-    let xonly = hex::decode(xonly_hex)
-        .map_err(|e| PaymentError::InvalidState(format!("bad xonly hex: {e}")))?;
-    let sighash = hex::decode(sighash_hex)
-        .map_err(|e| PaymentError::InvalidState(format!("bad sighash hex: {e}")))?;
-    let sig_bytes = hex::decode(sig_hex)
-        .map_err(|e| PaymentError::InvalidState(format!("bad sig hex: {e}")))?;
-    let vk = VerifyingKey::from_bytes(&xonly)
-        .map_err(|e| PaymentError::InvalidState(format!("bad verifying key: {e}")))?;
-    let sig = Signature::try_from(sig_bytes.as_slice())
-        .map_err(|e| PaymentError::InvalidState(format!("bad signature: {e}")))?;
-    Ok(vk.verify_raw(&sighash, &sig).is_ok())
+    let xonly = hex::decode(xonly_hex).map_err(|e| invalid(format!("bad xonly hex: {e}")))?;
+    let sighash = hex::decode(sighash_hex).map_err(|e| invalid(format!("bad sighash hex: {e}")))?;
+    let sig_bytes = hex::decode(sig_hex).map_err(|e| invalid(format!("bad sig hex: {e}")))?;
+    let key = parse_xonly(&xonly)?;
+    let msg = Message::from_digest_slice(&sighash)
+        .map_err(|e| invalid(format!("sighash must be 32 bytes: {e}")))?;
+    let sig = schnorr::Signature::from_slice(&sig_bytes)
+        .map_err(|e| invalid(format!("bad signature: {e}")))?;
+    Ok(Secp256k1::verification_only()
+        .verify_schnorr(&sig, &msg, &key)
+        .is_ok())
 }
 
 // ── TXO voucher parsing (token.js:226-236) ──────────────────────────────
@@ -496,10 +400,9 @@ pub fn verify_keypath_signature(
 /// (`token.js:226-236`): `txo:<chain>:<txid>:<vout>?amount=<sats>&key=<hex>`.
 ///
 /// This is intentionally distinct from [`crate::payments::TxoDeposit`]
-/// (`payments::parse_txo_uri`), which parses a *deposit reference*
-/// (`txid:vout`, no key) used to credit a ledger. A voucher additionally
-/// carries the spending `privkey` + `amount` and is what mint / withdraw-sats
-/// consume. The two are different concepts; keeping the names distinct avoids
+/// (`payments::parse_txo_uri`), which parses a bare *output reference*
+/// (`txid:vout`, no key). A voucher additionally carries the spending
+/// `privkey` + `amount` and is what mint / withdraw-sats consume. The two are different concepts; keeping the names distinct avoids
 /// a same-name/different-shape collision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxoVoucher {
@@ -634,9 +537,8 @@ pub async fn mint_token(
 ) -> Result<TrailUpdate, PaymentError> {
     let privkey = hex::decode(&voucher.privkey)
         .map_err(|e| PaymentError::InvalidState(format!("bad voucher key: {e}")))?;
-    let sk = SecretKey::from_slice(&privkey)
-        .map_err(|e| PaymentError::InvalidState(format!("bad voucher key: {e}")))?;
-    let pubkey_base_hex = hex::encode(sk.public_key().to_sec1_bytes());
+    let sk = parse_secret(&privkey)?;
+    let pubkey_base_hex = hex::encode(sk.public_key(&Secp256k1::signing_only()).serialize());
 
     // Genesis MRC20 state (token.js:250-260).
     let mut balances = std::collections::BTreeMap::new();
@@ -1010,9 +912,9 @@ pub fn build_withdraw_voucher(
     }
 
     // Fresh voucher recipient key (JSS `pay.js:848-851`).
-    let voucher_sk = SecretKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
-    let voucher_priv_hex = hex::encode(voucher_sk.to_bytes());
-    let voucher_xonly = xonly_of(&voucher_sk.to_bytes())?;
+    let voucher_sk = SecretKey::new(&mut rand::thread_rng());
+    let voucher_priv_hex = hex::encode(voucher_sk.secret_bytes());
+    let voucher_xonly = xonly_of(&voucher_sk.secret_bytes())?;
     let voucher_script = p2tr_script(&voucher_xonly)?;
 
     // Change back to the funding key (JSS `pay.js:854-859`).
@@ -1076,7 +978,12 @@ mod tests {
 
     #[test]
     fn p2tr_script_shape() {
-        let xonly = [0xabu8; 32];
+        // x of the generator G.
+        let xonly: [u8; 32] =
+            hex::decode("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+                .unwrap()
+                .try_into()
+                .unwrap();
         let s = p2tr_script(&xonly).unwrap();
         assert_eq!(s.len(), 34);
         assert_eq!(s[0], 0x51);
@@ -1088,32 +995,6 @@ mod tests {
     fn p2tr_script_rejects_wrong_length() {
         assert!(p2tr_script(&[0u8; 31]).is_err());
         assert!(p2tr_script(&[0u8; 33]).is_err());
-    }
-
-    // ── scalar arithmetic ────────────────────────────────────────────────
-
-    #[test]
-    fn add_mod_n_wraps() {
-        // (n-1) + 2 = 1 (mod n)
-        let mut a = SECP_N;
-        a[31] -= 1; // n-1
-        let mut two = [0u8; 32];
-        two[31] = 2;
-        let r = add_mod_n(&a, &two);
-        let mut one = [0u8; 32];
-        one[31] = 1;
-        assert_eq!(r, one);
-    }
-
-    #[test]
-    fn neg_mod_n_is_n_minus_a() {
-        let mut a = [0u8; 32];
-        a[31] = 5;
-        let r = neg_mod_n(&a);
-        // r + a should be n ≡ 0; check r == n-5
-        let mut expected = SECP_N;
-        expected[31] -= 5;
-        assert_eq!(r, expected);
     }
 
     // ── CROSS-IMPL GOLDEN: case A (untweaked MRC20 chained-key spend) ─────
@@ -1306,13 +1187,16 @@ mod tests {
                 let secret: [u8; 32] = hex::decode(sk).unwrap().try_into().unwrap();
                 let aux: [u8; 32] = hex::decode(aux).unwrap().try_into().unwrap();
                 let msg_b: [u8; 32] = hex::decode(msg).unwrap().try_into().unwrap();
-                let key = SigningKey::from_bytes(&secret).unwrap();
+                let secp = Secp256k1::new();
+                let key = Keypair::from_seckey_slice(&secp, &secret).unwrap();
                 assert_eq!(
-                    hex::encode_upper(key.verifying_key().to_bytes()),
+                    hex::encode_upper(key.x_only_public_key().0.serialize()),
                     pk,
                     "vector {idx}: public key"
                 );
-                let ours = key.sign_raw(&msg_b, &aux).unwrap().to_bytes();
+                let ours = *secp
+                    .sign_schnorr_with_aux_rand(&Message::from_digest(msg_b), &key, &aux)
+                    .as_ref();
                 assert_eq!(hex::encode_upper(ours), sig, "vector {idx}: signature");
                 signed += 1;
             }
@@ -1439,39 +1323,150 @@ mod tests {
     // ("scriptPubKey" → key-path-only output, no script tree): the internal
     // x-only key `d6889cb0…` tweaked with the key-path-only `TapTweak`
     // (hashing ONLY the internal key) yields the published output key
-    // `53a1f6e4…`. This validates our `tagged_hash("TapTweak", …)` + the
-    // even-Y lift + `Q = P + t·G` against the spec INDEPENDENTLY of JSS — it is
-    // the authoritative oracle for the `needs_tweak` signing path.
+    // `53a1f6e4…`. This is the public-key side of the tweak whose secret-key
+    // side `keypath_signing_secret` applies.
     #[test]
     fn bip341_official_output_key_vector() {
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
-        use k256::{ProjectivePoint, PublicKey, Scalar};
-
-        let internal_hex = "d6889cb081036e0faefa3a35157ad71086b123b2b144b649798b494c300a961d";
-        let expected_output = "53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343";
-
-        let internal = hex::decode(internal_hex).unwrap();
-        // TapTweak over ONLY the internal key (key-path spend, empty merkle).
-        let tweak = tagged_hash("TapTweak", &[&internal]);
-        let t = Scalar::from(k256::elliptic_curve::ScalarPrimitive::from_slice(&tweak).unwrap());
-
-        // lift_x(internal) with even Y (BIP-340 convention).
-        let lifted = PublicKey::from_sec1_bytes(&{
-            let mut c = vec![0x02];
-            c.extend_from_slice(&internal);
-            c
-        })
+        let internal = parse_xonly(
+            &hex::decode("d6889cb081036e0faefa3a35157ad71086b123b2b144b649798b494c300a961d")
+                .unwrap(),
+        )
         .unwrap();
-        let p = ProjectivePoint::from(*lifted.as_affine());
-        let q = p + ProjectivePoint::GENERATOR * t;
-        let q_pub = PublicKey::from_affine(q.to_affine()).unwrap();
-        let encoded = q_pub.to_encoded_point(true);
-        let output_xonly = hex::encode(&encoded.as_bytes()[1..]);
-
+        let (output, _parity) = internal.tap_tweak(&Secp256k1::verification_only(), None);
         assert_eq!(
-            output_xonly, expected_output,
-            "BIP-341 official output-key vector: TapTweak derivation must match the spec"
+            hex::encode(output.to_x_only_public_key().serialize()),
+            "53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343",
+            "BIP-341 official output-key vector"
         );
+    }
+
+    // ── BIP-341 OFFICIAL SIGHASH VECTOR (SIGHASH_DEFAULT, key path) ──────
+    //
+    // `keyPathSpending[0]` publishes an unsigned transaction, the outputs it
+    // spends and, per input, the expected `sigHash`. The SIGHASH_DEFAULT
+    // input must produce the published `sigHash` through the same
+    // `SighashCache` call `build_transaction` makes.
+    #[test]
+    fn bip341_keypath_default_sighash_vector() {
+        use bitcoin::consensus::encode::deserialize;
+        let v = bip341();
+        let kps = &v["keyPathSpending"][0];
+        let tx: Transaction =
+            deserialize(&hex::decode(kps["given"]["rawUnsignedTx"].as_str().unwrap()).unwrap())
+                .unwrap();
+        let spent: Vec<TxOut> = kps["given"]["utxosSpent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| TxOut {
+                value: Amount::from_sat(u["amountSats"].as_u64().unwrap()),
+                script_pubkey: ScriptBuf::from_bytes(
+                    hex::decode(u["scriptPubKey"].as_str().unwrap()).unwrap(),
+                ),
+            })
+            .collect();
+        let mut cache = SighashCache::new(&tx);
+        let mut seen = 0;
+        for inp in kps["inputSpending"].as_array().unwrap() {
+            if inp["given"]["hashType"].as_u64().unwrap() != 0 {
+                continue;
+            }
+            let index = inp["given"]["txinIndex"].as_u64().unwrap() as usize;
+            let sighash = cache
+                .taproot_key_spend_signature_hash(
+                    index,
+                    &Prevouts::All(&spent),
+                    TapSighashType::Default,
+                )
+                .unwrap();
+            assert_eq!(
+                hex::encode(sighash.to_byte_array()),
+                inp["intermediary"]["sigHash"].as_str().unwrap(),
+                "BIP-341 sigHash for input {index}"
+            );
+            seen += 1;
+        }
+        assert_eq!(seen, 1);
+    }
+
+    // ── Port-specific behaviour (ADR-2008) ───────────────────────────────
+
+    /// The pre-port builder left-padded a 24-31-byte key through k256 and
+    /// then panicked copying it into a 32-byte buffer. It is now an error.
+    #[test]
+    fn build_rejects_short_privkey_without_panicking() {
+        let input = TxInput {
+            txid: "aa".repeat(32),
+            vout: 0,
+            amount: 10_000,
+            script_pubkey: vec![0x51, 0x20],
+        };
+        let mut short = vec![0u8; 31];
+        short[30] = 1;
+        assert!(build_transaction(&[input], &[], &short).is_err());
+    }
+
+    /// An output to an x coordinate with no curve point can never be spent;
+    /// the pre-port `p2tr_script` accepted any 32 bytes.
+    #[test]
+    fn p2tr_script_rejects_non_point() {
+        // x = 5 is not the x coordinate of any secp256k1 point (5^3 + 7 = 132
+        // is a quadratic non-residue mod p), which rejects it.
+        let mut x = [0u8; 32];
+        x[31] = 5;
+        assert!(p2tr_script(&x).is_err());
+    }
+
+    /// Upper-case txid hex is accepted, as before, and serialises identically.
+    #[test]
+    fn txid_hex_case_is_insignificant() {
+        let g = golden();
+        let (mut inputs, outputs, privkey) = case_inputs(&g["caseA"]);
+        let lower = build_transaction(&inputs, &outputs, &privkey).unwrap();
+        inputs[0].txid = inputs[0].txid.to_uppercase();
+        let upper = build_transaction(&inputs, &outputs, &privkey).unwrap();
+        assert_eq!(lower.raw_hex, upper.raw_hex);
+    }
+
+    /// A key-path sighash is 32 bytes; anything else is a malformed argument.
+    #[test]
+    fn verify_rejects_non_32_byte_sighash() {
+        for line in BIP340_CSV.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            if f[4].len() == 64 {
+                continue;
+            }
+            assert!(verify_keypath_signature(
+                &f[2].to_lowercase(),
+                &f[4].to_lowercase(),
+                &f[5].to_lowercase()
+            )
+            .is_err());
+        }
+    }
+
+    /// The signed transaction round-trips through rust-bitcoin's decoder and
+    /// its txid is the hash of the witness-stripped serialisation.
+    #[test]
+    fn golden_raw_decodes_and_txid_matches_unsigned_hash() {
+        use bitcoin::consensus::encode::deserialize;
+        let g = golden();
+        for case in ["caseA", "caseB", "caseC"] {
+            let c = &g[case];
+            let raw = hex::decode(c["raw"].as_str().unwrap()).unwrap();
+            let tx: Transaction = deserialize(&raw).unwrap();
+            let unsigned = hex::decode(c["unsigned"].as_str().unwrap()).unwrap();
+            let double = bitcoin::hashes::sha256d::Hash::hash(&unsigned);
+            assert_eq!(
+                tx.compute_txid().to_byte_array(),
+                double.to_byte_array(),
+                "{case}"
+            );
+            assert!(tx
+                .input
+                .iter()
+                .all(|i| i.witness.len() == 1 && i.witness[0].len() == 64));
+        }
     }
 
     // ── parse_txo_voucher ────────────────────────────────────────────────

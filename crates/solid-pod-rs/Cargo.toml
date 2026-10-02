@@ -67,6 +67,14 @@ jsonwebtoken = { version = "9", optional = true }
 # `ecdsa` added for LWS-CID ES256K verification.
 k256 = { version = "0.13", features = ["schnorr", "ecdsa"], optional = true }
 
+# ADR-2008 D1: Bitcoin transaction construction, the BIP-341 sighash and
+# tweak, BIP-340 signing and bech32m come from rust-bitcoin and the
+# libsecp256k1 binding it re-exports (`bitcoin::secp256k1`, 0.29), never from
+# hand-rolled code. Latest stable line (0.33 is beta); Cargo.lock holds the
+# exact build. `rand-std` supplies the OS RNG for fresh voucher keys.
+# Gated behind `mrc20`.
+bitcoin = { version = "0.32.102", default-features = false, features = ["std", "rand-std"], optional = true }
+
 # LWS-CID optional algorithms (ES256, EdDSA).
 p256 = { version = "0.13", features = ["ecdsa"], optional = true }
 
@@ -195,9 +203,11 @@ webhook-signing = ["jss-v04", "dep:ed25519-dalek", "dep:httpdate", "dep:rand", "
 did-nostr-types = ["dep:k256"]
 # MRC20 token state chain verification with BIP-341 taproot key chaining.
 # Pure logic (JCS, state validation, deposit verification) is always compiled.
-# This feature enables anchor verification: taproot address derivation and
-# bech32m encoding via k256.
-mrc20 = ["dep:k256"]
+# This feature enables anchor verification (taproot address derivation and
+# bech32m encoding) and the native transaction builder, all via rust-bitcoin.
+# rust-bitcoin links libsecp256k1 (C), so a wasm32 build with `mrc20` needs a
+# C toolchain for the target; the `core` wasm surface does not include it.
+mrc20 = ["dep:bitcoin"]
 did-nostr = ["did-nostr-types", "jss-v04", "security-primitives", "tokio-runtime", "dep:reqwest"]
 
 # Sprint 7 A: rate-limit primitive. Library exposes a `RateLimiter`

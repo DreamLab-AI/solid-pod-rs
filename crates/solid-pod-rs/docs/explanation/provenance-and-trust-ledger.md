@@ -82,11 +82,12 @@ The crypto is the verified `mrc20` module — BIP-341 taproot key chaining
 for both the public and private key, bech32m P2TR address derivation,
 state-link + sequence verification — and the write-side (`bitcoin_tx`,
 feature `mrc20`, non-wasm): P2TR output construction, BIP-341 TapSighash,
-BIP-340 Schnorr signing, witness assembly. That tx-builder is a
-**byte-for-byte** port of the JSS `token.js` taproot builder, validated
-against the official BIP-340/341 test vectors and a JSS cross-impl golden
-fixture so a state hash chains identically across the Rust and JS
-implementations.
+BIP-340 Schnorr signing, witness assembly. Every one of those primitives
+comes from rust-bitcoin and the libsecp256k1 binding it re-exports
+(ADR-2008); none is hand-rolled. The tx-builder is held **byte-for-byte**
+to the JSS `token.js` taproot builder by a JSS cross-impl golden fixture,
+and to the specs by the official BIP-340/341/350 test vectors, so a state
+hash chains identically across the Rust and JS implementations.
 
 ADR-059's **generalisation** (D2) is the load-bearing change: the trail
 is lifted from a token-only structure to one carrying *arbitrary*
