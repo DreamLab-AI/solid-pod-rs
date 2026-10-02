@@ -42,3 +42,6 @@ perf.data*
 /CLAUDE.md
 /ruvector.db
 /ruvector.db-*
+/agentdb.rvf
+/agentdb.rvf.lock
+.claude-flow/
