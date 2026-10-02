@@ -89,6 +89,12 @@ jobs:
       - name: cargo test ${{ matrix.features.flags }}
         run: cargo test ${{ matrix.features.flags }} --all-targets
 
+      # `--all-targets` never runs doctests, and the ledger's compile gate
+      # (`WebLedger::credit`/`debit` are pub(crate): `compile_fail` doctests)
+      # plus the teller genesis-hash doctest live there. Run them explicitly.
+      - name: cargo test --doc ${{ matrix.features.flags }}
+        run: cargo test ${{ matrix.features.flags }} --doc
+
       - name: cargo doc --no-deps ${{ matrix.features.flags }}
         if: matrix.toolchain == 'stable'
         env:
@@ -249,6 +255,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test --workspace --all-targets
         run: cargo test --workspace --all-targets
+      - name: cargo test --workspace --doc
+        run: cargo test --workspace --doc
 
   # ---------------------------------------------------------------------------
   # RES-c diagram staleness guard — fails when a docs/diagrams/src/*.mmd is

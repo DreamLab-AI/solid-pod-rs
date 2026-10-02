@@ -49,6 +49,7 @@ fn state_with_issuer(mempool_url: Option<String>) -> AppState {
         rate: 1,
         supply: 1000,
         issuer: issuer_pubkey(),
+        accepted_issuers: Vec::new(),
     });
     st.mempool_url = mempool_url;
     st
@@ -89,26 +90,23 @@ fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String)
 // ---------------------------------------------------------------------------
 
 /// Spawn a local HTTP server that answers `GET /api/address/{addr}/utxo`.
-/// If `addr == utxo_address` it returns a one-element UTXO list; otherwise
-/// (and for any other address) an empty list `[]`. Returns the base URL.
+/// If `addr` is one of `utxo_addresses` it returns the same one-element UTXO
+/// list (one coin, `abab…:0`); for any other address an empty list `[]`.
+/// Returns the base URL.
 async fn spawn_fixture_mempool(
-    utxo_address: Option<String>,
+    utxo_addresses: Vec<String>,
 ) -> (String, actix_web::dev::ServerHandle) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let utxo_address = web::Data::new(utxo_address);
+    let utxo_addresses = web::Data::new(utxo_addresses);
 
     let server = actix_web::HttpServer::new(move || {
-        App::new().app_data(utxo_address.clone()).route(
+        App::new().app_data(utxo_addresses.clone()).route(
             "/api/address/{addr}/utxo",
             web::get().to(
-                |path: web::Path<String>, want: web::Data<Option<String>>| async move {
+                |path: web::Path<String>, want: web::Data<Vec<String>>| async move {
                     let addr = path.into_inner();
-                    let matches = want
-                        .get_ref()
-                        .as_deref()
-                        .map(|w| w == addr)
-                        .unwrap_or(false);
+                    let matches = want.get_ref().contains(&addr);
                     if matches {
                         HttpResponse::Ok().content_type("application/json").body(
                             r#"[{"txid":"abababababababababababababababababababababababababababababababab","vout":0,"value":9700,"status":{"confirmed":true,"block_height":42000}}]"#,
@@ -139,15 +137,25 @@ async fn spawn_fixture_mempool(
 /// tokens to the pod's generic deposit address. `anchor_address` is where
 /// the UTXO must sit for verification to pass.
 fn build_mrc20_fixture(amount: u64) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
-    let issuer = issuer_pubkey();
+    build_trail_fixture(&issuer_pubkey(), "TEST", amount)
+}
+
+/// [`build_mrc20_fixture`] for a trail issued by `issuer` (any key) under
+/// `ticker`, still transferring to the POD's deposit address.
+fn build_trail_fixture(
+    issuer: &str,
+    ticker: &str,
+    amount: u64,
+) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
+    let issuer = issuer.to_string();
     // The pod's generic deposit address (no tweak) — transfers target it.
-    let pod_address = bt_address(&issuer, &[], NETWORK).unwrap();
+    let pod_address = bt_address(&issuer_pubkey(), &[], NETWORK).unwrap();
 
     let genesis = Mrc20State {
         profile: solid_pod_rs::mrc20::MRC20_PROFILE.into(),
         prev: "0".repeat(64),
         seq: 0,
-        ticker: Some("TEST".into()),
+        ticker: Some(ticker.into()),
         name: Some("Test Token".into()),
         decimals: Some(0),
         supply: Some(1000),
@@ -162,7 +170,7 @@ fn build_mrc20_fixture(amount: u64) -> (Mrc20State, Mrc20State, Vec<String>, Str
         profile: solid_pod_rs::mrc20::MRC20_PROFILE.into(),
         prev: genesis_hash,
         seq: 1,
-        ticker: Some("TEST".into()),
+        ticker: Some(ticker.into()),
         name: Some("Test Token".into()),
         decimals: Some(0),
         supply: Some(1000),
@@ -194,12 +202,21 @@ fn build_mrc20_fixture(amount: u64) -> (Mrc20State, Mrc20State, Vec<String>, Str
 }
 
 fn mrc20_deposit_body(state: &Mrc20State, prev: &Mrc20State, state_strings: &[String]) -> Value {
+    mrc20_deposit_body_by(&issuer_pubkey(), state, prev, state_strings)
+}
+
+fn mrc20_deposit_body_by(
+    anchor_pubkey: &str,
+    state: &Mrc20State,
+    prev: &Mrc20State,
+    state_strings: &[String],
+) -> Value {
     json!({
         "type": "mrc20",
         "state": state,
         "prevState": prev,
         "anchor": {
-            "pubkey": issuer_pubkey(),
+            "pubkey": anchor_pubkey,
             "stateStrings": state_strings,
             "network": NETWORK,
         }
@@ -214,7 +231,7 @@ fn mrc20_deposit_body(state: &Mrc20State, prev: &Mrc20State, state_strings: &[St
 async fn mrc20_deposit_credits_when_utxo_present() {
     let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
     // Fixture mempool returns a UTXO at the derived anchor address.
-    let (mempool_url, handle) = spawn_fixture_mempool(Some(anchor_address)).await;
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
 
     let st = state_with_issuer(Some(mempool_url));
     let storage = st.storage.clone();
@@ -241,14 +258,37 @@ async fn mrc20_deposit_credits_when_utxo_present() {
     assert_eq!(j["balance"], 100);
     assert_eq!(j["unit"], "token");
     assert_eq!(j["ticker"], "TEST");
+    assert_eq!(j["outpoint"], format!("{}:0", "ab".repeat(32)));
 
-    // Ledger actually credited.
-    let (bytes, _) = storage
-        .get("/.well-known/webledgers/webledgers.json")
-        .await
-        .unwrap();
-    let ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ledger.get_balance(&did), 100);
+    // Ledger actually credited — in the TEST balance, never in sats — with
+    // the anchor outpoint as the deposit's receipt.
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(ledger.get_currency_balance(&did, "TEST"), 100);
+    assert_eq!(
+        ledger.get_balance(&did),
+        0,
+        "a token deposit never credits sats"
+    );
+    assert_eq!(ledger.deposits().len(), 1);
+    assert_eq!(
+        ledger.deposits()[0].outpoint,
+        format!("{}:0", "ab".repeat(32))
+    );
+    assert_eq!(ledger.deposits()[0].currency.as_deref(), Some("TEST"));
+
+    // A fresh ledger is born with teller's genesis identity, operator the
+    // pod issuer: id = urn:webledgers:sha256(JCS(genesis)).
+    let genesis = ledger.genesis().expect("fresh ledger carries a genesis");
+    assert_eq!(
+        genesis.operator,
+        format!("did:nostr:{}", &issuer_pubkey()[2..])
+    );
+    assert_eq!(ledger.hash(), Some(genesis.hash().as_str()));
+    assert_eq!(
+        ledger.id(),
+        Some(format!("urn:webledgers:{}", genesis.hash()).as_str())
+    );
+    ledger.check_genesis().unwrap();
 
     handle.stop(false).await;
 }
@@ -257,7 +297,7 @@ async fn mrc20_deposit_credits_when_utxo_present() {
 async fn mrc20_deposit_rejected_when_no_utxo() {
     let (genesis, transfer, state_strings, _anchor, _pod) = build_mrc20_fixture(100);
     // Fixture mempool has NOTHING at any address → anchor unverifiable.
-    let (mempool_url, handle) = spawn_fixture_mempool(None).await;
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![]).await;
 
     let st = state_with_issuer(Some(mempool_url));
     let storage = st.storage.clone();
@@ -285,7 +325,7 @@ async fn mrc20_deposit_rejected_when_no_utxo() {
     let credited = match storage.get("/.well-known/webledgers/webledgers.json").await {
         Ok((bytes, _)) => {
             let l: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
-            l.get_balance(&did)
+            l.get_balance(&did) + l.get_currency_balance(&did, "TEST")
         }
         Err(_) => 0,
     };
@@ -297,7 +337,7 @@ async fn mrc20_deposit_rejected_when_no_utxo() {
 #[actix_web::test]
 async fn mrc20_deposit_replay_is_rejected() {
     let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
-    let (mempool_url, handle) = spawn_fixture_mempool(Some(anchor_address)).await;
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
 
     let st = state_with_issuer(Some(mempool_url));
     let storage = st.storage.clone();
@@ -334,17 +374,200 @@ async fn mrc20_deposit_replay_is_rejected() {
     let j: Value = test::read_body_json(rsp).await;
     assert!(j["error"].as_str().unwrap_or("").contains("Replay"));
 
-    let (bytes, _) = storage
-        .get("/.well-known/webledgers/webledgers.json")
-        .await
-        .unwrap();
-    let ledger: solid_pod_rs::payments::WebLedger = serde_json::from_slice(&bytes).unwrap();
+    let ledger = read_ledger(&storage).await;
     assert_eq!(
-        ledger.get_balance(&did),
+        ledger.get_currency_balance(&did, "TEST"),
         100,
         "replay must not double-credit"
     );
 
+    handle.stop(false).await;
+}
+
+/// The authoritative ledger (`state.json`).
+async fn read_ledger(
+    storage: &Arc<dyn solid_pod_rs::storage::Storage>,
+) -> solid_pod_rs::payments::WebLedger {
+    let (bytes, _) = storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .unwrap();
+    let state: Value = serde_json::from_slice(&bytes).unwrap();
+    serde_json::from_value(state["ledger"].clone()).unwrap()
+}
+
+/// POST a deposit body as the test caller; returns `(status, json, did)`.
+async fn post_deposit<S, B>(app: &S, body: &Value) -> (u16, Value, String)
+where
+    S: actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<B>,
+        Error = actix_web::Error,
+    >,
+    B: actix_web::body::MessageBody,
+{
+    let payload = serde_json::to_vec(body).unwrap();
+    let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
+    let req = test::TestRequest::post()
+        .uri("/pay/.deposit")
+        .insert_header((header::AUTHORIZATION, auth))
+        .insert_header((header::CONTENT_TYPE, "application/json"))
+        .set_payload(payload)
+        .to_request();
+    let rsp = test::call_service(app, req).await;
+    let status = rsp.status().as_u16();
+    let j: Value = test::read_body_json(rsp).await;
+    (status, j, did)
+}
+
+// ---------------------------------------------------------------------------
+// MRC20 deposit — issuer and ticker binding, per-ticker credit, outpoint replay
+// ---------------------------------------------------------------------------
+
+/// A second key, standing in for anyone who mints their own trail.
+fn other_pubkey() -> String {
+    let sk = k256::SecretKey::from_slice(
+        &hex::decode("0000000000000000000000000000000000000000000000000000000000000002").unwrap(),
+    )
+    .unwrap();
+    hex::encode(sk.public_key().to_sec1_bytes())
+}
+
+#[actix_web::test]
+async fn mrc20_self_issued_trail_is_refused() {
+    // A trail with the pod's ticker, transferring to the pod's address, but
+    // issued (anchored) on someone else's key: a different token.
+    let other = other_pubkey();
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_trail_fixture(&other, "TEST", 100);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body_by(&other, &transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 403, "self-issued trail must be refused: {j}");
+    assert!(j["error"].as_str().unwrap().contains("issuer"));
+    assert!(
+        storage
+            .get("/.well-known/webledgers/state.json")
+            .await
+            .is_err(),
+        "nothing was committed"
+    );
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_self_issued_trail_from_an_accepted_issuer_is_credited() {
+    let other = other_pubkey();
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_trail_fixture(&other, "TEST", 100);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let mut st = state_with_issuer(Some(mempool_url));
+    st.pay_config
+        .token
+        .as_mut()
+        .unwrap()
+        .accepted_issuers
+        .push(other.to_uppercase());
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body_by(&other, &transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "accepted issuer: {j}");
+    assert_eq!(j["balance"], 100);
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_wrong_ticker_is_refused() {
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_trail_fixture(&issuer_pubkey(), "ELSE", 100);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 400, "another ticker must be refused: {j}");
+    assert!(j["error"].as_str().unwrap().contains("TEST"));
+    assert!(storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .is_err());
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_credit_leaves_the_sat_balance_unchanged() {
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+
+    // The caller already holds 777 sats (a receipted sat deposit).
+    let (_, did) = nip98_auth("GET", "/pay/.balance", None);
+    let mut seeded = solid_pod_rs::payments::WebLedger::new("Pod Credits");
+    seeded
+        .credit_by_outpoint(&did, "satoshi", &"cd".repeat(32), 1, 777)
+        .unwrap();
+    storage
+        .put(
+            "/.well-known/webledgers/webledgers.json",
+            serde_json::to_vec(&seeded).unwrap().into(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "{j}");
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(ledger.get_balance(&did), 777, "sats untouched");
+    assert_eq!(ledger.get_currency_balance(&did, "TEST"), 100);
+    assert_eq!(ledger.deposits().len(), 2);
+    assert!(
+        ledger.genesis().is_none(),
+        "a ledger holding balances keeps its shape; no identity is rewritten under it"
+    );
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_same_anchor_outpoint_twice_credits_once() {
+    // Two different states (different state hashes, different anchor
+    // addresses) whose anchors the mempool shows holding the SAME coin.
+    let (g1, t1, s1, a1, _) = build_mrc20_fixture(100);
+    let (g2, t2, s2, a2, _) = build_mrc20_fixture(60);
+    assert_ne!(a1, a2);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![a1, a2]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    let (status, j, did) = post_deposit(&app, &mrc20_deposit_body(&t1, &g1, &s1)).await;
+    assert_eq!(status, 200, "{j}");
+
+    let (status, j, _) = post_deposit(&app, &mrc20_deposit_body(&t2, &g2, &s2)).await;
+    assert_eq!(status, 400, "a used outpoint must be refused: {j}");
+    let error = j["error"].as_str().unwrap();
+    assert!(
+        error.contains("Replay") && error.contains("outpoint"),
+        "{error}"
+    );
+
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(
+        ledger.get_currency_balance(&did, "TEST"),
+        100,
+        "credited once"
+    );
+    assert_eq!(ledger.deposits().len(), 1);
     handle.stop(false).await;
 }
 

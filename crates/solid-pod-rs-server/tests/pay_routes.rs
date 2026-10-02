@@ -89,7 +89,9 @@ async fn balance_for_authed_did_zero_then_credited() {
 
     // Pre-seed the ledger with a known balance for this did.
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
-    ledger.credit(&did, 4242);
+    ledger
+        .credit_by_outpoint(&did, "satoshi", &"e1".repeat(32), 0, 4242)
+        .unwrap();
     let body = serde_json::to_vec(&ledger).unwrap();
     storage
         .put(
@@ -178,11 +180,15 @@ async fn offers_sell_swap_round_trip() {
     // The seller is the NIP-98 key (did derived below); the buyer is a
     // distinct did we fund directly.
     let (_, seller_did) = nip98_auth("POST", "/pay/.sell", None);
-    let buyer_did = "did:nostr:buyer";
+    let buyer_did = "did:nostr:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
-    ledger.credit_currency(&seller_did, "tbtc4", 1_000);
-    ledger.credit_currency(buyer_did, "tbtc3", 1_000);
+    ledger
+        .credit_by_outpoint(&seller_did, "tbtc4", &"e2".repeat(32), 0, 1_000)
+        .unwrap();
+    ledger
+        .credit_by_outpoint(buyer_did, "tbtc3", &"e3".repeat(32), 0, 1_000)
+        .unwrap();
     storage
         .put(
             "/.well-known/webledgers/webledgers.json",
@@ -241,7 +247,9 @@ async fn offers_sell_swap_round_trip() {
     let mut payment_state: Value = serde_json::from_slice(&bytes).unwrap();
     let mut ledger: solid_pod_rs::payments::WebLedger =
         serde_json::from_value(payment_state["ledger"].clone()).unwrap();
-    ledger.credit_currency(&seller_did, "tbtc3", 1_000);
+    ledger
+        .credit_by_outpoint(&seller_did, "tbtc3", &"e4".repeat(32), 0, 1_000)
+        .unwrap();
     payment_state["ledger"] = serde_json::to_value(&ledger).unwrap();
     storage
         .put(
@@ -285,8 +293,12 @@ async fn pool_add_liquidity_then_swap() {
 
     let (_, did) = nip98_auth("POST", "/pay/.pool", None);
     let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
-    ledger.credit_currency(&did, "tbtc4", 10_000);
-    ledger.credit_currency(&did, "tbtc3", 10_000);
+    ledger
+        .credit_by_outpoint(&did, "tbtc4", &"e5".repeat(32), 0, 10_000)
+        .unwrap();
+    ledger
+        .credit_by_outpoint(&did, "tbtc3", &"e6".repeat(32), 0, 10_000)
+        .unwrap();
     storage
         .put(
             "/.well-known/webledgers/webledgers.json",

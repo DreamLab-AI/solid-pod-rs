@@ -51,7 +51,7 @@ use solid_pod_rs::bitcoin_tx::{
 };
 use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor, Mrc20State};
 use solid_pod_rs::payments::{
-    balance_response, payment_required_body, PaymentError, PaymentStore, WebLedger,
+    balance_response, payment_required_body, PaymentError, PaymentStore, ReceiptOutcome, WebLedger,
 };
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
@@ -167,6 +167,16 @@ impl<'a> StoragePaymentStore<'a> {
     }
 
     async fn read_state(&self) -> Result<PaymentState, PaymentError> {
+        let state = self.read_state_unchecked().await?;
+        // Teller `checkLedger`: a ledger with a genesis must carry its hash.
+        state
+            .ledger
+            .check_genesis()
+            .map_err(|e| PaymentError::Store(format!("ledger identity: {e}")))?;
+        Ok(state)
+    }
+
+    async fn read_state_unchecked(&self) -> Result<PaymentState, PaymentError> {
         if let Ok((bytes, _)) = self.storage.get(PAYMENT_STATE_PATH).await {
             return serde_json::from_slice(&bytes)
                 .map_err(|e| PaymentError::Store(format!("malformed payment state: {e}")));
@@ -227,8 +237,12 @@ fn raw_transaction_txid(raw_hex: &str) -> Result<String, PaymentError> {
 }
 
 /// Resolve durable intents left by a lost broadcast response or process
-/// interruption. A definite 404 compensates the debit; a known transaction
-/// finalises its trail; transport/server ambiguity is retained fail-closed.
+/// interruption. A definite 404 reverses the recorded payout; a known
+/// transaction finalises its trail; transport/server ambiguity is retained
+/// fail-closed. An intent whose debit predates payout receipts (no payout
+/// recorded under its txid) is also retained, with a warning: the ledger
+/// cannot restore a debit it has no receipt for, and dropping the intent
+/// would lose the account's claim.
 async fn recover_payment_intents(
     store: &StoragePaymentStore<'_>,
     storage: &std::sync::Arc<dyn Storage>,
@@ -248,10 +262,18 @@ async fn recover_payment_intents(
                 }
                 changed = true;
             }
-            Ok(false) => {
-                state.ledger.credit(&intent.did, intent.amount);
-                changed = true;
-            }
+            Ok(false) => match state.ledger.reverse_payout(&intent.txid) {
+                Some(_) => changed = true,
+                None => {
+                    tracing::warn!(
+                        txid = %intent.txid,
+                        did = %intent.did,
+                        amount = intent.amount,
+                        "payment intent has no payout receipt; retained for operator review"
+                    );
+                    remaining.push(intent);
+                }
+            },
             Err(error) => {
                 tracing::warn!(%error, txid = %intent.txid, "payment intent recovery remains pending");
                 remaining.push(intent);
@@ -361,6 +383,12 @@ fn payment_error_response(err: PaymentError) -> HttpResponse {
 // ---------------------------------------------------------------------------
 
 /// NIP-98 → `did:nostr` → Web-Ledger balance. JSON `{did, balance, cost, unit}`.
+///
+/// The balance is read from the ledger and nothing else: it is the caller's
+/// satoshi entry as deposits and debits left it. There is no auto-detect
+/// scan of the caller's deposit address (JSS `pay.js:307-373` scans the
+/// chain here); a payment reaches the ledger only through
+/// `POST /pay/.deposit`.
 async fn handle_balance(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -474,15 +502,22 @@ fn pod_issuer_pubkey(state: &AppState) -> Option<String> {
 
 /// Verify an MRC20 token deposit and credit the verified transfer amount.
 ///
-/// Flow (JSS `pay.js:384-438`):
-/// 1. require an issuer pubkey configured on the pod (`payAddress` parity);
-/// 2. derive the pod's generic deposit address `bt_address(issuer, [], net)`
+/// Flow (JSS `pay.js:384-438`, bound to this pod's token):
+/// 1. require a token configured on the pod (`payAddress` parity);
+/// 2. **issuer and ticker binding**: the trail must be anchored on the
+///    configured issuer key (or one of `accepted_issuers`) and carry the
+///    configured ticker. A self-issued trail with the right ticker is a
+///    different token, refused 403; another ticker is refused 400;
+/// 3. derive the pod's generic deposit address `bt_address(issuer, [], net)`
 ///    — the `toAddress` transfers must target;
-/// 3. **replay-guard** on `JCS(state)` (the shared replay set) so a
+/// 4. **replay-guard** on `JCS(state)` (the shared replay set) so a
 ///    state can't be credited twice;
-/// 4. [`verify_mrc20_anchor`] — state-chain integrity + taproot re-derivation
+/// 5. [`verify_mrc20_anchor`] — state-chain integrity + taproot re-derivation
 ///    + a live mempool UTXO check via [`MempoolHttpClient`];
-/// 5. credit the verified amount via the [`PaymentStore`].
+/// 6. **replay-guard on the anchor outpoint**: an outpoint already in the
+///    ledger's deposit receipts is refused, so one coin never pays twice;
+/// 7. credit the verified amount to the caller's `ticker` balance with
+///    [`WebLedger::credit_by_outpoint`], never to the satoshi balance.
 async fn handle_mrc20_deposit(
     did: &str,
     state: &AppState,
@@ -496,15 +531,30 @@ async fn handle_mrc20_deposit(
         }
     };
 
-    // (1) Issuer pubkey — the pod must be configured to accept MRC20.
-    let issuer = match pod_issuer_pubkey(state) {
-        Some(p) => p,
-        None => {
+    // (1) The pod must be configured to accept MRC20.
+    let token = match state.pay_config.token.as_ref() {
+        Some(t) if !t.issuer.is_empty() => t,
+        _ => {
             return Ok(HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "MRC20 deposits not configured (no token issuer set)"
             })))
         }
     };
+    let issuer = token.issuer.clone();
+
+    // (2) Issuer and ticker binding: only this pod's token is credited.
+    if !token.accepts_issuer(&deposit.anchor.pubkey) {
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "MRC20 trail is not issued by this pod's token issuer",
+            "issuer": issuer,
+        })));
+    }
+    if deposit.state.ticker.as_deref() != Some(token.ticker.as_str()) {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("This pod accepts only {} deposits", token.ticker),
+            "ticker": deposit.state.ticker,
+        })));
+    }
 
     let network = deposit
         .anchor
@@ -512,13 +562,13 @@ async fn handle_mrc20_deposit(
         .clone()
         .unwrap_or_else(|| "testnet4".to_string());
 
-    // (2) The pod's generic deposit address — transfers must target it.
+    // (3) The pod's generic deposit address — transfers must target it.
     let to_address = match bt_address(&issuer, &[], &network) {
         Ok(a) => a,
         Err(e) => return Ok(payment_error_response(e)),
     };
 
-    // (3) Replay guard on the canonical state hash, keyed
+    // (4) Replay guard on the canonical state hash, keyed
     // `mrc20:<sha256(JCS(state))>`. The prefix also keeps it distinct from
     // `txid:vout` keys the deleted TXO stand-in left in older replay sets.
     let state_value = match serde_json::to_value(&deposit.state) {
@@ -535,6 +585,11 @@ async fn handle_mrc20_deposit(
         Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
     };
+    if payment_state.ledger.is_sats_unit(&token.ticker) {
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "pay-token ticker names the satoshi balance; refusing to credit it"
+        })));
+    }
     if payment_state.replay.iter().any(|key| key == &replay_key) {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Replay: this state has already been used for a deposit",
@@ -542,13 +597,10 @@ async fn handle_mrc20_deposit(
         })));
     }
 
-    // (4) Anchor verification against live mempool state. An explicit
+    // (5) Anchor verification against live mempool state. An explicit
     // `mempool_url` (tests → local fixture server) overrides the env-driven
     // default so the route never reaches mempool.space in CI.
-    let mempool = match &state.mempool_url {
-        Some(url) => MempoolHttpClient::new(url.clone()),
-        None => MempoolHttpClient::from_env(),
-    };
+    let mempool = mempool_client(state);
     let result = match verify_mrc20_anchor(
         &deposit.state,
         &deposit.prev_state,
@@ -564,14 +616,63 @@ async fn handle_mrc20_deposit(
         Err(e) => return Ok(payment_error_response(e)),
     };
 
-    // (5) Credit the verified amount, then record the replay key.
-    payment_state.ledger.credit(did, result.amount);
+    // (6) Replay guard on the anchor outpoint. Every UTXO at the derived
+    // address is checked, so adding a second coin there cannot dodge the
+    // guard; the lowest outpoint is the deposit's receipt.
+    if let Some(used) = result
+        .utxos
+        .iter()
+        .find(|u| payment_state.ledger.has_deposit(&u.txid, u.vout))
+    {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Replay: this anchor outpoint has already been credited",
+            "outpoint": format!("{}:{}", used.txid, used.vout),
+        })));
+    }
+    let Some(anchor) = result
+        .utxos
+        .iter()
+        .min_by(|a, b| (&a.txid, a.vout).cmp(&(&b.txid, b.vout)))
+    else {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "no UTXO at the derived anchor address" })));
+    };
+
+    // A fresh ledger is born with teller's genesis identity, its operator
+    // the pod's issuer. A ledger that already holds anything keeps the
+    // shape it has: its identity is not rewritten under live balances.
+    if payment_state.ledger.genesis().is_none() && ledger_is_empty(&payment_state.ledger) {
+        if let Some(fresh) = genesis_ledger(&issuer, &payment_state.ledger) {
+            payment_state.ledger = fresh;
+        }
+    }
+
+    // (7) Credit the verified amount to the ticker balance, then record the
+    // state-hash replay key.
+    match payment_state.ledger.credit_by_outpoint(
+        did,
+        &token.ticker,
+        &anchor.txid,
+        anchor.vout,
+        result.amount,
+    ) {
+        Ok(ReceiptOutcome::Applied) => {}
+        Ok(ReceiptOutcome::AlreadyApplied) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Replay: this anchor outpoint has already been credited",
+                "outpoint": format!("{}:{}", anchor.txid, anchor.vout),
+            })));
+        }
+        Err(e) => return Ok(payment_error_response(e)),
+    }
     payment_state.replay.push(replay_key);
     if let Err(e) = store.commit_state(&mut payment_state).await {
         return Ok(payment_error_response(e));
     }
 
-    let balance = payment_state.ledger.get_balance(did);
+    let balance = payment_state
+        .ledger
+        .get_currency_balance(did, &token.ticker);
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(serde_json::json!({
@@ -581,7 +682,33 @@ async fn handle_mrc20_deposit(
             "balance": balance,
             "unit": "token",
             "anchor": result.address,
+            "outpoint": format!("{}:{}", anchor.txid, anchor.vout),
         })))
+}
+
+/// Whether a ledger holds nothing at all: no balances, deposits or payouts.
+fn ledger_is_empty(ledger: &WebLedger) -> bool {
+    ledger.entries().is_empty() && ledger.deposits().is_empty() && ledger.payouts().is_empty()
+}
+
+/// A fresh ledger with teller's genesis: operator `did:nostr:<x of issuer>`,
+/// the existing ledger's name and unit, created now, one confirmation.
+/// `None` when the issuer key has no x-only form (a malformed config).
+fn genesis_ledger(issuer: &str, current: &WebLedger) -> Option<WebLedger> {
+    let x = issuer.get(2..).filter(|_| issuer.len() == 66)?;
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let genesis = solid_pod_rs::payments::LedgerGenesis::new(
+        x,
+        &current.name,
+        &current.default_currency,
+        created,
+        1,
+    )
+    .ok()?;
+    WebLedger::with_genesis(genesis).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +728,8 @@ pub struct AddressQuery {
 /// returns only a derived address + the pod's issuer pubkey, never a
 /// secret. The per-user address tweaks the issuer key by the user's DID
 /// (`bt_address(issuer, [did], net)`), so funds sent there are
-/// attributable to that user on the `/pay/.balance` auto-detect scan.
+/// attributable to that user. This pod does not scan these addresses:
+/// `/pay/.balance` reads the ledger only, and only `/pay/.deposit` credits.
 async fn handle_address(
     state: web::Data<AppState>,
     query: web::Query<AddressQuery>,
@@ -1172,7 +1300,7 @@ async fn execute_token_transfer(
         Ok(state) => state,
         Err(error) => return Err(payment_error_response(error)),
     };
-    if let Err(error) = payment_state.ledger.debit(did, sat_cost) {
+    if let Err(error) = debit_payout(&mut payment_state.ledger, did, sat_cost, &expected_txid) {
         return Err(payment_error_response(error));
     }
     payment_state.intents.push(PaymentIntent {
@@ -1211,6 +1339,22 @@ async fn execute_token_transfer(
 
     let proof = transfer_proof_json(&update.state, &prev_state, &appended);
     Ok((txid, proof, new_balance))
+}
+
+/// Debit `amount` sats against the payout `txid`, refusing a payout id the
+/// ledger has already applied (the same signed transaction twice).
+fn debit_payout(
+    ledger: &mut WebLedger,
+    did: &str,
+    amount: u64,
+    txid: &str,
+) -> Result<(), PaymentError> {
+    match ledger.debit_by_payout(did, amount, txid)? {
+        ReceiptOutcome::Applied => Ok(()),
+        ReceiptOutcome::AlreadyApplied => Err(PaymentError::Replay(format!(
+            "payout {txid} has already been debited"
+        ))),
+    }
 }
 
 /// POST `/pay/.buy` — primary market: buy `payToken` tokens with sats
@@ -1511,7 +1655,12 @@ async fn handle_withdraw_sats(
         Ok(s) => s,
         Err(e) => return Ok(payment_error_response(e)),
     };
-    if let Err(e) = payment_state.ledger.debit(&did, req_body.amount) {
+    if let Err(e) = debit_payout(
+        &mut payment_state.ledger,
+        &did,
+        req_body.amount,
+        &expected_txid,
+    ) {
         return Ok(payment_error_response(e));
     }
     payment_state.intents.push(PaymentIntent {
@@ -1587,6 +1736,9 @@ mod intent_recovery_tests {
     use solid_pod_rs::storage::memory::MemoryBackend;
     use std::sync::Arc;
 
+    const ACCOUNT: &str =
+        "did:nostr:4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+
     async fn fixture(status: u16) -> (MempoolHttpClient, actix_web::dev::ServerHandle) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1615,11 +1767,17 @@ mod intent_recovery_tests {
         let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
         let store = StoragePaymentStore::new(&*storage);
         let mut state = store.read_state().await.unwrap();
-        state.ledger.credit("did:nostr:test", 100);
-        state.ledger.debit("did:nostr:test", 40).unwrap();
+        state
+            .ledger
+            .credit_by_outpoint(ACCOUNT, "satoshi", &"aa".repeat(32), 0, 100)
+            .unwrap();
+        state
+            .ledger
+            .debit_by_payout(ACCOUNT, 40, &"11".repeat(32))
+            .unwrap();
         state.intents.push(PaymentIntent {
             txid: "11".repeat(32),
-            did: "did:nostr:test".into(),
+            did: ACCOUNT.into(),
             amount: 40,
             trail: None,
         });
@@ -1636,7 +1794,7 @@ mod intent_recovery_tests {
             .await
             .unwrap();
         let state = store.read_state().await.unwrap();
-        assert_eq!(state.ledger.get_balance("did:nostr:test"), 60);
+        assert_eq!(state.ledger.get_balance(ACCOUNT), 60);
         assert!(state.intents.is_empty());
         handle.stop(false).await;
     }
@@ -1650,9 +1808,62 @@ mod intent_recovery_tests {
             .await
             .unwrap();
         let state = store.read_state().await.unwrap();
-        assert_eq!(state.ledger.get_balance("did:nostr:test"), 100);
+        assert_eq!(state.ledger.get_balance(ACCOUNT), 100);
         assert!(state.intents.is_empty());
         handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn not_found_without_payout_receipt_retains_intent() {
+        // An intent whose debit predates payout receipts: nothing to reverse,
+        // so the intent stays for operator review and no balance is minted.
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let mut state = store.read_state().await.unwrap();
+        state.intents[0].txid = "22".repeat(32);
+        store.commit_state(&mut state).await.unwrap();
+        let (mempool, handle) = fixture(404).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let state = store.read_state().await.unwrap();
+        assert_eq!(state.ledger.get_balance(ACCOUNT), 60);
+        assert_eq!(state.intents.len(), 1);
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn ledger_with_a_tampered_genesis_is_refused() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let mut state = store.read_state().await.unwrap();
+        let genesis = solid_pod_rs::payments::LedgerGenesis::new(
+            ACCOUNT,
+            "Pod Credits",
+            "satoshi",
+            1_759_300_000,
+            1,
+        )
+        .unwrap();
+        state.ledger = WebLedger::with_genesis(genesis).unwrap();
+        store.commit_state(&mut state).await.unwrap();
+        assert!(store.read_state().await.is_ok());
+
+        let (bytes, _) = storage.get(PAYMENT_STATE_PATH).await.unwrap();
+        let mut raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        raw["ledger"]["genesis"]["name"] = "Another Ledger".into();
+        storage
+            .put(
+                PAYMENT_STATE_PATH,
+                Bytes::from(serde_json::to_vec(&raw).unwrap()),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.read_state().await,
+            Err(PaymentError::Store(msg)) if msg.contains("genesis")
+        ));
     }
 
     #[actix_web::test]
@@ -1664,7 +1875,7 @@ mod intent_recovery_tests {
             .await
             .unwrap();
         let state = store.read_state().await.unwrap();
-        assert_eq!(state.ledger.get_balance("did:nostr:test"), 60);
+        assert_eq!(state.ledger.get_balance(ACCOUNT), 60);
         assert_eq!(state.intents.len(), 1);
         handle.stop(false).await;
     }

@@ -93,6 +93,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bytes; amounts above 21 million BTC are refused; the old 65,535-byte cap
   on scripts and counts is gone.
 
+- **Breaking (`solid-pod-rs`): `WebLedger` balances change only through
+  receipts** (solidpayorg/teller 7c00cea `lib/teller.mjs:40-58`).
+  `WebLedger::credit` and `WebLedger::debit`, and `credit_currency` /
+  `debit_currency`, are now `pub(crate)`, and the `id` and `entries` fields
+  are crate-private (read them with `id()` and `entries()`). The public
+  mutators are `credit_by_outpoint(account, currency, txid, vout, value)`
+  (the outpoint is the receipt; a second credit of it returns
+  `ReceiptOutcome::AlreadyApplied`) and `debit_by_payout(account, amount,
+  txid)` (the payout txid is the receipt). The pod's existing flows keep
+  three receipt-bound helpers: `reverse_payout(txid)` restores a recorded
+  payout whose broadcast definitely failed, and `charge` / `refund(Charge)`
+  take and return an access fee (per-request `PaymentCondition` and the
+  `_prov` anchor price). None of these can raise a balance beyond what a
+  recorded deposit put there. Accounts are read as teller reads them
+  (`did:nostr:<64 hex>`, a bare x, or a Multikey's x).
+- **The ledger document carries teller's identity.** New `LedgerGenesis`
+  (`operator`, `name`, `currency`, `created`, `confirmations`) and
+  `WebLedger::with_genesis`: `hash = sha256(JCS(genesis))`, `id =
+  urn:webledgers:<hash>`, checked by `check_genesis` (teller
+  `checkLedger`). The document gains `hash`, `genesis`, `deposits`,
+  `applied` and `payouts`; `description` and `created` become optional so a
+  teller-written document loads. Documents without a genesis still load
+  unchanged. The server stamps a genesis (operator = the issuer's x) only
+  on a ledger that holds nothing yet, and refuses to read a ledger whose
+  hash does not match its genesis. Verified against teller's own output
+  (`tests/fixtures/teller/ledger-7c00cea.json`).
+- **Breaking (`solid-pod-rs`): `TokenConfig` gains `accepted_issuers`**
+  (`#[serde(default)]`, so stored configs still load; struct literals need
+  the field) and `accepts_issuer`.
+- `/pay/.buy`, `/pay/.withdraw` and `/pay/.withdraw-sats` debit through
+  `debit_by_payout` keyed by the signed transaction's txid; broadcast
+  recovery reverses that payout. An intent left by the old code, with no
+  payout receipt, is kept for operator review instead of being compensated.
+- The `/pay/.balance` and `/pay/.address` docs no longer claim an
+  auto-detect scan: the balance is read from the ledger only.
+- **Breaking (`solid-pod-rs-server`): the paying routes take a did:nostr
+  account only.** `/pay/.deposit`, `/pay/.buy`, `/pay/.withdraw` and
+  `/pay/.withdraw-sats` now answer 400 (`an account is a did:nostr
+  identifier`) for a principal teller's `accountOf` rejects, which includes
+  the https WebID a dev bearer token yields. NIP-98 callers are unaffected.
+- CI runs doctests: `cargo test --doc` per core feature set and
+  `cargo test --workspace --doc`. `--all-targets` skips doctests, so the
+  `compile_fail` gate keeping `WebLedger::credit`/`debit` crate-private and
+  the teller genesis-hash doctest were not running; `tests/ci_doctest_gate.rs`
+  fails if the workflow drops them again.
+
+### Security
+
+- **MRC20 deposits are bound to this pod's token.** `POST /pay/.deposit`
+  now refuses a trail whose `anchor.pubkey` is not the configured
+  `pay_config.token.issuer` (or one of the new `accepted_issuers`) with 403,
+  and a state whose ticker is not `pay_config.token.ticker` with 400, both
+  before any mempool call. Previously anyone could mint their own trail
+  under the pod's ticker, transfer it to the pod's address and be credited.
+- **A deposit credits its ticker, never sats.** The verified amount lands in
+  the caller's `ledger[ticker]` balance; the satoshi balance is untouched.
+  Balances already credited as sats by earlier deposits are left as they
+  are.
+- **One coin pays once.** Besides the `mrc20:<sha256(JCS(state))>` replay
+  key, a deposit is now refused (400, `Replay: … outpoint …`) when any UTXO
+  at its derived anchor address is already a deposit receipt; the lowest
+  outpoint is recorded as the receipt.
+
 ## [0.5.0-alpha.10] - 2026-10-01
 
 Tracks the did:nostr parity model as reconciled upstream in
