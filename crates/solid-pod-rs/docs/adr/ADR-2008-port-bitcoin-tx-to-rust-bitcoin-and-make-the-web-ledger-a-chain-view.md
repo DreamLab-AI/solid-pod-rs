@@ -107,3 +107,10 @@ Proposed; nothing built. Ratification evidence will be:
   and an explicit error rather than a stale figure when the node is unreachable.
 - The security audit's non-atomic payment state finding closed, with the README claim updated
   in the same change.
+
+## Disposition — 2026-10-02
+
+- **Suitability:** fits, needs revision
+- **Priority:** P2 — next cycle (planning-cycle §3 names "solid-pod-rs `bitcoin_tx.rs` is on rust-bitcoin" as a sovereign-settlement reopening condition, so D1–D2 are its first item; D4–D6 park with agentbox ADR-2099)
+- **Why:** D1 is the estate's outstanding hand-rolled-crypto port, and the house rule ranks that highest. It has not started at `6d2e5b0`: `src/bitcoin_tx.rs:24` still declares "No `rust-bitcoin` / `secp256k1-sys`", `add_mod_n`/`neg_mod_n` remain (`:146`, `:162`), and `Cargo.toml` carries only `k256`. D5 and D6 also stand: `src/payments.rs:144,158` keep `credit`/`debit` public, and the TXO stand-in remains at `crates/solid-pod-rs-server/src/handlers/pay.rs:498`. Two parts are overtaken. D8's pins are stale: this workspace is now `0.5.0-alpha.10`, the forum pins `=0.5.0-alpha.10`, and the host `0.4.0-alpha.15`. The Consequences' "the order book and constant-product AMM stay as the exchange surface; sidestr's `pool` rule is not adopted" is narrowed by agentbox ADR-2096's amendment, which parks the pod AMM in favour of upstream's pool rule (now in sidestr-rs, inactive).
+- **Next:** First item of the next cycle: port D1 under D2's unmodified golden fixtures. When D2 holds, D1–D3 are ready to accept on that evidence, separately from the ledger-view decisions.
