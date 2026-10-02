@@ -91,7 +91,16 @@ allow = [
 # copyleft / commercial / source-available licences (e.g. BUSL, SSPL,
 # Elastic-2.0, commercial-only) remain implicitly denied: anything not on
 # the allowlist fails the licence check.
-exceptions = []
+exceptions = [
+    # `hex_lit` (a const hex-literal macro) is a normal dependency of
+    # `bitcoin` 0.32 (ADR-2008: rust-bitcoin replaces hand-rolled Bitcoin
+    # crypto). Its licence, MITNFA, is MIT plus a no-false-attribution clause:
+    # anyone shipping a functionally altered copy must replace or remove the
+    # original author's bug-report contact. We ship it unmodified, so the
+    # clause is never triggered. Scoped to this one crate, not allowed
+    # workspace-wide.
+    { allow = ["MITNFA"], crate = "hex_lit" },
+]
 
 [[licenses.clarify]]
 name = "ring"
