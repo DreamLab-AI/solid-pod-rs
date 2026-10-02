@@ -1,0 +1,794 @@
+{
+  "source": {
+    "rule": "blocktrails/spec ef54a08 (the rule as it is); blocktrails/verify 043e7af walk and stateHash",
+    "keys": "sidestr/spec e8deb63 siding/lib/keys.mjs, siding/lib/address.mjs",
+    "curve": "bitcoin-desktop/schema b8cbf63 codec/hash.js, codec/secp256k1.js",
+    "generator": "gen-keys-walk-vectors.mjs (this directory)"
+  },
+  "cases": [
+    {
+      "name": "golden-0001-s1",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "basePoint": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "states": [
+        "s1"
+      ],
+      "stateStrings": [
+        "s1"
+      ],
+      "tweaks": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66665"
+      ],
+      "points": [
+        "02188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69"
+      ],
+      "outputs": [
+        "188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69"
+      ],
+      "secrets": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66666"
+      ],
+      "tb": [
+        "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e"
+      ],
+      "bc": [
+        "bc1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035sjg8fqk"
+      ]
+    },
+    {
+      "name": "golden-0001-s1s2s3",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "basePoint": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66665",
+        "dee113fc1042b210d0b4f4ce2671660c40a595e30bb61989d8593053d85205e8",
+        "9d9ed3ef215c66198455a13562342a1938b4671da7b2a9244d0076204cb9a975"
+      ],
+      "points": [
+        "02188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69",
+        "03751bab739a336e48b0c6861534901e2f01d7578eccd6002e573c0050a9cd2f03",
+        "023a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460"
+      ],
+      "outputs": [
+        "188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69",
+        "751bab739a336e48b0c6861534901e2f01d7578eccd6002e573c0050a9cd2f03",
+        "3a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460"
+      ],
+      "secrets": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66666",
+        "efb1e7329888bb98a571b0a77fb92d0681358279a9b0f2b8bd66acd880086c4e",
+        "8d50bb21b9e521b229c751dce1ed5720ff3b0cb0a21afba14a94c46bfc8bd482"
+      ],
+      "tb": [
+        "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e",
+        "tb1pw5d6kuu6xdhy3vxxsc2nfyq79uqaw4uwentqqtjh8sq9p2wd9upsnqvqmy",
+        "tb1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqlg6upc"
+      ],
+      "bc": [
+        "bc1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035sjg8fqk",
+        "bc1pw5d6kuu6xdhy3vxxsc2nfyq79uqaw4uwentqqtjh8sq9p2wd9upsyg60pt",
+        "bc1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqgqvnmh"
+      ]
+    },
+    {
+      "name": "golden-0001-mrc20-objects",
+      "note": "object states hashed as their JCS (solid-pod-rs CHAINED_GOLDEN_JCS inputs)",
+      "base": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "basePoint": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "states": [
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 0,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 1000
+          },
+          "ops": []
+        },
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af",
+          "seq": 1,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 900,
+            "recipient": 100
+          },
+          "ops": [
+            {
+              "op": "urn:mono:op:transfer",
+              "from": "issuer",
+              "to": "recipient",
+              "amt": 100
+            }
+          ]
+        }
+      ],
+      "stateStrings": [
+        "{\"balances\":{\"issuer\":1000},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[],\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":0,\"supply\":1000,\"ticker\":\"TEST\"}",
+        "{\"balances\":{\"issuer\":900,\"recipient\":100},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[{\"amt\":100,\"from\":\"issuer\",\"op\":\"urn:mono:op:transfer\",\"to\":\"recipient\"}],\"prev\":\"710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":1,\"supply\":1000,\"ticker\":\"TEST\"}"
+      ],
+      "tweaks": [
+        "0b2ae8bfee68796e0ab0b0d28f414b4e7d966855e194f6eba82a9c8ce1c8aee5",
+        "b0a035c7d52b5461e6a04c85951ade81941a4bc9917dc195a0c19f104706831f"
+      ],
+      "points": [
+        "03a8edeb55c42df22cc28a5dc28b7f4dfd05c04970f156d40315be4df3fee0d783",
+        "02e5c6ad36a3a79979a71f7879fa3b07454a1ef5883ba1695c89d1a7fc0e70f6dc"
+      ],
+      "outputs": [
+        "a8edeb55c42df22cc28a5dc28b7f4dfd05c04970f156d40315be4df3fee0d783",
+        "e5c6ad36a3a79979a71f7879fa3b07454a1ef5883ba1695c89d1a7fc0e70f6dc"
+      ],
+      "secrets": [
+        "0b2ae8bfee68796e0ab0b0d28f414b4e7d966855e194f6eba82a9c8ce1c8aee6",
+        "bbcb1e87c393cdcff150fd58245c29d011b0b41f7312b88148ec3b9d28cf3205"
+      ],
+      "tb": [
+        "tb1p4rk7k4wy9hezes52thpgkl6dl5zuqjts79tdgqc4hexl8lhq67psmpkshj",
+        "tb1puhr26d4r57vhnfcl0pul5wc8g49paavg8wskjhyf6xnlcrns7mwqj0wjc4"
+      ],
+      "bc": [
+        "bc1p4rk7k4wy9hezes52thpgkl6dl5zuqjts79tdgqc4hexl8lhq67psvfqlda",
+        "bc1puhr26d4r57vhnfcl0pul5wc8g49paavg8wskjhyf6xnlcrns7mwq98caz6"
+      ]
+    },
+    {
+      "name": "golden-0003-s1",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "basePoint": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "states": [
+        "s1"
+      ],
+      "stateStrings": [
+        "s1"
+      ],
+      "tweaks": [
+        "ceaa29cc897a2ab6e94751c5bd66cf2297aff0611a941eeb351b3afd5f662f3c"
+      ],
+      "points": [
+        "02587dcc33ef72f579de94e3046d2ae09e9cd2740bac64918a327b702d51964d92"
+      ],
+      "outputs": [
+        "587dcc33ef72f579de94e3046d2ae09e9cd2740bac64918a327b702d51964d92"
+      ],
+      "secrets": [
+        "ceaa29cc897a2ab6e94751c5bd66cf2297aff0611a941eeb351b3afd5f662f3f"
+      ],
+      "tb": [
+        "tb1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfqskp92l"
+      ],
+      "bc": [
+        "bc1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfq87h2ss"
+      ]
+    },
+    {
+      "name": "golden-0003-s1s2s3",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "basePoint": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "ceaa29cc897a2ab6e94751c5bd66cf2297aff0611a941eeb351b3afd5f662f3c",
+        "fbe4f07d2bad0df45ceadfb74baacbcce54b27b3ad14e300c674b722798d0dd0",
+        "d7535da10c2a3dd6866a07d035324699775fc0f014a776ffe5d28f7014b7b2d9"
+      ],
+      "points": [
+        "02587dcc33ef72f579de94e3046d2ae09e9cd2740bac64918a327b702d51964d92",
+        "03a2c6e01fe998a256c56e83a22bd000b661d97f4cc0900cceb20d6bfa2bda795c",
+        "03894f27c061c57dc7b6791c42b9c38faa826d3f3a2785ceac707db887db38c0a0"
+      ],
+      "outputs": [
+        "587dcc33ef72f579de94e3046d2ae09e9cd2740bac64918a327b702d51964d92",
+        "a2c6e01fe998a256c56e83a22bd000b661d97f4cc0900cceb20d6bfa2bda795c",
+        "894f27c061c57dc7b6791c42b9c38faa826d3f3a2785ceac707db887db38c0a0"
+      ],
+      "secrets": [
+        "ceaa29cc897a2ab6e94751c5bd66cf2297aff0611a941eeb351b3afd5f662f3f",
+        "ca8f1a49b52738ab4632317d09119af0c24c3b2e186061b03bbd939308bcfbce",
+        "a1e277eac1517681cc9c394d3e43e18b7efd1f377dbf387461bdc4764d3e6d66"
+      ],
+      "tb": [
+        "tb1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfqskp92l",
+        "tb1p5trwq8lfnz39d3twsw3zh5qqkesajl6vczgqen4jp44l527609wqvtgzcm",
+        "tb1p398j0srpc47u0dner3ptnsu042px60e6y7zuatrs0kug0kecczsqvv3cjm"
+      ],
+      "bc": [
+        "bc1ptp7ucvl0wt6hnh55uvzx62hqn6wdyaqt43jfrz3j0dcz65vkfkfq87h2ss",
+        "bc1p5trwq8lfnz39d3twsw3zh5qqkesajl6vczgqen4jp44l527609wqmr7dz5",
+        "bc1p398j0srpc47u0dner3ptnsu042px60e6y7zuatrs0kug0kecczsqmy8hg5"
+      ]
+    },
+    {
+      "name": "golden-0003-mrc20-objects",
+      "note": "object states hashed as their JCS (solid-pod-rs CHAINED_GOLDEN_JCS inputs)",
+      "base": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "basePoint": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000003",
+      "states": [
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 0,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 1000
+          },
+          "ops": []
+        },
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af",
+          "seq": 1,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 900,
+            "recipient": 100
+          },
+          "ops": [
+            {
+              "op": "urn:mono:op:transfer",
+              "from": "issuer",
+              "to": "recipient",
+              "amt": 100
+            }
+          ]
+        }
+      ],
+      "stateStrings": [
+        "{\"balances\":{\"issuer\":1000},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[],\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":0,\"supply\":1000,\"ticker\":\"TEST\"}",
+        "{\"balances\":{\"issuer\":900,\"recipient\":100},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[{\"amt\":100,\"from\":\"issuer\",\"op\":\"urn:mono:op:transfer\",\"to\":\"recipient\"}],\"prev\":\"710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":1,\"supply\":1000,\"ticker\":\"TEST\"}"
+      ],
+      "tweaks": [
+        "892a8bcc266a16f913d630117df26d1c1bb556476b22918d7ae6617fea11b8b7",
+        "245443045a5a28530b5b78182fbb81d28f6aaf58ec49736e26d424f023862bf2"
+      ],
+      "points": [
+        "037bacfe76805e8aab366a86230f3f78ec4d9c3f37efcf1f97c2f28f852e64dc5a",
+        "03ae5d99603a017fd8e09699bb9ff122df512d3109a1490427664855edca72516b"
+      ],
+      "outputs": [
+        "7bacfe76805e8aab366a86230f3f78ec4d9c3f37efcf1f97c2f28f852e64dc5a",
+        "ae5d99603a017fd8e09699bb9ff122df512d3109a1490427664855edca72516b"
+      ],
+      "secrets": [
+        "892a8bcc266a16f913d630117df26d1c1bb556476b22918d7ae6617fea11b8ba",
+        "ad7eced080c43f4c1f31a829adadeeeeab2005a0576c04fba1ba86700d97e4ac"
+      ],
+      "tb": [
+        "tb1p0wk0ua5qt692kdn2sc3s70mca3xec0ehal83l97z728c2tnym3dq6c94dx",
+        "tb1p4ewejcp6q9la3cyknxaelufzmagj6vgf59ysgfmxfp27mjnj294sf6ur8c"
+      ],
+      "bc": [
+        "bc1p0wk0ua5qt692kdn2sc3s70mca3xec0ehal83l97z728c2tnym3dqdsn6hf",
+        "bc1p4ewejcp6q9la3cyknxaelufzmagj6vgf59ysgfmxfp27mjnj294s7j2vah"
+      ]
+    },
+    {
+      "name": "golden-cfef-s1",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "basePoint": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "secret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "holderSecret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "states": [
+        "s1"
+      ],
+      "stateStrings": [
+        "s1"
+      ],
+      "tweaks": [
+        "209dd6466a2f60bac86b77090224b462b94d074e42e85e3c22979dd6fe5450cc"
+      ],
+      "points": [
+        "02f36f8a35e37abfd4637b069d3098faf162c3c622912a6c12ae3783a68c3c2ada"
+      ],
+      "outputs": [
+        "f36f8a35e37abfd4637b069d3098faf162c3c622912a6c12ae3783a68c3c2ada"
+      ],
+      "secrets": [
+        "d87f27a8f51c8b2587dccf899f19a82a1c341d5d7b9d3892ca1c76db4fe520bb"
+      ],
+      "tb": [
+        "tb1p7dhc5d0r02lagcmmq6wnpx86793v833zjy4xcy4wx7p6drpu9tdqr0x9dg"
+      ],
+      "bc": [
+        "bc1p7dhc5d0r02lagcmmq6wnpx86793v833zjy4xcy4wx7p6drpu9tdq58s2h8"
+      ]
+    },
+    {
+      "name": "golden-cfef-s1s2s3",
+      "note": "solid-pod-rs CHAINED_GOLDEN inputs",
+      "base": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "basePoint": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "secret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "holderSecret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "209dd6466a2f60bac86b77090224b462b94d074e42e85e3c22979dd6fe5450cc",
+        "f2d6cc923b70306a204df6e1c544961477ebe7f9ec34c8b5c1688f84fb538b75",
+        "7c3d1e4ed8f841ef21c3fdf930d285647d853994e6331a259967aed350146e31"
+      ],
+      "points": [
+        "02f36f8a35e37abfd4637b069d3098faf162c3c622912a6c12ae3783a68c3c2ada",
+        "03451d4e04c9569e8c128c5f7faf1f0e5001ccf9308159820f2df4a8c414395158",
+        "02f283242cfe1a63c445c2a809a08068dffeb6d3220951136786e140808ee87307"
+      ],
+      "outputs": [
+        "f36f8a35e37abfd4637b069d3098faf162c3c622912a6c12ae3783a68c3c2ada",
+        "451d4e04c9569e8c128c5f7faf1f0e5001ccf9308159820f2df4a8c414395158",
+        "f283242cfe1a63c445c2a809a08068dffeb6d3220951136786e140808ee87307"
+      ],
+      "secrets": [
+        "d87f27a8f51c8b2587dccf899f19a82a1c341d5d7b9d3892ca1c76db4fe520bb",
+        "cb55f43b308cbb8fa82ac66b645e3e3fd9712870b889610ccbb2a7d37b026aef",
+        "4793128a0984fd7ec9eec4649530c3a59c47851eef73daf6a547f819fae097df"
+      ],
+      "tb": [
+        "tb1p7dhc5d0r02lagcmmq6wnpx86793v833zjy4xcy4wx7p6drpu9tdqr0x9dg",
+        "tb1pg5w5upxf260gcy5vtal678cw2qque7fss9vcyred7j5vg9pe29vq6kzsxf",
+        "tb1p72pjgt87rf3ug3wz4qy6pqrgmlltd5ezp9g3xeuxu9qgprhgwvrss46m8z"
+      ],
+      "bc": [
+        "bc1p7dhc5d0r02lagcmmq6wnpx86793v833zjy4xcy4wx7p6drpu9tdq58s2h8",
+        "bc1pg5w5upxf260gcy5vtal678cw2qque7fss9vcyred7j5vg9pe29vqd75lux",
+        "bc1p72pjgt87rf3ug3wz4qy6pqrgmlltd5ezp9g3xeuxu9qgprhgwvrs8av5ad"
+      ]
+    },
+    {
+      "name": "golden-cfef-mrc20-objects",
+      "note": "object states hashed as their JCS (solid-pod-rs CHAINED_GOLDEN_JCS inputs)",
+      "base": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "basePoint": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "secret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "holderSecret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "states": [
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 0,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 1000
+          },
+          "ops": []
+        },
+        {
+          "profile": "mono.mrc20.v0.1",
+          "prev": "710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af",
+          "seq": 1,
+          "ticker": "TEST",
+          "name": "Test Token",
+          "decimals": 0,
+          "supply": 1000,
+          "balances": {
+            "issuer": 900,
+            "recipient": 100
+          },
+          "ops": [
+            {
+              "op": "urn:mono:op:transfer",
+              "from": "issuer",
+              "to": "recipient",
+              "amt": 100
+            }
+          ]
+        }
+      ],
+      "stateStrings": [
+        "{\"balances\":{\"issuer\":1000},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[],\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":0,\"supply\":1000,\"ticker\":\"TEST\"}",
+        "{\"balances\":{\"issuer\":900,\"recipient\":100},\"decimals\":0,\"name\":\"Test Token\",\"ops\":[{\"amt\":100,\"from\":\"issuer\",\"op\":\"urn:mono:op:transfer\",\"to\":\"recipient\"}],\"prev\":\"710241d814f6fb912dc70c9b67efd27a077b1380f529735d2fec61154d8518af\",\"profile\":\"mono.mrc20.v0.1\",\"seq\":1,\"supply\":1000,\"ticker\":\"TEST\"}"
+      ],
+      "tweaks": [
+        "043ae43b3cfbb0f0ce0acc651369cdb231ae449de8fb1ac6d77087eea79fd34d",
+        "91f02965bb2ba9877e29df10abff8c0b2262f5d7ce4e786c96df2c49fc2a7dfc"
+      ],
+      "points": [
+        "021259e027bb5aba1bcbf37232ae5ec75231513cef4610105279293105eb1afc84",
+        "02ea891b5e03f8426b50c7884b4d951e42e34ca39afd033d00f28edf014bdfe17e"
+      ],
+      "outputs": [
+        "1259e027bb5aba1bcbf37232ae5ec75231513cef4610105279293105eb1afc84",
+        "ea891b5e03f8426b50c7884b4d951e42e34ca39afd033d00f28edf014bdfe17e"
+      ],
+      "secrets": [
+        "bc1c359dc7e8db5b8d7c24e5b05ec17994955aad21aff51d7ef560f2f930a33c",
+        "4e0c5f03831484e30ba603f65c5e4d85fc49739e40b5cd4e56022eb02524dff7"
+      ],
+      "tb": [
+        "tb1pzfv7qfamt2aphjlnwge2uhk82gc4z080gcgpq5ne9ycst6c6ljzqeaxsma",
+        "tb1pa2y3khsrlppxk5x83p95m9g7gt35egu6l5pn6q8j3m0szj7lu9lqwhmwp0"
+      ],
+      "bc": [
+        "bc1pzfv7qfamt2aphjlnwge2uhk82gc4z080gcgpq5ne9ycst6c6ljzqw4slpj",
+        "bc1pa2y3khsrlppxk5x83p95m9g7gt35egu6l5pn6q8j3m0szj7lu9lqeldpmq"
+      ]
+    },
+    {
+      "name": "odd-base-full-point",
+      "note": "an 03 base kept whole, its first chained point odd-y too: the tweak is never added to a lift",
+      "base": "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
+      "basePoint": "03a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
+      "secret": "000000000000000000000000000000000000000000000000000000000000000a",
+      "holderSecret": "000000000000000000000000000000000000000000000000000000000000000a",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "6b76704c6e59e6084929e0bf780e334676387cddab02f1421594e3ce4e711350",
+        "4bd37947c99bd0fd155f8433ff13b91cfaae41a4511906816da4f251c2b222c7",
+        "a153ff965454a8985b4640f444b922f9fb7037e8496d13d2d5ab9bb9d13f3d35"
+      ],
+      "points": [
+        "033cb370acd1bbae11a4fbf420b876546669d4b699f6b719a3b03d959d69b78d8f",
+        "02169c27c63d70b9f1034c6acc7befd1c318306a62e2d438a0cc0979be2b31c721",
+        "03013bd3e0c901cea21352b252f6edbfe06bce41e4ad51852b53c284ff799f58de"
+      ],
+      "outputs": [
+        "3cb370acd1bbae11a4fbf420b876546669d4b699f6b719a3b03d959d69b78d8f",
+        "169c27c63d70b9f1034c6acc7befd1c318306a62e2d438a0cc0979be2b31c721",
+        "013bd3e0c901cea21352b252f6edbfe06bce41e4ad51852b53c284ff799f58de"
+      ],
+      "secrets": [
+        "6b76704c6e59e6084929e0bf780e334676387cddab02f1421594e3ce4e71135a",
+        "b749e99437f5b7055e8964f37721ec6370e6be81fc1bf7c38339d62011233621",
+        "589de92a8c4a5f9db9cfa5e7bbdb0f5eb1a8198396406b5a9913134d122c3215"
+      ],
+      "tb": [
+        "tb1p8jehptx3hwhprf8m7sstsaj5ve5afd5e76m3ngas8k2e66dh3k8s2w3xgv",
+        "tb1pz6wz033awzulzq6vdtx8hm73cvvrq6nzut2r3gxvp9umu2e3cusszf25ca",
+        "tb1pqyaa8cxfq882yy6jkff0dmdlup4uus0y44gc226nc2z077vltr0q0lnml7"
+      ],
+      "bc": [
+        "bc1p8jehptx3hwhprf8m7sstsaj5ve5afd5e76m3ngas8k2e66dh3k8sax8fjr",
+        "bc1pz6wz033awzulzq6vdtx8hm73cvvrq6nzut2r3gxvp9umu2e3cuss4pumzj",
+        "bc1pqyaa8cxfq882yy6jkff0dmdlup4uus0y44gc226nc2z077vltr0qch9593"
+      ]
+    },
+    {
+      "name": "odd-base-bare-x",
+      "note": "the same x given bare reads as the 02 point (the negation), its holder normalising the secret once: other outputs",
+      "base": "a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
+      "basePoint": "02a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7",
+      "secret": "000000000000000000000000000000000000000000000000000000000000000a",
+      "holderSecret": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364137",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "6b76704c6e59e6084929e0bf780e334676387cddab02f1421594e3ce4e711350",
+        "14c46a8befa0d0a0784e8b28ef14d6a26e73a774342bac5216c58c8f1f7a2e23",
+        "738a9874d63f74f135d96aaa5cb8c31e80d1aef20ccfcc0cea3149a086fb227a"
+      ],
+      "points": [
+        "02135088f95779d7f7b82d07f979aafe89e42057c57afd9b25362cdeb3bb4086de",
+        "03f22d8afa7fe134e962473bcc26f881b75431a7d2937e4f8c3eb2337742007841",
+        "027ea0c25b64bc44c7e33b4b506f1fa8f658605d6503d42188c6d86cae29b7ecad"
+      ],
+      "outputs": [
+        "135088f95779d7f7b82d07f979aafe89e42057c57afd9b25362cdeb3bb4086de",
+        "f22d8afa7fe134e962473bcc26f881b75431a7d2937e4f8c3eb2337742007841",
+        "7ea0c25b64bc44c7e33b4b506f1fa8f658605d6503d42188c6d86cae29b7ecad"
+      ],
+      "secrets": [
+        "6b76704c6e59e6084929e0bf780e334676387cddab02f1421594e3ce4e711346",
+        "803adad85dfab6a8c1786be8672309e8e4ac2451df2e9d942c5a705d6deb4169",
+        "f3c5734d343a2b99f751d692c3dbcd07657dd343ebfe69a1168bb9fdf4e663e3"
+      ],
+      "tb": [
+        "tb1pzdgg372h08tl0wpdqluhn2h738jzq4790t7ekffk9n0t8w6qsm0q5340vh",
+        "tb1p7gkc47nluy6wjcj880xzd7ypka2rrf7jjdlylrp7kgehwssq0pqs42s9x7",
+        "tb1p06svykmyh3zv0cemfdgx78ag7evxqht9q02zrzxxmpk2u2dhajkspvhjr4"
+      ],
+      "bc": [
+        "bc1pzdgg372h08tl0wpdqluhn2h738jzq4790t7ekffk9n0t8w6qsm0qrerqkc",
+        "bc1p7gkc47nluy6wjcj880xzd7ypka2rrf7jjdlylrp7kgehwssq0pqszzx2u3",
+        "bc1p06svykmyh3zv0cemfdgx78ag7evxqht9q02zrzxxmpk2u2dhajkskypae6"
+      ]
+    },
+    {
+      "name": "even-base-bare-x",
+      "note": "an even-y base given bare agrees with its full point",
+      "base": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "basePoint": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "secret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "holderSecret": "0000000000000000000000000000000000000000000000000000000000000001",
+      "states": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "stateStrings": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "tweaks": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66665",
+        "dee113fc1042b210d0b4f4ce2671660c40a595e30bb61989d8593053d85205e8",
+        "9d9ed3ef215c66198455a13562342a1938b4671da7b2a9244d0076204cb9a975"
+      ],
+      "points": [
+        "02188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69",
+        "03751bab739a336e48b0c6861534901e2f01d7578eccd6002e573c0050a9cd2f03",
+        "023a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460"
+      ],
+      "outputs": [
+        "188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69",
+        "751bab739a336e48b0c6861534901e2f01d7578eccd6002e573c0050a9cd2f03",
+        "3a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460"
+      ],
+      "secrets": [
+        "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66666",
+        "efb1e7329888bb98a571b0a77fb92d0681358279a9b0f2b8bd66acd880086c4e",
+        "8d50bb21b9e521b229c751dce1ed5720ff3b0cb0a21afba14a94c46bfc8bd482"
+      ],
+      "tb": [
+        "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e",
+        "tb1pw5d6kuu6xdhy3vxxsc2nfyq79uqaw4uwentqqtjh8sq9p2wd9upsnqvqmy",
+        "tb1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqlg6upc"
+      ],
+      "bc": [
+        "bc1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035sjg8fqk",
+        "bc1pw5d6kuu6xdhy3vxxsc2nfyq79uqaw4uwentqqtjh8sq9p2wd9upsyg60pt",
+        "bc1p8fr3ad9qs4z5ht6craf6fs9yhvfzddsf46vv8x53p2nllx4f53sqgqvnmh"
+      ]
+    },
+    {
+      "name": "text-and-object-states",
+      "note": "a string state hashes as its UTF-8 text (never quoted), an object as its JCS",
+      "base": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "basePoint": "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "secret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "holderSecret": "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef",
+      "states": [
+        "é✓ plain text",
+        {
+          "z": {
+            "b": [
+              3,
+              {
+                "y": "é✓",
+                "x": null
+              }
+            ],
+            "a": true
+          },
+          "a": -7,
+          "m": "line\nbreak \"quoted\""
+        },
+        "{\"a\":1}"
+      ],
+      "stateStrings": [
+        "é✓ plain text",
+        "{\"a\":-7,\"m\":\"line\\nbreak \\\"quoted\\\"\",\"z\":{\"a\":true,\"b\":[3,{\"x\":null,\"y\":\"é✓\"}]}}",
+        "{\"a\":1}"
+      ],
+      "tweaks": [
+        "91d0a36a25131058c4516196dda9531d4f45a0731450f68caf5bf6f1b980718a",
+        "b9675396c110b6c644db5c68719056eb7f7d463d55ab82b2d15461482cc6c6b1",
+        "80ac4aaea66bc782965c3bf0be72cf967bfa0bb76f97eb6ab65514aa1efda40c"
+      ],
+      "points": [
+        "0242b6835b957b1bb3e1aae278d870d4cc6d56efad56baafbc5003ea09906e9898",
+        "0338ed457d4f16f93c9b2284209beecf07a1b15b73a86fe452f3d2591d65896cb8",
+        "025bfb545750fdbfdfb30da89c4be0641859caee54deb3e998fa1bddf4a3fabb0e"
+      ],
+      "outputs": [
+        "42b6835b957b1bb3e1aae278d870d4cc6d56efad56baafbc5003ea09906e9898",
+        "38ed457d4f16f93c9b2284209beecf07a1b15b73a86fe452f3d2591d65896cb8",
+        "5bfb545750fdbfdfb30da89c4be0641859caee54deb3e998fa1bddf4a3fabb0e"
+      ],
+      "secrets": [
+        "49b1f4ccb0003ac383c2ba177a9e46e5f77dd99b9dbd30a7970e71693adb0038",
+        "031948637110f189c89e167fec2e9dd2bc4c42f24420131ea8907424976b85a8",
+        "83c59312177cb90c5efa5270aaa16d6938464ea9b3b7fe895ee588ceb66929b4"
+      ],
+      "tb": [
+        "tb1pg2mgxku40vdm8cd2ufudsux5e3k4dmad26a2l0zsq04qnyrwnzvqcf4qsk",
+        "tb1p8rk52l20zmunexezsssfhmk0q7smzkmn4ph7g5hn6fv36evfdjuq9sy83h",
+        "tb1pt0a4g46slklalvcd4zwyhcryrpvu4mj5m6e7nx86r0wlfgl6hv8qa2ts4t"
+      ],
+      "bc": [
+        "bc1pg2mgxku40vdm8cd2ufudsux5e3k4dmad26a2l0zsq04qnyrwnzvq0pr02e",
+        "bc1p8rk52l20zmunexezsssfhmk0q7smzkmn4ph7g5hn6fv36evfdjuqjcjgtc",
+        "bc1pt0a4g46slklalvcd4zwyhcryrpvu4mj5m6e7nx86r0wlfgl6hv8q2zal0y"
+      ]
+    },
+    {
+      "name": "git-mark-live-trail",
+      "note": "blocktrails/git-mark b852d7d: the first three marks of the live trail, commits as text",
+      "base": "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "basePoint": "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "states": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940"
+      ],
+      "stateStrings": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940"
+      ],
+      "tweaks": [
+        "3fb5d402b5899483c2af2628a939a80f7480e3aa1d10c0258cdf123d67e051a8",
+        "eebedb61b2ed57ff5379f8656187348e061f2ade6a17ff78594e1945f891fa40",
+        "b9201bf2d8bae60b279782c69cfa0883862e0a5156e6c76282d4a1625af7dc6b"
+      ],
+      "points": [
+        "02e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "033ef39ed4fc2a739d8d67f59db78da7b06ac4224d9919b05f963889086e3f58f6",
+        "03d7abfea9a395ab2218d4a68558186ade4be4f632125f8520485e62443b3e59cf"
+      ],
+      "outputs": [
+        "e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "3ef39ed4fc2a739d8d67f59db78da7b06ac4224d9919b05f963889086e3f58f6",
+        "d7abfea9a395ab2218d4a68558186ade4be4f632125f8520485e62443b3e59cf"
+      ],
+      "tb": [
+        "tb1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0sdxlkml",
+        "tb1p8meea48u9feemrt87kwm0rd8kp4vggjdnyvmqhuk8zyssm3ltrmqg3ug5j",
+        "tb1p674la2drjk4jyxx556z4sxr2me97fa3jzf0c2gzgte3ygwe7t88spjkruw"
+      ],
+      "bc": [
+        "bc1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0s6wfeps",
+        "bc1p8meea48u9feemrt87kwm0rd8kp4vggjdnyvmqhuk8zyssm3ltrmqle28wa",
+        "bc1p674la2drjk4jyxx556z4sxr2me97fa3jzf0c2gzgte3ygwe7t88sk6qvxp"
+      ]
+    },
+    {
+      "name": "git-mark-live-trail-bare-x",
+      "note": "the same base as a bare x (it is 02, so it agrees)",
+      "base": "73c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "basePoint": "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "states": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940"
+      ],
+      "stateStrings": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940"
+      ],
+      "tweaks": [
+        "3fb5d402b5899483c2af2628a939a80f7480e3aa1d10c0258cdf123d67e051a8",
+        "eebedb61b2ed57ff5379f8656187348e061f2ade6a17ff78594e1945f891fa40",
+        "b9201bf2d8bae60b279782c69cfa0883862e0a5156e6c76282d4a1625af7dc6b"
+      ],
+      "points": [
+        "02e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "033ef39ed4fc2a739d8d67f59db78da7b06ac4224d9919b05f963889086e3f58f6",
+        "03d7abfea9a395ab2218d4a68558186ade4be4f632125f8520485e62443b3e59cf"
+      ],
+      "outputs": [
+        "e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "3ef39ed4fc2a739d8d67f59db78da7b06ac4224d9919b05f963889086e3f58f6",
+        "d7abfea9a395ab2218d4a68558186ade4be4f632125f8520485e62443b3e59cf"
+      ],
+      "tb": [
+        "tb1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0sdxlkml",
+        "tb1p8meea48u9feemrt87kwm0rd8kp4vggjdnyvmqhuk8zyssm3ltrmqg3ug5j",
+        "tb1p674la2drjk4jyxx556z4sxr2me97fa3jzf0c2gzgte3ygwe7t88spjkruw"
+      ],
+      "bc": [
+        "bc1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0s6wfeps",
+        "bc1p8meea48u9feemrt87kwm0rd8kp4vggjdnyvmqhuk8zyssm3ltrmqle28wa",
+        "bc1p674la2drjk4jyxx556z4sxr2me97fa3jzf0c2gzgte3ygwe7t88sk6qvxp"
+      ]
+    },
+    {
+      "name": "git-mark-swapped",
+      "note": "commits 2 and 3 swapped: the first output agrees, every one from the swap on differs (git-mark refuses at index 1)",
+      "base": "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "basePoint": "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24",
+      "states": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e"
+      ],
+      "stateStrings": [
+        "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+        "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940",
+        "4490c4c39e145915c59c0964b6dcd8dc720c9d2e"
+      ],
+      "tweaks": [
+        "3fb5d402b5899483c2af2628a939a80f7480e3aa1d10c0258cdf123d67e051a8",
+        "946c0b8d8afc922f1c27f4378404e835ca4b01db5d54d879af58ee6238624c4e",
+        "9aba931122fff32b98da303eac512a551b42f3f0545b325c22f0fb5d91a0627c"
+      ],
+      "points": [
+        "02e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "0270cea4b3c95213ad06f2517b77ca414e37036c4d6e5ba390029034cd556195b0",
+        "0327befcc5a8a1131e3692b07d6dd30fee3b265545e3c9a743f4d3f39807004834"
+      ],
+      "outputs": [
+        "e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+        "70cea4b3c95213ad06f2517b77ca414e37036c4d6e5ba390029034cd556195b0",
+        "27befcc5a8a1131e3692b07d6dd30fee3b265545e3c9a743f4d3f39807004834"
+      ],
+      "tb": [
+        "tb1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0sdxlkml",
+        "tb1pwr82fv7f2gf66phj29ah0jjpfcmsxmzdded68yqzjq6v64tpjkcqusj8zx",
+        "tb1py7l0e3dg5yf3ud5jkp7km5c0acajv429u0y6wsl560eespcqfq6ql0wmkh"
+      ],
+      "bc": [
+        "bc1puspauu7f0jmu5tham2uzxjf60w2fpp0yqzr6e9l7dzzdkykvwl0s6wfeps",
+        "bc1pwr82fv7f2gf66phj29ah0jjpfcmsxmzdded68yqzjq6v64tpjkcqtcygcf",
+        "bc1py7l0e3dg5yf3ud5jkp7km5c0acajv429u0y6wsl560eespcqfq6qg8c5vc"
+      ]
+    }
+  ]
+}

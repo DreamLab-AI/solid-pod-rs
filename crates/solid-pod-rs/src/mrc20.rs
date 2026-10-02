@@ -6,7 +6,14 @@
 //! - Transfer operation extraction and deposit verification.
 //!
 //! When the `mrc20` feature is enabled, also provides:
-//! - BIP-341 taproot key chaining for per-state P2TR address derivation.
+//! - Blocktrails key chaining for per-state P2TR address derivation, the rule
+//!   blocktrails/spec ef54a08 states ("the rule as it is"): the tweak is BIP
+//!   341's `TapTweak` hash of `x(P) || sha256(state)`, added to the full point
+//!   `P` (never its even-y lift), and each output key is `x(P)` itself.
+//! - Reading a base key as a compressed point, a bare x (the even-y point) or
+//!   a did:nostr identifier (`bt_base_point`), and the per-link walk
+//!   blocktrails/verify checks a trail with (`bt_trail_outputs`,
+//!   `bt_verify_trail_outputs`).
 //! - Bech32m (BIP-350) taproot addresses, via rust-bitcoin.
 //! - Full anchor verification against mempool UTXOs.
 //!
@@ -69,6 +76,33 @@ pub fn jcs(value: &Value) -> String {
 /// SHA-256 hex digest of a string.
 pub fn sha256_hex(input: &str) -> String {
     hex::encode(Sha256::digest(input.as_bytes()))
+}
+
+/// The string a Blocktrails state is hashed as when it is chained: a string
+/// state is its own text, any other JSON value its JCS ([`jcs`]).
+///
+/// This is blocktrails/verify's `stateHash` (043e7af): a string state hashes
+/// as its UTF-8 text, never as `JSON.stringify` of it (which would quote it),
+/// so a git-mark commit is its 40 lowercase hex characters; an object state,
+/// such as an [`Mrc20State`], hashes as its JCS. The MRC20 trails this crate
+/// keeps already store each state's JCS in `state_strings`, which is the same
+/// string this function gives for the state as an object.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use solid_pod_rs::mrc20::bt_state_string;
+///
+/// let commit = "9adc596cfd1100333393a12f2f41b2d820f16d0b";
+/// assert_eq!(bt_state_string(&json!(commit)), commit);
+/// assert_eq!(bt_state_string(&json!({"b": 1, "a": [true, null]})), r#"{"a":[true,null],"b":1}"#);
+/// ```
+pub fn bt_state_string(state: &Value) -> String {
+    match state {
+        Value::String(text) => text.clone(),
+        other => jcs(other),
+    }
 }
 
 // ── MRC20 state types ───────────────────────────────────────────────
@@ -343,73 +377,345 @@ mod anchor {
     use bitcoin::taproot::TapTweakHash;
     use bitcoin::{Address, KnownHrp};
 
+    // The derivation is Blocktrails Core as blocktrails/spec ef54a08 states it
+    // ("the rule as it is"), and as blocktrails/verify 043e7af and
+    // blocktrails/git-mark b852d7d compute it with sidestr/spec `keys.mjs`:
+    //
+    //   t_i = int(TaggedHash("TapTweak", x(P_{i-1}) || sha256(state_i))) mod n, t_i != 0
+    //   P_i = P_{i-1} + t_i·G      on the full point, never its even-y lift
+    //   d_i = d_{i-1} + t_i mod n  so d_i·G = P_i exactly, whatever the parities
+    //   output_i = x(P_i)          a raw taproot key (`rawtr()`), no further tweak
+    //
+    // The hash is BIP 341's; the derivation is not (BIP 341 lifts before every
+    // tweak). The x-only form appears only at the output and inside BIP 340
+    // signing.
+
+    /// `int(h) mod n` for a 32-byte hash `h`, refusing zero: the scalar rule of
+    /// blocktrails/spec (`t = int(t) mod n`, a zero `t` rejects the state) and
+    /// of sidestr/spec `keys.mjs` `taggedScalar`.
+    ///
+    /// A hash at or above the group order (probability about 2^-128) is reduced
+    /// rather than refused: `h = (h - 2^255) + 2^255`, both terms below `n`, and
+    /// libsecp256k1 adds them mod `n`. The only such `h` that reduces to zero is
+    /// `n` itself, which `add_tweak` refuses.
+    fn scalar_mod_n(h: [u8; 32]) -> Option<Scalar> {
+        if let Ok(s) = Scalar::from_be_bytes(h) {
+            return (s != Scalar::ZERO).then_some(s);
+        }
+        let mut low = h;
+        low[0] &= 0x7f;
+        let mut high = [0u8; 32];
+        high[0] = 0x80;
+        let sum = SecretKey::from_slice(&low)
+            .ok()?
+            .add_tweak(&Scalar::from_be_bytes(high).ok()?)
+            .ok()?;
+        Scalar::from_be_bytes(sum.secret_bytes()).ok()
+    }
+
     /// The chaining scalar for one state:
-    /// `TaggedHash("TapTweak", x_only(current) || SHA-256(state)) mod n`.
+    /// `TaggedHash("TapTweak", x(current) || SHA-256(state)) mod n`, never zero.
     ///
     /// This is BIP-341's `TapTweak` tagged hash with `SHA-256(state)` in the
     /// place of a script-tree root, computed with rust-bitcoin's
     /// [`TapTweakHash`] engine. Unlike a BIP-341 output tweak it is added to
     /// the full point `P` (its Y parity unchanged), not to `lift_x(x(P))`.
-    /// `current` must be a 33-byte compressed key; a hash at or above the
-    /// group order yields `None`.
-    fn bt_scalar(current_compressed: &[u8], state_jcs: &str) -> Option<Scalar> {
-        if current_compressed.len() != 33 {
-            return None;
-        }
-        let state_hash = sha256::Hash::hash(state_jcs.as_bytes());
+    /// `None` means the state must be refused (`t = 0`).
+    fn bt_scalar(current: &PublicKey, state_string: &str) -> Option<Scalar> {
+        let state_hash = sha256::Hash::hash(state_string.as_bytes());
         let mut engine = TapTweakHash::engine();
-        engine.input(&current_compressed[1..]);
+        engine.input(&current.serialize()[1..]);
         engine.input(state_hash.as_byte_array());
-        Scalar::from_be_bytes(TapTweakHash::from_engine(engine).to_byte_array()).ok()
+        scalar_mod_n(TapTweakHash::from_engine(engine).to_byte_array())
+    }
+
+    fn refused_state() -> PaymentError {
+        PaymentError::InvalidState("the tweak is zero: refuse this state".into())
+    }
+
+    /// Parse a base key into its full point (see [`bt_base_point`]).
+    fn base_point(id: &str) -> Result<PublicKey, PaymentError> {
+        let s = id.trim().to_ascii_lowercase();
+        let is_hex = |h: &str| h.bytes().all(|b| b.is_ascii_hexdigit());
+        let is_point = |h: &str| h.len() == 66 && (h.starts_with("02") || h.starts_with("03"));
+        let bare = s.strip_prefix("did:nostr:").unwrap_or(&s);
+        let compressed = if bare.len() == 64 && is_hex(bare) {
+            format!("02{bare}")
+        } else if let Some(mk) = s.strip_prefix("fe701").filter(|m| is_point(m) && is_hex(m)) {
+            mk.to_string()
+        } else if is_point(&s) && is_hex(&s) {
+            s.clone()
+        } else {
+            return Err(PaymentError::InvalidState(
+                "bad pubkey: not a compressed point (02/03 + x), a bare x, a did:nostr \
+                 identifier or a did:nostr Multikey"
+                    .into(),
+            ));
+        };
+        let bytes = hex::decode(&compressed)
+            .map_err(|e| PaymentError::InvalidState(format!("bad pubkey hex: {e}")))?;
+        PublicKey::from_slice(&bytes)
+            .map_err(|e| PaymentError::InvalidState(format!("bad pubkey: not on the curve: {e}")))
+    }
+
+    /// Walk the chain from `base`, returning every chained point `P_1..P_k`.
+    fn walk_points(
+        base: PublicKey,
+        state_strings: &[String],
+    ) -> Result<Vec<PublicKey>, PaymentError> {
+        let secp = Secp256k1::verification_only();
+        let mut point = base;
+        let mut points = Vec::with_capacity(state_strings.len());
+        for state in state_strings {
+            let t = bt_scalar(&point, state).ok_or_else(refused_state)?;
+            point = point
+                .add_exp_tweak(&secp, &t)
+                .map_err(|e| PaymentError::InvalidState(format!("point at infinity: {e}")))?;
+            points.push(point);
+        }
+        Ok(points)
+    }
+
+    /// Read a trail's base key as the full point it names, compressed
+    /// (33 bytes), as sidestr/spec `keys.mjs` `basePoint` does: the rule
+    /// blocktrails/spec ef54a08 states and blocktrails/verify applies to a
+    /// trail's `pubkeyBase`.
+    ///
+    /// - A compressed point, `02`/`03` + x (66 hex): that point, parity kept.
+    ///   A trail publishes its base this way, so a verifier has nothing to guess.
+    /// - A bare x-only key (64 hex) or `did:nostr:<x>`: the even-y point `02` + x.
+    /// - A did:nostr Multikey, `fe701` + compressed point: that point.
+    ///
+    /// Input is trimmed and read case-insensitively; anything else, and any x
+    /// that is not on the curve, is refused. A bare x names the even-y point
+    /// whatever the parity of its holder's key, so the holder normalises the
+    /// secret once with [`bt_normalize_privkey`] before deriving chained
+    /// secrets from it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::bt_base_point;
+    ///
+    /// let x = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    /// let even = format!("02{x}");
+    /// assert_eq!(hex::encode(bt_base_point(x).unwrap()), even);
+    /// assert_eq!(hex::encode(bt_base_point(&format!("did:nostr:{x}")).unwrap()), even);
+    /// // a full point keeps its parity
+    /// let odd = format!("03{x}");
+    /// assert_eq!(hex::encode(bt_base_point(&odd).unwrap()), odd);
+    /// assert!(bt_base_point("not a key").is_err());
+    /// ```
+    pub fn bt_base_point(pubkey_base: &str) -> Result<[u8; 33], PaymentError> {
+        Ok(base_point(pubkey_base)?.serialize())
     }
 
     /// Iteratively derive a chained public key through a sequence of state strings.
     ///
-    /// For each state, tweaks the current point by `G * bt_scalar(current, state)`
-    /// and returns the final compressed (33-byte) key. With no states, the
-    /// base key's own bytes come back unchanged.
+    /// For each state, tweaks the current point by `G * t` with
+    /// `t = TaggedHash("TapTweak", x(current) || SHA-256(state)) mod n`, on the
+    /// full point (never its even-y lift), and returns the final compressed
+    /// (33-byte) key. With no states, the base point comes back unchanged.
+    ///
+    /// `pubkey_base_hex` is read by [`bt_base_point`]: a compressed point as
+    /// every stored trail has it, or a bare x (read as `02` + x), a
+    /// `did:nostr:` identifier or a Multikey.
+    ///
+    /// Each state string is hashed as its UTF-8 bytes, which is
+    /// blocktrails/verify's `stateHash`: an object state is passed as its JCS
+    /// (see [`jcs`] and [`bt_state_string`]), a string state as its text with
+    /// no JSON quoting (a git-mark commit is its 40 lowercase hex characters).
+    /// A state whose tweak is zero is refused.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::bt_derive_chained_pubkey;
+    ///
+    /// // base 1·G over the states "s1", "s2", "s3"
+    /// let g = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    /// let states: Vec<String> = ["s1", "s2", "s3"].map(String::from).to_vec();
+    /// let head = bt_derive_chained_pubkey(g, &states).unwrap();
+    /// assert_eq!(
+    ///     hex::encode(&head),
+    ///     "023a471eb4a085454baf581f53a4c0a4bb1226b609ae98c39a910aa7ff9aa9a460"
+    /// );
+    /// // the same base as a bare x: 1·G is even-y, so the 02 reading agrees
+    /// assert_eq!(bt_derive_chained_pubkey(&g[2..], &states).unwrap(), head);
+    /// ```
     pub fn bt_derive_chained_pubkey(
         pubkey_base_hex: &str,
         state_strings: &[String],
     ) -> Result<Vec<u8>, PaymentError> {
-        let pubkey_bytes = hex::decode(pubkey_base_hex)
-            .map_err(|e| PaymentError::InvalidState(format!("bad pubkey hex: {e}")))?;
-        let mut point = PublicKey::from_slice(&pubkey_bytes)
-            .map_err(|e| PaymentError::InvalidState(format!("bad pubkey: {e}")))?;
-        let secp = Secp256k1::verification_only();
-        let mut current_compressed = pubkey_bytes;
+        let base = base_point(pubkey_base_hex)?;
+        let points = walk_points(base, state_strings)?;
+        Ok(points.last().unwrap_or(&base).serialize().to_vec())
+    }
 
-        for state_jcs in state_strings {
-            let t = bt_scalar(&current_compressed, state_jcs)
-                .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
-            point = point
-                .add_exp_tweak(&secp, &t)
-                .map_err(|e| PaymentError::InvalidState(format!("point at infinity: {e}")))?;
-            current_compressed = point.serialize().to_vec();
+    /// The x-only output key of every link of a trail: `x(P_1) .. x(P_k)`, one
+    /// per state, from the base key and the states.
+    ///
+    /// This is the walk blocktrails/verify runs to check a trail's commitment:
+    /// its result is compared, mark by mark, with the output each mark's
+    /// transaction carries on-chain (see [`bt_verify_trail_outputs`]). The base
+    /// is read by [`bt_base_point`], each state string as in
+    /// [`bt_derive_chained_pubkey`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::bt_trail_outputs;
+    ///
+    /// // blocktrails/git-mark's live trail: the commits are the states, as text
+    /// let base = "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24";
+    /// let commits = vec!["9adc596cfd1100333393a12f2f41b2d820f16d0b".to_string()];
+    /// let outputs = bt_trail_outputs(base, &commits).unwrap();
+    /// assert_eq!(
+    ///     hex::encode(outputs[0]),
+    ///     "e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df"
+    /// );
+    /// ```
+    pub fn bt_trail_outputs(
+        pubkey_base: &str,
+        state_strings: &[String],
+    ) -> Result<Vec<[u8; 32]>, PaymentError> {
+        let points = walk_points(base_point(pubkey_base)?, state_strings)?;
+        Ok(points
+            .iter()
+            .map(|p| p.x_only_public_key().0.serialize())
+            .collect())
+    }
+
+    /// Check every link of a trail, not the head alone: recompute each mark's
+    /// output key from the base key and the states ([`bt_trail_outputs`]) and
+    /// compare it with the x-only output key found on-chain for that mark.
+    ///
+    /// `onchain_outputs[i]` is the 32-byte witness program of mark `i`'s
+    /// output (the `<x>` of its `OP_1 <x>` script). There must be exactly one
+    /// state per mark. The error names the first mark that does not match,
+    /// as blocktrails/git-mark's `verify` does (`mismatch at index i`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::{bt_trail_outputs, bt_verify_trail_outputs};
+    ///
+    /// let base = "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24";
+    /// let states: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+    /// let onchain = bt_trail_outputs(base, &states).unwrap();
+    /// assert!(bt_verify_trail_outputs(base, &states, &onchain).is_ok());
+    /// // the same states in another order commit to other outputs
+    /// let swapped: Vec<String> = ["a", "c", "b"].map(String::from).to_vec();
+    /// let err = bt_verify_trail_outputs(base, &swapped, &onchain).unwrap_err();
+    /// assert!(err.to_string().contains("mismatch at index 1"));
+    /// ```
+    pub fn bt_verify_trail_outputs(
+        pubkey_base: &str,
+        state_strings: &[String],
+        onchain_outputs: &[[u8; 32]],
+    ) -> Result<(), PaymentError> {
+        if state_strings.len() != onchain_outputs.len() {
+            return Err(PaymentError::InvalidState(format!(
+                "the trail has {} marks and {} states",
+                onchain_outputs.len(),
+                state_strings.len()
+            )));
         }
+        let expected = bt_trail_outputs(pubkey_base, state_strings)?;
+        match expected
+            .iter()
+            .zip(onchain_outputs)
+            .position(|(want, got)| want != got)
+        {
+            None => Ok(()),
+            Some(i) => Err(PaymentError::InvalidState(format!(
+                "mismatch at index {i}: expected output {}, found {}",
+                hex::encode(expected[i]),
+                hex::encode(onchain_outputs[i])
+            ))),
+        }
+    }
 
-        Ok(current_compressed)
+    /// Normalise a holder's secret once to the secret of the even-y point with
+    /// the same x: `d` itself when `d·G` has even y, otherwise `n - d`
+    /// (sidestr/spec `keys.mjs` `normalize`).
+    ///
+    /// Use it when a trail's base was published as a bare x (or a
+    /// `did:nostr:` identifier), which names the even-y point: the normalised
+    /// secret is then exactly the base point's, and
+    /// [`bt_derive_chained_privkey`] from it gives the secret of every chained
+    /// point. Never apply it between steps, and never to a trail whose base is
+    /// stored as a full compressed point: there the secret as stored already
+    /// matches the base.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::bt_normalize_privkey;
+    ///
+    /// // 1·G has even y: unchanged
+    /// let one = format!("{:064x}", 1);
+    /// assert_eq!(hex::encode(bt_normalize_privkey(&one).unwrap()), one);
+    /// // 10·G has odd y: n - 10
+    /// let ten = format!("{:064x}", 10);
+    /// assert_eq!(
+    ///     hex::encode(bt_normalize_privkey(&ten).unwrap()),
+    ///     "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364137"
+    /// );
+    /// ```
+    pub fn bt_normalize_privkey(privkey_hex: &str) -> Result<Vec<u8>, PaymentError> {
+        let d = parse_privkey(privkey_hex)?;
+        let (_, parity) = d.x_only_public_key(&Secp256k1::signing_only());
+        let d = if parity == bitcoin::secp256k1::Parity::Odd {
+            d.negate()
+        } else {
+            d
+        };
+        Ok(d.secret_bytes().to_vec())
+    }
+
+    fn parse_privkey(privkey_hex: &str) -> Result<SecretKey, PaymentError> {
+        let privkey_bytes = hex::decode(privkey_hex)
+            .map_err(|e| PaymentError::InvalidState(format!("bad privkey hex: {e}")))?;
+        SecretKey::from_slice(&privkey_bytes)
+            .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))
     }
 
     /// Derive a chained private key through a sequence of state strings.
     ///
     /// The secret-key counterpart of [`bt_derive_chained_pubkey`]: each
-    /// state adds the same scalar mod n. `privkey_hex` must be exactly 32
-    /// bytes of hex.
+    /// state adds the same scalar mod n, so the result's point is exactly the
+    /// chained point from `privkey_hex`'s own full point (its parity kept).
+    /// `privkey_hex` must be exactly 32 bytes of hex. For a base published as
+    /// a bare x, pass the secret through [`bt_normalize_privkey`] first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::{bt_derive_chained_privkey, bt_derive_chained_pubkey};
+    ///
+    /// let one = format!("{:064x}", 1);
+    /// let g = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    /// let states = vec!["s1".to_string()];
+    /// let d = bt_derive_chained_privkey(&one, &states).unwrap();
+    /// assert_eq!(
+    ///     hex::encode(&d),
+    ///     "10d0d33688460987d4bcbbd95947c6fa408fec969dfad92ee50d7c84a7b66666"
+    /// );
+    /// assert_eq!(
+    ///     hex::encode(bt_derive_chained_pubkey(g, &states).unwrap()),
+    ///     "02188885c94d9dac1636becb4891e6a0f045f4dcade83a35dc82f67965d1c07c69"
+    /// );
+    /// ```
     pub fn bt_derive_chained_privkey(
         privkey_hex: &str,
         state_strings: &[String],
     ) -> Result<Vec<u8>, PaymentError> {
-        let privkey_bytes = hex::decode(privkey_hex)
-            .map_err(|e| PaymentError::InvalidState(format!("bad privkey hex: {e}")))?;
-        let mut d = SecretKey::from_slice(&privkey_bytes)
-            .map_err(|e| PaymentError::InvalidState(format!("bad privkey: {e}")))?;
+        let mut d = parse_privkey(privkey_hex)?;
         let secp = Secp256k1::signing_only();
 
-        for state_jcs in state_strings {
-            let current_compressed = d.public_key(&secp).serialize();
-            let t = bt_scalar(&current_compressed, state_jcs)
-                .ok_or_else(|| PaymentError::InvalidState("scalar derivation failed".into()))?;
+        for state in state_strings {
+            let t = bt_scalar(&d.public_key(&secp), state).ok_or_else(refused_state)?;
             d = d
                 .add_tweak(&t)
                 .map_err(|e| PaymentError::InvalidState(format!("zero chained key: {e}")))?;
@@ -420,8 +726,24 @@ mod anchor {
 
     /// Derive the taproot (P2TR) address for a state chain.
     ///
-    /// Takes the issuer's compressed pubkey (66-char hex), the full
-    /// sequence of JCS-encoded state strings, and the network.
+    /// Takes the issuer's base key (a 66-char compressed point as stored
+    /// trails carry it, or any form [`bt_base_point`] reads), the full
+    /// sequence of state strings (JCS for MRC20 states), and the network.
+    /// The output key is `x(P_k)` itself, with no further BIP-341 tweak:
+    /// `bc` on `"mainnet"`, `tb` for every other network name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::bt_address;
+    ///
+    /// let g = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    /// let states = vec!["s1".to_string()];
+    /// assert_eq!(
+    ///     bt_address(g, &states, "testnet4").unwrap(),
+    ///     "tb1przygtj2dnkkpvd47edyfre4q7pzlfh9daqarthyz7eukt5wq035s9q3x6e"
+    /// );
+    /// ```
     pub fn bt_address(
         pubkey_hex: &str,
         state_strings: &[String],
@@ -452,6 +774,70 @@ mod anchor {
     #[cfg(test)]
     mod vector_tests {
         use super::*;
+
+        const N_HEX: &str = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+
+        fn h32(h: &str) -> [u8; 32] {
+            hex::decode(h).unwrap().try_into().unwrap()
+        }
+
+        /// `int(h) mod n`, zero refused: below `n` unchanged, `n` itself
+        /// refused (it reduces to zero), above `n` reduced. Known answers:
+        /// `n + 1 -> 1` and `2^256 - 1 -> 2^256 - 1 - n`
+        /// (`2^256 - n = 0x14551231950b75fc4402da1732fc9bebf`).
+        #[test]
+        fn scalar_mod_n_reduces_and_refuses_zero() {
+            let scal = |h: &str| scalar_mod_n(h32(h)).map(|s| hex::encode(s.to_be_bytes()));
+            assert_eq!(scal(&"0".repeat(64)), None);
+            let one = format!("{:064x}", 1);
+            assert_eq!(scal(&one).as_deref(), Some(one.as_str()));
+            let n_minus_1 = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140";
+            assert_eq!(scal(n_minus_1).as_deref(), Some(n_minus_1));
+            assert_eq!(scal(N_HEX), None);
+            let n_plus_1 = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142";
+            assert_eq!(scal(n_plus_1).as_deref(), Some(one.as_str()));
+            assert_eq!(
+                scal(&"f".repeat(64)).as_deref(),
+                Some("000000000000000000000000000000014551231950b75fc4402da1732fc9bebe")
+            );
+        }
+
+        /// The base-key forms of sidestr/spec `keys.mjs` `basePoint`.
+        #[test]
+        fn base_point_forms() {
+            let x = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+            let even = format!("02{x}");
+            let odd = format!("03{x}");
+            for id in [
+                x.to_string(),
+                x.to_uppercase(),
+                format!("  {x}\n"),
+                format!("did:nostr:{x}"),
+                format!("fe701{even}"),
+                even.clone(),
+            ] {
+                assert_eq!(hex::encode(bt_base_point(&id).unwrap()), even, "{id:?}");
+            }
+            assert_eq!(hex::encode(bt_base_point(&odd).unwrap()), odd);
+            assert_eq!(
+                hex::encode(bt_base_point(&format!("fe701{odd}")).unwrap()),
+                odd
+            );
+            // x = 5 is not on secp256k1 (5^3 + 7 = 132 is not a square mod p)
+            let off_curve = format!("{:064x}", 5);
+            for bad in [
+                off_curve.clone(),
+                format!("02{off_curve}"),
+                format!("04{x}"),
+                format!("did:nostr:{even}"),
+                format!("fe7010{x}"),
+                x[..62].to_string(),
+                format!("{}zz", &x[..62]),
+                String::new(),
+            ] {
+                assert!(bt_base_point(&bad).is_err(), "{bad:?} accepted");
+            }
+        }
 
         /// Every BIP-341 `scriptPubKey` vector carries the BIP-350 (bech32m)
         /// mainnet address of its output key. Fixture: verbatim copy of
@@ -1090,6 +1476,80 @@ mod tests {
                 );
                 assert_eq!(bt_address(&base, &chain, "testnet4").unwrap(), *tb);
             }
+        }
+
+        /// blocktrails/git-mark b852d7d `test/gitmark.test.js`, "the live rule,
+        /// pinned by the first three marks of an on-chain trail (1 Oct 2026)":
+        /// base key, commits (each state is the commit as text) and the x-only
+        /// outputs the chain carries. These are the git-mark profile on
+        /// tbtc4; the trails this crate keeps are MRC20 on testnet4, so the
+        /// pin proves the shared arithmetic (TapTweak hash, full-point
+        /// addition, x-only output), not the profile.
+        const GITMARK_BASE: &str =
+            "0273c7f6cf0f135a63bc95a2e676bcf0a592c8b508fae8697e43f778c74e232b24";
+        const GITMARK_COMMITS: [&str; 3] = [
+            "9adc596cfd1100333393a12f2f41b2d820f16d0b",
+            "4490c4c39e145915c59c0964b6dcd8dc720c9d2e",
+            "699ee3a3ea9332cc9ec435acf8fd8cd07eecf940",
+        ];
+        const GITMARK_OUTPUTS: [&str; 3] = [
+            "e403de73c97cb7ca2efddab823493a7b949085e40087ac97fe6884db12cc77df",
+            "3ef39ed4fc2a739d8d67f59db78da7b06ac4224d9919b05f963889086e3f58f6",
+            "d7abfea9a395ab2218d4a68558186ade4be4f632125f8520485e62443b3e59cf",
+        ];
+
+        fn gitmark_onchain() -> Vec<[u8; 32]> {
+            GITMARK_OUTPUTS
+                .iter()
+                .map(|o| hex::decode(o).unwrap().try_into().unwrap())
+                .collect()
+        }
+
+        #[test]
+        fn gitmark_live_trail_pin() {
+            let commits: Vec<String> = GITMARK_COMMITS.iter().map(|c| c.to_string()).collect();
+            // each prefix's head is the mark's output (x-only of the intermediate point)
+            for i in 0..commits.len() {
+                let head = bt_derive_chained_pubkey(GITMARK_BASE, &commits[..=i]).unwrap();
+                assert_eq!(hex::encode(&head[1..]), GITMARK_OUTPUTS[i], "mark {i}");
+            }
+            // a commit is hashed as its text: bt_state_string gives it back unquoted
+            for c in &commits {
+                assert_eq!(bt_state_string(&Value::String(c.clone())), *c);
+            }
+            let onchain = gitmark_onchain();
+            assert_eq!(bt_trail_outputs(GITMARK_BASE, &commits).unwrap(), onchain);
+            bt_verify_trail_outputs(GITMARK_BASE, &commits, &onchain).unwrap();
+            // the base as a bare x reads as the 02 point; this base is 02, so it agrees
+            bt_verify_trail_outputs(&GITMARK_BASE[2..], &commits, &onchain).unwrap();
+            // a JSON-quoted commit is not the state: no trail was made that way
+            let quoted: Vec<String> = commits.iter().map(|c| format!("\"{c}\"")).collect();
+            assert!(bt_verify_trail_outputs(GITMARK_BASE, &quoted, &onchain).is_err());
+        }
+
+        /// git-mark's "every link is checked: two commits swapped ... are
+        /// refused": commits 2 and 3 swapped do not give the live outputs, and
+        /// the walk names the first mark that differs.
+        #[test]
+        fn gitmark_swapped_commits_refused() {
+            let swapped: Vec<String> = [GITMARK_COMMITS[0], GITMARK_COMMITS[2], GITMARK_COMMITS[1]]
+                .iter()
+                .map(|c| c.to_string())
+                .collect();
+            let outputs = bt_trail_outputs(GITMARK_BASE, &swapped).unwrap();
+            assert_eq!(hex::encode(outputs[0]), GITMARK_OUTPUTS[0]);
+            assert_ne!(hex::encode(outputs[1]), GITMARK_OUTPUTS[1]);
+            assert_ne!(hex::encode(outputs[2]), GITMARK_OUTPUTS[2]);
+            let err = bt_verify_trail_outputs(GITMARK_BASE, &swapped, &gitmark_onchain())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("mismatch at index 1"), "{err}");
+            // one state per mark
+            let short = &swapped[..2];
+            let err = bt_verify_trail_outputs(GITMARK_BASE, short, &gitmark_onchain())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("3 marks and 2 states"), "{err}");
         }
 
         /// Every network name other than `"mainnet"` encodes with the `tb` HRP.
