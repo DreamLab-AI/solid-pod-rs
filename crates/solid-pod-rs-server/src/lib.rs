@@ -3070,10 +3070,7 @@ fn path_is_traversal(path: &str) -> bool {
     }
     // Also flag any raw escape sequences that decode to a traversal
     // segment even when buried inside a component (e.g. `foo%2f..%2fbar`).
-    if twice.contains("/../") || twice.starts_with("../") || twice.ends_with("/..") {
-        return true;
-    }
-    false
+    twice.contains("/../") || twice.starts_with("../") || twice.ends_with("/..")
 }
 
 // ---------------------------------------------------------------------------
