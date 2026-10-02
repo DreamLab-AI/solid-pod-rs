@@ -3,11 +3,11 @@ id: ADR-2008
 title: Port bitcoin_tx.rs and mrc20.rs to rust-bitcoin, make WebLedger a derived view over the sidestr chain, remove credit/debit from the public API and delete the TXO stand-in deposit
 date: 2026-09-21
 decision_status: proposed
-implementation_status: none
-activation_status: inactive
+implementation_status: partial
+activation_status: staged
 supersedes: []
 superseded_by: []
-verified_commit: 51426be8232a6ddf2d8134848b756de938ef70dd
+verified_commit: e62d028
 owner: jjohare
 review_trigger: the golden fixtures passing byte-identical under rust-bitcoin; the first sidestr-node read-through balance served by this crate; any proposal to reintroduce a ledger write path that is not a peg-in claim
 repo: solid-pod-rs
@@ -94,7 +94,8 @@ not adopted (agentbox ADR-2096 D5).
 
 ## Verification
 
-Proposed; nothing built. Ratification evidence will be:
+D1, D2 and D6 are built and verified at `e62d028` (see *Implementation — 2026-10-02*);
+D3 holds in part, and D4, D5, D7 and D8 are not built. Ratification evidence will be:
 
 - The three golden tests green with output byte-identical to the pre-port run, over an
   unmodified `tests/fixtures/bitcoin/golden_tx.json`, at the porting commit.
@@ -114,3 +115,45 @@ Proposed; nothing built. Ratification evidence will be:
 - **Priority:** P2 — next cycle (planning-cycle §3 names "solid-pod-rs `bitcoin_tx.rs` is on rust-bitcoin" as a sovereign-settlement reopening condition, so D1–D2 are its first item; D4–D6 park with agentbox ADR-2099)
 - **Why:** D1 is the estate's outstanding hand-rolled-crypto port, and the house rule ranks that highest. It has not started at `6d2e5b0`: `src/bitcoin_tx.rs:24` still declares "No `rust-bitcoin` / `secp256k1-sys`", `add_mod_n`/`neg_mod_n` remain (`:146`, `:162`), and `Cargo.toml` carries only `k256`. D5 and D6 also stand: `src/payments.rs:144,158` keep `credit`/`debit` public, and the TXO stand-in remains at `crates/solid-pod-rs-server/src/handlers/pay.rs:498`. Two parts are overtaken. D8's pins are stale: this workspace is now `0.5.0-alpha.10`, the forum pins `=0.5.0-alpha.10`, and the host `0.4.0-alpha.15`. The Consequences' "the order book and constant-product AMM stay as the exchange surface; sidestr's `pool` rule is not adopted" is narrowed by agentbox ADR-2096's amendment, which parks the pod AMM in favour of upstream's pool rule (now in sidestr-rs, inactive).
 - **Next:** First item of the next cycle: port D1 under D2's unmodified golden fixtures. When D2 holds, D1–D3 are ready to accept on that evidence, separately from the ledger-view decisions.
+
+## Implementation — 2026-10-02
+
+Owner decision 2026-10-02 (Q17) ordered the crypto items done now. Landed on `main`, unreleased:
+
+- `7d27024`: published vectors pinned against the **pre-port** code before anything was switched over. These are
+  the BIP-340 CSV (4 signing rows, 15 verification rows) and BIP-341 `keyPathSpending` (the key-path-only
+  `tweakedPrivkey`, plus the `SIGHASH_DEFAULT` witness signed with `aux_rand = 0`). Also pinned: all seven
+  BIP-341 `scriptPubKey`s and their BIP-350 addresses, JSS `signingKey` for golden cases A–C, and six chained-key
+  rows (pubkey, privkey, both addresses, odd-Y points included). The old code passed all of them.
+- `0befa5b`: **D1 done for both files.** `bitcoin` 0.32.102 (re-exporting `secp256k1` 0.29 / libsecp256k1) now
+  provides serialisation, CompactSize, txid byte order, the P2TR script, the `TapSighash` (`SighashCache`), the
+  key-path tweak (`TapTweakHash` + `Keypair::add_xonly_tweak`), BIP-340 signing and verification, the witness,
+  the chained-key point and scalar adds, and bech32m. `add_mod_n`, `neg_mod_n`, `sub`, both `tagged_hash`
+  helpers and the bech32m encoder are deleted. The `mrc20` feature swaps `dep:k256` for `dep:bitcoin`.
+  **D2 holds:** the three golden tests pass byte-identical over `golden_tx.json`, unmodified since `fc56b39`.
+  The BIP-341 `sigHash` vector is checked through the builder's own `SighashCache` call.
+- `e62d028`: **D6 done.** The TXO stand-in branch, `AppState::deposit_txo_standin_enabled`,
+  `--deposit-txo-standin` and `DEPOSIT_TXO_STANDIN_ENABLED` are deleted. A non-MRC20 deposit body gets 501 and
+  writes no payment state (`txo_deposit_is_gone_and_credits_nothing`). `handle_mrc20_deposit` keeps its
+  verified credit; stripping that credit waits on D4/D5.
+
+Old-code defects the port turned into errors, each with a test: a 24–31-byte private key was left-padded by
+k256 and then panicked in `copy_from_slice`; `p2tr_script` accepted an x-only key with no curve point, an
+unspendable output; `verify_keypath_signature` accepted a non-32-byte sighash. No correct output changed.
+
+**D3 in part.** The chained derivation ports and stays byte-identical. The `.buy` / `.withdraw` token routes
+are still live, because their retirement belongs with D4/D5.
+
+**Not built:** D4 (derived `WebLedger` view), D5 (`credit`/`debit` remain public), D7 (non-atomic payment
+state) and D8 (lockstep consumer bump).
+
+**Callers of the deleted deposit path.** VisionClaw's `src/handlers/pay_handler.rs` has its own `/pay/.deposit`
+stub and does not call this crate's route. agentbox `management-api/routes/payments.js:332` proxies
+`{txo_uri, amount_sats}` to this server's `/pay/.deposit` and, once the 501 arrives, surfaces it as an error.
+nostr-rust-forum `nostr-bbs-pod-worker` imports `parse_txo_uri` (kept) for its own mempool-verified deposit.
+That same forum handler has a sibling free-money path, outside this repo and not changed here. A
+`{"amount_sats": N}` body with no `txo` credits `N` unverified (`crates/nostr-bbs-pod-worker/src/payments.rs`,
+`pay_deposit_handler`), behind only NIP-98 and `PAY_ENABLED`, which `wrangler.toml` sets to `"false"`.
+
+Ratification of D1–D3 is the owner's call on this evidence; `decision_status` stays `proposed` until then.
+
