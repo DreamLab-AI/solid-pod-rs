@@ -278,6 +278,33 @@ jobs:
   # ---------------------------------------------------------------------------
   # Single required status check aggregator — branch protection points here.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Scheduled-only: the SPARQL-update fuzz target and the criterion benches are
+  # otherwise built but never executed (TODO-unified S-7e). Not part of
+  # ci-required: a weekly red here is a finding, not a merge blocker.
+  # ---------------------------------------------------------------------------
+  fuzz-and-bench:
+    name: fuzz sparql_update (60 s) + bench smoke
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain (nightly, for libFuzzer)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz sparql_update for 60 s
+        working-directory: crates/solid-pod-rs
+        env:
+          RUSTFLAGS: ""
+        run: cargo fuzz run sparql_update -- -max_total_time=60
+      - name: Bench smoke (each criterion benchmark runs once)
+        working-directory: crates/solid-pod-rs
+        run: cargo +nightly bench -- --test
+
   ci-required:
     name: CI required
     runs-on: ubuntu-latest
