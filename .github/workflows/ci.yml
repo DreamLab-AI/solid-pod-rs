@@ -276,9 +276,6 @@ jobs:
         run: bash scripts/check-diagram-staleness.sh
 
   # ---------------------------------------------------------------------------
-  # Single required status check aggregator — branch protection points here.
-  # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
   # Scheduled-only: the SPARQL-update fuzz target and the criterion benches are
   # otherwise built but never executed (TODO-unified S-7e). Not part of
   # ci-required: a weekly red here is a finding, not a merge blocker.
@@ -305,6 +302,9 @@ jobs:
         working-directory: crates/solid-pod-rs
         run: cargo +nightly bench -- --test
 
+  # ---------------------------------------------------------------------------
+  # Single required status check aggregator — branch protection points here.
+  # ---------------------------------------------------------------------------
   ci-required:
     name: CI required
     runs-on: ubuntu-latest
