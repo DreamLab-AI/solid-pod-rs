@@ -688,6 +688,11 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
             )
         })?;
 
+        // One advance of this trail at a time (anchorers are per-request).
+        let _guard =
+            crate::trail_store::lock_storage_key(storage, &crate::trail_store::trail_path(ticker))
+                .await;
+
         // Load the trail that will carry the anchor (JSS `loadTrail`).
         let mut stored = load_trail(storage, ticker)
             .await
@@ -822,6 +827,23 @@ pub async fn verify_anchor_report(
 // GitmarkAnchorer — new trails: the git-mark profile
 // ---------------------------------------------------------------------------
 
+/// Whether the mempool knows a transaction, with a definite "no" kept apart
+/// from a transport failure ([`MempoolLookup::tx`] cannot tell them apart).
+/// [`GitmarkAnchorer`] resolves an interrupted broadcast with it.
+#[async_trait(?Send)]
+pub trait MempoolTxPresence {
+    /// `Ok(true)` when `txid` is known, `Ok(false)` only on a definite
+    /// not-found, `Err` for anything ambiguous.
+    async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError>;
+}
+
+#[async_trait(?Send)]
+impl MempoolTxPresence for MempoolHttpClient {
+    async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError> {
+        MempoolHttpClient::transaction_exists(self, txid).await
+    }
+}
+
 /// A [`BlockAnchorer`] over a git-mark trail: each anchored state is the
 /// commit hash itself, as text (blocktrails/git-mark b852d7d), with no MRC20
 /// wrapper.
@@ -845,12 +867,12 @@ pub async fn verify_anchor_report(
 /// `/.well-known/gitmark/{name}/blocktrails.json`, where a verifier such as
 /// blocktrails/verify reads it.
 #[derive(Clone)]
-pub struct GitmarkAnchorer<M: MempoolLookup + MempoolBroadcast + Send + Sync> {
+pub struct GitmarkAnchorer<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> {
     lookup: M,
     storage: Option<std::sync::Arc<dyn solid_pod_rs::storage::Storage>>,
 }
 
-impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
+impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> GitmarkAnchorer<M> {
     /// Wrap a transport as a **verify-capable** anchorer; `anchor()` and
     /// [`genesis`](Self::genesis) need [`with_storage`](Self::with_storage).
     pub fn new(lookup: M) -> Self {
@@ -887,6 +909,57 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
         })
     }
 
+    /// Settle an interrupted advance of trail `name`: the previous call wrote
+    /// its intent (the txid it would broadcast and the trail with it) and did
+    /// not get to clear it. Caller holds the trail lock.
+    ///
+    /// The transaction on-chain ⇒ the intent's trail becomes the stored one
+    /// (unless a later advance already did); definitely not on-chain ⇒ the
+    /// intent is dropped; ambiguous ⇒ the advance is refused (fail closed).
+    async fn settle_intent(&self, name: &str) -> Result<(), ProvenanceError> {
+        use crate::trail_store::{
+            clear_gitmark_intent, load_gitmark_intent, load_gitmark_trail, save_gitmark_trail,
+        };
+        let storage = self.storage()?;
+        let err = |what: &str, e: PaymentError| ProvenanceError::Anchor(format!("{what}: {e}"));
+        let Some(intent) = load_gitmark_intent(storage, name)
+            .await
+            .map_err(|e| err("read pending mark", e))?
+        else {
+            return Ok(());
+        };
+        let exists = self
+            .lookup
+            .transaction_exists(&intent.txid)
+            .await
+            .map_err(|e| {
+                ProvenanceError::Anchor(format!(
+                    "a previous mark ({}) is unresolved, refusing to advance: {e}",
+                    intent.txid
+                ))
+            })?;
+        if exists {
+            let have = load_gitmark_trail(storage, name)
+                .await
+                .map_err(|e| err("load trail", e))?
+                .map_or(0, |t| t.trail.txo.len());
+            if have < intent.stored.trail.txo.len() {
+                save_gitmark_trail(storage, &intent.stored)
+                    .await
+                    .map_err(|e| err("save recovered trail", e))?;
+            }
+        }
+        clear_gitmark_intent(storage, name)
+            .await
+            .map_err(|e| err("clear pending mark", e))
+    }
+
+    /// Write the intent, broadcast, save the trail, clear the intent. Caller
+    /// holds the trail lock and has settled any earlier intent.
+    ///
+    /// Once the broadcast is accepted the mark is on-chain, so a failed save
+    /// is not a failed anchor: the intent stays and the next advance settles
+    /// it. The caller must not be refunded for it.
     async fn broadcast_and_save(
         &self,
         name: &str,
@@ -895,15 +968,17 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
         network: &str,
         date_created: String,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
-        use crate::trail_store::{save_gitmark_trail, StoredGitmarkTrail};
-        let txid = self
-            .lookup
-            .broadcast_tx(&update.tx.raw_hex)
-            .await
-            .map_err(|e| ProvenanceError::Anchor(format!("broadcast mark: {e}")))?;
+        use crate::trail_store::{
+            clear_gitmark_intent, save_gitmark_intent, save_gitmark_trail, GitmarkIntent,
+            StoredGitmarkTrail,
+        };
+        let storage = self.storage()?;
+        let expected = solid_pod_rs::bitcoin_tx::decode_tx_info(&update.tx.raw_hex)
+            .map_err(|e| ProvenanceError::Anchor(format!("decode mark: {e}")))?
+            .txid;
         let mut trail = update.trail;
         if let Some(last) = trail.txo.last_mut() {
-            last.txid = txid.clone();
+            last.txid = expected.clone();
         }
         let state_strings = trail
             .state_strings()
@@ -915,9 +990,38 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
             trail,
             date_created,
         };
-        save_gitmark_trail(self.storage()?, &stored)
+        save_gitmark_intent(
+            storage,
+            &GitmarkIntent {
+                txid: expected.clone(),
+                stored: stored.clone(),
+            },
+        )
+        .await
+        .map_err(|e| ProvenanceError::Anchor(format!("record pending mark: {e}")))?;
+
+        let txid = self
+            .lookup
+            .broadcast_tx(&update.tx.raw_hex)
             .await
-            .map_err(|e| ProvenanceError::Anchor(format!("save trail: {e}")))?;
+            .map_err(|e| ProvenanceError::Anchor(format!("broadcast mark: {e}")))?;
+        if txid != expected {
+            return Err(ProvenanceError::Anchor(format!(
+                "mempool returned txid {txid} for a mark that is {expected}"
+            )));
+        }
+        match save_gitmark_trail(storage, &stored).await {
+            Ok(()) => {
+                if let Err(e) = clear_gitmark_intent(storage, name).await {
+                    // Settling it later is a no-op: the trail is already saved.
+                    tracing::warn!(trail = %name, "git-mark intent not cleared: {e}");
+                }
+            }
+            Err(e) => tracing::error!(
+                trail = %name, txid = %txid,
+                "git-mark broadcast accepted but trail save failed; the next advance settles it: {e}"
+            ),
+        }
         Ok(BlockTrailAnchor {
             ticker: name.to_string(),
             state_hash: update.txo.commit.clone().unwrap_or_default(),
@@ -948,8 +1052,10 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
         network: &str,
         date_created: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
-        use crate::trail_store::load_gitmark_trail;
+        use crate::trail_store::{gitmark_trail_path, load_gitmark_trail};
         let storage = self.storage()?;
+        let _guard = crate::trail_store::lock_storage_key(storage, &gitmark_trail_path(name)).await;
+        self.settle_intent(name).await?;
         if load_gitmark_trail(storage, name)
             .await
             .map_err(|e| ProvenanceError::Anchor(format!("load trail {name}: {e}")))?
@@ -983,7 +1089,9 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> GitmarkAnchorer<M> {
 }
 
 #[async_trait(?Send)]
-impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for GitmarkAnchorer<M> {
+impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> BlockAnchorer
+    for GitmarkAnchorer<M>
+{
     /// Advance the git-mark trail `ticker` by the commit `state_hash`: spend
     /// its newest mark to the next ([`gitmark_advance`]), broadcast, save, and
     /// return the new mark as a [`BlockTrailAnchor`] (`state_strings` are the
@@ -997,7 +1105,11 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Gitmar
         state_hash: &str,
         network: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
-        use crate::trail_store::load_gitmark_trail;
+        use crate::trail_store::{gitmark_trail_path, load_gitmark_trail};
+        let _guard =
+            crate::trail_store::lock_storage_key(self.storage()?, &gitmark_trail_path(ticker))
+                .await;
+        self.settle_intent(ticker).await?;
         let stored = load_gitmark_trail(self.storage()?, ticker)
             .await
             .map_err(|e| ProvenanceError::Anchor(format!("load trail {ticker}: {e}")))?
@@ -1214,6 +1326,13 @@ mod tests {
             self.txs.lock().unwrap().insert(txid.clone(), info);
             self.broadcasts.lock().unwrap().push(raw_hex.to_string());
             Ok(txid)
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl MempoolTxPresence for FixtureMempool {
+        async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError> {
+            Ok(self.txs.lock().unwrap().contains_key(txid))
         }
     }
 
@@ -1602,7 +1721,11 @@ mod tests {
             let info = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)?;
             {
                 let mut spent = self.spent.lock().unwrap();
-                if info.vin.iter().any(|i| spent.contains(&(i.txid.clone(), i.vout))) {
+                if info
+                    .vin
+                    .iter()
+                    .any(|i| spent.contains(&(i.txid.clone(), i.vout)))
+                {
                     return Err(PaymentError::InvalidState("txn-mempool-conflict".into()));
                 }
                 for i in &info.vin {
@@ -1610,6 +1733,14 @@ mod tests {
                 }
             }
             self.inner.broadcast_tx(raw_hex).await
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl MempoolTxPresence for RacyMempool {
+        async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError> {
+            tokio::task::yield_now().await;
+            self.inner.transaction_exists(txid).await
         }
     }
 
@@ -1650,7 +1781,10 @@ mod tests {
         assert_eq!(stored.trail.txo.len(), 3, "both anchors must land");
         let heads = [ra.txid.clone(), rb.txid.clone()];
         assert_eq!(
-            heads.iter().filter(|t| **t == stored.trail.txo[2].txid).count(),
+            heads
+                .iter()
+                .filter(|t| **t == stored.trail.txo[2].txid)
+                .count(),
             1
         );
         assert!(heads.contains(&stored.trail.txo[1].txid));
@@ -1679,5 +1813,36 @@ mod tests {
         let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
         assert!(report.is_verified(), "{report:?}");
     }
-}
 
+    #[tokio::test]
+    async fn dropped_broadcast_is_settled_from_the_chain_on_the_next_anchor() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        mempool
+            .drop_next_broadcast
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        a.anchor("prov", COMMITS[1], "testnet4").await.unwrap_err();
+        // the intent survives the failed call, and is dropped (tx absent)
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        assert!(
+            crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let next = a.anchor("prov", COMMITS[2], "testnet4").await.unwrap();
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 2, "the dropped mark never landed");
+        assert_eq!(stored.trail.txo[1].txid, next.txid);
+        assert!(
+            crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
+        assert!(report.is_verified(), "{report:?}");
+    }
+}

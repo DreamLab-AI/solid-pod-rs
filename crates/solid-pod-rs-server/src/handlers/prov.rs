@@ -31,10 +31,12 @@ use actix_web::{web, Error as ActixError, HttpRequest, HttpResponse};
 use bytes::Bytes;
 
 use solid_pod_rs::provenance::{
-    prov_ttl, AnchorPolicy, BlockAnchorer, ClosedEpoch, EpochAccumulator, ProvenanceMark,
+    prov_ttl, AnchorPolicy, BlockAnchorer, BlockTrailAnchor, ClosedEpoch, EpochAccumulator,
+    ProvenanceError, ProvenanceMark,
 };
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::wac::{anchor_mode_of, AnchorMode};
+use solid_pod_rs::PodError;
 
 use crate::mempool::{GitmarkAnchorer, MempoolBlockAnchorer, MempoolHttpClient};
 use crate::trail_store::{load_gitmark_trail, load_trail, DEFAULT_GITMARK_TRAIL};
@@ -110,10 +112,57 @@ pub(crate) async fn resolve_anchor_policy(
     (AnchorPolicy::Never, None)
 }
 
+/// Stands in for the anchorer when the pod's trail could not be read: every
+/// anchor reports the storage error, so the write's receipt carries an
+/// `anchor_error` instead of silently degrading to git-mark-only.
+struct UnavailableAnchorer(String);
+
+#[async_trait::async_trait(?Send)]
+impl BlockAnchorer for UnavailableAnchorer {
+    async fn anchor(
+        &self,
+        _ticker: &str,
+        _state_hash: &str,
+        _network: &str,
+    ) -> Result<BlockTrailAnchor, ProvenanceError> {
+        Err(ProvenanceError::Anchor(self.0.clone()))
+    }
+
+    async fn verify(&self, _anchor: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+        Err(ProvenanceError::Anchor(self.0.clone()))
+    }
+}
+
 /// Build the optional expensive-tier anchorer for a pod, or `None` when the
 /// pod has no trail to anchor on — in which case
 /// [`ProvenanceLog`](solid_pod_rs::provenance::ProvenanceLog) degrades to
 /// git-mark-only.
+///
+/// A trail that exists but cannot be *read* is not "no trail": the result is
+/// an anchorer that fails every anchor with the storage error, which the
+/// write hook records as `anchor_error` (see [`try_build_anchorer`]).
+pub(crate) async fn build_anchorer(
+    state: &AppState,
+    ticker_override: Option<&str>,
+) -> Option<(Arc<dyn BlockAnchorer>, String, String)> {
+    match try_build_anchorer(state, ticker_override).await {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            tracing::warn!(
+                target: "solid_pod_rs_server::prov",
+                "anchorer unavailable (trail unreadable): {e}"
+            );
+            Some((
+                Arc::new(UnavailableAnchorer(e)),
+                ticker_override.unwrap_or_default().to_string(),
+                String::new(),
+            ))
+        }
+    }
+}
+
+/// [`build_anchorer`] with the storage error kept: `Ok(None)` only when the
+/// pod has no trail (a definite not-found), `Err` when reading one failed.
 ///
 /// The trail is named by `ticker_override`, else the pay-token ticker, else
 /// [`DEFAULT_GITMARK_TRAIL`]. An MRC20 trail already issued under that name
@@ -121,10 +170,10 @@ pub(crate) async fn resolve_anchor_policy(
 /// are never moved); otherwise a git-mark trail of that name, the profile new
 /// trails use, gets a [`GitmarkAnchorer`]. Returns the anchorer plus the
 /// resolved `(ticker, network)`; the trail's own network is authoritative.
-pub(crate) async fn build_anchorer(
+pub(crate) async fn try_build_anchorer(
     state: &AppState,
     ticker_override: Option<&str>,
-) -> Option<(Arc<dyn BlockAnchorer>, String, String)> {
+) -> Result<Option<(Arc<dyn BlockAnchorer>, String, String)>, String> {
     let token = state.pay_config.token.as_ref();
     let ticker = ticker_override
         .filter(|t| !t.is_empty())
@@ -139,27 +188,36 @@ pub(crate) async fn build_anchorer(
 
     // An issued MRC20 trail (it needs the pod's pay-token) keeps its profile.
     if token.is_some() {
-        if let Some(trail) = load_trail(&state.storage, &ticker).await.ok().flatten() {
+        if let Some(trail) = load_trail(&state.storage, &ticker)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             let anchorer = MempoolBlockAnchorer::with_storage(mempool(), state.storage.clone());
-            return Some((Arc::new(anchorer), ticker, trail.network));
+            return Ok(Some((Arc::new(anchorer), ticker, trail.network)));
         }
     }
 
     // Otherwise the git-mark profile, when the trail has been started.
-    let trail = load_gitmark_trail(&state.storage, &ticker)
+    let Some(trail) = load_gitmark_trail(&state.storage, &ticker)
         .await
-        .ok()
-        .flatten()?;
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
     let anchorer = GitmarkAnchorer::with_storage(mempool(), state.storage.clone());
-    Some((Arc::new(anchorer), ticker, trail.network()))
+    Ok(Some((Arc::new(anchorer), ticker, trail.network())))
 }
 
 /// Load the persisted per-pod pending epoch batch (the commit SHAs awaiting a
-/// single anchoring tx). Returns an empty list on any read/parse miss.
-async fn load_epoch_commits(storage: &Arc<dyn Storage>) -> Vec<String> {
+/// single anchoring tx). Only a missing file is an empty batch; a read or
+/// parse failure is an error, so the batch is never overwritten unseen.
+async fn load_epoch_commits(storage: &Arc<dyn Storage>) -> Result<Vec<String>, String> {
     match storage.get(EPOCH_PATH).await {
-        Ok((bytes, _)) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Ok((bytes, _)) => {
+            serde_json::from_slice(&bytes).map_err(|e| format!("malformed epoch batch: {e}"))
+        }
+        Err(PodError::NotFound(_)) => Ok(Vec::new()),
+        Err(e) => Err(format!("read epoch batch: {e}")),
     }
 }
 
@@ -193,7 +251,9 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
     commit_sha: &str,
 ) -> Result<Option<ClosedEpoch>, String> {
     let size = epoch_size();
-    let mut commits = load_epoch_commits(&state.storage).await;
+    // One read-modify-write of the batch at a time (and one close at a time).
+    let _guard = crate::trail_store::lock_storage_key(&state.storage, EPOCH_PATH).await;
+    let mut commits = load_epoch_commits(&state.storage).await?;
     // Idempotency: never double-count the same commit in a batch.
     if !commits.iter().any(|c| c == commit_sha) {
         commits.push(commit_sha.to_string());
@@ -376,14 +436,18 @@ async fn handle_anchor(
     let resource = format!("/{pod}/{resource_rel}");
 
     // (3) Build the anchorer (pod must have a minted trail).
-    let Some((anchorer, ticker, network)) =
-        build_anchorer(&state, req_body.ticker.as_deref()).await
-    else {
-        return Ok(prov_err(
-            "pod not configured for Bitcoin anchoring (no pay-token / trail not minted)",
-            400,
-        ));
-    };
+    let (anchorer, ticker, network) =
+        match try_build_anchorer(&state, req_body.ticker.as_deref()).await {
+            Ok(Some(bundle)) => bundle,
+            Ok(None) => {
+                return Ok(prov_err(
+                    "pod not configured for Bitcoin anchoring (no pay-token / trail not minted)",
+                    400,
+                ))
+            }
+            // Before any charge: an unreadable trail is a server fault, not a 400.
+            Err(e) => return Ok(prov_err(&format!("anchor trail unavailable: {e}"), 500)),
+        };
 
     // (4) Payment gate: charge the pod's configured anchor price. Debit BEFORE
     // the on-chain action; if anchoring then fails, refund (credit back).
@@ -402,11 +466,18 @@ async fn handle_anchor(
     let anchor = match anchorer.anchor(&ticker, &resolved.hash, &network).await {
         Ok(a) => a,
         Err(e) => {
-            // Refund the charge — no anchor was produced.
-            if let Some(charge) = charge {
-                let _ = refund(&state, charge).await;
-            }
-            return Ok(prov_err(&format!("anchor failed: {e}"), 502));
+            // Refund the charge — no anchor was produced. A refund that fails
+            // is logged and retained, never dropped.
+            let refund_pending = match charge {
+                Some(charge) => !refund_or_retain(&state, charge).await,
+                None => false,
+            };
+            return Ok(HttpResponse::BadGateway()
+                .content_type("application/json")
+                .json(serde_json::json!({
+                    "error": format!("anchor failed: {e}"),
+                    "refund_pending": refund_pending,
+                })));
         }
     };
 
@@ -526,6 +597,59 @@ async fn refund(state: &AppState, charge: solid_pod_rs::payments::Charge) -> Res
     store.write_ledger(&ledger).await.map_err(|e| e.to_string())
 }
 
+/// Pod-storage path of refunds owed but not yet paid back (a failed [`refund`]).
+const PENDING_REFUNDS_PATH: &str = "/.well-known/prov/refunds-pending.json";
+
+/// [`refund`] a charge; if that fails, log it and keep a record in
+/// [`PENDING_REFUNDS_PATH`] so the debt to the caller survives. Returns whether
+/// the refund went through.
+async fn refund_or_retain(state: &AppState, charge: solid_pod_rs::payments::Charge) -> bool {
+    let (did, amount) = (charge.account().to_string(), charge.amount());
+    let Err(reason) = refund(state, charge).await else {
+        return true;
+    };
+    tracing::error!(
+        target: "solid_pod_rs_server::prov",
+        %did, amount, "anchor refund failed, retaining it as pending: {reason}"
+    );
+    if let Err(e) = retain_refund(&state.storage, &did, amount, &reason).await {
+        tracing::error!(
+            target: "solid_pod_rs_server::prov",
+            %did, amount, "pending refund could not be recorded either: {e}"
+        );
+    }
+    false
+}
+
+/// Append a refund owed to [`PENDING_REFUNDS_PATH`].
+async fn retain_refund(
+    storage: &Arc<dyn Storage>,
+    did: &str,
+    amount: u64,
+    reason: &str,
+) -> Result<(), String> {
+    let _guard = crate::trail_store::lock_storage_key(storage, PENDING_REFUNDS_PATH).await;
+    let mut owed: Vec<serde_json::Value> = match storage.get(PENDING_REFUNDS_PATH).await {
+        Ok((bytes, _)) => {
+            serde_json::from_slice(&bytes).map_err(|e| format!("malformed pending refunds: {e}"))?
+        }
+        Err(PodError::NotFound(_)) => Vec::new(),
+        Err(e) => return Err(format!("read pending refunds: {e}")),
+    };
+    owed.push(serde_json::json!({
+        "did": did,
+        "amount_sats": amount,
+        "error": reason,
+        "at": chrono::Utc::now().to_rfc3339(),
+    }));
+    let body = serde_json::to_vec(&owed).map_err(|e| e.to_string())?;
+    storage
+        .put(PENDING_REFUNDS_PATH, Bytes::from(body), "application/json")
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// JSS-shaped JSON error response.
 fn prov_err(msg: &str, status: u16) -> HttpResponse {
     HttpResponse::build(
@@ -594,7 +718,10 @@ mod tests {
         let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Unreachable);
 
         let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "c").await;
-        assert!(out.is_err(), "a failed read must not look like an empty batch");
+        assert!(
+            out.is_err(),
+            "a failed read must not look like an empty batch"
+        );
         assert_eq!(epoch_on_disk(&inner).await, vec!["a", "b"], "batch lost");
     }
 
@@ -602,7 +729,11 @@ mod tests {
     async fn epoch_corrupt_batch_is_not_overwritten() {
         let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
         inner
-            .put(EPOCH_PATH, Bytes::from_static(b"{not json"), "application/json")
+            .put(
+                EPOCH_PATH,
+                Bytes::from_static(b"{not json"),
+                "application/json",
+            )
             .await
             .unwrap();
         let state = state_over(inner.clone());
@@ -663,5 +794,34 @@ mod tests {
             .expect("an MRC20 read fault must not fall through to git-mark/None");
         let err = anchorer.anchor(&ticker, "ab", &network).await.unwrap_err();
         assert!(err.to_string().contains("injected fault"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn failed_refund_is_logged_and_retained() {
+        use solid_pod_rs::payments::{PaymentStore, ReceiptOutcome};
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let faulty = FaultStorage::new(inner.clone(), false);
+        let state = state_over(faulty.clone());
+        let did = format!("did:nostr:{}", "ab".repeat(32));
+        {
+            let store = crate::handlers::pay::StoragePaymentStore::new(&*state.storage);
+            let mut ledger = store.read_ledger().await.unwrap();
+            let r = ledger
+                .credit_by_outpoint(&did, "satoshi", &"cd".repeat(32), 0, 100)
+                .unwrap();
+            assert_eq!(r, ReceiptOutcome::Applied);
+            store.write_ledger(&ledger).await.unwrap();
+        }
+        let Ok(charge) = debit(&state, &did, 40).await else {
+            panic!("debit failed");
+        };
+        // The ledger write that would give the money back fails.
+        faulty.fail_put("/.well-known/webledgers/state.json");
+        assert!(!refund_or_retain(&state, charge).await);
+        let (bytes, _) = inner.get(PENDING_REFUNDS_PATH).await.unwrap();
+        let owed: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(owed.len(), 1);
+        assert_eq!(owed[0]["did"], did.as_str());
+        assert_eq!(owed[0]["amount_sats"], 40);
     }
 }

@@ -21,6 +21,7 @@ use solid_pod_rs::blocktrail::{network_for_txo_chain, Blocktrail};
 use solid_pod_rs::mrc20::{Mrc20State, Mrc20Trail};
 use solid_pod_rs::payments::PaymentError;
 use solid_pod_rs::storage::Storage;
+use solid_pod_rs::PodError;
 
 /// Pod-storage path of a trail file (JSS `token.js:194-196`). Ticker is
 /// lower-cased so `PROV` and `prov` resolve to one file.
@@ -99,8 +100,9 @@ impl StoredTrail {
 }
 
 /// Load a trail for `ticker`, or `None` if it does not exist (JSS
-/// `loadTrail`, `token.js:198-203` — a read failure is "no trail", not an
-/// error).
+/// `loadTrail`, `token.js:198-203`). Only [`PodError::NotFound`] means absent:
+/// any other read failure is an error, so a storage fault is never mistaken
+/// for "no trail" (and a trail never overwritten on the strength of one).
 pub async fn load_trail(
     storage: &Arc<dyn Storage>,
     ticker: &str,
@@ -111,7 +113,8 @@ pub async fn load_trail(
                 .map_err(|e| PaymentError::Store(format!("malformed trail {ticker}: {e}")))?;
             Ok(Some(trail))
         }
-        Err(_) => Ok(None),
+        Err(PodError::NotFound(_)) => Ok(None),
+        Err(e) => Err(PaymentError::Store(format!("read trail {ticker}: {e}"))),
     }
 }
 
@@ -188,7 +191,8 @@ impl StoredGitmarkTrail {
     }
 }
 
-/// Load the git-mark trail `name`, or `None` if there is none.
+/// Load the git-mark trail `name`, or `None` if there is none. Only
+/// [`PodError::NotFound`] means absent; any other read failure is an error.
 pub async fn load_gitmark_trail(
     storage: &Arc<dyn Storage>,
     name: &str,
@@ -197,8 +201,101 @@ pub async fn load_gitmark_trail(
         Ok((bytes, _meta)) => serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|e| PaymentError::Store(format!("malformed git-mark trail {name}: {e}"))),
-        Err(_) => Ok(None),
+        Err(PodError::NotFound(_)) => Ok(None),
+        Err(e) => Err(PaymentError::Store(format!(
+            "read git-mark trail {name}: {e}"
+        ))),
     }
+}
+
+/// Pod-storage path of a git-mark trail's pending broadcast intent.
+#[must_use]
+pub fn gitmark_intent_path(name: &str) -> String {
+    format!("/.well-known/gitmark/{}/intent.json", name.to_lowercase())
+}
+
+/// A broadcast about to happen: the txid the signed transaction will have and
+/// the trail as it stands once that transaction is in. Written before the
+/// broadcast, so a lost response or a failed save is resolved from the chain
+/// on the next advance instead of leaving the stored head stale.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitmarkIntent {
+    /// The txid the broadcast transaction has.
+    pub txid: String,
+    /// The trail once the transaction is in (with its secret, as the trail file).
+    pub stored: StoredGitmarkTrail,
+}
+
+/// Load the pending intent for git-mark trail `name`, if any. Only
+/// [`PodError::NotFound`] means none.
+pub async fn load_gitmark_intent(
+    storage: &Arc<dyn Storage>,
+    name: &str,
+) -> Result<Option<GitmarkIntent>, PaymentError> {
+    match storage.get(&gitmark_intent_path(name)).await {
+        Ok((bytes, _meta)) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| PaymentError::Store(format!("malformed git-mark intent {name}: {e}"))),
+        Err(PodError::NotFound(_)) => Ok(None),
+        Err(e) => Err(PaymentError::Store(format!(
+            "read git-mark intent {name}: {e}"
+        ))),
+    }
+}
+
+/// Persist the pending intent for a git-mark trail.
+pub async fn save_gitmark_intent(
+    storage: &Arc<dyn Storage>,
+    intent: &GitmarkIntent,
+) -> Result<(), PaymentError> {
+    let body = serde_json::to_vec(intent)
+        .map_err(|e| PaymentError::Store(format!("serialise git-mark intent: {e}")))?;
+    storage
+        .put(
+            &gitmark_intent_path(&intent.stored.name),
+            Bytes::from(body),
+            "application/json",
+        )
+        .await
+        .map_err(|e| PaymentError::Store(format!("save git-mark intent: {e}")))?;
+    Ok(())
+}
+
+/// Remove the pending intent for git-mark trail `name` (already absent is fine).
+pub async fn clear_gitmark_intent(
+    storage: &Arc<dyn Storage>,
+    name: &str,
+) -> Result<(), PaymentError> {
+    match storage.delete(&gitmark_intent_path(name)).await {
+        Ok(()) | Err(PodError::NotFound(_)) => Ok(()),
+        Err(e) => Err(PaymentError::Store(format!(
+            "clear git-mark intent {name}: {e}"
+        ))),
+    }
+}
+
+/// Take the in-process lock for `key` on this pod's storage, serialising every
+/// read-modify-write of the file(s) it names. Anchorers are built per request,
+/// so the lock lives here, keyed by the storage instance as well as the key
+/// (two pods may both keep a trail called `prov`).
+pub(crate) async fn lock_storage_key(
+    storage: &Arc<dyn Storage>,
+    key: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    type Locks = std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>;
+    static LOCKS: std::sync::LazyLock<std::sync::Mutex<Locks>> =
+        std::sync::LazyLock::new(Default::default);
+    let lock = {
+        let mut locks = LOCKS.lock().unwrap_or_else(|p| p.into_inner());
+        // Drop locks nobody holds or waits on, so the map stays bounded.
+        locks.retain(|_, l| Arc::strong_count(l) > 1);
+        locks
+            .entry(format!("{:p}:{key}", Arc::as_ptr(storage).cast::<()>()))
+            .or_default()
+            .clone()
+    };
+    lock.lock_owned().await
 }
 
 /// Persist a git-mark trail and publish its `blocktrails.json` beside it.
