@@ -720,6 +720,7 @@ fn pending_anchor(detail: String) -> ProvenanceError {
 
 /// Whether `e` is an anchor left pending (see [`pending_anchor`]) rather than
 /// one that definitely did not go out.
+#[cfg(any(feature = "git", test))]
 pub(crate) fn is_pending_anchor(e: &ProvenanceError) -> bool {
     matches!(e, ProvenanceError::Anchor(m) if m.starts_with(PENDING_ANCHOR_PREFIX))
 }
@@ -1003,6 +1004,35 @@ async fn settle_broadcast<M: MempoolLookup + MempoolBroadcast + ?Sized>(
     }
 }
 
+/// An intent is only acted on if its signed transaction really is the one it
+/// names and, when it would move the stored trail forward (`behind`), spends
+/// the trail's stored head. A tampered or mismatched record is refused rather
+/// than written over the trail.
+fn verify_intent_tx(
+    txid: &str,
+    raw_hex: &str,
+    head: Option<(&str, u32)>,
+    behind: bool,
+) -> Result<(), ProvenanceError> {
+    let bad =
+        |why: String| ProvenanceError::Anchor(format!("pending intent {txid} refused: {why}"));
+    let info = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)
+        .map_err(|e| bad(format!("undecodable transaction: {e}")))?;
+    if info.txid != txid {
+        return Err(bad(format!("its transaction is {}", info.txid)));
+    }
+    if let (true, Some((head_txid, head_vout))) = (behind, head) {
+        let spends_head = info
+            .vin
+            .first()
+            .is_some_and(|i| i.txid == head_txid && i.vout == head_vout);
+        if !spends_head {
+            return Err(bad("it does not spend the stored head".into()));
+        }
+    }
+    Ok(())
+}
+
 /// A git-mark intent as stored: [`GitmarkIntent`](crate::trail_store::GitmarkIntent)
 /// plus the signed transaction, so an unresolved mark can be sent again.
 /// Intents written before `rawHex` existed read back with `None`.
@@ -1096,6 +1126,14 @@ pub(crate) async fn settle_trail_intent<M: MempoolLookup + MempoolBroadcast + ?S
     let stored = load_trail(storage, ticker)
         .await
         .map_err(|e| err("load trail", &e))?;
+    verify_intent_tx(
+        &pending.txid,
+        &pending.raw_hex,
+        stored
+            .as_ref()
+            .map(|t| (t.current_txid.as_str(), t.current_vout)),
+        stored.as_ref().map_or(0, |t| t.states.len()) < pending.stored.states.len(),
+    )?;
     let landed = lookup.tx(&pending.txid).await.is_ok()
         || settle_broadcast(
             lookup,
@@ -1234,6 +1272,17 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
         let stored = load_gitmark_trail(storage, name)
             .await
             .map_err(|e| err("load trail", e))?;
+        if let Some(raw_hex) = &pending.raw_hex {
+            verify_intent_tx(
+                &intent.txid,
+                raw_hex,
+                stored
+                    .as_ref()
+                    .and_then(|t| t.trail.txo.last())
+                    .map(|m| (m.txid.as_str(), m.vout)),
+                stored.as_ref().map_or(0, |t| t.trail.txo.len()) < intent.stored.trail.txo.len(),
+            )?;
+        }
         let landed = if exists {
             true
         } else if let Some(raw_hex) = &pending.raw_hex {
@@ -2321,6 +2370,42 @@ mod tests {
         let stored = load_trail(&inner, &ticker).await.unwrap().unwrap();
         assert_eq!(stored.states.len(), 2);
         assert!(!inner.exists(&anchor_intent_path(&ticker)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn block_anchorer_refuses_an_intent_whose_txid_is_not_its_transaction() {
+        let (inner, fixture, ticker) = mint_and_store("TMP").await;
+        let mempool = RacyMempool::new(fixture);
+        let anchorer = MempoolBlockAnchorer::with_storage(mempool.clone(), inner.clone());
+        mempool
+            .drop_next_broadcast
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        anchorer
+            .anchor(&ticker, &"a".repeat(40), "testnet4")
+            .await
+            .unwrap_err();
+        // Tamper with the recorded txid, as a writer of the intent file could.
+        let path = anchor_intent_path(&ticker);
+        let (bytes, _) = inner.get(&path).await.unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        v["txid"] = serde_json::json!("ab".repeat(32));
+        inner
+            .put(
+                &path,
+                bytes::Bytes::from(serde_json::to_vec(&v).unwrap()),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let before = load_trail(&inner, &ticker).await.unwrap().unwrap();
+        let err = anchorer
+            .anchor(&ticker, &"b".repeat(40), "testnet4")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("refused"), "{err}");
+        let after = load_trail(&inner, &ticker).await.unwrap().unwrap();
+        assert_eq!(after.states.len(), before.states.len());
+        assert!(inner.exists(&path).await.unwrap(), "the intent is kept");
     }
 
     #[tokio::test]

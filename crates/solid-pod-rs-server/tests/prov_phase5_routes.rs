@@ -155,19 +155,21 @@ async fn spawn_fixture_with(
             .app_data(spk.clone())
             .route(
                 "/api/tx/{txid}",
-                web::get().to(move |_p: web::Path<String>, spk: web::Data<String>| async move {
-                    if lookup_fails {
-                        return HttpResponse::InternalServerError().body("lookup down");
-                    }
-                    let body = json!({
-                        "txid": "aa".repeat(32),
-                        "vout": [ { "value": 50000, "scriptpubkey": spk.get_ref() } ],
-                        "status": { "confirmed": true, "block_height": 42000 }
-                    });
-                    HttpResponse::Ok()
-                        .content_type("application/json")
-                        .body(body.to_string())
-                }),
+                web::get().to(
+                    move |_p: web::Path<String>, spk: web::Data<String>| async move {
+                        if lookup_fails {
+                            return HttpResponse::InternalServerError().body("lookup down");
+                        }
+                        let body = json!({
+                            "txid": "aa".repeat(32),
+                            "vout": [ { "value": 50000, "scriptpubkey": spk.get_ref() } ],
+                            "status": { "confirmed": true, "block_height": 42000 }
+                        });
+                        HttpResponse::Ok()
+                            .content_type("application/json")
+                            .body(body.to_string())
+                    },
+                ),
             )
             .route(
                 "/api/address/{addr}/utxo",

@@ -1056,7 +1056,11 @@ mod tests {
     async fn concurrent_debits_cannot_overspend() {
         let (state, did) = funded(100).await;
         let (a, b) = tokio::join!(debit(&state, &did, 60), debit(&state, &did, 60));
-        assert_eq!(a.is_ok() as u8 + b.is_ok() as u8, 1, "exactly one debit fits");
+        assert_eq!(
+            a.is_ok() as u8 + b.is_ok() as u8,
+            1,
+            "exactly one debit fits"
+        );
         assert_eq!(balance(&state, &did).await, 40);
     }
 }

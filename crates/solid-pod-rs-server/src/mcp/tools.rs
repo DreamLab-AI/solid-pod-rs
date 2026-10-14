@@ -31,6 +31,8 @@ const FOAF_AGENT: &str = "http://xmlns.com/foaf/0.1/Agent";
 const ACL_AUTH_AGENT: &str = "http://www.w3.org/ns/auth/acl#AuthenticatedAgent";
 const MAX_READ_BYTES: usize = 200_000;
 const MAX_FEDERATION_DEPTH: u32 = 3;
+/// Largest response body `call_remote_pod` will buffer from a remote pod.
+const MAX_REMOTE_BYTES: usize = 1 << 20;
 
 /// Safe allowlist of header names the `call_remote_pod` `header` auth mode may
 /// forward to a remote pod. Deliberately narrow: only credential-carrying
@@ -79,8 +81,8 @@ fn build_url(ctx: &McpCtx, path: &str) -> String {
 /// it has over REST. The fs backend's `.solid-pod-tmp-` scratch names are
 /// refused wherever they appear in a segment.
 fn clean_path(state: &AppState, raw: &str) -> Result<String, Value> {
-    let path = crate::canonical_pod_path(raw)
-        .ok_or_else(|| tool_error(format!("invalid path: {raw}")))?;
+    let path =
+        crate::canonical_pod_path(raw).ok_or_else(|| tool_error(format!("invalid path: {raw}")))?;
     check_dotfile(state, &path)?;
     Ok(path)
 }
@@ -775,6 +777,23 @@ fn federation_gate_path(web_id: Option<&str>) -> Option<String> {
     Some("/private/federation/".to_string())
 }
 
+/// Read a response body, refusing one longer than `cap` bytes: a remote pod
+/// chooses how much it sends.
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    let mut raw: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("unreadable: {e}"))?
+    {
+        if raw.len() + chunk.len() > cap {
+            return Err(format!("exceeds {cap} bytes"));
+        }
+        raw.extend_from_slice(&chunk);
+    }
+    Ok(raw)
+}
+
 async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     let pod_url = match args.get("pod_url").and_then(Value::as_str) {
         Some(u) if !u.is_empty() => u,
@@ -903,7 +922,11 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         Err(e) => return tool_error(format!("remote pod unreachable: {e}")),
     };
     let status = response.status();
-    let payload: Value = match response.json().await {
+    let raw = match read_capped(response, MAX_REMOTE_BYTES).await {
+        Ok(raw) => raw,
+        Err(e) => return tool_error(format!("remote response {e} ({status})")),
+    };
+    let payload: Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(e) => return tool_error(format!("remote response not JSON ({status}): {e}")),
     };
@@ -1114,6 +1137,27 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[actix_web::test]
+    async fn remote_bodies_are_capped() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 5_000]))
+            .mount(&server)
+            .await;
+        let get = || reqwest::get(server.uri());
+        assert_eq!(
+            read_capped(get().await.unwrap(), 5_000)
+                .await
+                .unwrap()
+                .len(),
+            5_000
+        );
+        let err = read_capped(get().await.unwrap(), 4_999).await.unwrap_err();
+        assert!(err.contains("exceeds"), "{err}");
+    }
 
     #[test]
     fn forwardable_auth_header_allowlist_is_case_insensitive() {
