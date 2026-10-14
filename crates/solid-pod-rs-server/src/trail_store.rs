@@ -29,6 +29,17 @@ pub fn trail_path(ticker: &str) -> String {
     format!("/.well-known/token/{}.json", ticker.to_lowercase())
 }
 
+/// Whether `path` is a pod-storage trail file that holds an issuer secret
+/// ([`trail_path`], [`gitmark_trail_path`]). The public
+/// `/.well-known/gitmark/{name}/blocktrails.json` is deliberately excluded:
+/// it is the file a verifier reads and carries no secret.
+#[must_use]
+pub fn is_secret_trail_path(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    (p.starts_with("/.well-known/token/") || p.starts_with("/.well-known/gitmark/"))
+        && !p.ends_with("/blocktrails.json")
+}
+
 /// The persisted trail — the public [`Mrc20Trail`] plus the issuer secret and
 /// creation timestamp (JSS stores all of these in one JSON blob,
 /// `token.js:290-303`). Serialises with camelCase keys to match the JSS file

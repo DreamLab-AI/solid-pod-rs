@@ -83,7 +83,7 @@ fn parent_path(p: &str) -> String {
 async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode) -> bool {
     // Sidecars are always evaluated as Control on the resource they govern.
     // This is the same canonical elevation used by the REST and Git paths.
-    let (target, effective_mode) = wac::effective_acl_target(path, mode);
+    let (target, effective_mode) = crate::guarded_acl_target(path, mode);
     let is_write = matches!(effective_mode, AccessMode::Write | AccessMode::Append);
     let check_path = if is_write
         && !target.ends_with('/')

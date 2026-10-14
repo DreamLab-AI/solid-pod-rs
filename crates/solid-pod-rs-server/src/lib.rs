@@ -695,6 +695,18 @@ fn accept_includes_html(accept: &str) -> bool {
 // use; the lockout-guard call sites below and the enforcement functions
 // both route through it.
 
+/// [`effective_acl_target`] plus the trail-secret rule: a trail file holding an
+/// issuer private key (`trail_store::is_secret_trail_path`) is evaluated as
+/// `acl:Control` on itself, so only the pod's Control holder can read or
+/// overwrite it. An `acl:Read` or `acl:Write` grant, including a public one on
+/// the pod root, is not enough to reach the key over HTTP.
+pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, AccessMode) {
+    if trail_store::is_secret_trail_path(path) {
+        return (path.to_string(), AccessMode::Control);
+    }
+    effective_acl_target(path, mode)
+}
+
 /// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
 /// `.acl` document body and confirm at least one authorization still
 /// grants `acl:Control` to `caller` (by exact WebID, `foaf:Agent`, or —
@@ -819,7 +831,7 @@ async fn enforce_write_ctx(
     // it returns `(protected_resource, Control)`. The lockout guard
     // (`proposed_acl_keeps_caller_control`) still runs at the PUT/POST/PATCH
     // handler call sites, keyed on the same `protected_resource_for_acl`.
-    let (resource, eff_mode) = effective_acl_target(path, mode);
+    let (resource, eff_mode) = guarded_acl_target(path, mode);
 
     // `StorageAclResolver` is generic over a concrete backend. `state`
     // holds an `Arc<dyn Storage>`; `find_effective_acl_dyn` wraps it in a
@@ -981,6 +993,20 @@ async fn enforce_read_ctx(
     agent_uri: Option<&str>,
     request_origin: Option<&str>,
 ) -> Result<ResponseAudience, ActixError> {
+    enforce_read_inner(state, path, agent_uri, request_origin, true).await
+}
+
+/// [`enforce_read_ctx`] with the payment step selectable. With
+/// `charge == false` a read whose authorising rule carries an
+/// `acl:PaymentCondition` is refused instead of debited, for callers that
+/// would otherwise bill one request many times (glob GET).
+async fn enforce_read_inner(
+    state: &AppState,
+    path: &str,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+    charge: bool,
+) -> Result<ResponseAudience, ActixError> {
     let origin = request_origin.and_then(wac::Origin::parse);
     // P0-3: reading an `.acl`/`.meta` sidecar discloses the full
     // authorization graph of the resource it governs — every WebID,
@@ -993,7 +1019,7 @@ async fn enforce_read_ctx(
     // ordinary resource stays `(path, Read)`; a sidecar becomes
     // `(protected_resource, Control)`, gating ACL disclosure on Control
     // exactly as JSS does (`auth/middleware.js:93`).
-    let (resource, eff_mode) = effective_acl_target(path, AccessMode::Read);
+    let (resource, eff_mode) = guarded_acl_target(path, AccessMode::Read);
     // ADR-2005: see `enforce_write_ctx` — invalid/unavailable policy denies
     // rather than inheriting an ancestor's broader grant.
     let outcome = resolve_policy_dyn(&*state.storage, &resource).await;
@@ -1025,7 +1051,19 @@ async fn enforce_read_ctx(
     // Sat-gating consumption applies only to a non-elevated (ordinary)
     // read; a sidecar Control elevation is never metered (see
     // `enforce_write_ctx`). `resource == path` iff no elevation happened.
-    if resource.as_str() == path {
+    if resource.as_str() == path && !charge {
+        if wac::granted_payment_cost(
+            acl_doc.as_ref(),
+            &ctx,
+            &resource,
+            eff_mode,
+            &groups,
+            &registry,
+        ) > 0
+        {
+            return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
+        }
+    } else if resource.as_str() == path {
         // A granted read whose authorising rule carried an
         // `acl:PaymentCondition` debits the caller's Web Ledger by the
         // matched rule's cost (fail-closed on a raced balance). See
@@ -2553,6 +2591,39 @@ async fn handle_create_pod(
 // HTTP COPY (JSS parity: handlers/copy.mjs)
 // ---------------------------------------------------------------------------
 
+/// Reduce a COPY `Source` header to a pod path. An absolute URL is accepted
+/// only for this server's own `host` and is stripped to its path; any other
+/// host is refused, as are relative references, `.`/`..` segments (also
+/// percent-encoded) and query or fragment parts. `None` means reject.
+fn normalise_copy_source(raw: &str, host: &str) -> Option<String> {
+    let path = if raw.starts_with("http://") || raw.starts_with("https://") {
+        let url = url::Url::parse(raw).ok()?;
+        let authority = match url.port() {
+            Some(port) => format!("{}:{port}", url.host_str()?),
+            None => url.host_str()?.to_string(),
+        };
+        if !authority.eq_ignore_ascii_case(host)
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return None;
+        }
+        url.path().to_string()
+    } else if raw.starts_with('/') && !raw.contains(['?', '#']) {
+        raw.to_string()
+    } else {
+        return None;
+    };
+    let decoded = percent_decode_str(&path).decode_utf8().ok()?;
+    if decoded
+        .split('/')
+        .any(|seg| seg == "." || seg == ".." || seg.contains('\\'))
+    {
+        return None;
+    }
+    Some(path)
+}
+
 async fn handle_copy(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -2578,6 +2649,17 @@ async fn handle_copy(
         Some(s) => s,
         None => return Ok(HttpResponse::BadRequest().body("Source header required")),
     };
+    let host = req.connection_info().host().to_string();
+    let source = match normalise_copy_source(&source, &host) {
+        Some(s) => s,
+        None => return Ok(HttpResponse::BadRequest().body("invalid Source")),
+    };
+    if !state.dotfiles.is_allowed(Path::new(&source)) {
+        return Ok(HttpResponse::Forbidden().body("dotfile path denied by allowlist"));
+    }
+    // The Source is a read of another resource: it needs the same `acl:Read`
+    // (sidecars and trail secrets: `acl:Control`) as a plain GET of it.
+    enforce_read_ctx(&state, &source, agent.as_deref(), req_origin(&req)).await?;
 
     let (body, meta) = match state.storage.get(&source).await {
         Ok(v) => v,
@@ -2587,22 +2669,55 @@ async fn handle_copy(
         Err(e) => return Err(to_actix(e)),
     };
 
+    // Same lockout guard as `handle_put` when the destination is a sidecar.
+    if protected_resource_for_acl(&dest).is_some()
+        && !proposed_acl_keeps_caller_control(&body, &meta.content_type, agent.as_deref())
+    {
+        return Ok(HttpResponse::Conflict().body(
+            "refused: the proposed ACL would not grant Control to the caller \
+             (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+        ));
+    }
+
     let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
     let write = state.storage.put(&dest, body, &meta.content_type).await;
     finish_quota_reservation(&state, quota, write.is_ok()).await;
     write.map_err(to_actix)?;
 
-    // Copy ACL sidecar if it exists.
+    // Copy the ACL sidecar only for a caller who holds Control on both the
+    // source (to read it) and the destination (to write it), and only if the
+    // copy keeps their own Control. Otherwise it is skipped: the resource
+    // copy above stands, but no one gains or loses access through COPY.
     let src_acl = format!("{}.acl", source.trim_end_matches('/'));
     let dst_acl = format!("{}.acl", dest.trim_end_matches('/'));
     if let Ok((acl_body, acl_meta)) = state.storage.get(&src_acl).await {
-        let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
-        let write = state
-            .storage
-            .put(&dst_acl, acl_body, &acl_meta.content_type)
-            .await;
-        finish_quota_reservation(&state, quota, write.is_ok()).await;
-        write.map_err(to_actix)?;
+        let origin = req_origin(&req);
+        let permitted = enforce_read_ctx(&state, &src_acl, agent.as_deref(), origin)
+            .await
+            .is_ok()
+            && enforce_write_ctx(
+                &state,
+                &dst_acl,
+                AccessMode::Write,
+                agent.as_deref(),
+                origin,
+            )
+            .await
+            .is_ok()
+            && proposed_acl_keeps_caller_control(
+                &acl_body,
+                &acl_meta.content_type,
+                agent.as_deref(),
+            );
+        if permitted {
+            let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
+            let write = state
+                .storage
+                .put(&dst_acl, acl_body, &acl_meta.content_type)
+                .await;
+            finish_quota_reservation(&state, quota, write.is_ok()).await;
+            write.map_err(to_actix)?;
+        }
     }
 
     let mut rsp = HttpResponse::Created().finish();
@@ -2637,16 +2752,29 @@ async fn handle_glob_get(
     // read-authz check applied to plain container GETs.
     let auth_pk = extract_pubkey(&req).await;
     let agent = agent_uri(auth_pk.as_ref());
-    enforce_read_ctx(&state, &folder, agent.as_deref(), req_origin(&req)).await?;
+    let origin = req_origin(&req);
+    let audience = enforce_read_ctx(&state, &folder, agent.as_deref(), origin).await?;
 
     let children = state.storage.list(&folder).await.map_err(to_actix)?;
     let mut merged = String::new();
+    let mut audience = audience;
 
     for child in &children {
-        if child.ends_with('/') {
+        if child.ends_with('/')
+            || child.ends_with(".acl")
+            || child.ends_with(".meta")
+            || child.ends_with(".prov.ttl")
+        {
             continue;
         }
         let child_path = format!("{folder}{child}");
+        // Each child needs its own `acl:Read`; one that is refused (or is
+        // pay-per-read, which a glob must not bill once per child) is left out.
+        match enforce_read_inner(&state, &child_path, agent.as_deref(), origin, false).await {
+            Ok(ResponseAudience::Private) => audience = ResponseAudience::Private,
+            Ok(ResponseAudience::Public) => {}
+            Err(_) => continue,
+        }
         if let Ok((body, meta)) = state.storage.get(&child_path).await {
             if meta.content_type.contains("turtle")
                 || meta.content_type.contains("n-triples")
@@ -2664,7 +2792,9 @@ async fn handle_glob_get(
         return Ok(HttpResponse::NotFound().body("no matching RDF resources"));
     }
 
-    Ok(HttpResponse::Ok().content_type("text/turtle").body(merged))
+    let mut rsp = HttpResponse::Ok().content_type("text/turtle").body(merged);
+    set_cache_policy(&mut rsp, "text/turtle", audience);
+    Ok(rsp)
 }
 
 // ---------------------------------------------------------------------------
@@ -4895,6 +5025,41 @@ mod payment_gating_tests {
             assert!(acl.contains(&agent), "{name} must grant PRINCIPAL");
         }
         assert!(!WRITE_NOT_CONTROL_ACL.contains("did:nostr:alice"));
+    }
+
+    /// A pay-per-read resource is debited once by a plain read, but refused
+    /// (and never debited) by the uncharged check glob GET runs per child.
+    #[actix_web::test]
+    async fn uncharged_read_skips_pay_per_read_resource() {
+        let storage = Arc::new(MemoryBackend::new());
+        let acl = format!(
+            "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+             <#paid> a acl:Authorization ; acl:agent <{PRINCIPAL}> ;\n\
+               acl:accessTo </premium/doc> ; acl:mode acl:Read ;\n\
+               acl:condition [ a acl:PaymentCondition ; acl:costSats 100 ] .\n"
+        );
+        storage
+            .put("/premium/doc.acl", Bytes::from(acl), "text/turtle")
+            .await
+            .unwrap();
+        seed_ledger(storage.as_ref(), PRINCIPAL, 500).await;
+        let state = AppState::new(storage.clone());
+
+        let skipped =
+            enforce_read_inner(&state, "/premium/doc", Some(PRINCIPAL), None, false).await;
+        assert!(skipped.is_err(), "glob must not serve a pay-per-read child");
+        assert_eq!(
+            resolve_balance_sats(&*storage, Some(PRINCIPAL)).await,
+            Some(500)
+        );
+
+        enforce_read_ctx(&state, "/premium/doc", Some(PRINCIPAL), None)
+            .await
+            .expect("a direct read pays and is served");
+        assert_eq!(
+            resolve_balance_sats(&*storage, Some(PRINCIPAL)).await,
+            Some(400)
+        );
     }
 
     /// Anonymous (no principal) → `None`, so a PaymentCondition fails closed.

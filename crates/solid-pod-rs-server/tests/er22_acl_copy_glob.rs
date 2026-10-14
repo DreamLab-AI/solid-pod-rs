@@ -335,7 +335,13 @@ async fn copy_does_not_install_acl_without_control() {
     put(
         s.as_ref(),
         "/drop/src.acl",
-        &acl("/drop/dst", &[(WRITER, "acl:Read, acl:Write, acl:Control")]),
+        &format!(
+            "{}<#w> a acl:Authorization ; acl:agent <{WRITER}> ;\n\
+               acl:accessTo </drop/src> ; acl:mode acl:Read .\n\
+             <#c> a acl:Authorization ; acl:agent <{WRITER}> ;\n\
+               acl:accessTo </drop/dst> ; acl:mode acl:Read, acl:Write, acl:Control .\n",
+            acl("/drop/src", &[])
+        ),
         "text/turtle",
     )
     .await;
@@ -363,7 +369,7 @@ async fn copy_installs_acl_for_control_holder() {
     put(
         s.as_ref(),
         "/drop/src.acl",
-        &acl("/drop/dst", &[]),
+        &acl("/drop/src", &[]),
         "text/turtle",
     )
     .await;
