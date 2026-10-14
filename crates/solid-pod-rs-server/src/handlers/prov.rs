@@ -236,6 +236,10 @@ async fn save_epoch_commits(storage: &Arc<dyn Storage>, commits: &[String]) -> R
         .map_err(|e| e.to_string())
 }
 
+/// How many epochs' worth of commits may wait on a failing anchor before
+/// further commits are refused rather than appended to `epoch.json`.
+const EPOCH_BACKLOG_FACTOR: usize = 4;
+
 /// Feed a git commit SHA into the pod's epoch (the `AnchorPolicy::Epoch` path),
 /// and when the epoch fills, anchor the **batch Merkle root** with a single
 /// Bitcoin tx (ADR-059 D5) and reset the epoch.
@@ -278,6 +282,15 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
     }
     // Idempotency: never double-count the same commit in a batch.
     if !commits.iter().any(|c| c == commit_sha) {
+        // A close that keeps failing leaves the batch full, and every push
+        // would grow it. Past the backlog cap the commit is not accumulated
+        // (its git-mark stands); the batch drains once an anchor succeeds.
+        if commits.len() >= size.saturating_mul(EPOCH_BACKLOG_FACTOR) {
+            return Err(format!(
+                "epoch backlog full ({} commits): anchoring keeps failing",
+                commits.len()
+            ));
+        }
         commits.push(commit_sha.to_string());
     }
 
@@ -966,6 +979,20 @@ mod tests {
         assert!(second.is_ok_and(|c| c.is_none()));
         assert_eq!(epoch_on_disk(&inner).await, vec!["next"]);
         assert!(!inner.exists(EPOCH_ANCHORED_PATH).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn failing_anchor_cannot_grow_the_epoch_without_bound() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let backlog: Vec<String> = (0..DEFAULT_EPOCH_SIZE * EPOCH_BACKLOG_FACTOR)
+            .map(|i| format!("c{i}"))
+            .collect();
+        save_epoch_commits(&inner, &backlog).await.unwrap();
+        let state = state_over(inner.clone());
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Failing);
+        let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "more").await;
+        assert!(out.is_err());
+        assert_eq!(epoch_on_disk(&inner).await, backlog, "epoch.json grew");
     }
 
     #[tokio::test]

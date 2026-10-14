@@ -1223,6 +1223,11 @@ struct TokenMoveBody {
     all: Option<bool>,
 }
 
+/// How long a token transfer waits for the trail while holding the payment
+/// lock before answering 503, so one slow anchor cannot stall every payment
+/// endpoint behind it.
+const TRAIL_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Execute the token transfer + ledger debit shared by `.buy`/`.withdraw`.
 ///
 /// Loads the trail, runs [`transfer_token_with_key`] (reusing the chained-key
@@ -1243,7 +1248,23 @@ async fn execute_token_transfer(
     let mempool = mempool_client(state);
 
     // One advance of this trail at a time: the anchorer takes the same lock.
-    let _trail_lock = crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)).await;
+    // The caller holds the global payment lock, so a slow anchor must not be
+    // waited out here: past `TRAIL_LOCK_WAIT` the request is told to retry.
+    let _trail_lock = match tokio::time::timeout(
+        TRAIL_LOCK_WAIT,
+        crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)),
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Err(HttpResponse::ServiceUnavailable()
+                .insert_header(("Retry-After", TRAIL_LOCK_WAIT.as_secs().max(1).to_string()))
+                .json(serde_json::json!({
+                    "error": "The trail is busy with another transaction; retry shortly"
+                })));
+        }
+    };
     // A payout that landed moves the head first; then an anchor that was
     // broadcast but not saved is settled, before this transfer spends the
     // trail's head.
@@ -1973,6 +1994,35 @@ mod intent_recovery_tests {
         .await
         .expect("transfer must proceed once the lock is free");
         assert!(done.is_err(), "no trail is minted, so it is refused");
+    }
+
+    #[actix_web::test]
+    async fn token_transfer_behind_a_slow_anchor_answers_503_and_frees_the_payment_lock() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let state = crate::AppState::new(storage);
+        let _held = crate::trail_store::lock_path(&crate::trail_store::trail_path("PAY")).await;
+        let rsp = {
+            // As the handlers do: the payment lock is held across the call.
+            let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                execute_token_transfer(&state, "PAY", &"22".repeat(32), ACCOUNT, 1, 1),
+            )
+            .await
+            .expect("the transfer stalled behind the trail lock")
+            .unwrap_err()
+        };
+        assert_eq!(rsp.status().as_u16(), 503);
+        assert!(rsp.headers().contains_key("retry-after"));
+        // The payment lock is free again for the other endpoints.
+        drop(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::PAYMENT_STATE_LOCK.lock(),
+            )
+            .await
+            .expect("the payment lock must not stay held behind the trail"),
+        );
     }
 
     #[actix_web::test]
