@@ -229,8 +229,97 @@ pub async fn save_gitmark_trail(
     Ok(())
 }
 
+/// A fault-injecting [`Storage`] for the anchoring tests: it wraps a real
+/// backend, fails chosen paths with `Io`, and (optionally) yields at every
+/// call so concurrent tasks genuinely interleave.
+#[cfg(test)]
+pub(crate) mod fault_storage {
+    use super::*;
+    use solid_pod_rs::storage::{ResourceMeta, StorageEvent};
+    use solid_pod_rs::PodError;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    pub(crate) struct FaultStorage {
+        pub(crate) inner: Arc<dyn Storage>,
+        pub(crate) fail_get: Mutex<HashSet<String>>,
+        pub(crate) fail_put: Mutex<HashSet<String>>,
+        pub(crate) yielding: bool,
+    }
+
+    impl FaultStorage {
+        pub(crate) fn new(inner: Arc<dyn Storage>, yielding: bool) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                fail_get: Mutex::default(),
+                fail_put: Mutex::default(),
+                yielding,
+            })
+        }
+        pub(crate) fn fail_get(&self, path: &str) {
+            self.fail_get.lock().unwrap().insert(path.to_string());
+        }
+        pub(crate) fn fail_put(&self, path: &str) {
+            self.fail_put.lock().unwrap().insert(path.to_string());
+        }
+        pub(crate) fn heal(&self) {
+            self.fail_get.lock().unwrap().clear();
+            self.fail_put.lock().unwrap().clear();
+        }
+        fn io() -> PodError {
+            PodError::Io(std::io::Error::other("injected fault"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for FaultStorage {
+        async fn get(&self, path: &str) -> Result<(Bytes, ResourceMeta), PodError> {
+            if self.yielding {
+                tokio::task::yield_now().await;
+            }
+            if self.fail_get.lock().unwrap().contains(path) {
+                return Err(Self::io());
+            }
+            self.inner.get(path).await
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Bytes,
+            content_type: &str,
+        ) -> Result<ResourceMeta, PodError> {
+            if self.yielding {
+                tokio::task::yield_now().await;
+            }
+            if self.fail_put.lock().unwrap().contains(path) {
+                return Err(Self::io());
+            }
+            self.inner.put(path, body, content_type).await
+        }
+        async fn delete(&self, path: &str) -> Result<(), PodError> {
+            self.inner.delete(path).await
+        }
+        async fn list(&self, container: &str) -> Result<Vec<String>, PodError> {
+            self.inner.list(container).await
+        }
+        async fn head(&self, path: &str) -> Result<ResourceMeta, PodError> {
+            self.inner.head(path).await
+        }
+        async fn exists(&self, path: &str) -> Result<bool, PodError> {
+            self.inner.exists(path).await
+        }
+        async fn watch(
+            &self,
+            path: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<StorageEvent>, PodError> {
+            self.inner.watch(path).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fault_storage::FaultStorage;
     use super::*;
     use solid_pod_rs::mrc20::MRC20_PROFILE;
     use solid_pod_rs::storage::memory::MemoryBackend;
@@ -368,6 +457,23 @@ mod tests {
         let parsed: Blocktrail = serde_json::from_str(&public).unwrap();
         assert_eq!(parsed, stored.trail);
         assert!(load_gitmark_trail(&storage, "none")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn loaders_propagate_storage_errors_and_only_not_found_is_absent() {
+        let mem: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let faulty = FaultStorage::new(mem, false);
+        faulty.fail_get(&trail_path("prov"));
+        faulty.fail_get(&gitmark_trail_path("prov"));
+        let storage: Arc<dyn Storage> = faulty.clone();
+        assert!(load_trail(&storage, "prov").await.is_err());
+        assert!(load_gitmark_trail(&storage, "prov").await.is_err());
+        // a path that is merely absent is still `None`
+        assert!(load_trail(&storage, "other").await.unwrap().is_none());
+        assert!(load_gitmark_trail(&storage, "other")
             .await
             .unwrap()
             .is_none());

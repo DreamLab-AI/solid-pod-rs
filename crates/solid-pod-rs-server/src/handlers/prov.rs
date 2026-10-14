@@ -547,3 +547,121 @@ pub fn register(app: &mut web::ServiceConfig) {
     app.route("/{pod}/_prov/anchor", web::post().to(handle_anchor))
         .route("/{pod}/_prov/{commit_sha}", web::get().to(handle_resolve));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trail_store::fault_storage::FaultStorage;
+    use crate::trail_store::{gitmark_trail_path, trail_path};
+    use solid_pod_rs::provenance::{BlockTrailAnchor, ProvenanceError};
+    use solid_pod_rs::storage::memory::MemoryBackend;
+
+    /// An anchorer that must never be reached (the epoch never fills).
+    struct Unreachable;
+    #[async_trait::async_trait(?Send)]
+    impl BlockAnchorer for Unreachable {
+        async fn anchor(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<BlockTrailAnchor, ProvenanceError> {
+            panic!("epoch must not close in this test")
+        }
+        async fn verify(&self, _: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+            Ok(false)
+        }
+    }
+
+    fn state_over(storage: Arc<dyn Storage>) -> AppState {
+        AppState::new(storage)
+    }
+
+    async fn epoch_on_disk(inner: &Arc<dyn Storage>) -> Vec<String> {
+        let (bytes, _) = inner.get(EPOCH_PATH).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn epoch_read_error_keeps_the_pending_batch() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        save_epoch_commits(&inner, &["a".into(), "b".into()])
+            .await
+            .unwrap();
+        let faulty = FaultStorage::new(inner.clone(), false);
+        faulty.fail_get(EPOCH_PATH);
+        let state = state_over(faulty.clone());
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Unreachable);
+
+        let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "c").await;
+        assert!(out.is_err(), "a failed read must not look like an empty batch");
+        assert_eq!(epoch_on_disk(&inner).await, vec!["a", "b"], "batch lost");
+    }
+
+    #[tokio::test]
+    async fn epoch_corrupt_batch_is_not_overwritten() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        inner
+            .put(EPOCH_PATH, Bytes::from_static(b"{not json"), "application/json")
+            .await
+            .unwrap();
+        let state = state_over(inner.clone());
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Unreachable);
+        let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "c").await;
+        assert!(out.is_err());
+        let (bytes, _) = inner.get(EPOCH_PATH).await.unwrap();
+        assert_eq!(&bytes[..], b"{not json");
+    }
+
+    #[tokio::test]
+    async fn concurrent_epoch_pushes_both_survive() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let faulty = FaultStorage::new(inner.clone(), true);
+        let state = state_over(faulty.clone());
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Unreachable);
+        let (a, b) = tokio::join!(
+            epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "a"),
+            epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "b"),
+        );
+        a.unwrap();
+        b.unwrap();
+        let mut got = epoch_on_disk(&inner).await;
+        got.sort();
+        assert_eq!(got, vec!["a", "b"], "lost update in the epoch RMW");
+    }
+
+    /// A failing anchor must be reported by the hook (as `anchor_error`), so
+    /// `build_anchorer` still hands back an anchorer when the trail read fails.
+    #[tokio::test]
+    async fn build_anchorer_storage_error_is_not_silent_git_only() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let faulty = FaultStorage::new(inner, false);
+        faulty.fail_get(&gitmark_trail_path("prov"));
+        let state = state_over(faulty.clone());
+        let (anchorer, ticker, network) = build_anchorer(&state, None)
+            .await
+            .expect("a storage fault must surface as a failing anchorer, not git-only");
+        let err = anchorer.anchor(&ticker, "ab", &network).await.unwrap_err();
+        assert!(err.to_string().contains("injected fault"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn build_anchorer_mrc20_trail_read_error_does_not_fall_through() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let faulty = FaultStorage::new(inner, false);
+        faulty.fail_get(&trail_path("prov"));
+        let mut state = state_over(faulty.clone());
+        state.pay_config.token = Some(solid_pod_rs::payments::TokenConfig {
+            ticker: "prov".into(),
+            rate: 1,
+            supply: 1000,
+            issuer: "02".to_string() + &"ab".repeat(32),
+            accepted_issuers: vec![],
+        });
+        let (anchorer, ticker, network) = build_anchorer(&state, None)
+            .await
+            .expect("an MRC20 read fault must not fall through to git-mark/None");
+        let err = anchorer.anchor(&ticker, "ab", &network).await.unwrap_err();
+        assert!(err.to_string().contains("injected fault"), "{err}");
+    }
+}

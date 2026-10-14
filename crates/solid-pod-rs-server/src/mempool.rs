@@ -1558,4 +1558,126 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("with_storage"), "{err}");
     }
+
+    // ── GitmarkAnchorer: serialised advances, durable broadcast intent ──
+
+    /// A mempool that yields on every call (so concurrent tasks interleave),
+    /// rejects a double spend like a node would, and can drop a broadcast.
+    #[derive(Clone)]
+    struct RacyMempool {
+        inner: FixtureMempool,
+        spent: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, u32)>>>,
+        drop_next_broadcast: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl RacyMempool {
+        fn new(inner: FixtureMempool) -> Self {
+            Self {
+                inner,
+                spent: Default::default(),
+                drop_next_broadcast: Default::default(),
+            }
+        }
+    }
+    #[async_trait(?Send)]
+    impl MempoolLookup for RacyMempool {
+        async fn address_utxos(&self, address: &str) -> Result<Vec<Utxo>, PaymentError> {
+            tokio::task::yield_now().await;
+            self.inner.address_utxos(address).await
+        }
+        async fn tx(&self, txid: &str) -> Result<TxInfo, PaymentError> {
+            tokio::task::yield_now().await;
+            self.inner.tx(txid).await
+        }
+    }
+    #[async_trait(?Send)]
+    impl MempoolBroadcast for RacyMempool {
+        async fn broadcast_tx(&self, raw_hex: &str) -> Result<String, PaymentError> {
+            tokio::task::yield_now().await;
+            if self
+                .drop_next_broadcast
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(PaymentError::InvalidState("connection reset".into()));
+            }
+            let info = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)?;
+            {
+                let mut spent = self.spent.lock().unwrap();
+                if info.vin.iter().any(|i| spent.contains(&(i.txid.clone(), i.vout))) {
+                    return Err(PaymentError::InvalidState("txn-mempool-conflict".into()));
+                }
+                for i in &info.vin {
+                    spent.insert((i.txid.clone(), i.vout));
+                }
+            }
+            self.inner.broadcast_tx(raw_hex).await
+        }
+    }
+
+    /// Two separate anchorer instances (as `build_anchorer` makes per request)
+    /// over one pod, with genesis already on-chain.
+    async fn racy_trail() -> (
+        RacyMempool,
+        std::sync::Arc<crate::trail_store::fault_storage::FaultStorage>,
+        GitmarkAnchorer<RacyMempool>,
+        GitmarkAnchorer<RacyMempool>,
+    ) {
+        let fixture = FixtureMempool::empty();
+        let voucher = issuer_voucher(&fixture, &"35".repeat(32));
+        let mempool = RacyMempool::new(fixture);
+        let inner: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryBackend::new());
+        let storage = crate::trail_store::fault_storage::FaultStorage::new(inner, true);
+        let a = GitmarkAnchorer::with_storage(mempool.clone(), storage.clone());
+        let b = GitmarkAnchorer::with_storage(mempool.clone(), storage.clone());
+        a.genesis("prov", &voucher, COMMITS[0], "testnet4", "")
+            .await
+            .unwrap();
+        (mempool, storage, a, b)
+    }
+
+    #[tokio::test]
+    async fn concurrent_anchors_build_on_each_others_head() {
+        let (mempool, storage, a, b) = racy_trail().await;
+        let (ra, rb) = tokio::join!(
+            a.anchor("prov", COMMITS[1], "testnet4"),
+            b.anchor("prov", COMMITS[2], "testnet4"),
+        );
+        let (ra, rb) = (ra.unwrap(), rb.unwrap());
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 3, "both anchors must land");
+        let heads = [ra.txid.clone(), rb.txid.clone()];
+        assert_eq!(
+            heads.iter().filter(|t| **t == stored.trail.txo[2].txid).count(),
+            1
+        );
+        assert!(heads.contains(&stored.trail.txo[1].txid));
+        let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
+        assert!(report.is_verified(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn broadcast_then_failed_save_is_ok_and_recovered_by_the_next_anchor() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        storage.fail_put(&crate::trail_store::gitmark_trail_path("prov"));
+        let landed = a
+            .anchor("prov", COMMITS[1], "testnet4")
+            .await
+            .expect("the tx is on-chain: a failed save must not read as a failed anchor");
+        storage.heal();
+        let next = a.anchor("prov", COMMITS[2], "testnet4").await.unwrap();
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 3);
+        assert_eq!(stored.trail.txo[1].txid, landed.txid);
+        assert_eq!(stored.trail.txo[2].txid, next.txid);
+        let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
+        assert!(report.is_verified(), "{report:?}");
+    }
 }
+
