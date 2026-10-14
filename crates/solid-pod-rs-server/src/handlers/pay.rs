@@ -254,7 +254,14 @@ async fn recover_payment_intents(
         match mempool.transaction_exists(&intent.txid).await {
             Ok(true) => {
                 if let Some(trail) = &intent.trail {
-                    save_trail(storage, trail).await?;
+                    // Only ever move the stored trail forward: a snapshot
+                    // taken before a later advance must not roll its head back.
+                    let have = load_trail(storage, &trail.ticker)
+                        .await?
+                        .map_or(0, |t| t.states.len());
+                    if have < trail.states.len() {
+                        save_trail(storage, trail).await?;
+                    }
                 }
                 changed = true;
             }
@@ -1233,6 +1240,20 @@ async fn execute_token_transfer(
     sat_cost: u64,
 ) -> Result<(String, serde_json::Value, u64), HttpResponse> {
     let storage = &state.storage;
+    let mempool = mempool_client(state);
+
+    // One advance of this trail at a time: the anchorer takes the same lock.
+    let _trail_lock = crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)).await;
+    // An anchor that was broadcast but not saved is settled before this
+    // transfer spends the trail's head.
+    if let Err(e) = crate::mempool::settle_trail_intent(&mempool, storage, ticker).await {
+        return Err(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": format!("Transfer failed: {e}")})));
+    }
+    let store = StoragePaymentStore::new(&**storage);
+    if let Err(error) = recover_payment_intents(&store, storage, &mempool).await {
+        return Err(payment_error_response(error));
+    }
 
     // Load the trail (must be minted on this pod).
     let mut stored = match load_trail(storage, ticker).await {
@@ -1245,7 +1266,6 @@ async fn execute_token_transfer(
         Err(e) => return Err(payment_error_response(e)),
     };
 
-    let mempool = mempool_client(state);
     let public = stored.to_public();
     let prev_state = match public.states.last() {
         Some(s) => s.clone(),
@@ -1278,10 +1298,6 @@ async fn execute_token_transfer(
     // Prepare one durable debit + recovery intent before the irreversible
     // broadcast. A lost HTTP response is ambiguous, so recovery queries the
     // locally-computed txid instead of immediately returning the balance.
-    let store = StoragePaymentStore::new(&**storage);
-    if let Err(error) = recover_payment_intents(&store, storage, &mempool).await {
-        return Err(payment_error_response(error));
-    }
     let expected_txid = match raw_transaction_txid(&update.tx.raw_hex) {
         Ok(txid) => txid,
         Err(error) => return Err(payment_error_response(error)),
@@ -1873,6 +1889,89 @@ mod intent_recovery_tests {
         .replace(' ', "");
         let want = solid_pod_rs::bitcoin_tx::decode_tx_info(&raw).unwrap().txid;
         assert_eq!(raw_transaction_txid(&raw).unwrap(), want);
+    }
+
+    fn stored_trail(states: usize) -> StoredTrail {
+        let state = |seq: u64| -> Mrc20State {
+            serde_json::from_value(serde_json::json!({
+                "profile": "mrc20", "prev": "0".repeat(64), "seq": seq, "ops": []
+            }))
+            .unwrap()
+        };
+        StoredTrail {
+            ticker: "PAY".into(),
+            name: "Pay".into(),
+            supply: 1,
+            privkey: "11".repeat(32),
+            pubkey_base: "02".to_string() + &"22".repeat(32),
+            states: (0..states as u64).map(state).collect(),
+            state_strings: vec![],
+            current_txid: format!("{states:02x}").repeat(32),
+            current_vout: 0,
+            current_amount: 1,
+            network: "testnet4".into(),
+            date_created: String::new(),
+        }
+    }
+
+    #[actix_web::test]
+    async fn recovery_never_rolls_the_stored_trail_back() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        // the intent's snapshot has 2 states; a later advance stored 3
+        let mut state = store.read_state().await.unwrap();
+        state.intents[0].trail = Some(stored_trail(2));
+        store.commit_state(&mut state).await.unwrap();
+        save_trail(&storage, &stored_trail(3)).await.unwrap();
+        let (mempool, handle) = fixture(200).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let kept = load_trail(&storage, "PAY").await.unwrap().unwrap();
+        assert_eq!(kept.states.len(), 3, "the head was rolled back");
+        assert!(store.read_state().await.unwrap().intents.is_empty());
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn recovery_still_moves_a_stale_trail_forward() {
+        let storage = prepared_state().await;
+        let store = StoragePaymentStore::new(&*storage);
+        let mut state = store.read_state().await.unwrap();
+        state.intents[0].trail = Some(stored_trail(3));
+        store.commit_state(&mut state).await.unwrap();
+        save_trail(&storage, &stored_trail(2)).await.unwrap();
+        let (mempool, handle) = fixture(200).await;
+        recover_payment_intents(&store, &storage, &mempool)
+            .await
+            .unwrap();
+        let kept = load_trail(&storage, "PAY").await.unwrap().unwrap();
+        assert_eq!(kept.states.len(), 3);
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn token_transfer_waits_for_the_trail_lock() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let state = crate::AppState::new(storage);
+        let held = crate::trail_store::lock_path(&crate::trail_store::trail_path("PAY")).await;
+        let waiting = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            execute_token_transfer(&state, "PAY", &"22".repeat(32), ACCOUNT, 1, 1),
+        )
+        .await;
+        assert!(
+            waiting.is_err(),
+            "a transfer ran while an anchor held the trail"
+        );
+        drop(held);
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute_token_transfer(&state, "PAY", &"22".repeat(32), ACCOUNT, 1, 1),
+        )
+        .await
+        .expect("transfer must proceed once the lock is free");
+        assert!(done.is_err(), "no trail is minted, so it is refused");
     }
 
     #[actix_web::test]
