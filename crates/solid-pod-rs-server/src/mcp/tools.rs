@@ -73,37 +73,16 @@ fn clean_path(raw: &str) -> Result<String, Value> {
     crate::canonical_pod_path(raw).ok_or_else(|| tool_error(format!("invalid path: {raw}")))
 }
 
-fn parent_path(p: &str) -> String {
-    if p == "/" || p.is_empty() {
-        return "/".to_string();
-    }
-    let trimmed = p.strip_suffix('/').unwrap_or(p);
-    match trimmed.rfind('/') {
-        Some(0) | None => "/".to_string(),
-        Some(idx) => trimmed[..=idx].to_string(),
-    }
-}
-
-/// WAC check mirroring the HTTP write path: for writes against a
-/// non-existent resource, fall back to the parent container (same pattern
-/// as `enforce_write`), so MCP tools and REST endpoints agree.
+/// Non-charging WAC gate for the metadata-style tools (list, head, ACL and
+/// skill reads). Resource reads and mutations go through [`authorise`], which
+/// is the REST enforcement path with its payment and quota accounting.
 async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode) -> bool {
     // Sidecars are always evaluated as Control on the resource they govern.
     // This is the same canonical elevation used by the REST and Git paths.
     let Some(path) = crate::canonical_pod_path(path) else {
         return false;
     };
-    let (target, effective_mode) = crate::guarded_acl_target(&path, mode);
-    let is_write = matches!(effective_mode, AccessMode::Write | AccessMode::Append);
-    let check_path = if is_write
-        && !target.ends_with('/')
-        && !state.storage.exists(&target).await.unwrap_or(false)
-    {
-        parent_path(&target)
-    } else {
-        target
-    };
-
+    let (check_path, effective_mode) = crate::guarded_acl_target(&path, mode);
     let acl_doc = match crate::find_effective_acl_dyn(&*state.storage, &check_path).await {
         Ok(doc) => doc,
         Err(_) => return false,
@@ -128,6 +107,28 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
         &groups,
         &registry,
     )
+}
+
+/// Authorise `path` through the same enforcement the REST handlers use
+/// (`enforce_read_ctx` / `enforce_write_ctx`): sidecar and trail-secret
+/// elevation, `acl:origin`, and the `acl:PaymentCondition` debit for the
+/// granting rule. `verb` names the operation in the refusal.
+async fn authorise(
+    state: &AppState,
+    ctx: &McpCtx,
+    path: &str,
+    mode: AccessMode,
+    verb: &str,
+) -> Result<(), Value> {
+    let agent = ctx.web_id.as_deref();
+    let origin = ctx.request_origin.as_deref();
+    let granted = match mode {
+        AccessMode::Read => crate::enforce_read_ctx(state, path, agent, origin)
+            .await
+            .map(|_| ()),
+        _ => crate::enforce_write_ctx(state, path, mode, agent, origin).await,
+    };
+    granted.map_err(|_| tool_error(format!("access denied: {verb} {path}")))
 }
 
 async fn can_read_child(state: &AppState, ctx: &McpCtx, path: &str) -> bool {
@@ -195,11 +196,11 @@ async fn read_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         Ok(p) => p,
         Err(e) => return e,
     };
-    if !wac_check(state, ctx, path, AccessMode::Read).await {
-        return tool_error(format!("access denied: read {path}"));
-    }
     if path.ends_with('/') {
         return tool_error("use list_resources for containers");
+    }
+    if let Err(e) = authorise(state, ctx, path, AccessMode::Read, "read").await {
+        return e;
     }
     let (body, _meta) = match state.storage.get(path).await {
         Ok(v) => v,
@@ -239,12 +240,18 @@ async fn write_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         .get("contentType")
         .and_then(Value::as_str)
         .unwrap_or("text/plain");
-    if !wac_check(state, ctx, path, AccessMode::Write).await {
-        return tool_error(format!("access denied: write {path}"));
+    if let Err(e) = authorise(state, ctx, path, AccessMode::Write, "write").await {
+        return e;
     }
     let bytes = Bytes::from(content.as_bytes().to_vec());
     let len = bytes.len();
-    match state.storage.put(path, bytes, content_type).await {
+    let quota = match crate::reserve_quota_for_size(state, path, len as u64).await {
+        Ok(q) => q,
+        Err(e) => return tool_error(format!("write refused: {e}")),
+    };
+    let write = state.storage.put(path, bytes, content_type).await;
+    crate::finish_quota_reservation(state, quota, write.is_ok()).await;
+    match write {
         Ok(_) => tool_text(format!("wrote {path} ({len} bytes)")),
         Err(e) => tool_error(format!("write failed: {e}")),
     }
@@ -259,8 +266,8 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         Ok(p) => p,
         Err(e) => return e,
     };
-    if !wac_check(state, ctx, container, AccessMode::Append).await {
-        return tool_error(format!("access denied: append {container}"));
+    if let Err(e) = authorise(state, ctx, container, AccessMode::Append, "append").await {
+        return e;
     }
     if !state.storage.exists(container).await.unwrap_or(false) {
         return tool_error(format!("container not found: {container}"));
@@ -270,16 +277,19 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         .get("isContainer")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let base = match ldp::resolve_slug(container, slug) {
+    let mut base = match ldp::resolve_slug(container, slug) {
         Ok(p) => p,
         Err(e) => return tool_error(format!("invalid slug: {e}")),
     };
-    // Resolve authorization again against the final slug. For ordinary new
-    // children this inherits the container's Append grant; an `.acl` or
-    // `.meta` slug is elevated by `wac_check` to Control on its governed
-    // resource and therefore cannot bypass the sidecar boundary.
-    if !wac_check(state, ctx, &base, AccessMode::Write).await {
-        return tool_error(format!("access denied: create {base}"));
+    // Same rule as REST POST: an `.acl` or `.meta` slug is elevated to Control
+    // on its governed resource and cannot be minted from Append alone. Any
+    // other slug is a new child of the container, never an overwrite.
+    if wac::protected_resource_for_acl(&base).is_some() {
+        if let Err(e) = authorise(state, ctx, &base, AccessMode::Write, "create").await {
+            return e;
+        }
+    } else {
+        base = crate::mint_unique_target(&*state.storage, &base).await;
     }
     if is_container {
         let child = format!("{base}/");
@@ -294,7 +304,13 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
             .and_then(Value::as_str)
             .unwrap_or("text/plain");
         let bytes = Bytes::from(content.as_bytes().to_vec());
-        match state.storage.put(&base, bytes, content_type).await {
+        let quota = match crate::reserve_quota_for_size(state, &base, bytes.len() as u64).await {
+            Ok(q) => q,
+            Err(e) => return tool_error(format!("create refused: {e}")),
+        };
+        let write = state.storage.put(&base, bytes, content_type).await;
+        crate::finish_quota_reservation(state, quota, write.is_ok()).await;
+        match write {
             Ok(_) => tool_text(format!("created {base}")),
             Err(e) => tool_error(format!("create failed: {e}")),
         }
@@ -310,13 +326,19 @@ async fn delete_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         Ok(p) => p,
         Err(e) => return e,
     };
-    if !wac_check(state, ctx, path, AccessMode::Write).await {
-        return tool_error(format!("access denied: delete {path}"));
+    if let Err(e) = authorise(state, ctx, path, AccessMode::Write, "delete").await {
+        return e;
     }
     if !state.storage.exists(path).await.unwrap_or(false) {
         return tool_error(format!("not found: {path}"));
     }
-    match state.storage.delete(path).await {
+    let quota = match crate::reserve_quota_for_size(state, path, 0).await {
+        Ok(q) => q,
+        Err(e) => return tool_error(format!("delete refused: {e}")),
+    };
+    let deleted = state.storage.delete(path).await;
+    crate::finish_quota_reservation(state, quota, deleted.is_ok()).await;
+    match deleted {
         Ok(()) => tool_text(format!("deleted {path}")),
         Err(e) => tool_error(format!("delete failed: {e}")),
     }
