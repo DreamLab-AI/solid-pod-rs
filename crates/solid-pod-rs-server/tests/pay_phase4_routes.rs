@@ -19,7 +19,6 @@ use std::sync::Arc;
 use actix_web::http::header;
 use actix_web::{test, web, App, HttpResponse};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use solid_pod_rs::auth::nip98;
 use solid_pod_rs::storage::memory::MemoryBackend;
 use solid_pod_rs::storage::Storage;
@@ -28,13 +27,12 @@ use solid_pod_rs_server::{build_app, AppState};
 
 const NETWORK: &str = "testnet4";
 
+/// The txid a node reports for a raw transaction: the witness is excluded.
 fn bitcoin_txid(raw_hex: &[u8]) -> String {
-    let raw = hex::decode(raw_hex).unwrap();
-    let first = Sha256::digest(raw);
-    let mut second = Sha256::digest(first).to_vec();
-    second.reverse();
-    hex::encode(second)
+    let raw = std::str::from_utf8(raw_hex).unwrap();
+    solid_pod_rs::bitcoin_tx::decode_tx_info(raw).unwrap().txid
 }
+
 // Issuer (pod) key — controls the trail.
 const ISSUER_PRIVKEY: &str = "0000000000000000000000000000000000000000000000000000000000000007";
 // Buyer/withdrawer NIP-98 key.
