@@ -689,9 +689,7 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
         })?;
 
         // One advance of this trail at a time (anchorers are per-request).
-        let _guard =
-            crate::trail_store::lock_storage_key(storage, &crate::trail_store::trail_path(ticker))
-                .await;
+        let _guard = crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)).await;
 
         // Load the trail that will carry the anchor (JSS `loadTrail`).
         let mut stored = load_trail(storage, ticker)
@@ -1054,7 +1052,7 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
         use crate::trail_store::{gitmark_trail_path, load_gitmark_trail};
         let storage = self.storage()?;
-        let _guard = crate::trail_store::lock_storage_key(storage, &gitmark_trail_path(name)).await;
+        let _guard = crate::trail_store::lock_path(&gitmark_trail_path(name)).await;
         self.settle_intent(name).await?;
         if load_gitmark_trail(storage, name)
             .await
@@ -1106,9 +1104,7 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Bloc
         network: &str,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
         use crate::trail_store::{gitmark_trail_path, load_gitmark_trail};
-        let _guard =
-            crate::trail_store::lock_storage_key(self.storage()?, &gitmark_trail_path(ticker))
-                .await;
+        let _guard = crate::trail_store::lock_path(&gitmark_trail_path(ticker)).await;
         self.settle_intent(ticker).await?;
         let stored = load_gitmark_trail(self.storage()?, ticker)
             .await
@@ -1844,5 +1840,16 @@ mod tests {
         );
         let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
         assert!(report.is_verified(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn http_client_presence_check_reaches_the_inherent_method() {
+        // A closed port: the call must come back as an ambiguous Err (not a
+        // definite `false`, not a recursion into the trait impl).
+        let client = MempoolHttpClient::new("http://127.0.0.1:1");
+        let out =
+            <MempoolHttpClient as MempoolTxPresence>::transaction_exists(&client, &"ab".repeat(32))
+                .await;
+        assert!(out.is_err(), "{out:?}");
     }
 }

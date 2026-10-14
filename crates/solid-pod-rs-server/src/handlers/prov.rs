@@ -252,16 +252,17 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
 ) -> Result<Option<ClosedEpoch>, String> {
     let size = epoch_size();
     // One read-modify-write of the batch at a time (and one close at a time).
-    let _guard = crate::trail_store::lock_storage_key(&state.storage, EPOCH_PATH).await;
+    let _guard = crate::trail_store::lock_path(EPOCH_PATH).await;
     let mut commits = load_epoch_commits(&state.storage).await?;
     // Idempotency: never double-count the same commit in a batch.
     if !commits.iter().any(|c| c == commit_sha) {
         commits.push(commit_sha.to_string());
     }
 
+    // Persist the grown batch first: a failed close below must not lose the
+    // commit that filled it (the next push retries the close).
+    save_epoch_commits(&state.storage, &commits).await?;
     if commits.len() < size {
-        // Not full yet — persist the growing batch and wait for more commits.
-        save_epoch_commits(&state.storage, &commits).await?;
         return Ok(None);
     }
 
@@ -628,7 +629,7 @@ async fn retain_refund(
     amount: u64,
     reason: &str,
 ) -> Result<(), String> {
-    let _guard = crate::trail_store::lock_storage_key(storage, PENDING_REFUNDS_PATH).await;
+    let _guard = crate::trail_store::lock_path(PENDING_REFUNDS_PATH).await;
     let mut owed: Vec<serde_json::Value> = match storage.get(PENDING_REFUNDS_PATH).await {
         Ok((bytes, _)) => {
             serde_json::from_slice(&bytes).map_err(|e| format!("malformed pending refunds: {e}"))?
@@ -823,5 +824,38 @@ mod tests {
         assert_eq!(owed.len(), 1);
         assert_eq!(owed[0]["did"], did.as_str());
         assert_eq!(owed[0]["amount_sats"], 40);
+    }
+
+    /// An anchorer whose every anchor fails (the chain is unreachable).
+    struct Failing;
+    #[async_trait::async_trait(?Send)]
+    impl BlockAnchorer for Failing {
+        async fn anchor(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<BlockTrailAnchor, ProvenanceError> {
+            Err(ProvenanceError::Anchor("chain unreachable".into()))
+        }
+        async fn verify(&self, _: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_epoch_close_keeps_the_commit_that_filled_it() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let full: Vec<String> = (0..DEFAULT_EPOCH_SIZE - 1)
+            .map(|i| format!("c{i}"))
+            .collect();
+        save_epoch_commits(&inner, &full).await.unwrap();
+        let state = state_over(inner.clone());
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Failing);
+        let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "last").await;
+        assert!(out.is_err());
+        let kept = epoch_on_disk(&inner).await;
+        assert_eq!(kept.len(), DEFAULT_EPOCH_SIZE);
+        assert_eq!(kept.last().map(String::as_str), Some("last"));
     }
 }

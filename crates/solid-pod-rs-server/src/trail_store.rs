@@ -275,14 +275,11 @@ pub async fn clear_gitmark_intent(
     }
 }
 
-/// Take the in-process lock for `key` on this pod's storage, serialising every
-/// read-modify-write of the file(s) it names. Anchorers are built per request,
-/// so the lock lives here, keyed by the storage instance as well as the key
-/// (two pods may both keep a trail called `prov`).
-pub(crate) async fn lock_storage_key(
-    storage: &Arc<dyn Storage>,
-    key: &str,
-) -> tokio::sync::OwnedMutexGuard<()> {
+/// Take the in-process lock for `key`, serialising every read-modify-write of
+/// the file(s) it names. Anchorers are built per request (and per worker), so
+/// the lock is process-global and keyed by path alone: serving separate
+/// storages from one process at worst over-serialises, never under-serialises.
+pub(crate) async fn lock_path(key: &str) -> tokio::sync::OwnedMutexGuard<()> {
     type Locks = std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>;
     static LOCKS: std::sync::LazyLock<std::sync::Mutex<Locks>> =
         std::sync::LazyLock::new(Default::default);
@@ -290,10 +287,7 @@ pub(crate) async fn lock_storage_key(
         let mut locks = LOCKS.lock().unwrap_or_else(|p| p.into_inner());
         // Drop locks nobody holds or waits on, so the map stays bounded.
         locks.retain(|_, l| Arc::strong_count(l) > 1);
-        locks
-            .entry(format!("{:p}:{key}", Arc::as_ptr(storage).cast::<()>()))
-            .or_default()
-            .clone()
+        locks.entry(key.to_string()).or_default().clone()
     };
     lock.lock_owned().await
 }
