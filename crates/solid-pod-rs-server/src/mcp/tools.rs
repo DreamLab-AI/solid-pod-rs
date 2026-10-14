@@ -71,8 +71,31 @@ fn build_url(ctx: &McpCtx, path: &str) -> String {
 /// The canonical spelling of a caller-supplied pod path
 /// ([`crate::canonical_pod_path`]). Every tool authorises and touches storage
 /// with this value only, never with the raw argument.
-fn clean_path(raw: &str) -> Result<String, Value> {
-    crate::canonical_pod_path(raw).ok_or_else(|| tool_error(format!("invalid path: {raw}")))
+///
+/// The spelling is also held to the REST dotfile allowlist
+/// ([`solid_pod_rs::security::DotfileAllowlist`]): `.git/…`, `*.meta.json`
+/// storage sidecars and other non-allowlisted dotfiles are refused for every
+/// tool, as the REST `DotfileGuard` does. `/.well-known/` keeps the exemption
+/// it has over REST. The fs backend's `.solid-pod-tmp-` scratch names are
+/// refused wherever they appear in a segment.
+fn clean_path(state: &AppState, raw: &str) -> Result<String, Value> {
+    let path = crate::canonical_pod_path(raw)
+        .ok_or_else(|| tool_error(format!("invalid path: {raw}")))?;
+    check_dotfile(state, &path)?;
+    Ok(path)
+}
+
+/// The dotfile / sidecar gate shared by [`clean_path`] and slug-minted names.
+fn check_dotfile(state: &AppState, path: &str) -> Result<(), Value> {
+    let exempt = path.starts_with("/.well-known/");
+    if path.contains(".solid-pod-tmp-")
+        || (!exempt && !state.dotfiles.is_allowed(std::path::Path::new(path)))
+    {
+        return Err(tool_error(format!(
+            "access denied: dotfile path denied by allowlist: {path}"
+        )));
+    }
+    Ok(())
 }
 
 /// Non-charging WAC gate for the metadata-style tools (list, head, ACL and
@@ -154,7 +177,7 @@ async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() || !path.ends_with('/') {
         return tool_error("path must be a container (ending in /)");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -194,7 +217,7 @@ async fn read_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -227,7 +250,7 @@ async fn write_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -264,7 +287,7 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if container.is_empty() || !container.ends_with('/') {
         return tool_error("container path required (must end in /)");
     }
-    let container = &match clean_path(container) {
+    let container = &match clean_path(state, container) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -286,6 +309,9 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     // Same rule as REST POST: an `.acl` or `.meta` slug is elevated to Control
     // on its governed resource and cannot be minted from Append alone. Any
     // other slug is a new child of the container, never an overwrite.
+    if let Err(e) = check_dotfile(state, &base) {
+        return e;
+    }
     if wac::protected_resource_for_acl(&base).is_some() {
         if let Err(e) = authorise(state, ctx, &base, AccessMode::Write, "create").await {
             return e;
@@ -324,7 +350,7 @@ async fn delete_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -351,7 +377,7 @@ async fn head_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -399,7 +425,7 @@ async fn get_skill(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -543,7 +569,7 @@ async fn read_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -651,7 +677,7 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
-    let path = &match clean_path(path) {
+    let path = &match clean_path(state, path) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -1023,8 +1049,9 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
         .and_then(|a| a.get("path"))
         .and_then(Value::as_str)
         .unwrap_or("/");
-    let Ok(scope) = clean_path(scope) else {
-        return HttpResponse::Ok().json(tool_error("invalid path"));
+    let scope = match clean_path(&state, scope) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::Ok().json(e),
     };
 
     let receiver = match state.storage.watch(&scope).await {
