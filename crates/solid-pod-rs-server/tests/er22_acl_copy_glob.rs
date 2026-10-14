@@ -461,3 +461,65 @@ async fn glob_get_filters_children_fs_backend() {
     let dir = tempfile::tempdir().unwrap();
     glob_check(Arc::new(FsBackend::new(dir.path()).await.unwrap())).await;
 }
+
+// ---------------------------------------------------------------------------
+// Encoded-path bypass attempts (FsBackend) and MCP
+// ---------------------------------------------------------------------------
+
+#[actix_web::test]
+async fn percent_encoded_trail_paths_do_not_leak_on_fs_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let s: Arc<dyn Storage> = Arc::new(FsBackend::new(dir.path()).await.unwrap());
+    put(
+        s.as_ref(),
+        "/.acl",
+        &acl("/", &[("*", "acl:Read")]),
+        "text/turtle",
+    )
+    .await;
+    put(
+        s.as_ref(),
+        "/.well-known/token/x.json",
+        TRAIL,
+        "application/json",
+    )
+    .await;
+    put(
+        s.as_ref(),
+        "/drop.acl",
+        &acl("/drop/", &[(WRITER, "acl:Write")]),
+        "text/turtle",
+    )
+    .await;
+    for enc in [
+        "/%2ewell-known/token/x.json",
+        "/.well-known/%74oken/x.json",
+        "/.well-known/token%2fx.json",
+        "/.WELL-KNOWN/TOKEN/x.json",
+    ] {
+        let (st, body) = status_and_body(s.clone(), "GET", enc, None, None).await;
+        assert!(!body.contains("deadbeef"), "GET {enc} leaked: {st}");
+        let (st, _) = status_and_body(s.clone(), "COPY", "/drop/y", Some(WRITER), Some(enc)).await;
+        assert!(!(200..300).contains(&st), "COPY Source {enc} -> {st}");
+        assert!(s.get("/drop/y").await.is_err(), "COPY Source {enc} copied");
+    }
+}
+
+#[actix_web::test]
+async fn mcp_read_resource_denies_trail_secret_under_public_read_root() {
+    let s = trail_storage(&acl("/", &[("*", "acl:Read")])).await;
+    let mut state = AppState::new(s);
+    state.mcp_enabled = true;
+    let app = test::init_service(build_app(state)).await;
+    let req = test::TestRequest::post()
+        .uri("/mcp")
+        .set_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "read_resource",
+                       "arguments": {"path": "/.well-known/token/x.json"}}
+        }))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    let out = String::from_utf8_lossy(&test::read_body(resp).await).into_owned();
+    assert!(!out.contains("deadbeef"), "{out}");
+}

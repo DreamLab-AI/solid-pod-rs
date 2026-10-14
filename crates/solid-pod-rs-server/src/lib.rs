@@ -701,10 +701,11 @@ fn accept_includes_html(accept: &str) -> bool {
 /// overwrite it. An `acl:Read` or `acl:Write` grant, including a public one on
 /// the pod root, is not enough to reach the key over HTTP.
 pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, AccessMode) {
-    if trail_store::is_secret_trail_path(path) {
-        return (path.to_string(), AccessMode::Control);
+    let (resource, mode) = effective_acl_target(path, mode);
+    if trail_store::is_secret_trail_path(&resource) {
+        return (resource, AccessMode::Control);
     }
-    effective_acl_target(path, mode)
+    (resource, mode)
 }
 
 /// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
@@ -5413,6 +5414,32 @@ mod payment_gating_tests {
             result.is_err(),
             "writer lacks Control — must not be able to PUT a .meta sidecar"
         );
+    }
+
+    /// Trail secrets are Control-gated; their sidecars map to Control on the
+    /// trail file; the public `blocktrails.json` and ordinary paths are not.
+    #[test]
+    fn guarded_acl_target_vectors() {
+        use AccessMode::{Control, Read, Write};
+        let c = |p: &str, m| guarded_acl_target(p, m);
+        assert_eq!(
+            c("/.well-known/token/x.json", Read),
+            ("/.well-known/token/x.json".into(), Control)
+        );
+        assert_eq!(
+            c("/.well-known/gitmark/p.json", Write),
+            ("/.well-known/gitmark/p.json".into(), Control)
+        );
+        assert_eq!(c("/.well-known/%74oken/x.json", Read).1, Control);
+        assert_eq!(
+            c("/.well-known/token/x.json.acl", Read),
+            ("/.well-known/token/x.json".into(), Control)
+        );
+        assert_eq!(
+            c("/.well-known/gitmark/p/blocktrails.json", Read),
+            ("/.well-known/gitmark/p/blocktrails.json".into(), Read)
+        );
+        assert_eq!(c("/pub/x", Read), ("/pub/x".into(), Read));
     }
 
     /// Unit cover for the suffix-stripping helper.

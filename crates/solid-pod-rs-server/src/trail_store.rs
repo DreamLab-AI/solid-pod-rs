@@ -35,7 +35,10 @@ pub fn trail_path(ticker: &str) -> String {
 /// it is the file a verifier reads and carries no secret.
 #[must_use]
 pub fn is_secret_trail_path(path: &str) -> bool {
-    let p = path.to_ascii_lowercase();
+    // Decode first so an encoded spelling (`%74oken`, `%2e`, `%2f`) cannot
+    // slip past the prefix test if a backend or proxy decodes it later.
+    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    let p = decoded.to_ascii_lowercase();
     (p.starts_with("/.well-known/token/") || p.starts_with("/.well-known/gitmark/"))
         && !p.ends_with("/blocktrails.json")
 }
