@@ -20,7 +20,7 @@ const OWNER: &str = "https://owner.example/profile/card#me";
 const WRITER: &str = "https://writer.example/profile/card#me";
 const TRAIL: &str = r#"{"ticker":"x","privkey":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}"#;
 const REFUNDS: &str = r#"[{"payer":"did:nostr:payer-secret","amount":42}]"#;
-const EPOCH: &str = r#"{"epoch":7}"#;
+const EPOCH: &str = r#"{"epoch":7,"marker":"EPOCH-MARKER"}"#;
 const INTENT: &str = r#"{"intent":"broadcast"}"#;
 
 const SPELLINGS: &[&str] = &[
@@ -96,7 +96,21 @@ fn app_state(s: Arc<dyn Storage>) -> AppState {
     st
 }
 
-async fn mcp(s: Arc<dyn Storage>, who: Option<&str>, name: &str, args: Value) -> String {
+/// Result of one MCP tool call: whether it reported an error, and its text.
+struct Call {
+    is_error: bool,
+    text: String,
+}
+
+impl Call {
+    fn leaked(&self) -> bool {
+        ["deadbeef", "payer-secret", "EPOCH-MARKER", "broadcast"]
+            .iter()
+            .any(|m| self.text.contains(m))
+    }
+}
+
+async fn mcp(s: Arc<dyn Storage>, who: Option<&str>, name: &str, args: Value) -> Call {
     let app = test::init_service(build_app(app_state(s))).await;
     let mut req = test::TestRequest::post().uri("/mcp").set_json(json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -106,7 +120,14 @@ async fn mcp(s: Arc<dyn Storage>, who: Option<&str>, name: &str, args: Value) ->
         req = req.insert_header(("Authorization", bearer(w)));
     }
     let resp = test::call_service(&app, req.to_request()).await;
-    String::from_utf8_lossy(&test::read_body(resp).await).into_owned()
+    let v: Value = test::read_body_json(resp).await;
+    Call {
+        is_error: v["result"]["isError"].as_bool().unwrap_or(false),
+        text: v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    }
 }
 
 async fn exists_with(s: &Arc<dyn Storage>, path: &str, body: &str) -> bool {
@@ -130,25 +151,27 @@ where
 #[actix_web::test]
 async fn mcp_read_and_head_deny_every_trail_spelling() {
     run_each_backend(|s| async move {
-        for sp in SPELLINGS {
-            for tool in ["read_resource", "head_resource"] {
-                let out = mcp(s.clone(), None, tool, json!({"path": sp})).await;
-                assert!(!out.contains("deadbeef"), "{tool} {sp}: {out}");
-                assert!(!out.contains("\"size\""), "{tool} {sp}: {out}");
-            }
-        }
-        for sp in [
+        let mut leaks = Vec::new();
+        let mut spellings: Vec<&str> = SPELLINGS.to_vec();
+        spellings.extend([
             "/.well-known/prov/refunds-pending.json",
             ".well-known/prov/refunds-pending.json",
             "/.well-known//prov/refunds-pending.json",
             "/./.well-known/prov/epoch.json",
-        ] {
-            let out = mcp(s.clone(), None, "read_resource", json!({"path": sp})).await;
-            assert!(
-                !out.contains("payer-secret") && !out.contains("epoch\\\":7"),
-                "{sp}: {out}"
-            );
+            "/.well-known/prov/epoch.json",
+            ".well-known//prov/epoch.json",
+            "/.well-known/gitmark/prov/intent.json",
+            "//.well-known/gitmark/prov/intent.json",
+        ]);
+        for sp in spellings {
+            for tool in ["read_resource", "head_resource"] {
+                let c = mcp(s.clone(), None, tool, json!({"path": sp})).await;
+                if !c.is_error || c.leaked() {
+                    leaks.push(format!("{tool} {sp}: {}", c.text));
+                }
+            }
         }
+        assert!(leaks.is_empty(), "leaking spellings:\n{}", leaks.join("\n"));
     })
     .await;
 }
@@ -166,12 +189,9 @@ async fn mcp_list_denies_trail_and_prov_containers() {
             "/.well-known/prov/",
             ".well-known/prov/",
         ] {
-            let out = mcp(s.clone(), None, "list_resources", json!({"path": sp})).await;
-            assert!(
-                !out.contains("x.json") && !out.contains("epoch.json"),
-                "{sp}: {out}"
-            );
-            assert!(!out.contains("refunds-pending"), "{sp}: {out}");
+            let c = mcp(s.clone(), None, "list_resources", json!({"path": sp})).await;
+            assert!(c.is_error, "list {sp}: {}", c.text);
+            assert!(!c.text.contains(".json"), "list {sp}: {}", c.text);
         }
     })
     .await;
@@ -271,8 +291,8 @@ async fn mcp_write_create_delete_cannot_touch_protected_files() {
 #[actix_web::test]
 async fn mcp_ordinary_paths_still_work_with_messy_spellings() {
     run_each_backend(|s| async move {
-        let out = mcp(s.clone(), None, "read_resource", json!({"path": "open//y"})).await;
-        assert!(out.contains("ok"), "{out}");
+        let c = mcp(s.clone(), None, "read_resource", json!({"path": "open//y"})).await;
+        assert!(!c.is_error && c.text.contains("ok"), "{}", c.text);
         mcp(
             s.clone(),
             Some(WRITER),
@@ -281,14 +301,14 @@ async fn mcp_ordinary_paths_still_work_with_messy_spellings() {
         )
         .await;
         assert!(exists_with(&s, "/open/z", "zz").await);
-        let out = mcp(
+        let c = mcp(
             s.clone(),
             None,
             "read_resource",
             json!({"path": "/open/../x"}),
         )
         .await;
-        assert!(out.contains("isError"), "{out}");
+        assert!(c.is_error, "{}", c.text);
     })
     .await;
 }
@@ -390,4 +410,30 @@ async fn http_get_and_put_cannot_reach_protected_files() {
         assert!(exists_with(&s, "/.well-known/prov/epoch.json", EPOCH).await);
         assert!(exists_with(&s, "/.well-known/token/x.json", TRAIL).await);
     }
+}
+
+/// Behaviour change, pinned: MCP and COPY address storage by the decoded
+/// key, HTTP by the raw one, so a name stored over HTTP as `/a%20b` is not the
+/// file MCP/COPY reach as `/a%20b` (they read `/a b`).
+#[actix_web::test]
+async fn percent_encoded_names_are_addressed_by_their_decoded_key() {
+    let (s, _keep) = seeded(false).await;
+    put(s.as_ref(), "/open/a b", "spaced").await;
+    let c = mcp(
+        s.clone(),
+        None,
+        "read_resource",
+        json!({"path": "/open/a%20b"}),
+    )
+    .await;
+    assert!(!c.is_error && c.text.contains("spaced"), "{}", c.text);
+    put(s.as_ref(), "/open/c%20d", "literal").await;
+    let c = mcp(
+        s.clone(),
+        None,
+        "read_resource",
+        json!({"path": "/open/c%20d"}),
+    )
+    .await;
+    assert!(c.is_error, "literal %-named file must not be reachable");
 }

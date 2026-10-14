@@ -1,9 +1,11 @@
 //! MCP tool definitions, dispatch, and the streaming `subscribe` upgrade.
 //!
-//! Each tool maps `(args, state, ctx) -> MCPToolResult`. Every WAC check
-//! delegates to [`wac_check`], which reuses the pod's effective-ACL walk and
-//! the same WAC 2.0 condition registry as the HTTP write path, so MCP tools
-//! have identical access semantics to the REST endpoints.
+//! Each tool maps `(args, state, ctx) -> MCPToolResult`. A path argument is
+//! first reduced to its canonical spelling ([`clean_path`]); that one value is
+//! then authorised and used for storage. Resource reads and mutations go
+//! through the REST enforcement functions ([`authorise`]: WAC 2.0 conditions,
+//! payment debit, quota); metadata tools use the non-charging [`wac_check`].
+//! MCP tools therefore have the same access semantics as the REST endpoints.
 //!
 //! Mirrors JSS `src/mcp/tools.js`.
 
@@ -713,11 +715,16 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
 
     let acl_path = acl_url_for(path);
     let bytes = Bytes::from(serialized.into_bytes());
-    match state
+    let quota = match crate::reserve_quota_for_size(state, &acl_path, bytes.len() as u64).await {
+        Ok(q) => q,
+        Err(e) => return tool_error(format!("write refused: {e}")),
+    };
+    let write = state
         .storage
         .put(&acl_path, bytes, "application/ld+json")
-        .await
-    {
+        .await;
+    crate::finish_quota_reservation(state, quota, write.is_ok()).await;
+    match write {
         Ok(_) => tool_text(format!(
             "wrote {acl_path} ({} authorization{})",
             authorizations.len(),
@@ -1015,8 +1022,10 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
         .and_then(|p| p.get("arguments"))
         .and_then(|a| a.get("path"))
         .and_then(Value::as_str)
-        .unwrap_or("/")
-        .to_string();
+        .unwrap_or("/");
+    let Ok(scope) = clean_path(scope) else {
+        return HttpResponse::Ok().json(tool_error("invalid path"));
+    };
 
     let receiver = match state.storage.watch(&scope).await {
         Ok(rx) => rx,

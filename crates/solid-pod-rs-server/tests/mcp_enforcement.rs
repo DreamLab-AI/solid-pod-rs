@@ -67,7 +67,7 @@ fn payer() -> String {
 
 /// Call an MCP tool as `who`: `None` is the `NOSTR_SECRET` principal, `Some`
 /// a development-bearer WebID.
-async fn mcp(state: AppState, who: Option<&str>, name: &str, args: Value) -> String {
+async fn mcp(state: AppState, who: Option<&str>, name: &str, args: Value) -> (bool, String) {
     let app = test::init_service(build_app(state)).await;
     let body = rpc(name, args);
     let auth = match who {
@@ -81,7 +81,14 @@ async fn mcp(state: AppState, who: Option<&str>, name: &str, args: Value) -> Str
         .set_payload(body)
         .to_request();
     let resp = test::call_service(&app, req).await;
-    String::from_utf8_lossy(&test::read_body(resp).await).into_owned()
+    let v: Value = test::read_body_json(resp).await;
+    (
+        v["result"]["isError"].as_bool().unwrap_or(false),
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 async fn balance(s: &dyn Storage, payer: &str) -> u64 {
@@ -123,14 +130,14 @@ async fn mcp_read_of_pay_per_read_resource_debits_the_account() {
     .unwrap();
     let mut state = AppState::new(s.clone());
     state.mcp_enabled = true;
-    let out = mcp(
+    let (err, out) = mcp(
         state,
         None,
         "read_resource",
         json!({"path": "/premium/doc"}),
     )
     .await;
-    assert!(out.contains("PAID"), "{out}");
+    assert!(!err && out.contains("PAID"), "{out}");
     assert_eq!(
         balance(s.as_ref(), &payer).await,
         400,
@@ -156,22 +163,22 @@ async fn mcp_write_past_quota_is_refused() {
     let mut state = AppState::new(s.clone());
     state.mcp_enabled = true;
     state.quota = Some(quota.clone());
-    let ok = mcp(
+    let (ok_err, ok) = mcp(
         state.clone(),
         Some(WRITER),
         "write_resource",
         json!({"path": "/alice/first", "content": "12345678"}),
     )
     .await;
-    assert!(ok.contains("wrote"), "{ok}");
-    let over = mcp(
+    assert!(!ok_err && ok.contains("wrote"), "{ok}");
+    let (over_err, over) = mcp(
         state,
         Some(WRITER),
         "write_resource",
         json!({"path": "/alice/second", "content": "12345"}),
     )
     .await;
-    assert!(over.contains("isError"), "{over}");
+    assert!(over_err, "{over}");
     assert!(
         s.get("/alice/second").await.is_err(),
         "over-quota write landed"
@@ -195,14 +202,14 @@ async fn mcp_write_to_missing_target_does_not_borrow_the_parent_grant() {
     s.put("/box/", Bytes::new(), "text/plain").await.ok();
     let mut state = AppState::new(s.clone());
     state.mcp_enabled = true;
-    let out = mcp(
+    let (err, out) = mcp(
         state.clone(),
         Some(WRITER),
         "write_resource",
         json!({"path": "/box/new", "content": "x"}),
     )
     .await;
-    assert!(out.contains("access denied"), "{out}");
+    assert!(err && out.contains("access denied"), "{out}");
     assert!(s.get("/box/new").await.is_err());
 
     // Positive control: with `acl:default` the same write is granted.
@@ -214,12 +221,12 @@ async fn mcp_write_to_missing_target_does_not_borrow_the_parent_grant() {
     s.put("/box.acl", Bytes::from(acl), "text/turtle")
         .await
         .unwrap();
-    let out = mcp(
+    let (err, out) = mcp(
         state,
         Some(WRITER),
         "write_resource",
         json!({"path": "/box/new", "content": "x"}),
     )
     .await;
-    assert!(out.contains("wrote"), "{out}");
+    assert!(!err && out.contains("wrote"), "{out}");
 }
