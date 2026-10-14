@@ -168,7 +168,11 @@ async fn spawn_fixture() -> (String, actix_web::dev::ServerHandle) {
             .route(
                 "/api/tx",
                 web::post().to(|body: bytes::Bytes| async move {
-                    let txid = solid_pod_rs::mrc20::sha256_hex(&String::from_utf8_lossy(&body));
+                    // what a node reports: the txid of the transaction sent
+                    let txid =
+                        solid_pod_rs::bitcoin_tx::decode_tx_info(&String::from_utf8_lossy(&body))
+                            .unwrap()
+                            .txid;
                     HttpResponse::Ok().content_type("text/plain").body(txid)
                 }),
             )
