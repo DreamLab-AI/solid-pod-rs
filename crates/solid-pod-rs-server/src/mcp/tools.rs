@@ -66,6 +66,13 @@ fn build_url(ctx: &McpCtx, path: &str) -> String {
     }
 }
 
+/// The canonical spelling of a caller-supplied pod path
+/// ([`crate::canonical_pod_path`]). Every tool authorises and touches storage
+/// with this value only, never with the raw argument.
+fn clean_path(raw: &str) -> Result<String, Value> {
+    crate::canonical_pod_path(raw).ok_or_else(|| tool_error(format!("invalid path: {raw}")))
+}
+
 fn parent_path(p: &str) -> String {
     if p == "/" || p.is_empty() {
         return "/".to_string();
@@ -83,7 +90,10 @@ fn parent_path(p: &str) -> String {
 async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode) -> bool {
     // Sidecars are always evaluated as Control on the resource they govern.
     // This is the same canonical elevation used by the REST and Git paths.
-    let (target, effective_mode) = crate::guarded_acl_target(path, mode);
+    let Some(path) = crate::canonical_pod_path(path) else {
+        return false;
+    };
+    let (target, effective_mode) = crate::guarded_acl_target(&path, mode);
     let is_write = matches!(effective_mode, AccessMode::Write | AccessMode::Append);
     let check_path = if is_write
         && !target.ends_with('/')
@@ -141,6 +151,10 @@ async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() || !path.ends_with('/') {
         return tool_error("path must be a container (ending in /)");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, path, AccessMode::Read).await {
         return tool_error(format!("access denied: read {path}"));
     }
@@ -177,6 +191,10 @@ async fn read_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, path, AccessMode::Read).await {
         return tool_error(format!("access denied: read {path}"));
     }
@@ -206,6 +224,10 @@ async fn write_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if path.ends_with('/') {
         return tool_error("cannot PUT a container; use create_resource");
     }
@@ -233,6 +255,10 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if container.is_empty() || !container.ends_with('/') {
         return tool_error("container path required (must end in /)");
     }
+    let container = &match clean_path(container) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, container, AccessMode::Append).await {
         return tool_error(format!("access denied: append {container}"));
     }
@@ -280,6 +306,10 @@ async fn delete_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, path, AccessMode::Write).await {
         return tool_error(format!("access denied: delete {path}"));
     }
@@ -297,6 +327,10 @@ async fn head_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, path, AccessMode::Read).await {
         return tool_error(format!("access denied: read {path}"));
     }
@@ -341,6 +375,10 @@ async fn get_skill(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
@@ -481,6 +519,10 @@ async fn read_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     if !wac_check(state, ctx, path, AccessMode::Control).await {
         return tool_error(format!("access denied: control {path}"));
     }
@@ -585,6 +627,10 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if path.is_empty() {
         return tool_error("path required");
     }
+    let path = &match clean_path(path) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     let authorizations = match args.get("authorizations").and_then(Value::as_array) {
         Some(a) => a,
         None => return tool_error("authorizations must be an array"),

@@ -702,10 +702,47 @@ fn accept_includes_html(accept: &str) -> bool {
 /// the pod root, is not enough to reach the key over HTTP.
 pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, AccessMode) {
     let (resource, mode) = effective_acl_target(path, mode);
-    if trail_store::is_secret_trail_path(&resource) {
-        return (resource, AccessMode::Control);
+    // Judge the protected-path rules on the canonical spelling, whatever the
+    // caller handed in; a path that cannot be canonicalised is held to the
+    // strictest mode rather than waved through.
+    match canonical_pod_path(&resource) {
+        Some(canon)
+            if !trail_store::is_secret_trail_path(&canon)
+                && !trail_store::is_prov_state_path(&canon) =>
+        {
+            (resource, mode)
+        }
+        _ => (resource, AccessMode::Control),
     }
-    (resource, mode)
+}
+
+/// The one canonical spelling of a pod path, or `None` to reject it.
+///
+/// Percent-decodes exactly once, rejects `.` and `..` segments, backslashes,
+/// NUL and invalid UTF-8, collapses empty segments (`//`), forces a leading
+/// `/` and keeps a trailing `/`. The permission check and the storage call
+/// must both use this output, never the caller's spelling, so that a check
+/// and a read cannot see different files.
+pub(crate) fn canonical_pod_path(raw: &str) -> Option<String> {
+    let decoded = percent_decode_str(raw).decode_utf8().ok()?;
+    if decoded.contains(['\\', '\0']) {
+        return None;
+    }
+    let mut out = String::with_capacity(decoded.len() + 1);
+    for seg in decoded.split('/') {
+        match seg {
+            "" => {}
+            "." | ".." => return None,
+            _ => {
+                out.push('/');
+                out.push_str(seg);
+            }
+        }
+    }
+    if out.is_empty() || decoded.ends_with('/') {
+        out.push('/');
+    }
+    Some(out)
 }
 
 /// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
@@ -2595,7 +2632,8 @@ async fn handle_create_pod(
 /// Reduce a COPY `Source` header to a pod path. An absolute URL is accepted
 /// only for this server's own `host` and is stripped to its path; any other
 /// host is refused, as are relative references, `.`/`..` segments (also
-/// percent-encoded) and query or fragment parts. `None` means reject.
+/// percent-encoded) and query or fragment parts. The result is the
+/// [`canonical_pod_path`] spelling, decoded and cleaned. `None` means reject.
 fn normalise_copy_source(raw: &str, host: &str) -> Option<String> {
     let path = if raw.starts_with("http://") || raw.starts_with("https://") {
         let url = url::Url::parse(raw).ok()?;
@@ -2615,14 +2653,7 @@ fn normalise_copy_source(raw: &str, host: &str) -> Option<String> {
     } else {
         return None;
     };
-    let decoded = percent_decode_str(&path).decode_utf8().ok()?;
-    if decoded
-        .split('/')
-        .any(|seg| seg == "." || seg == ".." || seg.contains('\\'))
-    {
-        return None;
-    }
-    Some(path)
+    canonical_pod_path(&path)
 }
 
 async fn handle_copy(
@@ -5418,6 +5449,33 @@ mod payment_gating_tests {
 
     /// Trail secrets are Control-gated; their sidecars map to Control on the
     /// trail file; the public `blocktrails.json` and ordinary paths are not.
+    #[test]
+    fn canonical_pod_path_vectors() {
+        let ok = [
+            ("a/b", "/a/b"),
+            ("", "/"),
+            ("/", "/"),
+            ("//a//b/", "/a/b/"),
+            ("/%2ewell-known/x", "/.well-known/x"),
+            ("/a%2fb", "/a/b"),
+            ("/a%2520b", "/a%20b"),
+        ];
+        for (raw, want) in ok {
+            assert_eq!(canonical_pod_path(raw).as_deref(), Some(want), "{raw}");
+        }
+        for bad in [
+            "/a/./b",
+            "/a/..",
+            "../a",
+            "/a\\b",
+            "/a%00b",
+            "/a%ffb",
+            "/%2e%2e/x",
+        ] {
+            assert_eq!(canonical_pod_path(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn guarded_acl_target_vectors() {
         use AccessMode::{Control, Read, Write};

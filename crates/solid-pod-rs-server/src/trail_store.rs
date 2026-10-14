@@ -36,12 +36,47 @@ pub fn trail_path(ticker: &str) -> String {
 /// it is the file a verifier reads and carries no secret.
 #[must_use]
 pub fn is_secret_trail_path(path: &str) -> bool {
-    // Decode first so an encoded spelling (`%74oken`, `%2e`, `%2f`) cannot
-    // slip past the prefix test if a backend or proxy decodes it later.
-    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
-    let p = decoded.to_ascii_lowercase();
-    (p.starts_with("/.well-known/token/") || p.starts_with("/.well-known/gitmark/"))
-        && !p.ends_with("/blocktrails.json")
+    // Canonicalise first (decode once, collapse `//`, add the leading `/`) and
+    // compare whole segments, so no spelling of the path slips past the test.
+    // A path that cannot be canonicalised is treated as secret.
+    let Some(canon) = crate::canonical_pod_path(path) else {
+        return true;
+    };
+    let segs = lower_segments(&canon);
+    let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    match segs.as_slice() {
+        [".well-known", "token", ..] => true,
+        // `/.well-known/gitmark/{name}/blocktrails.json` is the public file.
+        [".well-known", "gitmark", _, "blocktrails.json"] => canon.ends_with('/'),
+        [".well-known", "gitmark", ..] => true,
+        _ => false,
+    }
+}
+
+/// Whether `path` is under `/.well-known/prov/` (the pending-refunds list and
+/// the epoch counter). Both are operator state: payer DIDs and amounts, and a
+/// file whose corruption halts epoch anchoring.
+#[must_use]
+pub fn is_prov_state_path(path: &str) -> bool {
+    let Some(canon) = crate::canonical_pod_path(path) else {
+        return true;
+    };
+    let segs = lower_segments(&canon);
+    matches!(
+        segs.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [".well-known", "prov", ..]
+    )
+}
+
+fn lower_segments(canon: &str) -> Vec<String> {
+    canon
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 /// The persisted trail — the public [`Mrc20Trail`] plus the issuer secret and
@@ -414,6 +449,29 @@ mod tests {
     use super::*;
     use solid_pod_rs::mrc20::MRC20_PROFILE;
     use solid_pod_rs::storage::memory::MemoryBackend;
+
+    #[test]
+    fn secret_and_prov_paths_compare_whole_segments() {
+        for p in [
+            "/.well-known/token/x.json",
+            ".well-known//token/x.json",
+            "/.well-known/token/blocktrails.json",
+            "/.WELL-KNOWN/gitmark/prov/intent.json",
+            "/.well-known/token/",
+        ] {
+            assert!(is_secret_trail_path(p), "{p}");
+        }
+        for p in [
+            "/.well-known/gitmark/prov/blocktrails.json",
+            "/.well-known/tokens/x.json",
+            "/x/.well-known/token/y",
+            "/open/y",
+        ] {
+            assert!(!is_secret_trail_path(p), "{p}");
+        }
+        assert!(is_prov_state_path("//.well-known/prov/epoch.json"));
+        assert!(!is_prov_state_path("/.well-known/provision/x"));
+    }
 
     fn genesis() -> Mrc20State {
         Mrc20State {
