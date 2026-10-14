@@ -1328,11 +1328,19 @@ async fn handle_get(
         // clients get RDF.
         if accept_includes_html(accept) {
             let index_path = format!("{path}index.html");
-            if let Ok((body, _meta)) = state.storage.get(&index_path).await {
+            // The child has its own ACL: Read on the container does not entitle
+            // the caller to it. On denial fall through to the listing.
+            let index_audience =
+                enforce_read_ctx(&state, &index_path, agent.as_deref(), req_origin(&req))
+                    .await
+                    .ok();
+            if let (Some(index_audience), Ok((body, _meta))) =
+                (index_audience, state.storage.get(&index_path).await)
+            {
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
                     .body(inject_live_reload(&body, state.live_reload));
-                set_cache_policy(&mut rsp, "text/html", audience);
+                set_cache_policy(&mut rsp, "text/html", index_audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state.nodeinfo.base_url);
                 set_link_headers(&mut rsp, &path);
