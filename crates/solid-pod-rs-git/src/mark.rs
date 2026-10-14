@@ -76,9 +76,22 @@ impl Default for ShellGitMarker {
 /// Maps a missing `git` binary and any non-zero exit into
 /// [`ProvenanceError::Git`] so the server hook can log-and-swallow uniformly.
 async fn git(repo: &Path, args: &[&str]) -> Result<String, ProvenanceError> {
+    // The repo lives in the pod's data tree, so its own `.git/config` is not
+    // trusted: no system/global config, and the repo-local settings that run
+    // programs (fsmonitor, hooks, ssh) are overridden on every invocation.
     let output = Command::new("git")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.sshCommand=false",
+        ])
         .args(args)
         .current_dir(repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .await
         .map_err(|e| {
@@ -274,6 +287,31 @@ mod tests {
             tokio::fs::create_dir_all(parent).await.unwrap();
         }
         tokio::fs::write(abs, contents).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repo_local_hooks_do_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_available() {
+            return;
+        }
+        let td = init_repo().await;
+        let ran = td.path().join("hook-ran");
+        let hook = td.path().join(".git/hooks/pre-commit");
+        write_file(
+            td.path(),
+            ".git/hooks/pre-commit",
+            &format!("#!/bin/sh\ntouch '{}'\n", ran.display()),
+        )
+        .await;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_file(td.path(), "a.txt", "a").await;
+        ShellGitMarker::new()
+            .mark_write(td.path(), "a.txt", "did:nostr:abcd", "m")
+            .await
+            .unwrap();
+        assert!(!ran.exists(), "a repo-local hook ran");
     }
 
     #[tokio::test]
