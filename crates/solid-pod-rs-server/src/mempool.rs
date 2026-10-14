@@ -42,6 +42,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::time::Duration;
 
 use solid_pod_rs::bitcoin_tx::{
     anchor_state, gitmark_advance, gitmark_genesis, GitmarkUpdate, MempoolBroadcast, TxoVoucher,
@@ -58,6 +59,38 @@ pub const MEMPOOL_URL_ENV: &str = "JSS_PAY_MEMPOOL_URL";
 /// Default base URL — the mempool.space **testnet4** explorer. Matches the
 /// JSS default (`pay.js:243`, `mrc20.js:282`).
 pub const DEFAULT_MEMPOOL_URL: &str = "https://mempool.space/testnet4";
+
+/// Environment override for the mempool client's connect timeout, in seconds.
+pub const MEMPOOL_CONNECT_TIMEOUT_ENV: &str = "JSS_PAY_MEMPOOL_CONNECT_TIMEOUT_SECS";
+
+/// Environment override for the mempool client's total request timeout, in
+/// seconds.
+pub const MEMPOOL_TIMEOUT_ENV: &str = "JSS_PAY_MEMPOOL_TIMEOUT_SECS";
+
+/// Connect timeout when [`MEMPOOL_CONNECT_TIMEOUT_ENV`] is unset or invalid.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 5;
+
+/// Total request timeout when [`MEMPOOL_TIMEOUT_ENV`] is unset or invalid.
+const DEFAULT_TIMEOUT_SECS: u64 = 20;
+
+/// A positive whole number of seconds from the environment, else `default`.
+fn env_secs(var: &str, default: u64) -> Duration {
+    let secs = std::env::var(var)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(default);
+    Duration::from_secs(secs)
+}
+
+/// An HTTP client that gives up on a backend that stops answering.
+fn http_client(connect: Duration, total: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(total)
+        .build()
+        .unwrap_or_default()
+}
 
 // ---------------------------------------------------------------------------
 // Endpoint selection (ADR-2007) — pure, no I/O
@@ -371,10 +404,23 @@ impl MempoolHttpClient {
     #[must_use]
     pub fn from_selection(selection: MempoolSelection) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: http_client(
+                env_secs(MEMPOOL_CONNECT_TIMEOUT_ENV, DEFAULT_CONNECT_TIMEOUT_SECS),
+                env_secs(MEMPOOL_TIMEOUT_ENV, DEFAULT_TIMEOUT_SECS),
+            ),
             base: selection.base_url.clone(),
             selection,
         }
+    }
+
+    /// Replace the connect and total request timeouts (the defaults come from
+    /// [`MEMPOOL_CONNECT_TIMEOUT_ENV`] / [`MEMPOOL_TIMEOUT_ENV`]). The
+    /// anchoring locks are held across these calls, so a backend that never
+    /// answers must be cut off.
+    #[must_use]
+    pub fn with_timeouts(mut self, connect: Duration, total: Duration) -> Self {
+        self.client = http_client(connect, total);
+        self
     }
 
     /// Construct from `JSS_PAY_MEMPOOL_URL`, falling back to
