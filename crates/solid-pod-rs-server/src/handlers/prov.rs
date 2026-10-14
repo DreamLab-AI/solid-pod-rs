@@ -607,6 +607,10 @@ async fn debit(
     use crate::handlers::pay::StoragePaymentStore;
     use solid_pod_rs::payments::{PaymentError, PaymentStore};
 
+    // Read, charge and write back under the one payment lock, so a concurrent
+    // charge, refund or `/pay/*` transition is never overwritten with a stale
+    // ledger. Held only for these storage calls, never across the anchor.
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
     let store = StoragePaymentStore::new(&*state.storage);
     let mut ledger = store
         .read_ledger()
@@ -633,6 +637,7 @@ async fn refund(state: &AppState, charge: solid_pod_rs::payments::Charge) -> Res
     use crate::handlers::pay::StoragePaymentStore;
     use solid_pod_rs::payments::PaymentStore;
 
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
     let store = StoragePaymentStore::new(&*state.storage);
     let mut ledger = store.read_ledger().await.map_err(|e| e.to_string())?;
     ledger.refund(charge);
@@ -962,5 +967,54 @@ mod tests {
         let kept = epoch_on_disk(&inner).await;
         assert_eq!(kept.len(), DEFAULT_EPOCH_SIZE);
         assert_eq!(kept.last().map(String::as_str), Some("last"));
+    }
+
+    /// A ledger holding `sats` for `did`, over a storage that yields on every
+    /// access (so unlocked read-modify-writes interleave).
+    async fn funded(sats: u64) -> (AppState, String) {
+        use solid_pod_rs::payments::{PaymentStore, ReceiptOutcome};
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let state = state_over(FaultStorage::new(inner, true));
+        let did = format!("did:nostr:{}", "ab".repeat(32));
+        let store = crate::handlers::pay::StoragePaymentStore::new(&*state.storage);
+        let mut ledger = store.read_ledger().await.unwrap();
+        let r = ledger
+            .credit_by_outpoint(&did, "satoshi", &"cd".repeat(32), 0, sats)
+            .unwrap();
+        assert_eq!(r, ReceiptOutcome::Applied);
+        store.write_ledger(&ledger).await.unwrap();
+        (state, did)
+    }
+
+    async fn balance(state: &AppState, did: &str) -> u64 {
+        use solid_pod_rs::payments::PaymentStore;
+        let store = crate::handlers::pay::StoragePaymentStore::new(&*state.storage);
+        store.read_ledger().await.unwrap().get_balance(did)
+    }
+
+    #[tokio::test]
+    async fn concurrent_debits_do_not_lose_an_update() {
+        let (state, did) = funded(100).await;
+        let (a, b) = tokio::join!(debit(&state, &did, 40), debit(&state, &did, 40));
+        assert!(a.is_ok() && b.is_ok());
+        assert_eq!(balance(&state, &did).await, 20);
+    }
+
+    #[tokio::test]
+    async fn concurrent_debit_and_refund_keep_both_effects() {
+        let (state, did) = funded(100).await;
+        let held = debit(&state, &did, 40).await.unwrap();
+        let (refunded, debited) = tokio::join!(refund(&state, held), debit(&state, &did, 30));
+        refunded.unwrap();
+        assert!(debited.is_ok());
+        assert_eq!(balance(&state, &did).await, 70);
+    }
+
+    #[tokio::test]
+    async fn concurrent_debits_cannot_overspend() {
+        let (state, did) = funded(100).await;
+        let (a, b) = tokio::join!(debit(&state, &did, 60), debit(&state, &did, 60));
+        assert_eq!(a.is_ok() as u8 + b.is_ok() as u8, 1, "exactly one debit fits");
+        assert_eq!(balance(&state, &did).await, 40);
     }
 }
