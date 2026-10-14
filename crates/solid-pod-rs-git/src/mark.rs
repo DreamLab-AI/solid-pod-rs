@@ -87,6 +87,8 @@ async fn git(repo: &Path, args: &[&str]) -> Result<String, ProvenanceError> {
             "core.hooksPath=/dev/null",
             "-c",
             "core.sshCommand=false",
+            "-c",
+            "commit.gpgSign=false",
         ])
         .args(args)
         .current_dir(repo)
@@ -312,6 +314,38 @@ mod tests {
             .await
             .unwrap();
         assert!(!ran.exists(), "a repo-local hook ran");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repo_local_gpg_program_does_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_available() {
+            return;
+        }
+        let td = init_repo().await;
+        let ran = td.path().join("gpg-ran");
+        let prog = td.path().join("fake-gpg");
+        write_file(
+            td.path(),
+            "fake-gpg",
+            &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran.display()),
+        )
+        .await;
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cfg = td.path().join(".git/config");
+        let mut conf = std::fs::read_to_string(&cfg).unwrap();
+        conf.push_str(&format!(
+            "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = {}\n",
+            prog.display()
+        ));
+        std::fs::write(&cfg, conf).unwrap();
+        write_file(td.path(), "a.txt", "a").await;
+        ShellGitMarker::new()
+            .mark_write(td.path(), "a.txt", "did:nostr:abcd", "m")
+            .await
+            .unwrap();
+        assert!(!ran.exists(), "a repo-local gpg program ran");
     }
 
     #[tokio::test]

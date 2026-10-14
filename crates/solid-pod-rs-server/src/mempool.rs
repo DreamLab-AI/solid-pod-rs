@@ -2384,11 +2384,19 @@ mod tests {
             .anchor(&ticker, &"a".repeat(40), "testnet4")
             .await
             .unwrap_err();
-        // Tamper with the recorded txid, as a writer of the intent file could.
+        // Tamper with the recorded txid, as a writer of the intent file could,
+        // naming a transaction the mempool does know: the stored head. Taken
+        // at face value it reads as "landed", and the trail would be advanced
+        // over an anchor that never went out.
         let path = anchor_intent_path(&ticker);
+        let head = load_trail(&inner, &ticker)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_txid;
         let (bytes, _) = inner.get(&path).await.unwrap();
         let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        v["txid"] = serde_json::json!("ab".repeat(32));
+        v["txid"] = serde_json::json!(head);
         inner
             .put(
                 &path,

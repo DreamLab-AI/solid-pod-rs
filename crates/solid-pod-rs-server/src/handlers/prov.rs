@@ -284,14 +284,16 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
     if !commits.iter().any(|c| c == commit_sha) {
         // A close that keeps failing leaves the batch full, and every push
         // would grow it. Past the backlog cap the commit is not accumulated
-        // (its git-mark stands); the batch drains once an anchor succeeds.
-        if commits.len() >= size.saturating_mul(EPOCH_BACKLOG_FACTOR) {
-            return Err(format!(
-                "epoch backlog full ({} commits): anchoring keeps failing",
-                commits.len()
-            ));
+        // (its git-mark stands) but the close is still attempted, so the
+        // batch drains once an anchor succeeds.
+        if commits.len() < size.saturating_mul(EPOCH_BACKLOG_FACTOR) {
+            commits.push(commit_sha.to_string());
+        } else {
+            tracing::warn!(
+                backlog = commits.len(),
+                "epoch backlog full: commit not accumulated, anchoring keeps failing"
+            );
         }
-        commits.push(commit_sha.to_string());
     }
 
     // Persist the grown batch first: a failed close below must not lose the
@@ -993,6 +995,48 @@ mod tests {
         let out = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "more").await;
         assert!(out.is_err());
         assert_eq!(epoch_on_disk(&inner).await, backlog, "epoch.json grew");
+    }
+
+    #[tokio::test]
+    async fn a_full_backlog_still_drains_once_anchoring_recovers() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let backlog: Vec<String> = (0..DEFAULT_EPOCH_SIZE * EPOCH_BACKLOG_FACTOR)
+            .map(|i| format!("c{i}"))
+            .collect();
+        save_epoch_commits(&inner, &backlog).await.unwrap();
+        let state = state_over(inner.clone());
+        struct Works;
+        #[async_trait::async_trait(?Send)]
+        impl BlockAnchorer for Works {
+            async fn anchor(
+                &self,
+                ticker: &str,
+                state_hash: &str,
+                network: &str,
+            ) -> Result<BlockTrailAnchor, ProvenanceError> {
+                Ok(BlockTrailAnchor {
+                    ticker: ticker.into(),
+                    state_hash: state_hash.into(),
+                    txid: "ab".repeat(32),
+                    vout: 0,
+                    address: String::new(),
+                    network: network.into(),
+                    blockheight: None,
+                    state_strings: vec![],
+                    pubkey: None,
+                })
+            }
+            async fn verify(&self, _: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+                Ok(true)
+            }
+        }
+        let anchorer: Arc<dyn BlockAnchorer> = Arc::new(Works);
+        let closed = epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "more")
+            .await
+            .unwrap()
+            .expect("the epoch must close once anchoring works again");
+        assert_eq!(closed.commits, backlog, "every backlogged commit is rooted");
+        assert!(epoch_on_disk(&inner).await.is_empty());
     }
 
     #[tokio::test]

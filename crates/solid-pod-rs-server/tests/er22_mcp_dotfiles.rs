@@ -84,6 +84,7 @@ const BAD: &[&str] = &[
     "/alice/sub/y.meta.json",
     "/alice/.solid-pod-tmp-x",
     "/alice/y.solid-pod-tmp-1",
+    "/.well-known/x.meta.json",
     "/alice/%2egit/config",
     "alice/.git/config",
 ];

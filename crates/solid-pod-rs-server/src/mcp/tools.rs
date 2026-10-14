@@ -90,9 +90,10 @@ fn clean_path(state: &AppState, raw: &str) -> Result<String, Value> {
 /// The dotfile / sidecar gate shared by [`clean_path`] and slug-minted names.
 fn check_dotfile(state: &AppState, path: &str) -> Result<(), Value> {
     let exempt = path.starts_with("/.well-known/");
-    if path.contains(".solid-pod-tmp-")
-        || (!exempt && !state.dotfiles.is_allowed(std::path::Path::new(path)))
-    {
+    // Storage sidecars and scratch names are refused even under the exemption.
+    let internal =
+        path.contains(".solid-pod-tmp-") || path.split('/').any(|seg| seg.ends_with(".meta.json"));
+    if internal || (!exempt && !state.dotfiles.is_allowed(std::path::Path::new(path))) {
         return Err(tool_error(format!(
             "access denied: dotfile path denied by allowlist: {path}"
         )));
