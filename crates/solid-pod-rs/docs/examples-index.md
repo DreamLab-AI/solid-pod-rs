@@ -7,9 +7,10 @@ prerequisites.
 
 ## Server-side
 
+There is no `standalone` example: the quickest working pod is the `solid-pod-rs-server` binary (`cargo run -p solid-pod-rs-server -- --port 8765`).
+
 | Example | Purpose |
 |---------|---------|
-| `standalone` | Minimal actix-web server wiring `FsBackend`, NIP-98 auth, LDP headers, and WAC-Allow. The quickest way to see a working pod. |
 | `embed_in_actix` | Same pod, but mounted under `/pod/*` inside a larger actix-web app that also serves `/health` and `/api/whoami`. Shows how to share `SharedState` (storage + auth) between the host app and the pod sub-scope. |
 | `custom_storage` | Implements the `Storage` trait for a `BTreeMap`-backed backend to demonstrate the extension point. Useful if you want to back a pod with Redis, SQLite, S3, IPFS, etc. |
 | `webhook_receiver` | Minimal Axum server that receives `WebhookChannel2023` POSTs from a pod and logs them. Good template for building downstream consumers. |
