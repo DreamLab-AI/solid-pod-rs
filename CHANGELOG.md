@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.13] — 2026-10-14
+
+### Security
+
+All fixes are in `solid-pod-rs-server`. Every release from `0.4.0-alpha.3`
+through `0.5.0-alpha.12` is affected and is yanked; upgrade to `0.5.0-alpha.13`.
+
+- **COPY authorises its source.** `COPY` now requires read access on the
+  `Source` resource (the dotfile allowlist applies to it), rejects relative,
+  query, fragment and cross-host values with 400, and accepts same-host
+  absolute URLs. The source's `.acl` sidecar is copied only for a caller with
+  Control on both source and destination who keeps Control; otherwise it is
+  skipped. A pay-per-read source debits the caller once.
+- **Glob GET authorises each child.** Unreadable children, `.acl`, `.meta`
+  and `.prov.ttl` are no longer merged into the response, pay-per-read
+  children are left out, and a response containing private parts carries
+  `Cache-Control: no-store` and `Vary: Authorization`.
+- **Trail files need Control.** Everything under `/.well-known/token/` and
+  `/.well-known/gitmark/` except `blocktrails.json` now requires
+  `acl:Control` to read or write, over HTTP and MCP (path percent-decoded
+  before the test). These files hold anchor signing keys. A public-read pod
+  root previously exposed them to anonymous GET, and COPY exposed them to any
+  writer. Operators who served a public-read root should rotate trail keys.
+- **Anchoring no longer swallows storage errors.** Only `NotFound` means
+  absent; an unreadable trail or epoch file fails the anchor with a recorded
+  `anchor_error` (500 before any charge on `/_prov` anchor) instead of
+  silently falling back to git-only provenance or resetting the pending
+  batch. A failed refund is logged and queued in
+  `/.well-known/prov/refunds-pending.json`.
+- **Anchoring is serialised.** A path-keyed lock covers trail and epoch
+  advances, and a durable intent file records the expected txid before each
+  broadcast so a failed save after an accepted broadcast no longer wedges the
+  trail.
+
+### Changed
+
+- `GitmarkAnchorer<M>` now also requires `M: MempoolTxPresence` (implemented
+  for `MempoolHttpClient`).
+
+### Known gaps
+
+MCP tools still bypass quota and payment charging; `MempoolBlockAnchorer`
+has no intent file; the new locks are in-process only.
+
 ## [0.5.0-alpha.12] — 2026-10-03
 
 ### Added
