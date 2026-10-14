@@ -921,25 +921,69 @@ fn already_known(e: &PaymentError) -> bool {
         || msg.contains("outputs already in")
 }
 
-/// Send a recorded transaction again. A backend that took the first
-/// broadcast but has not indexed it answers "not found" to a presence check;
-/// sending the same bytes is harmless and says whether it is there. `Ok` means
-/// the transaction is in the node; `Err` means nothing was learned, and the
-/// caller must keep its record and refuse to build on the old head.
-async fn resend<M: MempoolBroadcast + ?Sized>(
+/// Settle a recorded broadcast that the backend does not report. "Not found"
+/// is not "never sent": a backend that took the transaction but has not
+/// indexed it says the same. So send it again; the same bytes are harmless.
+///
+/// - `Ok(true)`: the node has the transaction (sent now, or already known).
+/// - `Ok(false)`: the node refused it (a 4xx that is not "already known") **and**
+///   it cannot land: the output it spends is shown unspent, or `head` (the
+///   outpoint the trail's newest mark now is) is no longer that output, so
+///   something else replaced it. The caller may drop its record.
+/// - `Err`: nothing was learned (transport, 5xx, a refusal with no proof the
+///   input is free); the caller keeps its record and refuses to advance.
+async fn settle_broadcast<M: MempoolLookup + MempoolBroadcast + ?Sized>(
     lookup: &M,
     txid: &str,
     raw_hex: &str,
-) -> Result<(), ProvenanceError> {
-    match lookup.broadcast_tx(raw_hex).await {
-        Ok(t) if t == txid => Ok(()),
-        Ok(t) => Err(ProvenanceError::Anchor(format!(
-            "mempool returned txid {t} for a mark that is {txid}"
-        ))),
-        Err(e) if already_known(&e) => Ok(()),
-        Err(e) => Err(ProvenanceError::Anchor(format!(
-            "a previous mark ({txid}) is unresolved, refusing to advance: {e}"
-        ))),
+    head: Option<(&str, u32)>,
+) -> Result<bool, ProvenanceError> {
+    let unresolved = |why: &dyn std::fmt::Display| {
+        ProvenanceError::Anchor(format!(
+            "a previous mark ({txid}) is unresolved, refusing to advance: {why}"
+        ))
+    };
+    let refusal = match lookup.broadcast_tx(raw_hex).await {
+        Ok(t) if t == txid => return Ok(true),
+        Ok(t) => {
+            return Err(ProvenanceError::Anchor(format!(
+                "mempool returned txid {t} for a mark that is {txid}"
+            )))
+        }
+        Err(e) if already_known(&e) => return Ok(true),
+        Err(e) if e.to_string().contains("broadcast rejected (4") => e,
+        Err(e) => return Err(unresolved(&e)),
+    };
+    let spent = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)
+        .map_err(|e| unresolved(&e))?
+        .vin
+        .into_iter()
+        .next()
+        .ok_or_else(|| unresolved(&"it spends nothing"))?;
+    // Replaced: the trail already moved off the output this mark spends
+    // (and is not this mark), so this mark can never confirm.
+    if head.is_some_and(|(t, v)| (t, v) != (spent.txid.as_str(), spent.vout) && t != txid) {
+        return Ok(false);
+    }
+    // Unspent: the node has just refused the mark, so a lagging index cannot
+    // be hiding it; the output it spends is still there to be spent again.
+    let prev = lookup.tx(&spent.txid).await.map_err(|e| unresolved(&e))?;
+    let address = prev
+        .vout
+        .get(spent.vout as usize)
+        .and_then(|o| o.scriptpubkey_address.clone())
+        .ok_or_else(|| unresolved(&refusal))?;
+    let utxos = lookup
+        .address_utxos(&address)
+        .await
+        .map_err(|e| unresolved(&e))?;
+    if utxos
+        .iter()
+        .any(|u| u.txid == spent.txid && u.vout == spent.vout)
+    {
+        Ok(false)
+    } else {
+        Err(unresolved(&refusal))
     }
 }
 
@@ -1003,7 +1047,7 @@ struct PendingAnchor {
 /// Pod-storage path of an MRC20 trail's pending anchor. It holds the trail's
 /// secret, so it sits under `/.well-known/token/` beside the trail file.
 fn anchor_intent_path(ticker: &str) -> String {
-    format!("/.well-known/token/{}.intent.json", ticker.to_lowercase())
+    format!("/.well-known/token/{}/intent.json", ticker.to_lowercase())
 }
 
 /// Settle an interrupted advance of the MRC20 trail `ticker`: the previous
@@ -1033,14 +1077,20 @@ pub(crate) async fn settle_trail_intent<M: MempoolLookup + MempoolBroadcast + ?S
         Err(PodError::NotFound(_)) => return Ok(()),
         Err(e) => return Err(err("read pending anchor", &e)),
     };
-    if lookup.tx(&pending.txid).await.is_err() {
-        resend(lookup, &pending.txid, &pending.raw_hex).await?;
-    }
-    let have = load_trail(storage, ticker)
+    let stored = load_trail(storage, ticker)
         .await
-        .map_err(|e| err("load trail", &e))?
-        .map_or(0, |t| t.states.len());
-    if have < pending.stored.states.len() {
+        .map_err(|e| err("load trail", &e))?;
+    let landed = lookup.tx(&pending.txid).await.is_ok()
+        || settle_broadcast(
+            lookup,
+            &pending.txid,
+            &pending.raw_hex,
+            stored
+                .as_ref()
+                .map(|t| (t.current_txid.as_str(), t.current_vout)),
+        )
+        .await?;
+    if landed && stored.map_or(0, |t| t.states.len()) < pending.stored.states.len() {
         save_trail(storage, &pending.stored)
             .await
             .map_err(|e| err("save recovered trail", &e))?;
@@ -1165,25 +1215,25 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
         // "Not found" is not "not broadcast": a backend that took the mark
         // but has not indexed it says the same. Send it again; the intent is
         // dropped only for a mark that predates `rawHex` and cannot be.
+        let stored = load_gitmark_trail(storage, name)
+            .await
+            .map_err(|e| err("load trail", e))?;
         let landed = if exists {
             true
         } else if let Some(raw_hex) = &pending.raw_hex {
-            resend(&self.lookup, &intent.txid, raw_hex).await?;
-            true
+            let head = stored
+                .as_ref()
+                .and_then(|t| t.trail.txo.last())
+                .map(|m| (m.txid.as_str(), m.vout));
+            settle_broadcast(&self.lookup, &intent.txid, raw_hex, head).await?
         } else {
             tracing::warn!(trail = %name, txid = %intent.txid, "pending mark has no raw transaction; dropped as not on-chain");
             false
         };
-        if landed {
-            let have = load_gitmark_trail(storage, name)
+        if landed && stored.map_or(0, |t| t.trail.txo.len()) < intent.stored.trail.txo.len() {
+            save_gitmark_trail(storage, &intent.stored)
                 .await
-                .map_err(|e| err("load trail", e))?
-                .map_or(0, |t| t.trail.txo.len());
-            if have < intent.stored.trail.txo.len() {
-                save_gitmark_trail(storage, &intent.stored)
-                    .await
-                    .map_err(|e| err("save recovered trail", e))?;
-            }
+                .map_err(|e| err("save recovered trail", e))?;
         }
         clear_gitmark_intent(storage, name)
             .await
@@ -1926,6 +1976,8 @@ mod tests {
         /// The backend accepted a broadcast but has not indexed it yet:
         /// presence checks answer "not found".
         index_lag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// The next broadcast is refused with this node message.
+        reject_next: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     }
     impl RacyMempool {
         fn new(inner: FixtureMempool) -> Self {
@@ -1934,7 +1986,28 @@ mod tests {
                 spent: Default::default(),
                 drop_next_broadcast: Default::default(),
                 index_lag: Default::default(),
+                reject_next: Default::default(),
             }
+        }
+        fn reject_next(&self, msg: &str) {
+            *self.reject_next.lock().unwrap() = Some(msg.into());
+        }
+        /// Show `txid:vout` as an unspent output of a known address, as an
+        /// esplora backend does.
+        fn show_unspent(&self, txid: &str, vout: u32) {
+            let address = format!("tb1q{txid}{vout}");
+            self.inner.txs.lock().unwrap().get_mut(txid).unwrap().vout[vout as usize]
+                .scriptpubkey_address = Some(address.clone());
+            self.inner.utxos.lock().unwrap().insert(
+                address,
+                vec![Utxo {
+                    txid: txid.into(),
+                    vout,
+                    value: 9_700,
+                    confirmed: true,
+                    block_height: Some(1),
+                }],
+            );
         }
     }
     #[async_trait(?Send)]
@@ -1959,6 +2032,9 @@ mod tests {
                 return Err(PaymentError::InvalidState("connection reset".into()));
             }
             let info = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)?;
+            if let Some(msg) = self.reject_next.lock().unwrap().take() {
+                return Err(PaymentError::InvalidState(msg));
+            }
             // A node refuses the identical transaction a second time.
             if self.inner.txs.lock().unwrap().contains_key(&info.txid) {
                 return Err(PaymentError::InvalidState(
@@ -2144,6 +2220,88 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.trail.txo.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_resend_with_an_unspent_head_drops_the_intent() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        let head = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap()
+            .trail
+            .txo[0]
+            .txid
+            .clone();
+        mempool
+            .drop_next_broadcast
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        a.anchor("prov", COMMITS[1], "testnet4").await.unwrap_err();
+        // the node refuses the mark outright, and the head it spends is unspent
+        mempool.reject_next("broadcast rejected (400): min relay fee not met");
+        mempool.show_unspent(&head, 0);
+        a.anchor("prov", COMMITS[2], "testnet4")
+            .await
+            .expect("a refused mark must not wedge the trail");
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 2, "the refused mark never landed");
+        assert!(
+            crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_resend_without_proof_of_an_unspent_head_keeps_refusing() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        mempool
+            .drop_next_broadcast
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        a.anchor("prov", COMMITS[1], "testnet4").await.unwrap_err();
+        // refused, but nothing shows the head is still unspent
+        mempool.reject_next("broadcast rejected (400): bad-txns-inputs-missingorspent");
+        a.anchor("prov", COMMITS[2], "testnet4").await.unwrap_err();
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        assert!(
+            crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn block_anchorer_rejected_resend_with_an_unspent_head_drops_the_intent() {
+        let (inner, fixture, ticker) = mint_and_store("DRP").await;
+        let mempool = RacyMempool::new(fixture);
+        let anchorer = MempoolBlockAnchorer::with_storage(mempool.clone(), inner.clone());
+        let head = load_trail(&inner, &ticker)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_txid;
+        mempool
+            .drop_next_broadcast
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        anchorer
+            .anchor(&ticker, &"a".repeat(40), "testnet4")
+            .await
+            .unwrap_err();
+        mempool.reject_next("broadcast rejected (400): min relay fee not met");
+        mempool.show_unspent(&head, 0);
+        anchorer
+            .anchor(&ticker, &"b".repeat(40), "testnet4")
+            .await
+            .expect("a refused anchor must not wedge the trail");
+        let stored = load_trail(&inner, &ticker).await.unwrap().unwrap();
+        assert_eq!(stored.states.len(), 2);
+        assert!(!inner.exists(&anchor_intent_path(&ticker)).await.unwrap());
     }
 
     #[tokio::test]

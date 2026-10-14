@@ -267,11 +267,11 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
                 .map_err(|e| format!("malformed anchored-epoch marker: {e}"))?;
             commits.retain(|c| !done.contains(c));
             save_epoch_commits(&state.storage, &commits).await?;
-            state
-                .storage
-                .delete(EPOCH_ANCHORED_PATH)
-                .await
-                .map_err(|e| format!("clear anchored-epoch marker: {e}"))?;
+            // Dropping the same commits again is a no-op, so a marker that
+            // cannot be cleared now is cleared by a later push.
+            if let Err(e) = state.storage.delete(EPOCH_ANCHORED_PATH).await {
+                tracing::warn!("anchored-epoch marker not cleared: {e}");
+            }
         }
         Err(PodError::NotFound(_)) => {}
         Err(e) => return Err(format!("read anchored-epoch marker: {e}")),

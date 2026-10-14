@@ -1244,15 +1244,16 @@ async fn execute_token_transfer(
 
     // One advance of this trail at a time: the anchorer takes the same lock.
     let _trail_lock = crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)).await;
-    // An anchor that was broadcast but not saved is settled before this
-    // transfer spends the trail's head.
-    if let Err(e) = crate::mempool::settle_trail_intent(&mempool, storage, ticker).await {
-        return Err(HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": format!("Transfer failed: {e}")})));
-    }
+    // A payout that landed moves the head first; then an anchor that was
+    // broadcast but not saved is settled, before this transfer spends the
+    // trail's head.
     let store = StoragePaymentStore::new(&**storage);
     if let Err(error) = recover_payment_intents(&store, storage, &mempool).await {
         return Err(payment_error_response(error));
+    }
+    if let Err(e) = crate::mempool::settle_trail_intent(&mempool, storage, ticker).await {
+        return Err(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": format!("Transfer failed: {e}")})));
     }
 
     // Load the trail (must be minted on this pod).
