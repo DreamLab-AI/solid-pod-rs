@@ -137,6 +137,15 @@ fn genesis_spk_hex() -> String {
 /// Fixture mempool (tx lookup + empty UTXO set + broadcast echo). Identical
 /// shape to `pay_phase4_routes::spawn_fixture`.
 async fn spawn_fixture() -> (String, actix_web::dev::ServerHandle) {
+    spawn_fixture_with(false, false).await
+}
+
+/// [`spawn_fixture`] whose broadcast endpoint, or whose transaction lookup,
+/// answers 500.
+async fn spawn_fixture_with(
+    broadcast_fails: bool,
+    lookup_fails: bool,
+) -> (String, actix_web::dev::ServerHandle) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let spk = web::Data::new(genesis_spk_hex());
@@ -146,7 +155,10 @@ async fn spawn_fixture() -> (String, actix_web::dev::ServerHandle) {
             .app_data(spk.clone())
             .route(
                 "/api/tx/{txid}",
-                web::get().to(|_p: web::Path<String>, spk: web::Data<String>| async move {
+                web::get().to(move |_p: web::Path<String>, spk: web::Data<String>| async move {
+                    if lookup_fails {
+                        return HttpResponse::InternalServerError().body("lookup down");
+                    }
                     let body = json!({
                         "txid": "aa".repeat(32),
                         "vout": [ { "value": 50000, "scriptpubkey": spk.get_ref() } ],
@@ -167,7 +179,10 @@ async fn spawn_fixture() -> (String, actix_web::dev::ServerHandle) {
             )
             .route(
                 "/api/tx",
-                web::post().to(|body: bytes::Bytes| async move {
+                web::post().to(move |body: bytes::Bytes| async move {
+                    if broadcast_fails {
+                        return HttpResponse::InternalServerError().body("node down");
+                    }
                     // what a node reports: the txid of the transaction sent
                     let txid =
                         solid_pod_rs::bitcoin_tx::decode_tx_info(&String::from_utf8_lossy(&body))
@@ -541,6 +556,89 @@ async fn prov_anchor_upgrade_402_on_insufficient_balance() {
         .unwrap()
         .contains("bt:txid"));
 
+    handle.stop(false).await;
+}
+
+/// POST the owner's anchor request for `sha`, then return the status and the
+/// owner's ledger balance as `/pay/.balance` reports it.
+async fn anchor_then_balance(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>,
+        Error = actix_web::Error,
+    >,
+    pod: &str,
+    sha: &str,
+) -> (u16, Value, u64) {
+    let anchor_path = format!("/{pod}/_prov/anchor");
+    let body = json!({"commit_sha": sha}).to_string();
+    let req = test::TestRequest::post()
+        .uri(&anchor_path)
+        .insert_header(("content-type", "application/json"))
+        .insert_header((
+            "authorization",
+            owner_nip98("POST", &anchor_path, Some(body.as_bytes())),
+        ))
+        .set_payload(body)
+        .to_request();
+    let rsp = test::call_service(app, req).await;
+    let status = rsp.status().as_u16();
+    let out: Value = test::read_body_json(rsp).await;
+    let bal = test::TestRequest::get()
+        .uri("/pay/.balance")
+        .insert_header(("authorization", owner_nip98("GET", "/pay/.balance", None)))
+        .to_request();
+    let bal: Value = test::read_body_json(test::call_service(app, bal).await).await;
+    (status, out, bal["balance"].as_u64().unwrap())
+}
+
+#[actix_web::test]
+async fn prov_anchor_with_lost_broadcast_is_pending_and_keeps_the_charge() {
+    if !git_available() {
+        return;
+    }
+    let (mempool_url, handle) = spawn_fixture_with(true, false).await;
+    let (state, tmp, pod) =
+        git_pod_with_trail(mempool_url, &format!("/{}/lost/", owner_xonly()), None, 100).await;
+    let repo = tmp.path().join(&pod);
+    let app = test::init_service(build_app(state)).await;
+    let put = test::TestRequest::put()
+        .uri(&format!("/{pod}/lost/x.ttl"))
+        .insert_header(("content-type", "text/turtle"))
+        .set_payload(web::Bytes::from_static(b"<#x> <#y> <#z> ."))
+        .to_request();
+    assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
+    let sha = last_commit_sha(&repo);
+
+    // The tx may be on-chain and the next advance settles it: 202, no refund.
+    let (status, out, balance) = anchor_then_balance(&app, &pod, &sha).await;
+    assert_eq!(status, 202, "{out}");
+    assert_eq!(out["status"], json!("pending"));
+    assert_eq!(balance, 95, "the charge must stand");
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn prov_anchor_failing_before_broadcast_still_refunds() {
+    if !git_available() {
+        return;
+    }
+    let (mempool_url, handle) = spawn_fixture_with(false, true).await;
+    let (state, tmp, pod) =
+        git_pod_with_trail(mempool_url, &format!("/{}/pre/", owner_xonly()), None, 100).await;
+    let repo = tmp.path().join(&pod);
+    let app = test::init_service(build_app(state)).await;
+    let put = test::TestRequest::put()
+        .uri(&format!("/{pod}/pre/x.ttl"))
+        .insert_header(("content-type", "text/turtle"))
+        .set_payload(web::Bytes::from_static(b"<#x> <#y> <#z> ."))
+        .to_request();
+    assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
+    let sha = last_commit_sha(&repo);
+
+    let (status, out, balance) = anchor_then_balance(&app, &pod, &sha).await;
+    assert_eq!(status, 502, "{out}");
+    assert_eq!(balance, 100, "nothing went out: the charge is refunded");
     handle.stop(false).await;
 }
 

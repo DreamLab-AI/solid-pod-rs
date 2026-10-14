@@ -507,6 +507,21 @@ async fn handle_anchor(
     // state_hash IS the git commit SHA — binding git ↔ Bitcoin (§2.3).
     let anchor = match anchorer.anchor(&ticker, &resolved.hash, &network).await {
         Ok(a) => a,
+        // The transaction may be on-chain and the next advance settles it:
+        // keep the charge and say the anchor is pending.
+        Err(e) if crate::mempool::is_pending_anchor(&e) => {
+            tracing::warn!(
+                target: "solid_pod_rs_server::prov",
+                "anchor outcome pending, charge kept: {e}"
+            );
+            return Ok(HttpResponse::Accepted()
+                .content_type("application/json")
+                .json(serde_json::json!({
+                    "status": "pending",
+                    "error": format!("anchor pending: {e}"),
+                    "charged_sats": price,
+                })));
+        }
         Err(e) => {
             // Refund the charge — no anchor was produced. A refund that fails
             // is logged and retained, never dropped.

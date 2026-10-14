@@ -708,6 +708,22 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> MempoolBlockAnchorer<M> 
     }
 }
 
+/// Marks an anchor whose broadcast outcome is unknown. Once the intent is
+/// recorded the transaction may be on-chain, and the next advance settles it
+/// from the chain, so the caller has been served and must not be refunded.
+const PENDING_ANCHOR_PREFIX: &str = "anchor pending: ";
+
+/// The error for an anchor that failed after its intent was recorded.
+fn pending_anchor(detail: String) -> ProvenanceError {
+    ProvenanceError::Anchor(format!("{PENDING_ANCHOR_PREFIX}{detail}"))
+}
+
+/// Whether `e` is an anchor left pending (see [`pending_anchor`]) rather than
+/// one that definitely did not go out.
+pub(crate) fn is_pending_anchor(e: &ProvenanceError) -> bool {
+    matches!(e, ProvenanceError::Anchor(m) if m.starts_with(PENDING_ANCHOR_PREFIX))
+}
+
 #[async_trait(?Send)]
 impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for MempoolBlockAnchorer<M> {
     /// Append one MRC20 state anchoring `state_hash` under `ticker`, build +
@@ -797,9 +813,9 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
             .lookup
             .broadcast_tx(&update.tx.raw_hex)
             .await
-            .map_err(|e| ProvenanceError::Anchor(format!("broadcast anchoring tx: {e}")))?;
+            .map_err(|e| pending_anchor(format!("broadcast anchoring tx: {e}")))?;
         if txid != expected {
-            return Err(ProvenanceError::Anchor(format!(
+            return Err(pending_anchor(format!(
                 "mempool returned txid {txid} for an anchor that is {expected}"
             )));
         }
@@ -1292,9 +1308,9 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
             .lookup
             .broadcast_tx(&update.tx.raw_hex)
             .await
-            .map_err(|e| ProvenanceError::Anchor(format!("broadcast mark: {e}")))?;
+            .map_err(|e| pending_anchor(format!("broadcast mark: {e}")))?;
         if txid != expected {
-            return Err(ProvenanceError::Anchor(format!(
+            return Err(pending_anchor(format!(
                 "mempool returned txid {txid} for a mark that is {expected}"
             )));
         }
@@ -2166,7 +2182,10 @@ mod tests {
             .drop_next_broadcast
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let lost = a.anchor("prov", COMMITS[1], "testnet4").await;
-        lost.unwrap_err();
+        assert!(
+            is_pending_anchor(&lost.unwrap_err()),
+            "a recorded but unconfirmed broadcast is pending, not failed"
+        );
         // the intent survives the failed call
         let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
         assert!(
