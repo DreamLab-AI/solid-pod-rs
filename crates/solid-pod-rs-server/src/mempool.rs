@@ -41,7 +41,7 @@
 //! manifest (ADR-2007).
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use solid_pod_rs::bitcoin_tx::{
@@ -737,6 +737,8 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
         // One advance of this trail at a time (anchorers are per-request).
         let _guard = crate::trail_store::lock_path(&crate::trail_store::trail_path(ticker)).await;
 
+        settle_trail_intent(&self.lookup, storage, ticker).await?;
+
         // Load the trail that will carry the anchor (JSS `loadTrail`).
         let mut stored = load_trail(storage, ticker)
             .await
@@ -764,23 +766,59 @@ impl<M: MempoolLookup + MempoolBroadcast + Send + Sync> BlockAnchorer for Mempoo
         .await
         .map_err(|e| ProvenanceError::Anchor(format!("build anchoring tx: {e}")))?;
 
+        // The trail once the tx is in, with the txid the signed tx has as its
+        // new currentTxid (so the next anchor/transfer spends this output).
+        let expected = solid_pod_rs::bitcoin_tx::decode_tx_info(&update.tx.raw_hex)
+            .map_err(|e| ProvenanceError::Anchor(format!("decode anchoring tx: {e}")))?
+            .txid;
+        let mut appended = update.trail.clone();
+        appended.current_txid = expected.clone();
+        stored.merge_public(&appended);
+        stored.current_txid = expected.clone();
+        stored.current_vout = 0;
+
+        // Record the broadcast first: a lost response or a failed save is
+        // then settled from the chain by the next advance, not left as a
+        // stored head that points at a spent output.
+        let intent_path = anchor_intent_path(ticker);
+        let body = serde_json::to_vec(&PendingAnchor {
+            txid: expected.clone(),
+            raw_hex: update.tx.raw_hex.clone(),
+            stored: stored.clone(),
+        })
+        .map_err(|e| ProvenanceError::Anchor(format!("serialise pending anchor: {e}")))?;
+        storage
+            .put(&intent_path, bytes::Bytes::from(body), "application/json")
+            .await
+            .map_err(|e| ProvenanceError::Anchor(format!("record pending anchor: {e}")))?;
+
         // Broadcast (JSS `broadcastTx`). The returned txid IS the anchoring tx.
         let txid = self
             .lookup
             .broadcast_tx(&update.tx.raw_hex)
             .await
             .map_err(|e| ProvenanceError::Anchor(format!("broadcast anchoring tx: {e}")))?;
+        if txid != expected {
+            return Err(ProvenanceError::Anchor(format!(
+                "mempool returned txid {txid} for an anchor that is {expected}"
+            )));
+        }
 
-        // Persist the appended trail with the broadcast txid as the new
-        // currentTxid (so the next anchor/transfer spends this output).
-        let mut appended = update.trail.clone();
-        appended.current_txid = txid.clone();
-        stored.merge_public(&appended);
-        stored.current_txid = txid.clone();
-        stored.current_vout = 0;
-        save_trail(storage, &stored)
-            .await
-            .map_err(|e| ProvenanceError::Anchor(format!("save trail: {e}")))?;
+        // Once the broadcast is accepted the anchor is on-chain, so a failed
+        // save is not a failed anchor: the intent stays and the next advance
+        // settles it. The caller must not be refunded for it.
+        match save_trail(storage, &stored).await {
+            Ok(()) => {
+                if let Err(e) = storage.delete(&intent_path).await {
+                    // Settling it later is a no-op: the trail is already saved.
+                    tracing::warn!(%ticker, "anchor intent not cleared: {e}");
+                }
+            }
+            Err(e) => tracing::error!(
+                %ticker, %txid,
+                "anchor broadcast accepted but trail save failed; the next advance settles it: {e}"
+            ),
+        }
 
         Ok(BlockTrailAnchor {
             ticker: ticker.to_string(),
@@ -865,6 +903,152 @@ pub async fn verify_anchor_report(
     .await
     .map(Some)
     .map_err(|e| ProvenanceError::Anchor(format!("anchor chain walk failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Pending broadcasts: kept until the trail that carries them is saved
+// ---------------------------------------------------------------------------
+
+/// Whether a broadcast error says the node already has this very transaction
+/// (in its mempool, in a block, or its outputs in the UTXO set). Anything else
+/// is not a statement about the transaction and is never read as one.
+fn already_known(e: &PaymentError) -> bool {
+    let msg = e.to_string().to_lowercase().replace('-', " ");
+    msg.contains("already in mempool")
+        || msg.contains("already in block chain")
+        || msg.contains("already known")
+        || msg.contains("already in utxo set")
+        || msg.contains("outputs already in")
+}
+
+/// Send a recorded transaction again. A backend that took the first
+/// broadcast but has not indexed it answers "not found" to a presence check;
+/// sending the same bytes is harmless and says whether it is there. `Ok` means
+/// the transaction is in the node; `Err` means nothing was learned, and the
+/// caller must keep its record and refuse to build on the old head.
+async fn resend<M: MempoolBroadcast + ?Sized>(
+    lookup: &M,
+    txid: &str,
+    raw_hex: &str,
+) -> Result<(), ProvenanceError> {
+    match lookup.broadcast_tx(raw_hex).await {
+        Ok(t) if t == txid => Ok(()),
+        Ok(t) => Err(ProvenanceError::Anchor(format!(
+            "mempool returned txid {t} for a mark that is {txid}"
+        ))),
+        Err(e) if already_known(&e) => Ok(()),
+        Err(e) => Err(ProvenanceError::Anchor(format!(
+            "a previous mark ({txid}) is unresolved, refusing to advance: {e}"
+        ))),
+    }
+}
+
+/// A git-mark intent as stored: [`GitmarkIntent`](crate::trail_store::GitmarkIntent)
+/// plus the signed transaction, so an unresolved mark can be sent again.
+/// Intents written before `rawHex` existed read back with `None`.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingMark {
+    #[serde(flatten)]
+    intent: crate::trail_store::GitmarkIntent,
+    #[serde(default)]
+    raw_hex: Option<String>,
+}
+
+/// Read the pending mark of git-mark trail `name`, if any.
+async fn load_pending_mark(
+    storage: &std::sync::Arc<dyn solid_pod_rs::storage::Storage>,
+    name: &str,
+) -> Result<Option<PendingMark>, ProvenanceError> {
+    use solid_pod_rs::PodError;
+    match storage
+        .get(&crate::trail_store::gitmark_intent_path(name))
+        .await
+    {
+        Ok((bytes, _)) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+            ProvenanceError::Anchor(format!("read pending mark: malformed git-mark intent: {e}"))
+        }),
+        Err(PodError::NotFound(_)) => Ok(None),
+        Err(e) => Err(ProvenanceError::Anchor(format!("read pending mark: {e}"))),
+    }
+}
+
+/// Write the pending mark of a git-mark trail.
+async fn save_pending_mark(
+    storage: &std::sync::Arc<dyn solid_pod_rs::storage::Storage>,
+    pending: &PendingMark,
+) -> Result<(), String> {
+    let body = serde_json::to_vec(pending).map_err(|e| e.to_string())?;
+    storage
+        .put(
+            &crate::trail_store::gitmark_intent_path(&pending.intent.stored.name),
+            bytes::Bytes::from(body),
+            "application/json",
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// An MRC20 anchor about to be broadcast: the signed transaction and the
+/// trail as it stands once that transaction is in.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingAnchor {
+    txid: String,
+    raw_hex: String,
+    stored: crate::trail_store::StoredTrail,
+}
+
+/// Pod-storage path of an MRC20 trail's pending anchor. It holds the trail's
+/// secret, so it sits under `/.well-known/token/` beside the trail file.
+fn anchor_intent_path(ticker: &str) -> String {
+    format!("/.well-known/token/{}.intent.json", ticker.to_lowercase())
+}
+
+/// Settle an interrupted advance of the MRC20 trail `ticker`: the previous
+/// anchor wrote its intent and did not clear it. The transaction is looked up
+/// and, if the backend does not know it, sent again; once it is in, the
+/// intent's trail becomes the stored one (unless a later write already did).
+/// Caller holds the trail's [`lock_path`](crate::trail_store::lock_path).
+///
+/// # Errors
+///
+/// [`ProvenanceError::Anchor`] when the pending anchor cannot be resolved; the
+/// intent is kept and no advance may be built on the old head.
+pub(crate) async fn settle_trail_intent<M: MempoolLookup + MempoolBroadcast + ?Sized>(
+    lookup: &M,
+    storage: &std::sync::Arc<dyn solid_pod_rs::storage::Storage>,
+    ticker: &str,
+) -> Result<(), ProvenanceError> {
+    use crate::trail_store::{load_trail, save_trail};
+    use solid_pod_rs::PodError;
+    let err =
+        |what: &str, e: &dyn std::fmt::Display| ProvenanceError::Anchor(format!("{what}: {e}"));
+    let path = anchor_intent_path(ticker);
+    let pending: PendingAnchor = match storage.get(&path).await {
+        Ok((bytes, _)) => {
+            serde_json::from_slice(&bytes).map_err(|e| err("malformed pending anchor", &e))?
+        }
+        Err(PodError::NotFound(_)) => return Ok(()),
+        Err(e) => return Err(err("read pending anchor", &e)),
+    };
+    if lookup.tx(&pending.txid).await.is_err() {
+        resend(lookup, &pending.txid, &pending.raw_hex).await?;
+    }
+    let have = load_trail(storage, ticker)
+        .await
+        .map_err(|e| err("load trail", &e))?
+        .map_or(0, |t| t.states.len());
+    if have < pending.stored.states.len() {
+        save_trail(storage, &pending.stored)
+            .await
+            .map_err(|e| err("save recovered trail", &e))?;
+    }
+    match storage.delete(&path).await {
+        Ok(()) | Err(PodError::NotFound(_)) => Ok(()),
+        Err(e) => Err(err("clear pending anchor", &e)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -961,17 +1145,13 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
     /// (unless a later advance already did); definitely not on-chain ⇒ the
     /// intent is dropped; ambiguous ⇒ the advance is refused (fail closed).
     async fn settle_intent(&self, name: &str) -> Result<(), ProvenanceError> {
-        use crate::trail_store::{
-            clear_gitmark_intent, load_gitmark_intent, load_gitmark_trail, save_gitmark_trail,
-        };
+        use crate::trail_store::{clear_gitmark_intent, load_gitmark_trail, save_gitmark_trail};
         let storage = self.storage()?;
         let err = |what: &str, e: PaymentError| ProvenanceError::Anchor(format!("{what}: {e}"));
-        let Some(intent) = load_gitmark_intent(storage, name)
-            .await
-            .map_err(|e| err("read pending mark", e))?
-        else {
+        let Some(pending) = load_pending_mark(storage, name).await? else {
             return Ok(());
         };
+        let intent = &pending.intent;
         let exists = self
             .lookup
             .transaction_exists(&intent.txid)
@@ -982,7 +1162,19 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
                     intent.txid
                 ))
             })?;
-        if exists {
+        // "Not found" is not "not broadcast": a backend that took the mark
+        // but has not indexed it says the same. Send it again; the intent is
+        // dropped only for a mark that predates `rawHex` and cannot be.
+        let landed = if exists {
+            true
+        } else if let Some(raw_hex) = &pending.raw_hex {
+            resend(&self.lookup, &intent.txid, raw_hex).await?;
+            true
+        } else {
+            tracing::warn!(trail = %name, txid = %intent.txid, "pending mark has no raw transaction; dropped as not on-chain");
+            false
+        };
+        if landed {
             let have = load_gitmark_trail(storage, name)
                 .await
                 .map_err(|e| err("load trail", e))?
@@ -1013,8 +1205,7 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
         date_created: String,
     ) -> Result<BlockTrailAnchor, ProvenanceError> {
         use crate::trail_store::{
-            clear_gitmark_intent, save_gitmark_intent, save_gitmark_trail, GitmarkIntent,
-            StoredGitmarkTrail,
+            clear_gitmark_intent, save_gitmark_trail, GitmarkIntent, StoredGitmarkTrail,
         };
         let storage = self.storage()?;
         let expected = solid_pod_rs::bitcoin_tx::decode_tx_info(&update.tx.raw_hex)
@@ -1034,11 +1225,14 @@ impl<M: MempoolLookup + MempoolBroadcast + MempoolTxPresence + Send + Sync> Gitm
             trail,
             date_created,
         };
-        save_gitmark_intent(
+        save_pending_mark(
             storage,
-            &GitmarkIntent {
-                txid: expected.clone(),
-                stored: stored.clone(),
+            &PendingMark {
+                intent: GitmarkIntent {
+                    txid: expected.clone(),
+                    stored: stored.clone(),
+                },
+                raw_hex: Some(update.tx.raw_hex.clone()),
             },
         )
         .await
@@ -1729,6 +1923,9 @@ mod tests {
         inner: FixtureMempool,
         spent: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, u32)>>>,
         drop_next_broadcast: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// The backend accepted a broadcast but has not indexed it yet:
+        /// presence checks answer "not found".
+        index_lag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl RacyMempool {
         fn new(inner: FixtureMempool) -> Self {
@@ -1736,6 +1933,7 @@ mod tests {
                 inner,
                 spent: Default::default(),
                 drop_next_broadcast: Default::default(),
+                index_lag: Default::default(),
             }
         }
     }
@@ -1761,6 +1959,12 @@ mod tests {
                 return Err(PaymentError::InvalidState("connection reset".into()));
             }
             let info = solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex)?;
+            // A node refuses the identical transaction a second time.
+            if self.inner.txs.lock().unwrap().contains_key(&info.txid) {
+                return Err(PaymentError::InvalidState(
+                    "broadcast rejected (400): txn-already-in-mempool".into(),
+                ));
+            }
             {
                 let mut spent = self.spent.lock().unwrap();
                 if info
@@ -1782,6 +1986,9 @@ mod tests {
     impl MempoolTxPresence for RacyMempool {
         async fn transaction_exists(&self, txid: &str) -> Result<bool, PaymentError> {
             tokio::task::yield_now().await;
+            if self.index_lag.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(false);
+            }
             self.inner.transaction_exists(txid).await
         }
     }
@@ -1856,14 +2063,35 @@ mod tests {
         assert!(report.is_verified(), "{report:?}");
     }
 
+    #[test]
+    fn already_known_reads_only_node_statements_about_the_same_tx() {
+        let e = |m: &str| PaymentError::InvalidState(m.into());
+        assert!(already_known(&e(
+            "broadcast rejected (400): txn-already-in-mempool"
+        )));
+        assert!(already_known(&e(
+            "broadcast rejected (400): Transaction already in block chain"
+        )));
+        assert!(already_known(&e(
+            "broadcast rejected (400): txn-already-known"
+        )));
+        assert!(!already_known(&e(
+            "broadcast rejected (400): txn-mempool-conflict"
+        )));
+        assert!(!already_known(&e(
+            "mempool broadcast failed: connection reset"
+        )));
+    }
+
     #[tokio::test]
-    async fn dropped_broadcast_is_settled_from_the_chain_on_the_next_anchor() {
+    async fn dropped_broadcast_is_resent_by_the_next_anchor() {
         let (mempool, storage, a, _b) = racy_trail().await;
         mempool
             .drop_next_broadcast
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        a.anchor("prov", COMMITS[1], "testnet4").await.unwrap_err();
-        // the intent survives the failed call, and is dropped (tx absent)
+        let lost = a.anchor("prov", COMMITS[1], "testnet4").await;
+        lost.unwrap_err();
+        // the intent survives the failed call
         let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
         assert!(
             crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
@@ -1871,13 +2099,15 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        // the next advance re-sends the same mark (it is not on-chain), then
+        // builds on it
         let next = a.anchor("prov", COMMITS[2], "testnet4").await.unwrap();
         let stored = load_gitmark_trail(&dyn_storage, "prov")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.trail.txo.len(), 2, "the dropped mark never landed");
-        assert_eq!(stored.trail.txo[1].txid, next.txid);
+        assert_eq!(stored.trail.txo.len(), 3, "the re-sent mark landed");
+        assert_eq!(stored.trail.txo[2].txid, next.txid);
         assert!(
             crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
                 .await
@@ -1886,6 +2116,95 @@ mod tests {
         );
         let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
         assert!(report.is_verified(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn unresolved_resend_keeps_the_intent_and_refuses_to_advance() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        let drop_next = || {
+            mempool
+                .drop_next_broadcast
+                .store(true, std::sync::atomic::Ordering::SeqCst)
+        };
+        drop_next();
+        a.anchor("prov", COMMITS[1], "testnet4").await.unwrap_err();
+        // the re-send fails too: nothing is known, so nothing is dropped
+        drop_next();
+        a.anchor("prov", COMMITS[2], "testnet4").await.unwrap_err();
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        assert!(
+            crate::trail_store::load_gitmark_intent(&dyn_storage, "prov")
+                .await
+                .unwrap()
+                .is_some(),
+            "an unresolved mark must keep its intent"
+        );
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_but_unindexed_mark_is_not_orphaned_by_the_next_anchor() {
+        let (mempool, storage, a, _b) = racy_trail().await;
+        // the broadcast is accepted, the trail save is lost
+        storage.fail_put(&crate::trail_store::gitmark_trail_path("prov"));
+        let landed = a.anchor("prov", COMMITS[1], "testnet4").await.unwrap();
+        storage.heal();
+        // the backend has not indexed it yet: presence answers 404
+        mempool
+            .index_lag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let next = a
+            .anchor("prov", COMMITS[2], "testnet4")
+            .await
+            .expect("the next advance must build on the accepted mark, not on the old head");
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        let stored = load_gitmark_trail(&dyn_storage, "prov")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.trail.txo.len(), 3);
+        assert_eq!(stored.trail.txo[1].txid, landed.txid);
+        assert_eq!(stored.trail.txo[2].txid, next.txid);
+        let report = solid_pod_rs::blocktrail::verify_blocktrail(&stored.trail, &mempool).await;
+        assert!(report.is_verified(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn block_anchorer_accepted_broadcast_with_failed_save_is_not_a_failed_anchor() {
+        use crate::trail_store::fault_storage::FaultStorage;
+        let (inner, mempool, ticker) = mint_and_store("FLT").await;
+        let storage = FaultStorage::new(inner, false);
+        let anchorer = MempoolBlockAnchorer::with_storage(mempool.clone(), storage.clone());
+        storage.fail_put(&crate::trail_store::trail_path(&ticker));
+        let first = anchorer
+            .anchor(&ticker, &"a".repeat(40), "testnet4")
+            .await
+            .expect("the tx is on-chain: a failed save must not read as a failed anchor");
+        storage.heal();
+        // the next advance settles the first, then builds on it
+        let second = anchorer
+            .anchor(&ticker, &"b".repeat(40), "testnet4")
+            .await
+            .unwrap();
+        let dyn_storage: std::sync::Arc<dyn Storage> = storage.clone();
+        let stored = load_trail(&dyn_storage, &ticker).await.unwrap().unwrap();
+        assert_eq!(stored.states.len(), 3);
+        assert_eq!(stored.current_txid, second.txid);
+        let second_tx = mempool
+            .txs
+            .lock()
+            .unwrap()
+            .get(&second.txid)
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            second_tx.vin[0].txid, first.txid,
+            "the second anchor must spend the first, not the old head"
+        );
     }
 
     #[tokio::test]
