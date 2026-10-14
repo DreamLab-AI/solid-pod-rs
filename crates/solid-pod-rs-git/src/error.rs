@@ -51,6 +51,12 @@ pub enum GitError {
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A push was refused by the pre-receive path guard before any of it was
+    /// applied. The message names a path the client itself supplied, never
+    /// anything about the server's state.
+    #[error("push refused: {0}")]
+    PushRefused(String),
+
     /// Underlying auth-layer error (NIP-98 decode, Schnorr mismatch, …).
     #[error("auth: {0}")]
     Auth(#[from] crate::auth::AuthError),
@@ -63,6 +69,7 @@ impl GitError {
         match self {
             GitError::PathTraversal(_) => 400,
             GitError::Unauthorised(_) | GitError::Auth(_) => 401,
+            GitError::PushRefused(_) => 403,
             GitError::NotARepository(_) => 404,
             GitError::BackendNotAvailable(_)
             | GitError::BackendFailed { .. }

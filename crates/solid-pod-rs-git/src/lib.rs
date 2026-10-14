@@ -56,6 +56,7 @@ pub mod guard;
 pub mod identity;
 pub mod init;
 pub mod mark;
+pub mod push_guard;
 pub mod service;
 
 pub use api::{
@@ -70,4 +71,5 @@ pub use guard::{extract_repo_slug, path_safe};
 pub use identity::{write_agent_identity, AgentIdentityWritten, AGENT_DID_FILE, NOSTR_PRIVKEY_KEY};
 pub use init::GitAutoInit;
 pub use mark::ShellGitMarker;
+pub use push_guard::{PushPathGuard, PushRefusal};
 pub use service::{GitHttpService, GitRequest, GitResponse, DEFAULT_GIT_HTTP_BACKEND};

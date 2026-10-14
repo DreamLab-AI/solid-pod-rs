@@ -116,6 +116,10 @@ pub mod cli;
 /// with JSS-parity JSON.
 mod handlers;
 
+/// Pre-receive path policy for `git push` (shares the REST/MCP path rules).
+#[cfg(feature = "git")]
+mod git_push;
+
 /// MCP (Model Context Protocol) server subsystem — `POST /mcp`, mounted
 /// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
 mod mcp;
@@ -4413,7 +4417,7 @@ async fn handle_git(
     state: web::Data<AppState>,
 ) -> HttpResponse {
     use solid_pod_rs_git::auth::{BasicNostrExtractor, GitAuth};
-    use solid_pod_rs_git::service::{GitHttpService, GitRequest};
+    use solid_pod_rs_git::service::GitRequest;
 
     let path = req.uri().path().to_string();
 
@@ -4507,7 +4511,7 @@ async fn handle_git(
         return resp;
     }
 
-    let service = GitHttpService::new(repo_root);
+    let service = git_push::pod_git_service(repo_root, state.dotfiles.clone());
     match service.handle(git_req).await {
         Ok(git_resp) => {
             let mut builder = HttpResponse::build(

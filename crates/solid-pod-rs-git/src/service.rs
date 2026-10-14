@@ -32,6 +32,7 @@ use crate::auth::{AuthError, GitAuth};
 use crate::config::{apply_write_config, find_git_dir};
 use crate::error::GitError;
 use crate::guard::{extract_repo_slug, path_safe};
+use crate::push_guard::{check_push, refusal_response, repo_lock, PushPathGuard};
 
 /// Path to the CGI binary shipped with git. Configurable via
 /// `GIT_HTTP_BACKEND_PATH` env var at service-startup time (the
@@ -209,6 +210,7 @@ pub struct GitHttpService {
     repo_root: PathBuf,
     auth: Option<Arc<dyn GitAuth>>,
     backend_path: PathBuf,
+    push_guard: Option<PushPathGuard>,
 }
 
 impl std::fmt::Debug for GitHttpService {
@@ -217,6 +219,7 @@ impl std::fmt::Debug for GitHttpService {
             .field("repo_root", &self.repo_root)
             .field("auth", &self.auth.is_some())
             .field("backend_path", &self.backend_path)
+            .field("push_guard", &self.push_guard.is_some())
             .finish()
     }
 }
@@ -233,7 +236,24 @@ impl GitHttpService {
             repo_root,
             auth: None,
             backend_path: backend,
+            push_guard: None,
         }
+    }
+
+    /// Install a pre-receive path guard (see [`crate::push_guard`]).
+    ///
+    /// `guard` receives each path a push would add, change or delete, as a
+    /// repository-relative path with a leading `/`, and returns `true` to
+    /// refuse it. With a guard installed every `git-receive-pack` request is
+    /// inspected before the CGI runs and the **whole push** is refused if any
+    /// path is refused, is a symlink or submodule entry, or the push exceeds the
+    /// documented size bounds. Without one, pushes are not inspected: use this
+    /// whenever the repository working tree is served or interpreted by
+    /// anything other than git.
+    #[must_use]
+    pub fn with_push_guard(mut self, guard: PushPathGuard) -> Self {
+        self.push_guard = Some(guard);
+        self
     }
 
     /// Override the default CGI binary path.
@@ -338,7 +358,22 @@ impl GitHttpService {
             let _ = apply_write_config(&git_dir, &repo_abs).await;
         }
 
-        // 5. Spawn the CGI and shuttle request/response bytes.
+        // 5. Pre-receive path guard. The per-repository lock is held across the
+        //    check and the CGI run so `HEAD` cannot move in between.
+        let mut _push_lock = None;
+        if let Some(guard) = self.push_guard.as_ref().filter(|_| {
+            req.is_write()
+                && req.method.eq_ignore_ascii_case("POST")
+                && req.path.ends_with("/git-receive-pack")
+        }) {
+            _push_lock = Some(repo_lock(&git_dir.git_dir).lock_owned().await);
+            if let Err(reason) = check_push(&git_dir.git_dir, &req.body, guard).await {
+                return refusal_response(&req.body, &reason)
+                    .map_err(|r| GitError::PushRefused(r.0));
+            }
+        }
+
+        // 6. Spawn the CGI and shuttle request/response bytes.
         spawn_cgi(
             &self.backend_path,
             &self.repo_root,
