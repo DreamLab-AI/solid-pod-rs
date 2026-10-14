@@ -10,45 +10,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-All fixes are in `solid-pod-rs-server`. Every release from `0.4.0-alpha.3`
-through `0.5.0-alpha.12` is affected and is yanked; upgrade to `0.5.0-alpha.13`.
+All fixes are in `solid-pod-rs-server` and `solid-pod-rs-git`. Every
+`solid-pod-rs-server` release from `0.4.0-alpha.3` through `0.5.0-alpha.12` is
+affected and is yanked; upgrade to `0.5.0-alpha.13`.
 
-- **COPY authorises its source.** `COPY` now requires read access on the
-  `Source` resource (the dotfile allowlist applies to it), rejects relative,
-  query, fragment and cross-host values with 400, and accepts same-host
-  absolute URLs. The source's `.acl` sidecar is copied only for a caller with
-  Control on both source and destination who keeps Control; otherwise it is
-  skipped. A pay-per-read source debits the caller once.
-- **Glob GET authorises each child.** Unreadable children, `.acl`, `.meta`
-  and `.prov.ttl` are no longer merged into the response, pay-per-read
-  children are left out, and a response containing private parts carries
-  `Cache-Control: no-store` and `Vary: Authorization`.
-- **Trail files need Control.** Everything under `/.well-known/token/` and
-  `/.well-known/gitmark/` except `blocktrails.json` now requires
-  `acl:Control` to read or write, over HTTP and MCP (path percent-decoded
-  before the test). These files hold anchor signing keys. A public-read pod
-  root previously exposed them to anonymous GET, and COPY exposed them to any
-  writer. Operators who served a public-read root should rotate trail keys.
+- **COPY authorises its source.** `COPY` requires read access on `Source` (the
+  dotfile allowlist applies), rejects relative, query, fragment and cross-host
+  values with 400, and accepts same-host absolute URLs. The source `.acl`
+  sidecar is copied only for a caller with Control on both ends who keeps
+  Control. A pay-per-read source debits the caller once.
+- **Glob GET authorises each child.** Unreadable children, `.acl`, `.meta` and
+  `.prov.ttl` are no longer merged; pay-per-read children are left out; a
+  response with private parts carries `Cache-Control: no-store` and
+  `Vary: Authorization`.
+- **One path canonicaliser** now feeds both the permission check and the
+  storage call on every route (REST, COPY, glob, MCP). Previously MCP and COPY
+  could reach guarded files through `//`, `/./` or a missing leading `/`.
+- **Server-managed state needs Control.** `/.well-known/token/`,
+  `/.well-known/gitmark/`, `/.well-known/prov/` and `/.well-known/webledgers/`
+  (except `blocktrails.json`) require `acl:Control` to read or write, over HTTP
+  and MCP. Trail files hold anchor signing keys; the web ledger holds every
+  balance. **Operators who served a public-read root, or enabled `--mcp`, should
+  rotate trail keys and audit ledger balances.**
+- **MCP enforces the dotfile allowlist** and routes through the REST read,
+  write and quota path. Previously a Writer could create `.git/config`,
+  `*.meta.json` and temp-file names via MCP.
+- **Container `index.html` negotiation** checks Read on the `index.html` child,
+  not only the container.
+- **Git push guard.** `GitHttpService::with_push_guard` rejects, before
+  anything is checked out, any push touching server-managed state, sidecars or
+  disallowed dotfiles, and always refuses symlink, submodule and signed
+  entries. Pushed symlinks are checked out as plain files
+  (`core.symlinks=false`). The server's own `git` calls drop repo-local hooks,
+  fsmonitor and global config.
 - **Anchoring no longer swallows storage errors.** Only `NotFound` means
   absent; an unreadable trail or epoch file fails the anchor with a recorded
-  `anchor_error` (500 before any charge on `/_prov` anchor) instead of
-  silently falling back to git-only provenance or resetting the pending
-  batch. A failed refund is logged and queued in
+  `anchor_error`. Failed refunds are logged and queued in
   `/.well-known/prov/refunds-pending.json`.
-- **Anchoring is serialised.** A path-keyed lock covers trail and epoch
-  advances, and a durable intent file records the expected txid before each
-  broadcast so a failed save after an accepted broadcast no longer wedges the
-  trail.
+- **Anchoring is serialised and durable.** Path-keyed locks cover trail and
+  epoch advances. A durable intent file stores the expected txid and signed
+  `rawHex` before each broadcast, is re-sent if the node has not indexed it,
+  and is checked against its raw transaction. Mempool requests time out
+  (5 s connect, 20 s total; `JSS_PAY_MEMPOOL_CONNECT_TIMEOUT_SECS`,
+  `JSS_PAY_MEMPOOL_TIMEOUT_SECS`). `epoch.json` growth is capped.
+- **Payment ledger race.** Anchor charges and refunds hold the payment lock
+  for their read-modify-write; concurrent debits could previously lose updates.
+- **Token-transfer txid** now excludes the witness (`decode_tx_info`). Payment
+  intents written by earlier builds carry wrong txids: inspect `state.json`
+  before deploying.
 
 ### Changed
 
-- `GitmarkAnchorer<M>` now also requires `M: MempoolTxPresence` (implemented
-  for `MempoolHttpClient`).
+- `GitmarkAnchorer<M>` requires `M: MempoolTxPresence` (implemented for
+  `MempoolHttpClient`).
+- `POST /_prov/anchor` returns 202 `{status:"pending"}` without refunding when
+  a broadcast outcome is ambiguous; failures before broadcast still refund
+  (502).
+- `/pay/.withdraw` and `/pay/.buy` return 503 with `Retry-After` when a trail
+  is busy for more than 2 s.
+- Public or Write-only GET of `/.well-known/webledgers/*` now returns 401/403.
+- `GIT_CONFIG_GLOBAL=/dev/null` for marks drops any operator `safe.directory`.
+- Docs: removed the non-existent `standalone` example; use
+  `cargo run -p solid-pod-rs-server`.
 
 ### Known gaps
 
-MCP tools still bypass quota and payment charging; `MempoolBlockAnchorer`
-has no intent file; the new locks are in-process only.
+Git push is not enabled over the server route (no auth provider); when it is,
+authorisation is Write-on-root only. Trail and epoch locks are in-process and
+held across network calls. Several `Command::new("git")` sites outside marks
+are not yet hardened. Case-insensitive filesystems are not supported. Solid-OIDC
+helpers do not check `aud` or issuer-to-WebID; the dev bearer token is a
+non-standard format.
 
 ## [0.5.0-alpha.12] — 2026-10-03
 
