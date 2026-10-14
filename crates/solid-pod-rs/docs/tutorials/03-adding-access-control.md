@@ -7,8 +7,7 @@ minutes.
 ## Prerequisites
 
 - Tutorial 2 complete.
-- A running example server (`cargo run --example standalone -p
-  solid-pod-rs`).
+- A running pod server (`cargo run -p solid-pod-rs-server -- --port 8765`).
 
 ## Step 1 — Observe the baseline (no ACL)
 
@@ -175,7 +174,7 @@ for the walk-up algorithm.
 Re-request the container with a trace:
 
 ```bash
-RUST_LOG=solid_pod_rs=debug cargo run --example standalone -p solid-pod-rs
+RUST_LOG=solid_pod_rs=debug cargo run -p solid-pod-rs-server -- --port 8765
 # in another terminal:
 curl -sI http://127.0.0.1:8765/notes/
 ```

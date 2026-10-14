@@ -8,7 +8,7 @@
 //!
 //! Start a pod first in another shell:
 //! ```bash
-//! cargo run --example standalone -p solid-pod-rs
+//! cargo run -p solid-pod-rs-server -- --port 8765
 //! ```
 //!
 //! Then run the client:
