@@ -227,13 +227,9 @@ impl<'a> StoragePaymentStore<'a> {
 }
 
 fn raw_transaction_txid(raw_hex: &str) -> Result<String, PaymentError> {
-    use sha2::{Digest, Sha256};
-    let raw = hex::decode(raw_hex)
-        .map_err(|e| PaymentError::InvalidState(format!("invalid raw transaction: {e}")))?;
-    let first = Sha256::digest(&raw);
-    let mut second = Sha256::digest(first).to_vec();
-    second.reverse();
-    Ok(hex::encode(second))
+    // Decoded, not hashed whole: a taproot spend carries a witness, which the
+    // txid excludes.
+    solid_pod_rs::bitcoin_tx::decode_tx_info(raw_hex).map(|tx| tx.txid)
 }
 
 /// Resolve durable intents left by a lost broadcast response or process
@@ -1864,6 +1860,19 @@ mod intent_recovery_tests {
             store.read_state().await,
             Err(PaymentError::Store(msg)) if msg.contains("genesis")
         ));
+    }
+
+    #[test]
+    fn txid_of_a_witness_transaction_excludes_the_witness() {
+        // version 2, segwit marker/flag, one input, one output, a one-item
+        // witness, locktime 0
+        let raw = format!(
+            "0200000000010111{}0000000000ffffffff0110270000000000000151010 1aa00000000",
+            "11".repeat(31)
+        )
+        .replace(' ', "");
+        let want = solid_pod_rs::bitcoin_tx::decode_tx_info(&raw).unwrap().txid;
+        assert_eq!(raw_transaction_txid(&raw).unwrap(), want);
     }
 
     #[actix_web::test]
