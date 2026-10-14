@@ -377,9 +377,13 @@ async fn spawn_cgi(
     );
     env.insert("GIT_HTTP_EXPORT_ALL".into(), String::new());
     env.insert("GIT_HTTP_RECEIVE_PACK".into(), "true".into());
+    // `core.symlinks=false` (command-line precedence, so repo config cannot
+    // undo it): a pushed mode-120000 tree entry is checked out into the pod
+    // working tree as a plain file, never a symlink the storage layer could
+    // follow to a path the WAC guard does not name.
     env.insert(
         "GIT_CONFIG_PARAMETERS".into(),
-        "'uploadpack.allowTipSHA1InWant=true'".into(),
+        "'uploadpack.allowTipSHA1InWant=true' 'core.symlinks=false'".into(),
     );
     env.insert("PATH_INFO".into(), req.path.clone());
     env.insert("REQUEST_METHOD".into(), req.method.to_uppercase());

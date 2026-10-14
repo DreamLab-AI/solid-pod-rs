@@ -478,3 +478,103 @@ async fn update_instead_applied_on_push_config() {
         "http.receivepack must be true after a write request"
     );
 }
+
+/// Frame a `git-receive-pack` request body: one ref update plus a pack.
+fn receive_pack_body(branch: &str, old: &str, new: &str, pack: &[u8]) -> Vec<u8> {
+    let line = format!("{old} {new} refs/heads/{branch}\0 report-status\n");
+    let mut body = format!("{:04x}{line}0000", line.len() + 4).into_bytes();
+    body.extend_from_slice(pack);
+    body
+}
+
+/// A push may carry a tree entry of mode 120000. With
+/// `receive.denyCurrentBranch=updateInstead` git then writes a real symlink
+/// into the pod's working tree, which the storage layer would later follow
+/// beneath the root and so reach paths the lexical WAC guard does not name.
+/// The service must check such an entry out as a plain file.
+#[tokio::test]
+async fn pushed_symlink_entry_is_not_checked_out_as_symlink() {
+    if !git_backend_available() {
+        eprintln!("skipping: git binary not found");
+        return;
+    }
+    let td = tempfile::TempDir::new().unwrap();
+    let pod = td.path().join("pod");
+    std::fs::create_dir(&pod).unwrap();
+    let old = init_repo_with_commit(&pod);
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(&pod)
+        .output()
+        .unwrap();
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+
+    // Client clone with a symlink commit.
+    let client = td.path().join("client");
+    assert!(Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            pod.to_str().unwrap(),
+            client.to_str().unwrap()
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&client)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    run(&["config", "user.email", "t@example.com"]);
+    run(&["config", "user.name", "T"]);
+    std::os::unix::fs::symlink(".well-known/token", client.join("leak")).unwrap();
+    run(&["add", "leak"]);
+    run(&["commit", "-qm", "symlink"]);
+    let new = String::from_utf8_lossy(&run(&["rev-parse", "HEAD"]))
+        .trim()
+        .to_string();
+    let objs = run(&["rev-list", "--objects", &format!("{old}..{new}")]);
+    let mut pack = Command::new("git")
+        .args(["pack-objects", "--stdout", "-q"])
+        .current_dir(&client)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut pack.stdin.take().unwrap(), &objs).unwrap();
+    let pack = pack.wait_with_output().unwrap().stdout;
+
+    let svc = GitHttpService::new(td.path().to_path_buf()).with_auth(AlwaysAllow);
+    let req = GitRequest {
+        method: "POST".into(),
+        path: "/pod/git-receive-pack".into(),
+        query: String::new(),
+        headers: vec![(
+            "content-type".into(),
+            "application/x-git-receive-pack-request".into(),
+        )],
+        body: Bytes::from(receive_pack_body(&branch, &old, &new, &pack)),
+        host_url: Some("http://localhost".into()),
+    };
+    let resp = svc.handle(req).await.unwrap();
+    let report = String::from_utf8_lossy(&resp.body).into_owned();
+    assert!(
+        report.contains("ok refs/heads/"),
+        "push not accepted: {report}"
+    );
+
+    let meta = std::fs::symlink_metadata(pod.join("leak")).expect("pushed entry checked out");
+    assert!(
+        !meta.file_type().is_symlink(),
+        "pushed mode-120000 entry became a symlink in the pod working tree"
+    );
+}
