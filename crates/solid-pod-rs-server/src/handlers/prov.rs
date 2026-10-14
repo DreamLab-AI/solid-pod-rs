@@ -55,6 +55,11 @@ pub const EPOCH_SIZE_ENV: &str = "JSS_PROV_EPOCH_SIZE";
 /// git commit SHAs awaiting a single anchoring tx).
 const EPOCH_PATH: &str = "/.well-known/prov/epoch.json";
 
+/// Pod-storage path of the batch last anchored, written only when the epoch
+/// reset after that anchor failed: the commits to drop from the pending batch
+/// so they are not anchored (and paid for) a second time.
+const EPOCH_ANCHORED_PATH: &str = "/.well-known/prov/epoch-anchored.json";
+
 /// The configured epoch close threshold (clamped to ≥ 1).
 fn epoch_size() -> usize {
     std::env::var(EPOCH_SIZE_ENV)
@@ -254,6 +259,23 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
     // One read-modify-write of the batch at a time (and one close at a time).
     let _guard = crate::trail_store::lock_path(EPOCH_PATH).await;
     let mut commits = load_epoch_commits(&state.storage).await?;
+    // A batch anchored on an earlier push whose reset was lost: drop it now,
+    // before anything is counted, so it is not anchored a second time.
+    match state.storage.get(EPOCH_ANCHORED_PATH).await {
+        Ok((bytes, _)) => {
+            let done: Vec<String> = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("malformed anchored-epoch marker: {e}"))?;
+            commits.retain(|c| !done.contains(c));
+            save_epoch_commits(&state.storage, &commits).await?;
+            state
+                .storage
+                .delete(EPOCH_ANCHORED_PATH)
+                .await
+                .map_err(|e| format!("clear anchored-epoch marker: {e}"))?;
+        }
+        Err(PodError::NotFound(_)) => {}
+        Err(e) => return Err(format!("read anchored-epoch marker: {e}")),
+    }
     // Idempotency: never double-count the same commit in a batch.
     if !commits.iter().any(|c| c == commit_sha) {
         commits.push(commit_sha.to_string());
@@ -276,8 +298,27 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
         .anchor(ticker, &closed.root, network)
         .await
         .map_err(|e| e.to_string())?;
-    // Reset the on-disk epoch (the batch is now anchored on-chain).
-    save_epoch_commits(&state.storage, &[]).await?;
+    // Reset the on-disk epoch (the batch is now anchored on-chain). If that
+    // fails the batch is still on disk, so record what was anchored: the next
+    // push drops it rather than paying to anchor it again.
+    if let Err(reset) = save_epoch_commits(&state.storage, &[]).await {
+        let marker = serde_json::to_vec(&closed.commits).map_err(|e| e.to_string())?;
+        if let Err(e) = state
+            .storage
+            .put(EPOCH_ANCHORED_PATH, Bytes::from(marker), "application/json")
+            .await
+        {
+            tracing::error!(
+                root = %closed.root,
+                "epoch anchored but neither the reset ({reset}) nor the marker ({e}) was saved; \
+                 the next push will anchor this batch again"
+            );
+            return Err(format!(
+                "epoch anchored but not reset: {reset}; marker: {e}"
+            ));
+        }
+        tracing::warn!(root = %closed.root, "epoch anchored; reset failed ({reset}), marker kept");
+    }
     Ok(Some(closed))
 }
 
@@ -841,6 +882,70 @@ mod tests {
         async fn verify(&self, _: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
             Ok(false)
         }
+    }
+
+    /// An anchorer that counts its calls and, once reached, makes the next
+    /// write of the epoch file fail (the anchor lands, the reset is lost).
+    struct CountingThenFault {
+        calls: std::sync::atomic::AtomicUsize,
+        storage: Arc<FaultStorage>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl BlockAnchorer for CountingThenFault {
+        async fn anchor(
+            &self,
+            ticker: &str,
+            state_hash: &str,
+            network: &str,
+        ) -> Result<BlockTrailAnchor, ProvenanceError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.storage.fail_put(EPOCH_PATH);
+            Ok(BlockTrailAnchor {
+                ticker: ticker.into(),
+                state_hash: state_hash.into(),
+                txid: "ab".repeat(32),
+                vout: 0,
+                address: String::new(),
+                network: network.into(),
+                blockheight: None,
+                state_strings: vec![],
+                pubkey: None,
+            })
+        }
+        async fn verify(&self, _: &BlockTrailAnchor) -> Result<bool, ProvenanceError> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_epoch_reset_does_not_anchor_the_same_batch_twice() {
+        let inner: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+        let full: Vec<String> = (0..DEFAULT_EPOCH_SIZE - 1)
+            .map(|i| format!("c{i}"))
+            .collect();
+        save_epoch_commits(&inner, &full).await.unwrap();
+        let faulty = FaultStorage::new(inner.clone(), false);
+        let state = state_over(faulty.clone());
+        let counting = Arc::new(CountingThenFault {
+            calls: Default::default(),
+            storage: faulty.clone(),
+        });
+        let anchorer: Arc<dyn BlockAnchorer> = counting.clone();
+        let first =
+            epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "last").await;
+        // the storage recovers; another commit arrives
+        faulty.heal();
+        let second =
+            epoch_push_and_maybe_anchor(&state, &anchorer, "prov", "testnet4", "next").await;
+        assert_eq!(
+            counting.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the anchored batch was anchored again"
+        );
+        assert!(first.is_ok_and(|c| c.is_some()), "the batch was anchored");
+        assert!(second.is_ok_and(|c| c.is_none()));
+        assert_eq!(epoch_on_disk(&inner).await, vec!["next"]);
+        assert!(!inner.exists(EPOCH_ANCHORED_PATH).await.unwrap());
     }
 
     #[tokio::test]
