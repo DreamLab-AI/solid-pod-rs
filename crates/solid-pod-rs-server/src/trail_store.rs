@@ -71,6 +71,25 @@ pub fn is_prov_state_path(path: &str) -> bool {
     )
 }
 
+/// Whether `path` is under `/.well-known/webledgers/`: the Web Ledger and the
+/// payment state, replay set, order book and pool documents. They hold every
+/// principal's balance, and a balance written there is spendable; only the
+/// payment handlers, which use `Storage` directly, may change them.
+#[must_use]
+pub fn is_server_state_path(path: &str) -> bool {
+    let Some(canon) = crate::canonical_pod_path(path) else {
+        return true;
+    };
+    let segs = lower_segments(&canon);
+    matches!(
+        segs.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [".well-known", "webledgers", ..]
+    )
+}
+
 fn lower_segments(canon: &str) -> Vec<String> {
     canon
         .split('/')

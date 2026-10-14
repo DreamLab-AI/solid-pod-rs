@@ -695,11 +695,13 @@ fn accept_includes_html(accept: &str) -> bool {
 // use; the lockout-guard call sites below and the enforcement functions
 // both route through it.
 
-/// [`effective_acl_target`] plus the trail-secret rule: a trail file holding an
-/// issuer private key (`trail_store::is_secret_trail_path`) is evaluated as
-/// `acl:Control` on itself, so only the pod's Control holder can read or
-/// overwrite it. An `acl:Read` or `acl:Write` grant, including a public one on
-/// the pod root, is not enough to reach the key over HTTP.
+/// [`effective_acl_target`] plus the server-managed-state rules. A trail file
+/// holding an issuer private key (`trail_store::is_secret_trail_path`), the
+/// `/.well-known/prov/` state, the `/.well-known/webledgers/` payment
+/// documents (a forged ledger entry is spendable) are evaluated as `acl:Control`
+/// on themselves, so only the pod's Control holder can read or overwrite them.
+/// An `acl:Read` or `acl:Write` grant, including a public one on the pod root,
+/// is not enough to reach them over HTTP.
 pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, AccessMode) {
     let (resource, mode) = effective_acl_target(path, mode);
     // Judge the protected-path rules on the canonical spelling, whatever the
@@ -708,7 +710,8 @@ pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, Acces
     match canonical_pod_path(&resource) {
         Some(canon)
             if !trail_store::is_secret_trail_path(&canon)
-                && !trail_store::is_prov_state_path(&canon) =>
+                && !trail_store::is_prov_state_path(&canon)
+                && !trail_store::is_server_state_path(&canon) =>
         {
             (resource, mode)
         }
@@ -5497,6 +5500,12 @@ mod payment_gating_tests {
             c("/.well-known/gitmark/p/blocktrails.json", Read),
             ("/.well-known/gitmark/p/blocktrails.json".into(), Read)
         );
+        assert_eq!(
+            c("/.well-known/webledgers/webledgers.json", Write),
+            ("/.well-known/webledgers/webledgers.json".into(), Control)
+        );
+        assert_eq!(c("/.well-known/%57ebledgers/state.json", Read).1, Control);
+        assert_eq!(c("/.well-known/webledgersx/y", Read).1, Read);
         assert_eq!(c("/pub/x", Read), ("/pub/x".into(), Read));
     }
 
