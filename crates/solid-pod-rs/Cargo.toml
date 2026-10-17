@@ -96,7 +96,7 @@ rand = { version = "0.8", optional = true }
 # Sprint 11 (row 120-124): multi-format config loader. YAML + TOML are
 # optional so consumers that only care about JSON aren't dragged in.
 # Gated behind `config-loader`.
-serde_yaml = { version = "0.9", optional = true }
+serde_norway = { version = "0.9", optional = true }
 toml = { version = "0.8", optional = true }
 
 [features]
@@ -184,7 +184,7 @@ dpop-symmetric-test = []
 # Sprint 11 (row 120-124): extends with auto-detected YAML/TOML file
 # loading, env overlay, and CLI overlay. YAML/TOML deps are pulled in
 # only when this feature is enabled.
-config-loader = ["jss-v04", "dep:serde_yaml", "dep:toml"]
+config-loader = ["jss-v04", "dep:serde_norway", "dep:toml"]
 
 # Sprint 6 C: RFC 9421 HTTP Message Signatures on outgoing webhook
 # deliveries, Retry-After handling, circuit breaker. Consumers opt in.

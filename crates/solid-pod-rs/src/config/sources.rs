@@ -117,7 +117,7 @@ fn load_file(path: &Path) -> Result<Value, PodError> {
 
     let v: Value = match ext.as_deref() {
         #[cfg(feature = "config-loader")]
-        Some("yaml") | Some("yml") => serde_yaml::from_str(&content).map_err(|e| {
+        Some("yaml") | Some("yml") => serde_norway::from_str(&content).map_err(|e| {
             PodError::Backend(format!("config file {path:?} is not valid YAML: {e}"))
         })?,
 
