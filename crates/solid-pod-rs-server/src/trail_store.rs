@@ -97,7 +97,8 @@ fn lower_segments(canon: &str) -> Vec<String> {
         // Full Unicode lower-casing, not ASCII-only: on a case-insensitive
         // filesystem `.well-known/TOKEN` and `.well-known/to\u{212A}en`
         // (Kelvin sign) reach the same directory as `token`.
-        .map(|s| s.to_lowercase())
+        // `fold_case` adds the full-folding cases lower-casing misses.
+        .map(solid_pod_rs::security::dotfile::fold_case)
         .collect()
 }
 

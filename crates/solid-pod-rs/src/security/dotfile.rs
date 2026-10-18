@@ -129,7 +129,7 @@ impl DotfileAllowlist {
                     // container listings AND poison the Content-Type served
                     // for a sibling (a stored-XSS vector). These are never
                     // directly addressable over HTTP.
-                    if s.to_lowercase().ends_with(".meta.json") || is_non_canonical_guarded(s) {
+                    if fold_case(s).ends_with(".meta.json") || is_non_canonical_guarded(s) {
                         self.record_deny();
                         return false;
                     }
@@ -244,7 +244,7 @@ pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
         // it does not start with `.`, so without this it would slip the
         // dotfile rule below and let an HTTP writer hide or content-type-
         // poison a sibling resource. See `DotfileAllowlist::is_allowed`.
-        if segment.to_lowercase().ends_with(".meta.json") || is_non_canonical_guarded(segment) {
+        if fold_case(segment).ends_with(".meta.json") || is_non_canonical_guarded(segment) {
             return Err(DotfilePathError::NotAllowed {
                 segment: segment.to_string(),
                 path: path.to_string(),
@@ -273,11 +273,11 @@ pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
 /// On case-insensitive filesystems (default macOS/APFS, Windows/NTFS)
 /// `doc.ACL` and `doc.acl` are the same file, so a guard keyed on the
 /// canonical spelling would be bypassed by a variant one. Folding uses
-/// [`str::to_lowercase`], which also maps the Kelvin sign U+212A to `k`.
+/// [`fold_case`].
 /// Canonical spellings are unaffected: `doc.acl` is still an ordinary
 /// sidecar name.
 fn is_non_canonical_guarded(segment: &str) -> bool {
-    let folded = segment.to_lowercase();
+    let folded = fold_case(segment);
     if folded == segment {
         return false;
     }
@@ -285,6 +285,40 @@ fn is_non_canonical_guarded(segment: &str) -> bool {
         || folded.ends_with(".meta")
         || folded.ends_with(".meta.json")
         || STATIC_ALLOWED_DOTFILES.contains(&folded.as_str())
+}
+
+/// Fold `s` for comparison against a guarded name, the way a case-insensitive
+/// filesystem would.
+///
+/// [`str::to_lowercase`] is Unicode *simple* lower-casing, which already maps
+/// the Kelvin sign U+212A to `k`. Full case folding also maps a few characters
+/// to ASCII that lower-casing leaves alone: the long s U+017F to `s`, the sharp
+/// s to `ss`, and the Latin ligatures (U+FB00 to U+FB06) to their letters. A
+/// guard built on lower-casing alone let `x.meta.j\u{17F}on` through.
+///
+/// ```
+/// use solid_pod_rs::security::dotfile::fold_case;
+/// assert_eq!(fold_case("X.META.J\u{17F}ON"), "x.meta.json");
+/// assert_eq!(fold_case("to\u{212A}en"), "token");
+/// assert_eq!(fold_case("\u{FB01}le"), "file");
+/// ```
+#[must_use]
+pub fn fold_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{017F}' => out.push('s'),
+            '\u{00DF}' | '\u{1E9E}' => out.push_str("ss"),
+            '\u{FB00}' => out.push_str("ff"),
+            '\u{FB01}' => out.push_str("fi"),
+            '\u{FB02}' => out.push_str("fl"),
+            '\u{FB03}' => out.push_str("ffi"),
+            '\u{FB04}' => out.push_str("ffl"),
+            '\u{FB05}' | '\u{FB06}' => out.push_str("st"),
+            c => out.extend(c.to_lowercase()),
+        }
+    }
+    out
 }
 
 fn parse_csv(raw: &str) -> Vec<String> {
@@ -332,6 +366,13 @@ mod tests {
         }
         // Kelvin sign folds to ASCII `k`; make sure the fold is Unicode-aware.
         assert_eq!("\u{212A}".to_lowercase(), "k");
+        // Lower-casing leaves the long s alone; folding must not.
+        assert!(is_path_allowed("/x.meta.j\u{17F}on").is_err());
+        assert!(
+            is_path_allowed("/doc.\u{17F}cl").is_ok(),
+            "not a guarded name"
+        );
+        assert!(is_path_allowed("/doc.ACL").is_err());
         for ok in ["/p/doc.acl", "/p/doc.meta", "/p/Readme.TXT", "/p/Photo.JPG"] {
             assert!(al.is_allowed(&PathBuf::from(ok)), "{ok}");
             assert!(is_path_allowed(ok).is_ok(), "{ok}");
