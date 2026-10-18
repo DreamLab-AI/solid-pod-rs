@@ -224,7 +224,7 @@ Each subsystem below is a one-paragraph summary; the linked docs carry the row-l
 
 **Storage.** A pluggable `Storage` trait backs everything. The shipped implementations are `fs-backend` (POSIX) and `memory-backend` (tests/demos). Unsupported backend names, including the removed dependency-only S3 scaffold, fail configuration validation. The filesystem backend uses capability-confined paths and atomic replacement writes. Per-pod quota uses `.quota.json` sidecars with process-wide atomic reservations.
 
-**Security controls.** The workspace includes `..`/null-byte path rejection, SSRF filtering with IP pinning, ACL size caps, a dotfile allowlist, a NIP-98 token-size limit, and WAC-gated git smart-HTTP. These controls do not make the current checkout production-safe: the dated audit records critical IdP, MCP, and payment-integrity findings. See [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md), the [2026-08-19 audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md), and [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md).
+**Security controls.** The workspace includes `..`/null-byte path rejection, SSRF filtering with IP pinning, ACL size caps, a dotfile allowlist, a NIP-98 token-size limit, and WAC-gated git smart-HTTP. The dated audit's findings are remediated (see the changelog for `0.5.0-alpha.13`). Supported filesystems: case-sensitive POSIX filesystems (ext4, xfs, btrfs, ZFS). Case-insensitive filesystems (default macOS/APFS, Windows/NTFS) are not a supported deployment target; the dotfile and well-known guards refuse case-variant spellings of guarded names, but nothing else is tested there. See [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md), the [2026-08-19 audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md), and [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md).
 
 **Git forge.** `solid-pod-rs-forge` is a clean-room Rust forge composed on the pod's own primitives (git smart-HTTP, provenance, NIP-98, did:nostr, WAC), behind a default-off `forge` feature. See Status below for exactly what is shipped versus scaffolded.
 
@@ -255,14 +255,15 @@ Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
   and `RUSTSEC-2023-0071` (rsa 0.9 Marvin, used for public-key verification
   only, never private-key decryption). Rationale and review dates live in
   [`deny.toml`](deny.toml) and [`.cargo/audit.toml`](.cargo/audit.toml).
-  **The code audit findings are still open**: reproduced critical findings
-  include filesystem symlink root escape, anonymous MCP reads/WAC sidecar
-  bypass, forged IdP identity, and non-atomic payment state. Filesystem writes
-  also violate the advertised atomic storage contract. Keep MCP disabled; do
-  not expose the optional IdP router or carry value through payment routes
-  until the findings are fixed.
-  See the [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
-  for evidence, affected optional surfaces, and remediation priority.
+  **The code audit findings are fixed.** The symlink root escape, anonymous
+  MCP reads and WAC sidecar bypass, forged IdP identity, non-atomic payment
+  state and non-atomic filesystem writes are all marked fixed in the
+  [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
+  remediation table, and the MCP, payment and git-push follow-ups from the
+  ER-22 review series ship in `0.5.0-alpha.13`: see the
+  [changelog](CHANGELOG.md#050-alpha13--2026-10-14) (every release from
+  `0.4.0-alpha.3` through `0.5.0-alpha.12` of `solid-pod-rs-server` is yanked).
+  Known gaps are listed under that entry.
 
 ---
 

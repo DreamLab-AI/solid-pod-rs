@@ -42,7 +42,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 use tokio::time::Duration;
 
 use crate::service::{git_cors_header_pairs, GitResponse};
@@ -264,7 +263,7 @@ impl Repo<'_> {
         stdin: Option<Bytes>,
     ) -> Result<(bool, Vec<u8>), PushRefusal> {
         let fail = |_| PushRefusal::new("push inspection failed");
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::hardened::hardened_git_async();
         cmd.args(args)
             .env_clear()
             .env("GIT_DIR", self.git_dir)

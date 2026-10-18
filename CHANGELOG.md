@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **One hardened `git` constructor** (`solid_pod_rs_git::hardened_git`,
+  `hardened_git_async`, `hardened_cgi_env`) now backs every production `git`
+  spawn in the git, forge and server crates: no repo-local hooks, no
+  fsmonitor, no system/global config, no terminal prompt. The `git-http-backend`
+  CGI gets the same settings through `GIT_CONFIG_COUNT`.
+- **Solid-OIDC `aud` is checked.** `verify_access_token` requires `aud` to be
+  (or contain) `solid`; `verify_access_token_with_policy` takes an explicit
+  `AccessTokenPolicy`. A `kid` resolving to a JWK of the wrong key family for
+  the header `alg` is rejected. New `WebIdProfileSource` and
+  `verify_webid_issuer_binding` check that the WebID profile declares the
+  token's `iss` as `solid:oidcIssuer`; the caller supplies the profile fetch.
+- **Dev bearer behind a feature.** `verify_dev_bearer` exists only with the
+  `dev-bearer` feature (off by default) and now requires
+  `aud = solid-pod-rs-dev-bearer` and a lifetime of at most 24 h.
+- **Case-insensitive filesystems.** The dotfile guard refuses `doc.ACL`,
+  `X.META.JSON` and similar case variants of guarded names; the well-known
+  trail guard folds with full Unicode lower-casing (Kelvin sign included).
+
+### Changed
+
+- `verify_access_token` rejects tokens whose `aud` does not name `solid`
+  (previously any `aud` verified). Deployments with another audience use
+  `verify_access_token_with_policy`.
+- Dev-bearer tokens need `aud` and `exp - iat <= 24 h`; build with
+  `--features dev-bearer` to use them.
+
 ## [0.5.0-alpha.13] — 2026-10-14
 
 ### Security

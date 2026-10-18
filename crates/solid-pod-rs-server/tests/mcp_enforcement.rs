@@ -1,6 +1,7 @@
 //! MCP resource tools share the REST enforcement path: payment conditions are
 //! debited on read, the pod quota is reserved on write, and a missing target
 //! does not borrow its parent container's grant.
+#![cfg(feature = "dev-bearer")]
 
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ const WRITER: &str = "https://writer.example/profile/card#me";
 fn bearer(web_id: &str) -> String {
     std::env::set_var("TOKEN_SECRET", SECRET);
     let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(json!({"webId": web_id, "iat": 1, "exp": u64::MAX / 2}).to_string());
+        .encode(json!({"webId": web_id, "iat": dev_now() - 10, "exp": dev_now() + 3600, "aud": solid_pod_rs_server::DEV_BEARER_AUDIENCE}).to_string());
     let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
     mac.update(data.as_bytes());
     let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -229,4 +230,11 @@ async fn mcp_write_to_missing_target_does_not_borrow_the_parent_grant() {
     )
     .await;
     assert!(!err && out.contains("wrote"), "{out}");
+}
+
+fn dev_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

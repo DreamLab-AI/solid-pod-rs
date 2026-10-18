@@ -22,7 +22,6 @@ use std::path::Path;
 use std::process::Stdio;
 
 use async_trait::async_trait;
-use tokio::process::Command;
 
 use solid_pod_rs::error::PodError;
 use solid_pod_rs::provision::GitInitHook;
@@ -100,7 +99,7 @@ impl GitAutoInit {
     /// reinitialises in place). Mirrors JSS `tryAutoInitRepo` (#466/#469/#472).
     pub async fn init_repo_at(&self, fs_pod_root: &Path) -> Result<(), GitError> {
         // ── Step 1: git init -b <branch> <path> ────────────────────────────
-        let init_out = Command::new("git")
+        let init_out = crate::hardened::hardened_git_async()
             .arg("init")
             .arg("-b")
             .arg(&self.default_branch)
@@ -132,7 +131,7 @@ impl GitAutoInit {
         // Allows HTTP push to a non-bare repo (the checked-out branch gets
         // updated in-place). Matches JSS lines 147-149. Best-effort —
         // swallow errors so the pod is not rolled back.
-        let cfg_out = Command::new("git")
+        let cfg_out = crate::hardened::hardened_git_async()
             .arg("-C")
             .arg(fs_pod_root)
             .arg("config")

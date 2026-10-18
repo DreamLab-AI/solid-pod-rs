@@ -193,7 +193,7 @@ fn install_into(
 ) -> anyhow::Result<()> {
     println!("→ {} → {dest_url}", spec.source_url);
 
-    let mut clone = Command::new("git");
+    let mut clone = crate::hardened_git::hardened_git();
     clone.arg("clone").arg("--quiet");
     if let Some(git_ref) = &spec.git_ref {
         clone.arg("--branch").arg(git_ref);
@@ -203,7 +203,7 @@ fn install_into(
 
     let header = build_auth_header(dest_url, args)?;
 
-    let mut push = Command::new("git");
+    let mut push = crate::hardened_git::hardened_git();
     push.arg("-C").arg(workdir);
     push.arg("-c")
         .arg(format!("http.extraHeader=Authorization: {header}"));

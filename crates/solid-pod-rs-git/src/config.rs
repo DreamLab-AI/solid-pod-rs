@@ -14,8 +14,6 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use tokio::process::Command;
-
 use crate::error::GitError;
 
 /// Information about the git directory layout for a given repo path.
@@ -98,7 +96,7 @@ pub async fn run_git_config(
     key: &str,
     value: &str,
 ) -> Result<(), GitError> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::hardened::hardened_git_async();
     cmd.arg("config")
         .arg("--local")
         .arg(key)
@@ -136,6 +134,7 @@ pub async fn run_git_config(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use tokio::process::Command;
 
     #[tokio::test]
     async fn find_git_dir_empty_returns_none() {

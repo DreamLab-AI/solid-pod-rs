@@ -13,7 +13,6 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde::Serialize;
-use tokio::process::Command;
 
 use crate::error::ForgeError;
 
@@ -48,7 +47,7 @@ pub struct TreeEntry {
 /// Run `git` with a fixed, hardened environment and return raw stdout
 /// bytes. `BackendFailed`-style errors carry stderr for diagnostics.
 async fn git_bytes(git_dir: &Path, args: &[&str]) -> Result<Vec<u8>, ForgeError> {
-    let output = Command::new("git")
+    let output = solid_pod_rs_git::hardened_git_async()
         .args(args)
         .current_dir(git_dir)
         // Defence-in-depth: no system/global config, no HOME-based include,

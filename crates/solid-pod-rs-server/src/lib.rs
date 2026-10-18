@@ -110,6 +110,8 @@
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 
+pub(crate) mod hardened_git;
+
 /// HTTP request handlers grouped by domain. Currently hosts the payment
 /// routing layer ([`handlers::pay`]) which wires the orphaned
 /// `solid-pod-rs` order-book / AMM / Web-Ledger logic onto actix routes
@@ -413,7 +415,7 @@ mod live_reload_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dev-bearer"))]
 mod dev_bearer_tests {
     use super::*;
     use base64::Engine as _;
@@ -423,11 +425,19 @@ mod dev_bearer_tests {
 
     static ENV: Mutex<()> = Mutex::new(());
 
-    fn token(exp: u64) -> String {
-        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            serde_json::json!({"webId":"https://alice.example/profile/card#me","iat":1,"exp":exp})
-                .to_string(),
-        );
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn token_with(iat: u64, exp: u64, aud: Option<&str>) -> String {
+        let mut claims = serde_json::json!({"webId":"https://alice.example/profile/card#me","iat":iat,"exp":exp});
+        if let Some(a) = aud {
+            claims["aud"] = serde_json::json!(a);
+        }
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
         let mut mac = Hmac::<Sha256>::new_from_slice(b"01234567890123456789012345678901").unwrap();
         mac.update(data.as_bytes());
         let sig =
@@ -435,16 +445,49 @@ mod dev_bearer_tests {
         format!("{data}.{sig}")
     }
 
+    fn token(exp: u64) -> String {
+        token_with(now().saturating_sub(10), exp, Some(DEV_BEARER_AUDIENCE))
+    }
+
     #[test]
     fn simple_bearer_verifies_signature_and_expiry() {
         let _guard = ENV.lock().unwrap();
         std::env::set_var("TOKEN_SECRET", "01234567890123456789012345678901");
         assert_eq!(
-            verify_dev_bearer(&token(u64::MAX)).as_deref(),
+            verify_dev_bearer(&token(now() + 3600)).as_deref(),
             Some("https://alice.example/profile/card#me")
         );
-        assert!(verify_dev_bearer(&(token(u64::MAX) + "x")).is_none());
+        assert!(verify_dev_bearer(&(token(now() + 3600) + "x")).is_none());
         assert!(verify_dev_bearer(&token(2)).is_none());
+        std::env::remove_var("TOKEN_SECRET");
+    }
+
+    #[test]
+    fn dev_bearer_enforces_audience_and_max_lifetime() {
+        let _guard = ENV.lock().unwrap();
+        std::env::set_var("TOKEN_SECRET", "01234567890123456789012345678901");
+        let n = now();
+        // Missing and wrong audience are refused.
+        assert!(verify_dev_bearer(&token_with(n, n + 60, None)).is_none());
+        assert!(verify_dev_bearer(&token_with(n, n + 60, Some("solid"))).is_none());
+        // Exactly 24 h is the ceiling; one second more is refused.
+        assert!(verify_dev_bearer(&token_with(
+            n,
+            n + DEV_BEARER_MAX_LIFETIME_SECS,
+            Some(DEV_BEARER_AUDIENCE)
+        ))
+        .is_some());
+        assert!(verify_dev_bearer(&token_with(
+            n,
+            n + DEV_BEARER_MAX_LIFETIME_SECS + 1,
+            Some(DEV_BEARER_AUDIENCE)
+        ))
+        .is_none());
+        // A back-dated iat cannot stretch the lifetime beyond 24 h from now.
+        assert!(verify_dev_bearer(&token_with(1, n + 3600, Some(DEV_BEARER_AUDIENCE))).is_none());
+        assert!(
+            verify_dev_bearer(&token_with(1, u64::MAX / 2, Some(DEV_BEARER_AUDIENCE))).is_none()
+        );
         std::env::remove_var("TOKEN_SECRET");
     }
 }
@@ -522,8 +565,13 @@ pub(crate) async fn extract_pubkey_with_body(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())?;
-    if let Some(token) = header_val.strip_prefix("Bearer ") {
-        return verify_dev_bearer(token);
+    if let Some(_token) = header_val.strip_prefix("Bearer ") {
+        // The home-made HMAC bearer exists only in `dev-bearer` builds.
+        // Production builds treat every `Bearer` header as unauthenticated.
+        #[cfg(feature = "dev-bearer")]
+        return verify_dev_bearer(_token);
+        #[cfg(not(feature = "dev-bearer"))]
+        return None;
     }
     // Reconstruct the request URL the NIP-98 event was signed over. The
     // scheme must reflect the externally-visible scheme (honouring
@@ -574,6 +622,23 @@ pub(crate) fn agent_uri(pubkey: Option<&String>) -> Option<String> {
     })
 }
 
+/// Audience a development bearer token must carry in its `aud` claim.
+#[cfg(feature = "dev-bearer")]
+pub const DEV_BEARER_AUDIENCE: &str = "solid-pod-rs-dev-bearer";
+
+/// Hard ceiling on a development bearer token's lifetime (24 h), applied to
+/// both `exp - iat` and `exp - now`.
+#[cfg(feature = "dev-bearer")]
+pub const DEV_BEARER_MAX_LIFETIME_SECS: u64 = 24 * 60 * 60;
+
+/// Verify the development-only HMAC bearer (`<b64url claims>.<b64url mac>`,
+/// HMAC-SHA256 keyed by `TOKEN_SECRET`, ≥ 32 bytes).
+///
+/// Compiled only with the `dev-bearer` cargo feature (off by default). Even
+/// then the token must carry `aud == DEV_BEARER_AUDIENCE` and live at most
+/// 24 h. There is no replay guard: it is a development convenience, not an
+/// authentication scheme for production.
+#[cfg(feature = "dev-bearer")]
 fn verify_dev_bearer(token: &str) -> Option<String> {
     use base64::Engine as _;
     use hmac::{Hmac, Mac};
@@ -601,6 +666,8 @@ fn verify_dev_bearer(token: &str) -> Option<String> {
         web_id: String,
         iat: u64,
         exp: u64,
+        #[serde(default)]
+        aud: Option<String>,
     }
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(data)
@@ -610,7 +677,15 @@ fn verify_dev_bearer(token: &str) -> Option<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
+    if claims.aud.as_deref() != Some(DEV_BEARER_AUDIENCE) {
+        return None;
+    }
     if claims.exp < now || claims.iat > now.saturating_add(60) || claims.exp <= claims.iat {
+        return None;
+    }
+    if claims.exp - claims.iat > DEV_BEARER_MAX_LIFETIME_SECS
+        || claims.exp - now > DEV_BEARER_MAX_LIFETIME_SECS
+    {
         return None;
     }
     let url = url::Url::parse(&claims.web_id).ok()?;
@@ -4271,11 +4346,9 @@ async fn handle_admin_provision(
     // --- Git init (feature-gated) ----------------------------------------
     #[cfg(feature = "git")]
     {
-        use tokio::process::Command;
-
         // Only init if .git does not yet exist (idempotent).
         if !pod_dir.join(".git").exists() {
-            let init_out = Command::new("git")
+            let init_out = crate::hardened_git::hardened_git_async()
                 .args(["init", "-b", "main", pod_dir.to_str().unwrap_or(".")])
                 .output()
                 .await;
@@ -4293,7 +4366,7 @@ async fn handle_admin_provision(
 
             // Configure receive.denyCurrentBranch=updateInstead so the forum
             // client can push directly into the working tree.
-            let cfg_out = Command::new("git")
+            let cfg_out = crate::hardened_git::hardened_git_async()
                 .args([
                     "-C",
                     pod_dir.to_str().unwrap_or("."),

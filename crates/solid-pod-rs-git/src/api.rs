@@ -10,7 +10,6 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 
 use crate::error::GitError;
 
@@ -114,7 +113,7 @@ pub struct CommitResult {
 /// Run a git command and collect stdout. Returns `GitError::BackendFailed`
 /// when the exit code is non-zero.
 async fn git_run(args: &[&str], repo: &Path) -> Result<String, GitError> {
-    let output = Command::new("git")
+    let output = crate::hardened::hardened_git_async()
         .args(args)
         .current_dir(repo)
         .output()
@@ -140,7 +139,7 @@ async fn git_run(args: &[&str], repo: &Path) -> Result<String, GitError> {
 /// Same as `git_run` but tolerates a non-zero exit code, returning the
 /// stdout anyway (some git commands like `reset HEAD` exit 1 on early commits).
 async fn git_run_tolerant(args: &[&str], repo: &Path) -> Result<String, GitError> {
-    let output = Command::new("git")
+    let output = crate::hardened::hardened_git_async()
         .args(args)
         .current_dir(repo)
         .output()

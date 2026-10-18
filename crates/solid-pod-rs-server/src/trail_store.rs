@@ -94,7 +94,10 @@ fn lower_segments(canon: &str) -> Vec<String> {
     canon
         .split('/')
         .filter(|s| !s.is_empty())
-        .map(str::to_ascii_lowercase)
+        // Full Unicode lower-casing, not ASCII-only: on a case-insensitive
+        // filesystem `.well-known/TOKEN` and `.well-known/to\u{212A}en`
+        // (Kelvin sign) reach the same directory as `token`.
+        .map(|s| s.to_lowercase())
         .collect()
 }
 
@@ -476,6 +479,9 @@ mod tests {
             ".well-known//token/x.json",
             "/.well-known/token/blocktrails.json",
             "/.WELL-KNOWN/gitmark/prov/intent.json",
+            "/.well-known/TOKEN/x.json",
+            "/.well-known/to\u{212A}en/x.json",
+            "/.well-known/gitmar\u{212A}/prov/intent.json",
             "/.well-known/token/",
         ] {
             assert!(is_secret_trail_path(p), "{p}");

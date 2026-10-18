@@ -19,8 +19,8 @@
 //!   set, absolute endpoint URLs, and the advertised algorithm lists.
 //! - **B. Issuer validation** — exact-match semantics, including the
 //!   trailing-slash, case and prefix/suffix near-misses.
-//! - **C. Audience** — the crate does *not* validate `aud`
-//!   (`validate_aud = false`); `aud` is nevertheless a *required*
+//! - **C. Audience** — `aud` must equal (or contain) the policy's
+//!   expected audience (default `solid`); `aud` is also a *required*
 //!   member of `SolidOidcClaims`, so a token omitting it fails to
 //!   deserialise. Both halves are pinned here.
 //! - **D. Unsupported identity shapes** — one assertion per refused
@@ -428,14 +428,11 @@ fn b3_discovery_normalised_issuer_round_trips_into_the_verifier() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn c1_audience_is_not_validated() {
-    // `verify_access_token` sets `validation.validate_aud = false`
-    // ("Solid-OIDC allows arbitrary aud"). No expected-audience
-    // parameter exists on the API, so ANY `aud` value verifies. This
-    // is documented as a known gap in the matrix's verifier table, not
-    // as a feature.
-    let audiences = [
-        json!("solid"),
+fn c1_audience_must_name_solid() {
+    // `aud` is checked against the policy's expected audience (default
+    // `solid`): a string equal to it, or an array containing it.
+    let accepted = [json!("solid"), json!(["https://a.example", "solid"])];
+    let refused = [
         json!("https://some.other.pod.example"),
         json!(["https://a.example", "https://b.example"]),
         json!([]),
@@ -443,13 +440,20 @@ fn c1_audience_is_not_validated() {
         json!(12345),
         json!(null),
     ];
-    for (i, aud) in audiences.iter().enumerate() {
+    for (i, aud) in accepted.iter().enumerate() {
         let mut claims = base_claims("JKT-C1", NOW + 3600);
         claims["aud"] = aud.clone();
         let token = mint_hs256(&claims);
         let verified = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-C1", NOW)
             .unwrap_or_else(|e| panic!("aud case {i} ({aud}) should verify, got: {e}"));
         assert_eq!(verified.webid, WEBID);
+    }
+    for (i, aud) in refused.iter().enumerate() {
+        let mut claims = base_claims("JKT-C1", NOW + 3600);
+        claims["aud"] = aud.clone();
+        let token = mint_hs256(&claims);
+        verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-C1", NOW)
+            .expect_err(&format!("aud case {i} ({aud}) must be refused"));
     }
 }
 

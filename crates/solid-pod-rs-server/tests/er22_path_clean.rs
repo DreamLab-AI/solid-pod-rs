@@ -2,6 +2,7 @@
 //! `/.well-known/` path (missing leading slash, empty segments, `.`
 //! segments, percent-encoding) must be authorised and served as the one
 //! canonical path, over MCP, COPY and plain HTTP, on both storage backends.
+#![cfg(feature = "dev-bearer")]
 
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ const SPELLINGS: &[&str] = &[
 fn bearer(web_id: &str) -> String {
     std::env::set_var("TOKEN_SECRET", SECRET);
     let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(json!({"webId": web_id, "iat": 1, "exp": u64::MAX / 2}).to_string());
+        .encode(json!({"webId": web_id, "iat": dev_now() - 10, "exp": dev_now() + 3600, "aud": solid_pod_rs_server::DEV_BEARER_AUDIENCE}).to_string());
     let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
     mac.update(data.as_bytes());
     let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -436,4 +437,11 @@ async fn percent_encoded_names_are_addressed_by_their_decoded_key() {
     )
     .await;
     assert!(c.is_error, "literal %-named file must not be reachable");
+}
+
+fn dev_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

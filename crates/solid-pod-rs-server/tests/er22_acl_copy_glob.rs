@@ -3,6 +3,7 @@
 //!
 //! Each test drives the full `build_app` stack with a development bearer
 //! token (`TOKEN_SECRET`), so the WAC gate runs exactly as in production.
+#![cfg(feature = "dev-bearer")]
 
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ const TRAIL: &str = r#"{"ticker":"x","privkey":"deadbeefdeadbeefdeadbeefdeadbeef
 fn bearer(web_id: &str) -> String {
     std::env::set_var("TOKEN_SECRET", SECRET);
     let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::json!({"webId": web_id, "iat": 1, "exp": u64::MAX / 2}).to_string());
+        .encode(serde_json::json!({"webId": web_id, "iat": dev_now() - 10, "exp": dev_now() + 3600, "aud": solid_pod_rs_server::DEV_BEARER_AUDIENCE}).to_string());
     let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
     mac.update(data.as_bytes());
     let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -522,4 +523,11 @@ async fn mcp_read_resource_denies_trail_secret_under_public_read_root() {
     let resp = test::call_service(&app, req).await;
     let out = String::from_utf8_lossy(&test::read_body(resp).await).into_owned();
     assert!(!out.contains("deadbeef"), "{out}");
+}
+
+fn dev_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

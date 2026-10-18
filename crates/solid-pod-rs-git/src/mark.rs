@@ -30,7 +30,6 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use solid_pod_rs::provenance::{GitMark, GitMarker, ProvenanceError};
-use tokio::process::Command;
 
 /// Branch the auto-init pins (`init.rs` runs `git init -b main`). Every mark
 /// records this as its branch; surfacing it keeps the [`GitMark`] self-describing
@@ -79,21 +78,9 @@ async fn git(repo: &Path, args: &[&str]) -> Result<String, ProvenanceError> {
     // The repo lives in the pod's data tree, so its own `.git/config` is not
     // trusted: no system/global config, and the repo-local settings that run
     // programs (fsmonitor, hooks, ssh) are overridden on every invocation.
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.sshCommand=false",
-            "-c",
-            "commit.gpgSign=false",
-        ])
+    let output = crate::hardened::hardened_git_async()
         .args(args)
         .current_dir(repo)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .await
         .map_err(|e| {

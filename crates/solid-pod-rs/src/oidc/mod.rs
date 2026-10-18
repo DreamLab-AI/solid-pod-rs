@@ -745,6 +745,102 @@ pub fn verify_access_token(
     dpop_jkt: &str,
     now: u64,
 ) -> Result<AccessTokenVerified, PodError> {
+    verify_access_token_with_policy(
+        token,
+        keyset,
+        expected_issuer,
+        dpop_jkt,
+        now,
+        &AccessTokenPolicy::default(),
+    )
+}
+
+/// Audience every Solid-OIDC access token is expected to carry.
+pub const SOLID_OIDC_AUDIENCE: &str = "solid";
+
+/// Per-deployment access-token acceptance policy.
+///
+/// The default requires `aud` to be (or, for an array, to contain)
+/// [`SOLID_OIDC_AUDIENCE`]. Deployments whose IdP mints a different
+/// audience must say so explicitly via [`AccessTokenPolicy::new`];
+/// there is deliberately no "accept anything" setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessTokenPolicy {
+    /// The audience value the token's `aud` claim must match.
+    pub expected_audience: String,
+}
+
+impl AccessTokenPolicy {
+    /// Policy that requires `expected_audience` in the token's `aud`.
+    #[must_use]
+    pub fn new(expected_audience: impl Into<String>) -> Self {
+        Self {
+            expected_audience: expected_audience.into(),
+        }
+    }
+}
+
+impl Default for AccessTokenPolicy {
+    fn default() -> Self {
+        Self::new(SOLID_OIDC_AUDIENCE)
+    }
+}
+
+/// `true` when `aud` (a JSON string or array of strings) names `expected`.
+fn audience_matches(aud: &serde_json::Value, expected: &str) -> bool {
+    match aud {
+        serde_json::Value::String(s) => s == expected,
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s == expected)),
+        _ => false,
+    }
+}
+
+/// `true` when the JWK's key family (and, if declared, its `alg`) is
+/// usable for the JOSE algorithm `alg` named in the token header.
+fn jwk_matches_alg(jwk: &jsonwebtoken::jwk::Jwk, alg: Algorithm) -> bool {
+    use jsonwebtoken::jwk::{AlgorithmParameters, EllipticCurve, OctetKeyPairType};
+    let family_ok = match (&jwk.algorithm, alg) {
+        (AlgorithmParameters::RSA(_), Algorithm::RS256) => true,
+        (AlgorithmParameters::EllipticCurve(ec), Algorithm::ES256) => {
+            ec.curve == EllipticCurve::P256
+        }
+        (AlgorithmParameters::OctetKeyPair(okp), Algorithm::EdDSA) => {
+            okp.key_type == OctetKeyPairType::OctetKeyPair
+        }
+        _ => false,
+    };
+    if !family_ok {
+        return false;
+    }
+    match jwk.common.key_algorithm {
+        None => true,
+        Some(declared) => declared.to_string().parse::<Algorithm>().ok() == Some(alg),
+    }
+}
+
+/// [`verify_access_token`] with an explicit [`AccessTokenPolicy`].
+///
+/// In addition to the invariants documented on [`verify_access_token`]:
+///
+/// * `aud` must match `policy.expected_audience` (string or array member);
+/// * a JWK selected by `kid` must belong to the key family of the header
+///   `alg` (RSA↔RS256, EC P-256↔ES256, OKP↔EdDSA) and, if it declares an
+///   `alg`, that must equal the header `alg`. A mismatch is rejected rather
+///   than handed to the signature primitive.
+///
+/// **Not checked here:** that the `webid` claim's profile lists `iss` as an
+/// `solid:oidcIssuer`. That needs a profile fetch; use
+/// [`verify_webid_issuer_binding`] after this call.
+pub fn verify_access_token_with_policy(
+    token: &str,
+    keyset: &TokenVerifyKey,
+    expected_issuer: &str,
+    dpop_jkt: &str,
+    now: u64,
+    policy: &AccessTokenPolicy,
+) -> Result<AccessTokenVerified, PodError> {
     let header = decode_header(token)
         .map_err(|e| PodError::Nip98(format!("access token header decode failed: {e}")))?;
     let alg = header.alg;
@@ -766,20 +862,22 @@ pub fn verify_access_token(
             // Prefer exact `kid` match; fall back to the first JWK
             // that advertises the same algorithm family.
             let jwk = if let Some(kid) = header.kid.as_deref() {
-                set.find(kid).ok_or_else(|| {
+                let jwk = set.find(kid).ok_or_else(|| {
                     PodError::Nip98(format!(
                         "access token kid '{kid}' not present in configured JwkSet"
                     ))
-                })?
+                })?;
+                if !jwk_matches_alg(jwk, alg) {
+                    return Err(PodError::Nip98(format!(
+                        "access token kid '{kid}' resolves to a key that is not \
+                        valid for alg {alg:?}"
+                    )));
+                }
+                jwk
             } else {
                 set.keys
                     .iter()
-                    .find(|j| {
-                        j.common
-                            .key_algorithm
-                            .and_then(|k| k.to_string().parse::<Algorithm>().ok())
-                            == Some(alg)
-                    })
+                    .find(|j| jwk_matches_alg(j, alg))
                     .ok_or_else(|| {
                         PodError::Nip98(format!(
                             "access token alg {alg:?} has no matching JWK in keyset"
@@ -809,7 +907,8 @@ pub fn verify_access_token(
     let mut validation = Validation::new(alg);
     validation.set_issuer(&[expected_issuer]);
     validation.validate_exp = false; // we check manually to return `Nip98`
-    validation.validate_aud = false; // Solid-OIDC allows arbitrary aud
+                                     // `aud` is checked below against the configured policy.
+    validation.validate_aud = false;
 
     let data = decode::<SolidOidcClaims>(token, &key, &validation)
         .map_err(|e| PodError::Nip98(format!("access token decode failed: {e}")))?;
@@ -817,6 +916,13 @@ pub fn verify_access_token(
 
     if claims.exp < now {
         return Err(PodError::Nip98("access token expired".into()));
+    }
+
+    if !audience_matches(&claims.aud, &policy.expected_audience) {
+        return Err(PodError::Nip98(format!(
+            "access token aud does not include '{}'",
+            policy.expected_audience
+        )));
     }
 
     let cnf = claims
@@ -838,6 +944,49 @@ pub fn verify_access_token(
         scope: claims.scope,
         exp: claims.exp,
     })
+}
+
+/// Source of WebID profile documents, supplied by the server so the
+/// library stays free of network policy (SSRF guards, caching, timeouts).
+#[async_trait::async_trait]
+pub trait WebIdProfileSource: Send + Sync {
+    /// Fetch the raw profile document for `webid`: an HTML page with an
+    /// embedded `application/ld+json` island (the shape
+    /// [`crate::webid::extract_oidc_issuer`] reads).
+    async fn fetch_profile(&self, webid: &str) -> Result<Vec<u8>, PodError>;
+}
+
+/// Check that the WebID profile document `profile` declares
+/// `solid:oidcIssuer` equal to `iss` (trailing slashes ignored).
+///
+/// This is the pure, fetch-free half of the Solid-OIDC issuer binding:
+/// the caller supplies the profile bytes. Only the single issuer that
+/// [`crate::webid::extract_oidc_issuer`] surfaces is compared; a profile
+/// with no declared issuer is rejected, because otherwise any IdP could
+/// assert any WebID.
+pub fn check_profile_declares_issuer(profile: &[u8], iss: &str) -> Result<(), PodError> {
+    let declared = crate::webid::extract_oidc_issuer(profile)
+        .map_err(|e| PodError::Nip98(format!("WebID profile unreadable: {e}")))?
+        .ok_or_else(|| PodError::Nip98("WebID profile declares no solid:oidcIssuer".into()))?;
+    if declared.trim_end_matches('/') == iss.trim_end_matches('/') {
+        Ok(())
+    } else {
+        Err(PodError::Nip98(format!(
+            "token issuer '{iss}' is not the WebID's declared solid:oidcIssuer"
+        )))
+    }
+}
+
+/// Fetch the profile for `verified.webid` through `source` and require it
+/// to declare `verified.iss` as its OIDC issuer. Call after
+/// [`verify_access_token`] / [`verify_access_token_with_policy`]; without
+/// this a compromised or unrelated IdP can mint tokens for any WebID.
+pub async fn verify_webid_issuer_binding(
+    source: &dyn WebIdProfileSource,
+    verified: &AccessTokenVerified,
+) -> Result<(), PodError> {
+    let profile = source.fetch_profile(&verified.webid).await?;
+    check_profile_declares_issuer(&profile, &verified.iss)
 }
 
 /// Backwards-compat shim — delegates to [`verify_access_token`] with
@@ -1083,6 +1232,111 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[test]
+    fn audience_must_match_policy() {
+        let secret = b"test-secret";
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let mk = |aud: serde_json::Value| {
+            let claims = SolidOidcClaims {
+                iss: "https://op".into(),
+                sub: "https://me.example/profile#me".into(),
+                aud,
+                exp: 9_999_999_999,
+                iat: 0,
+                webid: None,
+                client_id: None,
+                cnf: Some(CnfClaim { jkt: "T".into() }),
+                scope: None,
+            };
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(secret),
+            )
+            .unwrap()
+        };
+        let ok = |aud| verify_access_token(&mk(aud), &ks, "https://op", "T", 1).is_ok();
+        assert!(ok(serde_json::json!("solid")));
+        assert!(ok(serde_json::json!(["other", "solid"])));
+        assert!(!ok(serde_json::json!("https://other.example")));
+        assert!(!ok(serde_json::json!([])));
+        assert!(!ok(serde_json::json!(12345)));
+        assert!(!ok(serde_json::json!(null)));
+        // Explicit non-default audience.
+        let policy = AccessTokenPolicy::new("https://pod.example");
+        let t = mk(serde_json::json!("https://pod.example"));
+        assert!(verify_access_token_with_policy(&t, &ks, "https://op", "T", 1, &policy).is_ok());
+        assert!(verify_access_token(&t, &ks, "https://op", "T", 1).is_err());
+    }
+
+    #[test]
+    fn kid_resolving_to_wrong_key_family_is_rejected() {
+        // Header says ES256, kid points at an RSA JWK.
+        let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(serde_json::json!({
+            "keys": [{
+                "kty": "RSA", "kid": "rsa-1", "n": "sXchDaQebHnPiGvyDOAT4saGEUetSyo9MKLOoWFsueri23bOdgWp4Dy1Wl",
+                "e": "AQAB"
+            }]
+        }))
+        .unwrap();
+        let hdr = BASE64_URL.encode(br#"{"alg":"ES256","typ":"JWT","kid":"rsa-1"}"#);
+        let body = BASE64_URL.encode(br#"{"iss":"https://op"}"#);
+        let token = format!("{hdr}.{body}.AAAA");
+        let err = verify_access_token(
+            &token,
+            &TokenVerifyKey::Asymmetric(set),
+            "https://op",
+            "T",
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not valid for alg"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn html_profile(json_ld: &str) -> Vec<u8> {
+        format!("<html><script type=\"application/ld+json\">{json_ld}</script></html>").into_bytes()
+    }
+
+    #[test]
+    fn issuer_binding_requires_declared_issuer() {
+        let profile = html_profile(r#"{"solid:oidcIssuer":{"@id":"https://op/"}}"#);
+        let profile = profile.as_slice();
+        assert!(check_profile_declares_issuer(profile, "https://op").is_ok());
+        assert!(check_profile_declares_issuer(profile, "https://evil").is_err());
+        assert!(
+            check_profile_declares_issuer(&html_profile(r#"{"@id":"x"}"#), "https://op").is_err()
+        );
+        assert!(check_profile_declares_issuer(b"not json", "https://op").is_err());
+    }
+
+    #[tokio::test]
+    async fn issuer_binding_uses_the_supplied_source() {
+        struct Fixed(Vec<u8>);
+        #[async_trait::async_trait]
+        impl WebIdProfileSource for Fixed {
+            async fn fetch_profile(&self, _w: &str) -> Result<Vec<u8>, PodError> {
+                Ok(self.0.clone())
+            }
+        }
+        let v = AccessTokenVerified {
+            webid: "https://me.example/profile#me".into(),
+            client_id: None,
+            iss: "https://op".into(),
+            jkt: "t".into(),
+            scope: None,
+            exp: 0,
+        };
+        let good = Fixed(html_profile(r#"{"solid:oidcIssuer":{"@id":"https://op"}}"#));
+        let bad = Fixed(html_profile(
+            r#"{"solid:oidcIssuer":{"@id":"https://other"}}"#,
+        ));
+        assert!(verify_webid_issuer_binding(&good, &v).await.is_ok());
+        assert!(verify_webid_issuer_binding(&bad, &v).await.is_err());
     }
 
     #[test]

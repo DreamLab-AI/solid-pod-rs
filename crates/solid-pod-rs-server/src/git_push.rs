@@ -38,7 +38,7 @@ fn forbidden_one(dotfiles: &DotfileAllowlist, path: &str) -> bool {
 /// `true` when a push must not change `rel`, a repository-relative path with a
 /// leading `/`.
 pub(crate) fn push_path_forbidden(dotfiles: &DotfileAllowlist, rel: &str) -> bool {
-    forbidden_one(dotfiles, rel) || forbidden_one(dotfiles, &rel.to_ascii_lowercase())
+    forbidden_one(dotfiles, rel) || forbidden_one(dotfiles, &rel.to_lowercase())
 }
 
 /// The git service for a pod repository, with the push path guard installed.

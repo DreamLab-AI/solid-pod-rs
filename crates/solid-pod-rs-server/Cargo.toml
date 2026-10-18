@@ -121,6 +121,9 @@ solid-pod-rs-forge = { version = "0.5.0-alpha.13", path = "../solid-pod-rs-forge
 [features]
 # Feature umbrella toggles for the server binary.
 default = []
+# Development-only HMAC bearer tokens keyed by TOKEN_SECRET (aud-bound, max 24 h).
+# Never enable in production builds.
+dev-bearer = []
 
 # TLS via rustls (actix-web's `rustls-0_23` integration).
 tls = ["dep:rustls", "actix-web/rustls-0_23"]

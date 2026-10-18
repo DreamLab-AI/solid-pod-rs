@@ -34,7 +34,9 @@ pub enum DotfileError {
 /// Dotfile allowlist (aggregate root).
 ///
 /// Immutable after construction. Matching is by exact component
-/// equality (case-sensitive, as Solid paths are case-sensitive).
+/// equality, but segments that would collide with a guarded name on a
+/// case-insensitive filesystem (`doc.ACL`, `X.META.JSON`) are refused:
+/// see [`is_non_canonical_guarded`].
 #[derive(Debug, Clone)]
 pub struct DotfileAllowlist {
     allowed: Vec<String>,
@@ -127,7 +129,7 @@ impl DotfileAllowlist {
                     // container listings AND poison the Content-Type served
                     // for a sibling (a stored-XSS vector). These are never
                     // directly addressable over HTTP.
-                    if s.ends_with(".meta.json") {
+                    if s.to_lowercase().ends_with(".meta.json") || is_non_canonical_guarded(s) {
                         self.record_deny();
                         return false;
                     }
@@ -242,7 +244,7 @@ pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
         // it does not start with `.`, so without this it would slip the
         // dotfile rule below and let an HTTP writer hide or content-type-
         // poison a sibling resource. See `DotfileAllowlist::is_allowed`.
-        if segment.ends_with(".meta.json") {
+        if segment.to_lowercase().ends_with(".meta.json") || is_non_canonical_guarded(segment) {
             return Err(DotfilePathError::NotAllowed {
                 segment: segment.to_string(),
                 path: path.to_string(),
@@ -263,6 +265,27 @@ pub fn is_path_allowed(path: &str) -> Result<(), DotfilePathError> {
 }
 
 // --- helpers -------------------------------------------------------------
+
+/// `true` when `segment` is *not* spelled in its canonical (Unicode
+/// lower-case) form but its folded form is a guarded sidecar name
+/// (`*.acl`, `*.meta`, `*.meta.json`, or any allowlisted dotfile).
+///
+/// On case-insensitive filesystems (default macOS/APFS, Windows/NTFS)
+/// `doc.ACL` and `doc.acl` are the same file, so a guard keyed on the
+/// canonical spelling would be bypassed by a variant one. Folding uses
+/// [`str::to_lowercase`], which also maps the Kelvin sign U+212A to `k`.
+/// Canonical spellings are unaffected: `doc.acl` is still an ordinary
+/// sidecar name.
+fn is_non_canonical_guarded(segment: &str) -> bool {
+    let folded = segment.to_lowercase();
+    if folded == segment {
+        return false;
+    }
+    folded.ends_with(".acl")
+        || folded.ends_with(".meta")
+        || folded.ends_with(".meta.json")
+        || STATIC_ALLOWED_DOTFILES.contains(&folded.as_str())
+}
 
 fn parse_csv(raw: &str) -> Vec<String> {
     raw.split(',')
@@ -291,6 +314,29 @@ fn normalise_entry(entry: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn case_variants_of_guarded_names_are_refused() {
+        let al = DotfileAllowlist::default();
+        for bad in [
+            "/p/doc.ACL",
+            "/p/doc.Acl",
+            "/p/doc.META",
+            "/p/X.META.JSON",
+            "/p/x.Meta.Json",
+            "/p/.ACL",
+            "/p/.Meta",
+        ] {
+            assert!(!al.is_allowed(&PathBuf::from(bad)), "{bad}");
+            assert!(is_path_allowed(bad).is_err(), "{bad}");
+        }
+        // Kelvin sign folds to ASCII `k`; make sure the fold is Unicode-aware.
+        assert_eq!("\u{212A}".to_lowercase(), "k");
+        for ok in ["/p/doc.acl", "/p/doc.meta", "/p/Readme.TXT", "/p/Photo.JPG"] {
+            assert!(al.is_allowed(&PathBuf::from(ok)), "{ok}");
+            assert!(is_path_allowed(ok).is_ok(), "{ok}");
+        }
+    }
 
     #[test]
     fn default_permits_acl_and_meta() {

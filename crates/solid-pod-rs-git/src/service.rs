@@ -447,6 +447,8 @@ async fn spawn_cgi(
     let mut cmd = Command::new(backend);
     cmd.env_clear()
         .envs(&env)
+        // Applied last so request-derived variables cannot weaken them.
+        .envs(crate::hardened::hardened_cgi_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

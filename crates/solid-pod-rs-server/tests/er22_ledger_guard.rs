@@ -3,6 +3,7 @@
 //! holding only a (possibly inherited) `acl:Write` or `acl:Read` must not be
 //! able to forge, delete or read them; the payment code, which talks to
 //! `Storage` directly, must keep working.
+#![cfg(feature = "dev-bearer")]
 
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ const STATE_PATHS: [&str; 5] = [
 fn bearer(web_id: &str) -> String {
     std::env::set_var("TOKEN_SECRET", SECRET);
     let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::json!({"webId": web_id, "iat": 1, "exp": u64::MAX / 2}).to_string());
+        .encode(serde_json::json!({"webId": web_id, "iat": dev_now() - 10, "exp": dev_now() + 3600, "aud": solid_pod_rs_server::DEV_BEARER_AUDIENCE}).to_string());
     let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
     mac.update(data.as_bytes());
     let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -246,4 +247,11 @@ async fn owner_can_still_write_ledger_and_spelling_variants_are_guarded() {
         assert!(!(200..300).contains(&st), "PUT {p} -> {st}");
     }
     assert_eq!(s.get(LEDGER).await.unwrap().0, Bytes::from(REAL));
+}
+
+fn dev_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
