@@ -6,7 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.14] — 2026-10-18
+
 ### Security
+
+- **MCP skill reads are charged.** `get_skill` and `get_pod_skill` returned the
+  body of an `acl:PaymentCondition`-gated `SKILL.md` without debiting the
+  caller, so a paid skill was free over MCP. Both now go through the same
+  charging check as `read_resource`.
+- **Dependency advisories.** rustls 0.23.46+ and quinn-proto 0.11.19, and the
+  unmaintained `serde_yaml` (unsafe-libyaml) replaced by the API-compatible
+  `serde_norway`.
 
 - **One hardened `git` constructor** (`solid_pod_rs_git::hardened_git`,
   `hardened_git_async`, `hardened_cgi_env`) now backs every production `git`
@@ -23,8 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `dev-bearer` feature (off by default) and now requires
   `aud = solid-pod-rs-dev-bearer` and a lifetime of at most 24 h.
 - **Case-insensitive filesystems.** The dotfile guard refuses `doc.ACL`,
-  `X.META.JSON` and similar case variants of guarded names; the well-known
-  trail guard folds with full Unicode lower-casing (Kelvin sign included).
+  `X.META.JSON` and similar case variants of guarded names. New public
+  `solid_pod_rs::security::dotfile::fold_case` folds the way a case-insensitive
+  filesystem does, including the long s, the sharp s and the Latin ligatures
+  that plain lower-casing leaves alone; both the dotfile guard and the
+  well-known trail guard use it.
 
 ### Changed
 

@@ -25,9 +25,9 @@
 //! - [`user_store`]   — Pluggable [`UserStore`] trait with [`InMemoryUserStore`] for tests.
 //! - [`invites`]      — Invite-token minting, storage, and validation.
 //! - [`error`]        — [`ProviderError`] with RFC 6749 error codes.
-//! - [`passkey`]      — *(feature `passkey`)* WebAuthn registration and authentication.
-//! - [`schnorr`]      — *(feature `schnorr-sso`)* NIP-07 Schnorr challenge/response.
-//! - [`axum_binder`]  — *(feature `axum-binder`)* Pre-built axum router.
+//! - `passkey`      — *(feature `passkey`)* WebAuthn registration and authentication.
+//! - `schnorr`      — *(feature `schnorr-sso`)* NIP-07 Schnorr challenge/response.
+//! - `axum_binder`  — *(feature `axum-binder`)* Pre-built axum router.
 //!
 //! ## Quick start
 //!
