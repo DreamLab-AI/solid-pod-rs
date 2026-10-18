@@ -440,8 +440,10 @@ async fn get_skill(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     if !skills::is_conventional_skill_path(&path) {
         return tool_error(format!("not a conventional skill path: {path}"));
     }
-    if !wac_check(state, ctx, &path, AccessMode::Read).await {
-        return tool_error(format!("access denied: read {path}"));
+    // The body is returned, so this is a read like `read_resource`: the
+    // charging path, which debits an `acl:PaymentCondition` (estate ER-32).
+    if let Err(e) = authorise(state, ctx, &path, AccessMode::Read, "read").await {
+        return e;
     }
     match skills::read_skill(&*state.storage, &path).await {
         Ok(v) => tool_json(v),
@@ -454,8 +456,9 @@ async fn get_pod_skill(_args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         if !state.storage.exists(path).await.unwrap_or(false) {
             continue;
         }
-        if !wac_check(state, ctx, path, AccessMode::Read).await {
-            return tool_error(format!("access denied: read {path}"));
+        // Returns the body: charge like `read_resource` (estate ER-32).
+        if let Err(e) = authorise(state, ctx, path, AccessMode::Read, "read").await {
+            return e;
         }
         return match skills::read_skill(&*state.storage, path).await {
             Ok(value) => tool_json(value),

@@ -102,6 +102,49 @@ async fn balance(s: &dyn Storage, payer: &str) -> u64 {
         .get_balance(payer)
 }
 
+/// ER-32: the skill readers return a body, so a pay-per-read skill must debit
+/// exactly as `read_resource` does. Before the fix both used the non-charging
+/// check and returned the paid body with the balance untouched.
+#[actix_web::test]
+async fn mcp_skill_readers_debit_pay_per_read() {
+    let payer = payer();
+    for tool in ["get_skill", "get_pod_skill"] {
+        let s = Arc::new(MemoryBackend::new());
+        let acl = format!(
+            "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+             <#paid> a acl:Authorization ; acl:agent <{payer}> ;\n\
+               acl:accessTo </SKILL.md> ; acl:mode acl:Read ;\n\
+               acl:condition [ a acl:PaymentCondition ; acl:costSats 100 ] .\n"
+        );
+        s.put("/SKILL.md.acl", Bytes::from(acl), "text/turtle")
+            .await
+            .unwrap();
+        s.put("/SKILL.md", Bytes::from("# Paid skill\n"), "text/markdown")
+            .await
+            .unwrap();
+        let mut ledger = WebLedger::new("t");
+        ledger
+            .credit_by_outpoint(&payer, "satoshi", &"ab".repeat(32), 0, 500)
+            .unwrap();
+        s.put(
+            "/.well-known/webledgers/webledgers.json",
+            Bytes::from(serde_json::to_vec(&ledger).unwrap()),
+            "application/json",
+        )
+        .await
+        .unwrap();
+        let mut state = AppState::new(s.clone());
+        state.mcp_enabled = true;
+        let (err, out) = mcp(state, None, tool, json!({"path": "/SKILL.md"})).await;
+        assert!(!err, "{tool} refused a funded payer: {out}");
+        assert_eq!(
+            balance(s.as_ref(), &payer).await,
+            400,
+            "{tool} must debit 100 sats for the paid skill"
+        );
+    }
+}
+
 #[actix_web::test]
 async fn mcp_read_of_pay_per_read_resource_debits_the_account() {
     let payer = payer();
