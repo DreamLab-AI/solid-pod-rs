@@ -255,7 +255,9 @@ Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
   and `RUSTSEC-2023-0071` (rsa 0.9 Marvin, used for public-key verification
   only, never private-key decryption). Rationale and review dates live in
   [`deny.toml`](deny.toml) and [`.cargo/audit.toml`](.cargo/audit.toml).
-  **The code audit findings are fixed.** The symlink root escape, anonymous
+  **The code audit findings are fixed** (advisory
+  [GHSA-265w-77fm-mg3g](https://github.com/DreamLab-AI/solid-pod-rs/security/advisories/GHSA-265w-77fm-mg3g),
+  fixed in 0.5.0-alpha.13). The symlink root escape, anonymous
   MCP reads and WAC sidecar bypass, forged IdP identity, non-atomic payment
   state and non-atomic filesystem writes are all marked fixed in the
   [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
