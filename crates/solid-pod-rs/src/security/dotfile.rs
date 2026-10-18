@@ -36,7 +36,7 @@ pub enum DotfileError {
 /// Immutable after construction. Matching is by exact component
 /// equality, but segments that would collide with a guarded name on a
 /// case-insensitive filesystem (`doc.ACL`, `X.META.JSON`) are refused:
-/// see [`is_non_canonical_guarded`].
+/// see `is_non_canonical_guarded` (private helper).
 #[derive(Debug, Clone)]
 pub struct DotfileAllowlist {
     allowed: Vec<String>,

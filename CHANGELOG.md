@@ -28,8 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Every production `git` site, including the `git-http-backend` CGI, now
+  ignores system and global config. This drops operator `safe.directory`
+  entries, and `solid-pod-rs-server install` loses credential helpers, proxy
+  settings and terminal prompts (it authenticates with its explicit
+  `http.extraHeader`).
 - `verify_access_token` rejects tokens whose `aud` does not name `solid`
-  (previously any `aud` verified). Deployments with another audience use
+  (previously any `aud` verified); `CachedFetcher::verify_access_token_cached_with_policy` is the cached equivalent. Deployments with another audience use
   `verify_access_token_with_policy`.
 - Dev-bearer tokens need `aud` and `exp - iat <= 24 h`; build with
   `--features dev-bearer` to use them.

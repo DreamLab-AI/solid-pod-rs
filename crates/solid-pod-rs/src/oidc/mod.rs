@@ -807,7 +807,7 @@ fn jwk_matches_alg(jwk: &jsonwebtoken::jwk::Jwk, alg: Algorithm) -> bool {
             ec.curve == EllipticCurve::P256
         }
         (AlgorithmParameters::OctetKeyPair(okp), Algorithm::EdDSA) => {
-            okp.key_type == OctetKeyPairType::OctetKeyPair
+            okp.key_type == OctetKeyPairType::OctetKeyPair && okp.curve == EllipticCurve::Ed25519
         }
         _ => false,
     };

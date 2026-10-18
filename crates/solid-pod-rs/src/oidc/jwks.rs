@@ -424,11 +424,31 @@ impl CachedFetcher {
         dpop_jkt: &str,
         now: u64,
     ) -> Result<super::AccessTokenVerified, crate::error::PodError> {
+        self.verify_access_token_cached_with_policy(
+            token,
+            issuer,
+            dpop_jkt,
+            now,
+            &super::AccessTokenPolicy::default(),
+        )
+        .await
+    }
+
+    /// As [`Self::verify_access_token_cached`] with an explicit
+    /// [`super::AccessTokenPolicy`] (expected audience).
+    pub async fn verify_access_token_cached_with_policy(
+        &self,
+        token: &str,
+        issuer: &str,
+        dpop_jkt: &str,
+        now: u64,
+        policy: &super::AccessTokenPolicy,
+    ) -> Result<super::AccessTokenVerified, crate::error::PodError> {
         let issuer_url = Url::parse(issuer)
             .map_err(|e| crate::error::PodError::Nip98(format!("bad issuer URL: {e}")))?;
         let keyset = self.jwks(&issuer_url).await?;
         let key = super::TokenVerifyKey::Asymmetric(keyset);
-        super::verify_access_token(token, &key, issuer, dpop_jkt, now)
+        super::verify_access_token_with_policy(token, &key, issuer, dpop_jkt, now, policy)
     }
 }
 
