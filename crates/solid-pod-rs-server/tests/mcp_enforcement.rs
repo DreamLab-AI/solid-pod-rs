@@ -187,6 +187,91 @@ async fn mcp_write_past_quota_is_refused() {
     assert_eq!(quota.usage("alice").await.unwrap().used_bytes, 8);
 }
 
+/// A pod owned by [`WRITER`] under `/alice/` with a 10-byte quota. Returns the
+/// state, the backing store and the quota store (and keeps the temp dir alive).
+#[cfg(feature = "quota")]
+async fn quota_pod() -> (
+    AppState,
+    Arc<MemoryBackend>,
+    Arc<solid_pod_rs::quota::FsQuotaStore>,
+    tempfile::TempDir,
+) {
+    use solid_pod_rs::quota::FsQuotaStore;
+    let s = Arc::new(MemoryBackend::new());
+    let acl = format!(
+        "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         <#w> a acl:Authorization ; acl:agent <{WRITER}> ;\n\
+           acl:accessTo </alice/> ; acl:default </alice/> ;\n\
+           acl:mode acl:Read, acl:Write, acl:Append, acl:Control .\n"
+    );
+    s.put("/alice.acl", Bytes::from(acl), "text/turtle")
+        .await
+        .unwrap();
+    s.put("/alice/", Bytes::new(), "text/plain").await.ok();
+    let dir = tempfile::tempdir().unwrap();
+    let quota = Arc::new(FsQuotaStore::new(dir.path().to_path_buf(), 10));
+    let mut state = AppState::new(s.clone());
+    state.mcp_enabled = true;
+    state.quota = Some(quota.clone());
+    (state, s, quota, dir)
+}
+
+#[cfg(feature = "quota")]
+#[actix_web::test]
+async fn mcp_create_resource_past_quota_is_refused() {
+    use solid_pod_rs::quota::QuotaPolicy as _;
+    let (state, s, quota, _dir) = quota_pod().await;
+    let (err, out) = mcp(
+        state.clone(),
+        Some(WRITER),
+        "create_resource",
+        json!({"container": "/alice/", "slug": "first", "content": "12345678"}),
+    )
+    .await;
+    assert!(!err && out.contains("created"), "{out}");
+    let (err, out) = mcp(
+        state,
+        Some(WRITER),
+        "create_resource",
+        json!({"container": "/alice/", "slug": "second", "content": "12345"}),
+    )
+    .await;
+    assert!(err && out.contains("create refused"), "{out}");
+    assert!(
+        s.get("/alice/second").await.is_err(),
+        "over-quota create landed"
+    );
+    assert_eq!(quota.usage("alice").await.unwrap().used_bytes, 8);
+}
+
+#[cfg(feature = "quota")]
+#[actix_web::test]
+async fn mcp_write_acl_past_quota_is_refused() {
+    use solid_pod_rs::quota::QuotaPolicy as _;
+    let (state, s, quota, _dir) = quota_pod().await;
+    let (err, out) = mcp(
+        state,
+        Some(WRITER),
+        "write_acl",
+        json!({"path": "/alice/doc", "authorizations": [
+            {"agents": [WRITER], "modes": ["Read", "Write", "Control"]}]}),
+    )
+    .await;
+    assert!(err && out.contains("write refused"), "{out}");
+    assert!(
+        s.get("/alice/doc.acl").await.is_err(),
+        "over-quota ACL landed"
+    );
+    assert_eq!(
+        quota
+            .usage("alice")
+            .await
+            .map(|u| u.used_bytes)
+            .unwrap_or(0),
+        0
+    );
+}
+
 #[actix_web::test]
 async fn mcp_write_to_missing_target_does_not_borrow_the_parent_grant() {
     // Write is granted on the container itself (`accessTo`, no `default`), so a

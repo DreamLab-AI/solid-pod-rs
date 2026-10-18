@@ -724,3 +724,131 @@ async fn epoch_policy_batches_then_anchors_once() {
     std::env::remove_var("JSS_PROV_EPOCH_SIZE");
     handle.stop(false).await;
 }
+
+// ===========================================================================
+// 5. Race: `_prov/anchor` (charges) against `/pay/.withdraw` on one trail
+// ===========================================================================
+
+/// One funded trail, two concurrent operations by the same account: an anchor
+/// upgrade (charges 5 sats, then advances the trail) and `withdraw all` (moves
+/// the whole balance into tokens, also advancing the trail). Whatever order
+/// the scheduler picks, the ledger must stay non-negative, the debits that
+/// stuck must not exceed the funding, and every sat must be accounted for.
+#[actix_web::test]
+async fn anchor_and_withdraw_race_never_overdraw_the_ledger() {
+    if !git_available() {
+        return;
+    }
+    const FUNDING: u64 = 100;
+    const ANCHOR_PRICE: u64 = 5;
+    for round in 0..6 {
+        let (mempool_url, handle) = spawn_fixture().await;
+        let (state, tmp, pod) = git_pod_with_trail(
+            mempool_url,
+            &format!("/{}/race{round}/", owner_xonly()),
+            None,
+            FUNDING,
+        )
+        .await;
+        let repo = tmp.path().join(&pod);
+        let storage = state.storage.clone();
+        let app = test::init_service(build_app(state)).await;
+        let put = test::TestRequest::put()
+            .uri(&format!("/{pod}/race{round}/x.ttl"))
+            .insert_header(("content-type", "text/turtle"))
+            .set_payload(web::Bytes::from_static(b"<#x> <#y> <#z> ."))
+            .to_request();
+        assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
+        let sha = last_commit_sha(&repo);
+
+        let anchor_path = format!("/{pod}/_prov/anchor");
+        let anchor_body = json!({"commit_sha": sha}).to_string();
+        // Even rounds drain the account; odd rounds ask for 98 sats, which
+        // cannot coexist with the 5-sat anchor charge in a 100-sat balance.
+        let withdraw_body = if round % 2 == 0 {
+            json!({"all": true})
+        } else {
+            json!({"sats": 98})
+        }
+        .to_string();
+        let anchor_req = test::TestRequest::post()
+            .uri(&anchor_path)
+            .insert_header(("content-type", "application/json"))
+            .insert_header((
+                "authorization",
+                owner_nip98("POST", &anchor_path, Some(anchor_body.as_bytes())),
+            ))
+            .set_payload(anchor_body)
+            .to_request();
+        let withdraw_req = test::TestRequest::post()
+            .uri("/pay/.withdraw")
+            .insert_header(("content-type", "application/json"))
+            .insert_header((
+                "authorization",
+                owner_nip98("POST", "/pay/.withdraw", Some(withdraw_body.as_bytes())),
+            ))
+            .set_payload(withdraw_body)
+            .to_request();
+
+        // Stagger the withdrawal so it lands before, during and after the
+        // anchor's charge-then-advance window.
+        let delay = std::time::Duration::from_millis([0, 1, 3, 8, 20, 40][round]);
+        let (anchor_rsp, withdraw_rsp) =
+            tokio::join!(test::call_service(&app, anchor_req), async {
+                tokio::time::sleep(delay).await;
+                test::call_service(&app, withdraw_req).await
+            });
+        let anchor_status = anchor_rsp.status().as_u16();
+        let withdraw_status = withdraw_rsp.status().as_u16();
+        let withdraw_out: Value = test::read_body_json(withdraw_rsp).await;
+
+        // Only the outcomes the two routes document; nothing else may leak.
+        assert!(
+            matches!(anchor_status, 200 | 202 | 402 | 409 | 502 | 503),
+            "round {round}: anchor answered {anchor_status}"
+        );
+        assert!(
+            matches!(withdraw_status, 200 | 400 | 402 | 502 | 503),
+            "round {round}: withdraw answered {withdraw_status}: {withdraw_out}"
+        );
+
+        // Debits that stuck: an anchor that produced (200) or may have
+        // produced (202) a transaction keeps its charge; a withdrawal that
+        // answered 200 keeps its cost. Everything else was refused or refunded.
+        let anchor_kept = if matches!(anchor_status, 200 | 202) {
+            ANCHOR_PRICE
+        } else {
+            0
+        };
+        let withdraw_kept = if withdraw_status == 200 {
+            withdraw_out["cost"].as_u64().expect("withdraw cost")
+        } else {
+            0
+        };
+        assert!(
+            anchor_kept + withdraw_kept <= FUNDING,
+            "round {round}: debits {anchor_kept}+{withdraw_kept} exceed the {FUNDING} funded"
+        );
+
+        let (raw, _) = storage
+            .get("/.well-known/webledgers/webledgers.json")
+            .await
+            .unwrap();
+        let ledger: Value = serde_json::from_slice(&raw).unwrap();
+        let did = format!("did:nostr:{}", owner_xonly());
+        let final_balance = solid_pod_rs::payments::WebLedger::get_balance(
+            &serde_json::from_value(ledger.clone()).unwrap(),
+            &did,
+        );
+        assert!(
+            ledger.to_string().find(":-").is_none(),
+            "round {round}: a negative amount in the ledger: {ledger}"
+        );
+        assert_eq!(
+            final_balance,
+            FUNDING - anchor_kept - withdraw_kept,
+            "round {round}: anchor {anchor_status}, withdraw {withdraw_status}, ledger {ledger}"
+        );
+        handle.stop(false).await;
+    }
+}
