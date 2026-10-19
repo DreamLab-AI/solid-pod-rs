@@ -133,7 +133,9 @@ fn subject_to_term(s: &oxrdf::Subject) -> Result<Term, PodError> {
         oxrdf::Subject::NamedNode(n) => Ok(Term::Iri(n.as_str().to_string())),
         oxrdf::Subject::BlankNode(b) => Ok(Term::BlankNode(b.as_str().to_string())),
         #[allow(unreachable_patterns)]
-        _ => Err(PodError::Unsupported("quoted triples are not supported".into())),
+        _ => Err(PodError::Unsupported(
+            "quoted triples are not supported".into(),
+        )),
     }
 }
 
@@ -143,7 +145,9 @@ fn term_to_term(t: &oxrdf::Term) -> Result<Term, PodError> {
         oxrdf::Term::BlankNode(b) => Ok(Term::BlankNode(b.as_str().to_string())),
         oxrdf::Term::Literal(l) => Ok(literal_to_term(l)),
         #[allow(unreachable_patterns)]
-        _ => Err(PodError::Unsupported("quoted triples are not supported".into())),
+        _ => Err(PodError::Unsupported(
+            "quoted triples are not supported".into(),
+        )),
     }
 }
 
@@ -339,7 +343,10 @@ mod tests {
 
     #[test]
     fn n3_rule_is_unsupported() {
-        let r = parse_n3(b"@prefix : <http://e/> . { ?x :a :b } => { ?x :c :d } .", BASE);
+        let r = parse_n3(
+            b"@prefix : <http://e/> . { ?x :a :b } => { ?x :c :d } .",
+            BASE,
+        );
         assert!(matches!(r, Err(PodError::Unsupported(_))), "{r:?}");
         let r = parse_n3(b"@prefix : <http://e/> . {} => {} .", BASE);
         assert!(r.is_err(), "empty-formula rule must be refused: {r:?}");

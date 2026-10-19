@@ -287,3 +287,137 @@ async fn did_nostr_resolver_blocks_metadata_origin() {
         .await;
     assert!(out.is_none(), "metadata origin must be blocked pre-flight");
 }
+
+// --- row 60 hardening ------------------------------------------------------
+
+async fn mount_did_doc(server: &MockServer, web_id: &str) {
+    let doc = json!({
+        "id": format!("did:nostr:{TEST_PUBKEY}"),
+        "alsoKnownAs": [web_id],
+    });
+    Mock::given(method("GET"))
+        .and(path(format!("/.well-known/did/nostr/{TEST_PUBKEY}.json")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(doc))
+        .mount(server)
+        .await;
+}
+
+fn loopback_resolver() -> DidNostrResolver {
+    DidNostrResolver::new(Arc::new(SsrfPolicy::new().with_allow_loopback(true)))
+}
+
+/// A profile that merely mentions the DID (as a `foaf:knows` object) next
+/// to an unrelated `owl:sameAs` is a one-way claim and must be refused.
+#[tokio::test]
+async fn did_nostr_resolver_rejects_mention_without_sameas_on_webid() {
+    let server = MockServer::start().await;
+    let web_id = format!("{}/carol#me", server.uri());
+    mount_did_doc(&server, &web_id).await;
+    let body = format!(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+         @prefix foaf: <http://xmlns.com/foaf/0.1/> .\n\
+         <#me> foaf:knows <did:nostr:{TEST_PUBKEY}> ; owl:sameAs <https://elsewhere.example/c> .\n"
+    );
+    Mock::given(method("GET"))
+        .and(path("/carol"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/turtle")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    assert!(loopback_resolver()
+        .resolve(&server.uri(), TEST_PUBKEY)
+        .await
+        .is_none());
+}
+
+/// A sameAs about a different subject in the same document is not a
+/// back-link for the candidate WebID.
+#[tokio::test]
+async fn did_nostr_resolver_rejects_sameas_on_other_subject() {
+    let server = MockServer::start().await;
+    let web_id = format!("{}/dave#me", server.uri());
+    mount_did_doc(&server, &web_id).await;
+    let body = format!(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+         <#someone-else> owl:sameAs <did:nostr:{TEST_PUBKEY}> .\n"
+    );
+    Mock::given(method("GET"))
+        .and(path("/dave"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/turtle")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    assert!(loopback_resolver()
+        .resolve(&server.uri(), TEST_PUBKEY)
+        .await
+        .is_none());
+}
+
+/// JSON-LD profile with the back-link on the WebID node is accepted.
+#[tokio::test]
+async fn did_nostr_resolver_accepts_jsonld_backlink() {
+    let server = MockServer::start().await;
+    let web_id = format!("{}/erin#me", server.uri());
+    mount_did_doc(&server, &web_id).await;
+    let profile = json!({
+        "@id": "#me",
+        "owl:sameAs": {"@id": format!("did:nostr:{TEST_PUBKEY}")}
+    });
+    Mock::given(method("GET"))
+        .and(path("/erin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/ld+json")
+                .set_body_json(profile),
+        )
+        .mount(&server)
+        .await;
+    assert_eq!(
+        loopback_resolver()
+            .resolve(&server.uri(), TEST_PUBKEY)
+            .await
+            .as_deref(),
+        Some(web_id.as_str())
+    );
+}
+
+/// Redirects are not followed, so an allowed origin cannot bounce the
+/// resolver to a host the SSRF policy never vetted.
+#[tokio::test]
+async fn did_nostr_resolver_does_not_follow_redirects() {
+    let server = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "x"})))
+        .expect(0)
+        .mount(&target)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/.well-known/did/nostr/{TEST_PUBKEY}.json")))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", format!("{}/x", target.uri())),
+        )
+        .mount(&server)
+        .await;
+    assert!(loopback_resolver()
+        .resolve(&server.uri(), TEST_PUBKEY)
+        .await
+        .is_none());
+}
+
+/// A pubkey that is not 64 hex characters never reaches the network.
+#[tokio::test]
+async fn did_nostr_resolver_rejects_malformed_pubkey() {
+    let r = loopback_resolver();
+    assert!(r
+        .resolve("http://127.0.0.1:9", "../../etc/passwd")
+        .await
+        .is_none());
+    assert!(r.resolve("http://127.0.0.1:9", "abcd").await.is_none());
+}

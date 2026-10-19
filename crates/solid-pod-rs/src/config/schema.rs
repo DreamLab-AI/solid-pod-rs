@@ -99,6 +99,39 @@ pub struct ExtrasConfig {
     /// telemetry; this serde pass is solely for config reload symmetry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub admin_key: Option<String>,
+
+    /// `JSS_ACTIVITYPUB` — enable ActivityPub federation (JSS
+    /// `config.js` 79, 185). Needs the server's `activitypub` feature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activitypub_enabled: Option<bool>,
+
+    /// `JSS_AP_USERNAME` — ActivityPub preferredUsername (default `me`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ap_username: Option<String>,
+
+    /// `JSS_AP_DISPLAY_NAME` — ActivityPub display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ap_display_name: Option<String>,
+
+    /// `JSS_AP_SUMMARY` — ActivityPub bio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ap_summary: Option<String>,
+
+    /// `JSS_AP_NOSTR_PUBKEY` — hex pubkey linked as `alsoKnownAs`
+    /// `did:nostr:<pk>` on the actor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ap_nostr_pubkey: Option<String>,
+
+    /// `JSS_TRUST_PROXY` — honour `X-Forwarded-Proto` / `cf-visitor` for
+    /// the request scheme. Default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_proxy: Option<bool>,
+
+    /// `JSS_DID_NOSTR_ORIGINS` — CSV of origins whose
+    /// `/.well-known/did/nostr/<pk>.json` documents may link a Nostr key to
+    /// a WebID (cross-identity). Empty means local profile only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub did_nostr_origins: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

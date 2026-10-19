@@ -107,8 +107,12 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
+#[cfg(feature = "activitypub")]
+pub mod activitypub;
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
+pub mod cross_identity;
+pub mod scheme;
 
 pub(crate) mod hardened_git;
 
@@ -254,6 +258,26 @@ pub struct AppState {
     /// Tests point this at a local fixture server so they never reach
     /// mempool.space; production leaves it `None`.
     pub mempool_url: Option<String>,
+    /// Content negotiation (JSS `--conneg`). When on, `text/n3` is accepted
+    /// and advertised alongside Turtle for request bodies; when off a
+    /// `text/n3` body is refused with 415 as in JSS `canAcceptInput`.
+    pub conneg_enabled: bool,
+    /// Honour `X-Forwarded-Proto` / `cf-visitor` for the request scheme.
+    /// Off by default: only enable behind a proxy that overwrites them.
+    pub trust_proxy: bool,
+    /// did:nostr to WebID resolver applied to NIP-98 callers. `None`
+    /// disables cross-identity (the caller is the `did:nostr` agent only).
+    pub cross_identity: Option<Arc<dyn cross_identity::CrossIdentityResolver>>,
+    /// ActivityPub actor provider; `Some` mounts the actor route (set by the
+    /// `activitypub` feature's `ApConfig`; always `None` otherwise).
+    pub activitypub: Option<Arc<dyn ActorDocument>>,
+}
+
+/// Source of the ActivityPub actor document served at
+/// `GET /profile/card.jsonld` for activity+json requests.
+pub trait ActorDocument: Send + Sync {
+    /// The actor JSON for the site at `base_url` (`scheme://host`).
+    fn actor_json(&self, base_url: &str) -> serde_json::Value;
 }
 
 #[cfg(test)]
@@ -374,6 +398,10 @@ impl AppState {
             admin_key: None,
             mcp_enabled: false,
             mempool_url: None,
+            conneg_enabled: false,
+            trust_proxy: false,
+            cross_identity: None,
+            activitypub: None,
         }
     }
 }
@@ -580,8 +608,11 @@ pub(crate) async fn extract_pubkey_with_body(
     // before the `.await` below (clippy::await_holding_refcell_ref keys on
     // lexical scope, not liveness, so an explicit `drop` does not suffice).
     let url = {
+        // Scheme via `scheme::effective_scheme`: forwarding headers count
+        // only behind the trusted-proxy flag (JSS cf-visitor row 177).
+        let scheme = scheme::effective_scheme(req);
         let conn = req.connection_info();
-        format!("{}://{}{}", conn.scheme(), conn.host(), req.uri())
+        format!("{}://{}{}", scheme, conn.host(), req.uri())
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -968,26 +999,24 @@ async fn enforce_write_ctx(
     // which case any PaymentCondition fails closed.
     let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
 
-    let ctx = RequestContext {
-        web_id: agent_uri,
-        client_id: None,
-        issuer: None,
-        payment_balance_sats,
-    };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
-    let granted = wac::evaluate_access_ctx_with_registry(
+    // Row 60: a did:nostr caller with a verified WebID link presents as
+    // both, so an ACL naming either matches.
+    let linked = cross_identity::linked_identities(state.cross_identity.as_ref(), agent_uri).await;
+    let Some(ctx) = grant_for_identities(
         acl_doc.as_ref(),
-        &ctx,
+        agent_uri,
+        &linked,
+        payment_balance_sats,
         &resource,
         eff_mode,
         origin.as_ref(),
         &groups,
         &registry,
-    );
-    if !granted {
+    ) else {
         return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
-    }
+    };
     // Sat-gating consumption applies only to a non-elevated (ordinary)
     // write. A sidecar elevation demands `acl:Control` on the protected
     // resource — the owner-repair path — and is never itself a metered
@@ -1008,6 +1037,7 @@ async fn enforce_write_ctx(
             eff_mode,
             &groups,
             &registry,
+            agent_uri,
         )
         .await?;
     }
@@ -1022,6 +1052,7 @@ async fn enforce_write_ctx(
 /// no-op. A debit failure (insufficient balance after a concurrent
 /// spend, or ledger I/O error) is surfaced as the same WAC denial the
 /// caller would have received, so the request is never served unpaid.
+#[allow(clippy::too_many_arguments)]
 async fn charge_granted_payment(
     state: &AppState,
     acl_doc: Option<&wac::AclDocument>,
@@ -1030,17 +1061,53 @@ async fn charge_granted_payment(
     mode: AccessMode,
     groups: &wac::StaticGroupMembership,
     registry: &wac::conditions::ConditionRegistry,
+    payer: Option<&str>,
 ) -> Result<(), ActixError> {
     let cost = wac::granted_payment_cost(acl_doc, ctx, path, mode, groups, registry);
     if cost == 0 {
         return Ok(());
     }
-    if let Some(did) = ctx.web_id {
+    // The ledger is keyed by the authenticated principal (`payer`), which is
+    // the `did:nostr` agent even when a linked WebID is what the ACL granted.
+    if let Some(did) = payer {
         if debit_ledger(&*state.storage, did, cost).await.is_err() {
-            return Err(acl_denial(acl_doc, ctx.web_id, path));
+            return Err(acl_denial(acl_doc, payer, path));
         }
     }
     Ok(())
+}
+
+/// Evaluate WAC for the principal and each identity linked to it (row 60),
+/// returning the request context of the first identity the ACL grants.
+///
+/// Evaluating identities one at a time (rather than widening a single
+/// agent match) keeps every ACL rule, `acl:origin` gate and payment
+/// condition evaluated exactly as for an ordinary single-identity caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grant_for_identities<'a>(
+    acl_doc: Option<&wac::AclDocument>,
+    primary: Option<&'a str>,
+    linked: &'a [String],
+    payment_balance_sats: Option<u64>,
+    resource: &str,
+    mode: AccessMode,
+    origin: Option<&wac::Origin>,
+    groups: &wac::StaticGroupMembership,
+    registry: &wac::conditions::ConditionRegistry,
+) -> Option<RequestContext<'a>> {
+    std::iter::once(primary)
+        .chain(linked.iter().map(|s| Some(s.as_str())))
+        .map(|web_id| RequestContext {
+            web_id,
+            client_id: None,
+            issuer: None,
+            payment_balance_sats,
+        })
+        .find(|ctx| {
+            wac::evaluate_access_ctx_with_registry(
+                acl_doc, ctx, resource, mode, origin, groups, registry,
+            )
+        })
 }
 
 /// Build the WAC denial `actix_web::Error` shared by the read and write
@@ -1144,26 +1211,22 @@ async fn enforce_read_inner(
     }
     let acl_doc = outcome.document().cloned();
     let payment_balance_sats = resolve_balance_sats(&*state.storage, agent_uri).await;
-    let ctx = RequestContext {
-        web_id: agent_uri,
-        client_id: None,
-        issuer: None,
-        payment_balance_sats,
-    };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups: wac::StaticGroupMembership = wac::StaticGroupMembership::default();
-    let granted = wac::evaluate_access_ctx_with_registry(
+    let linked = cross_identity::linked_identities(state.cross_identity.as_ref(), agent_uri).await;
+    let Some(ctx) = grant_for_identities(
         acl_doc.as_ref(),
-        &ctx,
+        agent_uri,
+        &linked,
+        payment_balance_sats,
         &resource,
         eff_mode,
         origin.as_ref(),
         &groups,
         &registry,
-    );
-    if !granted {
+    ) else {
         return Err(acl_denial(acl_doc.as_ref(), agent_uri, &resource));
-    }
+    };
     // Sat-gating consumption applies only to a non-elevated (ordinary)
     // read; a sidecar Control elevation is never metered (see
     // `enforce_write_ctx`). `resource == path` iff no elevation happened.
@@ -1192,6 +1255,7 @@ async fn enforce_read_inner(
             eff_mode,
             &groups,
             &registry,
+            agent_uri,
         )
         .await?;
     }
@@ -1369,6 +1433,28 @@ async fn handle_get(
     state: web::Data<AppState>,
 ) -> Result<HttpResponse, ActixError> {
     let path = req.uri().path().to_string();
+
+    // JSS server.js 545-570: the dedicated `/profile/card.jsonld` route
+    // answers ActivityPub-flavoured Accept headers with the actor document
+    // and defers to the normal resource handler otherwise. Public, like
+    // the JSS route.
+    #[cfg(feature = "activitypub")]
+    if let (Some(ap), "/profile/card.jsonld") = (state.activitypub.as_ref(), path.as_str()) {
+        let accept = req
+            .headers()
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if solid_pod_rs_activitypub::negotiate_actor_format(accept)
+            == solid_pod_rs_activitypub::ActorFormat::ActivityJson
+        {
+            let doc = ap.actor_json(&scheme::request_origin(&req));
+            return Ok(HttpResponse::Ok()
+                .content_type("application/activity+json")
+                .insert_header((header::VARY, "Accept"))
+                .json(doc));
+        }
+    }
 
     if path.contains('*') {
         return handle_glob_get(req, state).await;
@@ -1563,6 +1649,40 @@ fn has_basic_container_link(req: &HttpRequest) -> bool {
         })
 }
 
+/// Validate a Turtle / N3 request body (parity row 35).
+///
+/// `text/turtle` bodies must parse (400 on a syntax error). `text/n3` is
+/// accepted only with conneg on (415 otherwise, JSS `canAcceptInput`), and
+/// N3 formulas, variables and rules are refused with 415. The base IRI is
+/// the request URL of the resource being written. Other content types pass
+/// through untouched. The parsed graph is discarded: the stored bytes are
+/// the client's own representation.
+fn validate_rdf_body(
+    req: &HttpRequest,
+    state: &AppState,
+    resource_path: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), ActixError> {
+    use solid_pod_rs::rdf_input::{parse_rdf_body, RdfInputSyntax};
+    let Some(syntax) = RdfInputSyntax::from_content_type(content_type) else {
+        return Ok(());
+    };
+    if syntax == RdfInputSyntax::N3 && !state.conneg_enabled {
+        return Err(actix_web::error::ErrorUnsupportedMediaType(
+            "text/n3 request bodies require content negotiation (conneg) to be enabled",
+        ));
+    }
+    let base = format!("{}{}", scheme::request_origin(req), resource_path);
+    match parse_rdf_body(syntax, body, &base) {
+        Ok(_) => Ok(()),
+        Err(solid_pod_rs::PodError::PayloadTooLarge(m)) => {
+            Err(actix_web::error::ErrorPayloadTooLarge(m))
+        }
+        Err(e) => Err(to_actix(e)),
+    }
+}
+
 async fn handle_put(
     req: HttpRequest,
     body: web::Bytes,
@@ -1626,6 +1746,8 @@ async fn handle_put(
              (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
         ));
     }
+
+    validate_rdf_body(&req, &state, &path, ct, &body)?;
 
     let quota = reserve_quota_for_size(&state, &path, body.len() as u64).await?;
     let write = state
@@ -1740,6 +1862,8 @@ async fn handle_post(
         // JSS `generateUniqueFilename` does.
         target = mint_unique_target(&*state.storage, &target).await;
     }
+
+    validate_rdf_body(&req, &state, &target, ct, &body)?;
 
     let quota = reserve_quota_for_size(&state, &target, body.len() as u64).await?;
     let write = state
@@ -2166,7 +2290,7 @@ async fn handle_options(
     state: web::Data<AppState>,
 ) -> Result<HttpResponse, ActixError> {
     let path = req.uri().path().to_string();
-    let o = ldp::options_for(&path);
+    let o = ldp::options_for_conneg(&path, state.conneg_enabled);
     let mut rsp = HttpResponse::NoContent().finish();
     if let Ok(v) = header::HeaderValue::from_str(&o.allow.join(", ")) {
         rsp.headers_mut()
@@ -2446,7 +2570,7 @@ async fn handle_export_all(
     // sign over elsewhere in this file.
     let pod_base = {
         let conn = req.connection_info();
-        format!("{}://{}/", conn.scheme(), conn.host())
+        format!("{}://{}/", scheme::effective_scheme(&req), conn.host())
     };
 
     let options = solid_pod_rs::ExportOptions { include_private };
@@ -2698,7 +2822,7 @@ async fn handle_create_pod(
 
     let base_uri = {
         let conn = req.connection_info();
-        format!("{}://{}", conn.scheme(), conn.host())
+        format!("{}://{}", scheme::effective_scheme(&req), conn.host())
     };
     let outcome = provision_named_pod(&state, &body.name, None, &base_uri).await?;
 
@@ -4529,7 +4653,11 @@ async fn handle_git(
     let query = req.uri().query().unwrap_or("").to_string();
     let host_url = {
         let conn = req.connection_info();
-        Some(format!("{}://{}", conn.scheme(), conn.host()))
+        Some(format!(
+            "{}://{}",
+            scheme::effective_scheme(&req),
+            conn.host()
+        ))
     };
     let headers: Vec<(String, String)> = req
         .headers()
@@ -4736,7 +4864,11 @@ async fn handle_forge(
     let query = req.uri().query().unwrap_or("").to_string();
     let host_url = {
         let conn = req.connection_info();
-        Some(format!("{}://{}", conn.scheme(), conn.host()))
+        Some(format!(
+            "{}://{}",
+            scheme::effective_scheme(&req),
+            conn.host()
+        ))
     };
     let headers: Vec<(String, String)> = req
         .headers()

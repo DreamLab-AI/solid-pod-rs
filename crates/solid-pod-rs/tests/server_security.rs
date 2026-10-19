@@ -63,6 +63,10 @@ async fn public_read_state() -> AppState {
         admin_key: None,
         mcp_enabled: false,
         mempool_url: None,
+        conneg_enabled: false,
+        trust_proxy: false,
+        cross_identity: None,
+        activitypub: None,
     }
 }
 
@@ -105,6 +109,10 @@ async fn public_write_state(body_cap: usize) -> AppState {
         admin_key: None,
         mcp_enabled: false,
         mempool_url: None,
+        conneg_enabled: false,
+        trust_proxy: false,
+        cross_identity: None,
+        activitypub: None,
     }
 }
 
@@ -268,6 +276,10 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         admin_key: None,
         mcp_enabled: false,
         mempool_url: None,
+        conneg_enabled: false,
+        trust_proxy: false,
+        cross_identity: None,
+        activitypub: None,
     };
     let app = test::init_service(build_app(state)).await;
 

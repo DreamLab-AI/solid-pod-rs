@@ -402,6 +402,27 @@ where
     if let Some(v) = get("JSS_ADMIN_KEY") {
         extras.insert("admin_key".into(), Value::String(v));
     }
+    for (var, key) in [
+        ("JSS_ACTIVITYPUB", "activitypub_enabled"),
+        ("JSS_TRUST_PROXY", "trust_proxy"),
+    ] {
+        if let Some(b) = get(var).and_then(|v| parse_bool(&v)) {
+            extras.insert(key.into(), Value::Bool(b));
+        }
+    }
+    for (var, key) in [
+        ("JSS_AP_USERNAME", "ap_username"),
+        ("JSS_AP_DISPLAY_NAME", "ap_display_name"),
+        ("JSS_AP_SUMMARY", "ap_summary"),
+        ("JSS_AP_NOSTR_PUBKEY", "ap_nostr_pubkey"),
+    ] {
+        if let Some(v) = get(var) {
+            extras.insert(key.into(), Value::String(v));
+        }
+    }
+    if let Some(v) = get("JSS_DID_NOSTR_ORIGINS") {
+        extras.insert("did_nostr_origins".into(), parse_csv(&v));
+    }
 
     if !server.is_empty() {
         out.insert("server".into(), Value::Object(server));

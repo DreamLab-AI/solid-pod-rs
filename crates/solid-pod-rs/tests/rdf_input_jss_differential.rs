@@ -150,7 +150,8 @@ fn corpus_matches_jss_parser() {
 
 #[test]
 fn comparator_distinguishes_graphs() {
-    let t = |s: &str, o: &str| Triple::new(Term::blank(s), Term::iri("http://e/p"), Term::literal(o));
+    let t =
+        |s: &str, o: &str| Triple::new(Term::blank(s), Term::iri("http://e/p"), Term::literal(o));
     let a: BTreeSet<Triple> = [t("x", "1"), t("y", "2")].into_iter().collect();
     let renamed: BTreeSet<Triple> = [t("m", "1"), t("n", "2")].into_iter().collect();
     let merged: BTreeSet<Triple> = [t("m", "1"), t("m", "2")].into_iter().collect();
@@ -172,7 +173,10 @@ fn n3_restricted_constructs_are_never_stored() {
     ] {
         let r = parse_rdf_body(RdfInputSyntax::N3, src.as_bytes(), "https://p.example/x");
         assert!(
-            matches!(r, Err(PodError::Unsupported(_)) | Err(PodError::BadRequest(_))),
+            matches!(
+                r,
+                Err(PodError::Unsupported(_)) | Err(PodError::BadRequest(_))
+            ),
             "{src}: {r:?}"
         );
     }

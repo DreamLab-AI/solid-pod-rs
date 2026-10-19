@@ -412,8 +412,13 @@ pub mod did_nostr {
         /// timeout) and TTLs matching JSS (5 min success, 1 min
         /// failure).
         pub fn new(ssrf: Arc<SsrfPolicy>) -> Self {
+            // Redirects are refused: the SSRF check runs on the URL we
+            // were given, and following a 30x would reach a host it never
+            // vetted (JSS re-checks each hop and refuses cross-origin
+            // redirects, `fetchWithRedirectGuard`).
             let client = Client::builder()
                 .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_else(|_| Client::new());
             Self {
@@ -446,6 +451,14 @@ pub mod did_nostr {
         /// within the matching TTL are served from memory without
         /// network I/O.
         pub async fn resolve(&self, origin: &str, pubkey: &str) -> Option<String> {
+            // The pubkey comes off a NIP-98 event and is interpolated into a
+            // URL path and the cache key: enforce 64 hex characters (JSS
+            // `resolveDidNostrToWebId` does the same) and lowercase it.
+            if pubkey.len() != 64 || !pubkey.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            let pubkey = pubkey.to_ascii_lowercase();
+            let pubkey = pubkey.as_str();
             let cache_key = format!("{origin}|{pubkey}");
 
             // Cache lookup (read lock).
@@ -465,6 +478,17 @@ pub mod did_nostr {
             let result = self.resolve_uncached(origin, pubkey).await;
 
             if let Ok(mut guard) = self.cache.write() {
+                // Bounded like JSS (10k entries): pubkeys are attacker
+                // supplied, so evict the oldest entry rather than grow.
+                if guard.len() >= MAX_CACHE_ENTRIES {
+                    if let Some(oldest) = guard
+                        .iter()
+                        .min_by_key(|(_, e)| e.fetched)
+                        .map(|(k, _)| k.clone())
+                    {
+                        guard.remove(&oldest);
+                    }
+                }
                 guard.insert(
                     cache_key,
                     CachedEntry {
@@ -493,7 +517,7 @@ pub mod did_nostr {
                 .ok()?
                 .error_for_status()
                 .ok()?;
-            let doc: DidNostrDoc = resp.json().await.ok()?;
+            let doc: DidNostrDoc = serde_json::from_slice(&read_capped(resp).await?).ok()?;
 
             if doc.id != format!("did:nostr:{pubkey}") {
                 return None;
@@ -521,21 +545,118 @@ pub mod did_nostr {
                 .ok()?
                 .error_for_status()
                 .ok()?;
-            let body = resp.text().await.ok()?;
+            let body = read_capped(resp).await?;
 
-            // Back-link check — literal string match suffices for the
-            // bidirectional guarantee because the DID IRI is by spec a
-            // verbatim literal (no relativisation in either RDF flavour).
-            let has_predicate = body.contains("owl:sameAs")
-                || body.contains("schema:sameAs")
-                || body.contains("http://www.w3.org/2002/07/owl#sameAs")
-                || body.contains("https://schema.org/sameAs");
-            if has_predicate && body.contains(did_iri) {
+            // Back-link check: the profile must itself assert, as a real
+            // statement about the candidate WebID, an `owl:sameAs` /
+            // `schema:sameAs` to this DID. A document that merely mentions
+            // the DID somewhere does not count (one-way links are never
+            // accepted).
+            if backlink_present(&body, candidate, did_iri) {
                 Some(candidate.to_string())
             } else {
                 None
             }
         }
+    }
+
+    /// Largest DID document / WebID profile body the resolver reads.
+    const MAX_DOC_BYTES: usize = 512 * 1024;
+    /// Resolver cache bound (JSS `CACHE_MAX_ENTRIES`).
+    const MAX_CACHE_ENTRIES: usize = 10_000;
+
+    const SAME_AS_IRIS: [&str; 4] = [
+        "http://www.w3.org/2002/07/owl#sameAs",
+        "https://schema.org/sameAs",
+        "http://schema.org/sameAs",
+        "https://schema.org/sameAs/",
+    ];
+    const SAME_AS_KEYS: [&str; 7] = [
+        "owl:sameAs",
+        "schema:sameAs",
+        "sameAs",
+        "http://www.w3.org/2002/07/owl#sameAs",
+        "https://schema.org/sameAs",
+        "http://schema.org/sameAs",
+        "https://schema.org/sameAs/",
+    ];
+
+    async fn read_capped(mut resp: reqwest::Response) -> Option<Vec<u8>> {
+        if resp
+            .content_length()
+            .is_some_and(|n| n as usize > MAX_DOC_BYTES)
+        {
+            return None;
+        }
+        let mut out = Vec::new();
+        while let Some(chunk) = resp.chunk().await.ok()? {
+            if out.len() + chunk.len() > MAX_DOC_BYTES {
+                return None;
+            }
+            out.extend_from_slice(&chunk);
+        }
+        Some(out)
+    }
+
+    /// True when `body` (JSON-LD or Turtle) asserts
+    /// `<candidate> owl:sameAs|schema:sameAs <did_iri>`.
+    ///
+    /// Exposed for tests; the resolver calls it with the fetched profile.
+    pub fn backlink_present(body: &[u8], candidate: &str, did_iri: &str) -> bool {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
+            return json_backlink(&v, candidate, did_iri);
+        }
+        let doc_base = candidate.split('#').next().unwrap_or(candidate);
+        match crate::rdf_input::parse_turtle(body, doc_base) {
+            Ok(g) => g.triples().any(|t| {
+                matches!(&t.subject, crate::ldp::Term::Iri(s) if s == candidate)
+                    && matches!(&t.predicate, crate::ldp::Term::Iri(p) if SAME_AS_IRIS.contains(&p.as_str()))
+                    && matches!(&t.object, crate::ldp::Term::Iri(o) if o == did_iri)
+            }),
+            Err(_) => false,
+        }
+    }
+
+    fn json_backlink(v: &serde_json::Value, candidate: &str, did_iri: &str) -> bool {
+        use serde_json::Value;
+        let base = Url::parse(candidate).ok();
+        let resolve = |id: &str| -> String {
+            base.as_ref()
+                .and_then(|b| b.join(id).ok())
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| id.to_string())
+        };
+        let is_did = |x: &Value| match x {
+            Value::String(s) => s == did_iri,
+            Value::Object(m) => m.get("@id").and_then(Value::as_str) == Some(did_iri),
+            _ => false,
+        };
+        fn walk(
+            v: &Value,
+            depth: usize,
+            visit: &mut dyn FnMut(&serde_json::Map<String, Value>) -> bool,
+        ) -> bool {
+            if depth > 16 {
+                return false;
+            }
+            match v {
+                Value::Object(m) => visit(m) || m.values().any(|c| walk(c, depth + 1, visit)),
+                Value::Array(a) => a.iter().any(|c| walk(c, depth + 1, visit)),
+                _ => false,
+            }
+        }
+        walk(v, 0, &mut |m| {
+            let id = m.get("@id").or_else(|| m.get("id")).and_then(Value::as_str);
+            let Some(id) = id else { return false };
+            if resolve(id) != candidate {
+                return false;
+            }
+            SAME_AS_KEYS.iter().any(|k| match m.get(*k) {
+                Some(Value::Array(a)) => a.iter().any(is_did),
+                Some(x) => is_did(x),
+                None => false,
+            })
+        })
     }
 }
 

@@ -4130,6 +4130,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "solid-pod-rs",
+ "solid-pod-rs-activitypub",
  "solid-pod-rs-forge",
  "solid-pod-rs-git",
  "solid-pod-rs-idp",
