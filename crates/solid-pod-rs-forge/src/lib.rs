@@ -88,6 +88,11 @@ pub mod token;
 pub mod trail;
 pub mod xlogin;
 
+/// Internal response header a handler sets to mark a page that loads the
+/// vendored login widget, so [`ForgeService::handle`] gives it the widget
+/// Content-Security-Policy. It never reaches the client.
+pub const WIDGET_PAGE_HEADER: &str = "x-forge-csp";
+
 #[cfg(test)]
 mod readfeat_tests;
 
@@ -270,7 +275,39 @@ impl ForgeService {
     /// [`ForgeAgent::Pod`] directly to [`Self::handle`] when it has a pod
     /// session; this helper is for the token/NIP-98 schemes.
     pub async fn resolve_agent(&self, req: &ForgeRequest) -> ForgeAgent {
+        // The URL a NIP-98 event is checked against comes from the configured
+        // origin when there is one, never from a forged `host_url`.
+        let pinned = self.pinned_host_url(req.host_url.as_deref());
+        if pinned.as_deref() != req.host_url.as_deref() {
+            let mut r = req.clone();
+            r.host_url = pinned;
+            return auth::resolve_agent(
+                &r,
+                self.token_key.as_ref(),
+                &self.nip98_replay,
+                now_secs(),
+            )
+            .await;
+        }
         auth::resolve_agent(req, self.token_key.as_ref(), &self.nip98_replay, now_secs()).await
+    }
+
+    /// The request origin the forge trusts: the origin of the configured
+    /// `base_url` (scheme and authority, no path) when set, otherwise the
+    /// embedder-supplied `host_url` unchanged (security review M1).
+    fn pinned_host_url(&self, host_url: Option<&str>) -> Option<String> {
+        match self.cfg.base_url.as_deref() {
+            Some(b) => {
+                let b = b.trim_end_matches('/');
+                let end = b
+                    .find("://")
+                    .map(|i| i + 3)
+                    .and_then(|s| b[s..].find('/').map(|j| s + j))
+                    .unwrap_or(b.len());
+                Some(b[..end].to_string())
+            }
+            None => host_url.map(str::to_string),
+        }
     }
 
     /// The configured, normalised URL prefix (`/forge`).
@@ -289,9 +326,10 @@ impl ForgeService {
     /// to a [`ForgeRequest`], WAC-gates the scope, and calls this.
     pub async fn handle(
         &self,
-        req: ForgeRequest,
+        mut req: ForgeRequest,
         agent: ForgeAgent,
     ) -> Result<ForgeResponse, ForgeError> {
+        req.host_url = self.pinned_host_url(req.host_url.as_deref());
         // CORS preflight.
         if req.method.eq_ignore_ascii_case("OPTIONS") {
             return Ok(ForgeResponse {
@@ -349,10 +387,15 @@ impl ForgeService {
         if is_html {
             // Only a page that loads the vendored widget keeps the weaker
             // widget policy; every other page gets a strict nonce policy.
+            // The marker is an internal header only a handler can set; page
+            // content (which an attacker can influence) never selects the
+            // weaker policy. It is stripped before the response leaves.
             let widget = resp
-                .body
-                .windows(b"xlogin.js".len())
-                .any(|w| w == b"xlogin.js");
+                .headers
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case(WIDGET_PAGE_HEADER) && v == "widget");
+            resp.headers
+                .retain(|(k, _)| !k.eq_ignore_ascii_case(WIDGET_PAGE_HEADER));
             let csp = if widget {
                 xlogin::build_csp(&self.cfg.csp_connect)
             } else {
@@ -1206,15 +1249,52 @@ mod tests {
                 .unwrap_or_default()
         };
         let plain = svc.finish_page(ForgeResponse::html(200, "<p>hi</p>".to_string()));
-        let widget = svc.finish_page(ForgeResponse::html(
+        let widget = svc.finish_page(
+            ForgeResponse::html(200, "<p>w</p>".to_string())
+                .with_header(WIDGET_PAGE_HEADER, "widget"),
+        );
+        // Text that merely mentions the widget (injected markup, a file
+        // named xlogin.js) must not select the weak policy.
+        let mention = svc.finish_page(ForgeResponse::html(
             200,
-            "<script src=\"/forge/xlogin.js\"></script>".to_string(),
+            "<p>&lt;script src=\"/forge/xlogin.js\"&gt;</p>".to_string(),
         ));
+        assert!(csp(&mention).contains("script-src 'self' 'nonce-"));
+        assert!(widget.headers.iter().all(|(k, _)| k != WIDGET_PAGE_HEADER));
         assert!(csp(&plain).contains("script-src 'self' 'nonce-"));
         assert!(!csp(&plain).contains("unsafe-inline' 'self'"));
         assert!(csp(&widget).contains("script-src 'unsafe-inline' 'self' https://esm.sh"));
         let again = svc.finish_page(ForgeResponse::html(200, "<p>hi</p>".to_string()));
         assert_ne!(csp(&plain), csp(&again), "the nonce is fresh per response");
+    }
+
+    /// M1: with `base_url` configured, a forged `host_url` cannot make an
+    /// event signed for the attacker's host satisfy the NIP-98 URL match.
+    #[tokio::test]
+    async fn nip98_url_comes_from_base_url_not_a_forged_host() {
+        use solid_pod_rs::auth::nip98;
+        const SK: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+        let td = TempDir::new().unwrap();
+        let cfg = ForgeConfig {
+            base_url: Some("https://pod.example/".into()),
+            ..ForgeConfig::default()
+        };
+        let svc = ForgeService::new(cfg, td.path()).unwrap();
+        let signed_for = |url: &str, t: u64| {
+            let tok = nip98::mint(url, "GET", SK, t).unwrap();
+            let mut r = req("GET", "/forge/x");
+            r.headers = vec![("authorization".into(), format!("Nostr {tok}"))];
+            r.host_url = Some("https://evil.example".into());
+            r
+        };
+        let now = now_secs();
+        let replayed = signed_for("https://evil.example/forge/x", now);
+        assert_eq!(svc.resolve_agent(&replayed).await, ForgeAgent::Anonymous);
+        let honest = signed_for("https://pod.example/forge/x", now + 1);
+        assert!(matches!(
+            svc.resolve_agent(&honest).await,
+            ForgeAgent::Nostr { .. }
+        ));
     }
 
     fn service() -> (TempDir, ForgeService) {

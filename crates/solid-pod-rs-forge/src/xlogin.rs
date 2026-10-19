@@ -9,6 +9,18 @@
 //! at `<prefix>/xlogin.js` (JSS: the xlogin route in the forge dispatcher),
 //! and [`build_csp`] builds the policy `handle` attaches to every HTML page
 //! (JSS: `buildCsp`).
+//!
+//! # Content-Security-Policy tiers and residual risk
+//!
+//! A page that loads the widget needs the weak [`build_csp`] policy
+//! (`'unsafe-inline'` and `https://esm.sh`), because the vendored widget
+//! dynamically imports from that CDN and must not be edited. Every other page
+//! gets [`build_strict_csp`] (`script-src 'self' 'nonce-<random>'`). A
+//! handler opts a page into the weak tier with the internal
+//! [`crate::WIDGET_PAGE_HEADER`] response header, never by page content. No
+//! page sets it today. The residual risk is that any future widget page
+//! carries the weak policy until the widget is vendored with its imports or
+//! pinned with subresource integrity.
 
 use bytes::Bytes;
 
