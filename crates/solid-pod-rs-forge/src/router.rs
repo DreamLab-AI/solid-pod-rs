@@ -274,6 +274,22 @@ pub enum Route {
         /// `<ref>.tar.gz` or `<ref>.zip` (the ref may contain slashes).
         spec: String,
     },
+    /// `POST /api/repos/<owner>/<repo>/edit` — commit one file over HTTP
+    /// (JSS `apiRepoEdit`): owner-signed, or anonymous under `open_edit`.
+    ApiEdit {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
+    /// `POST /api/repos/<owner>/<repo>/preview` — publish an ephemeral
+    /// kind-21617 preview, no commit (JSS `apiRepoPreview`).
+    ApiPreview {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
 }
 
 impl Route {
@@ -501,6 +517,14 @@ fn parse_api(segs: &[&str]) -> Route {
             repo: strip_git_suffix(repo),
             tail: tail.iter().map(|s| (*s).to_string()).collect(),
         },
+        ["repos", owner, repo, "edit"] => Route::ApiEdit {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
+        ["repos", owner, repo, "preview"] => Route::ApiPreview {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
         ["repos", owner] => Route::ApiOwnerRepos {
             owner: (*owner).to_string(),
         },
@@ -526,6 +550,25 @@ pub fn strip_git_suffix(repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_and_preview_routes_parse() {
+        assert_eq!(
+            parse_route("/api/repos/casey/demo.git/edit"),
+            Route::ApiEdit {
+                owner: "casey".into(),
+                repo: "demo".into()
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/demo/preview"),
+            Route::ApiPreview {
+                owner: "casey".into(),
+                repo: "demo".into()
+            }
+        );
+        assert_eq!(parse_route("/api/repos/casey/demo/edit/x"), Route::NotFound);
+    }
 
     #[test]
     fn marks_routes_parse() {
