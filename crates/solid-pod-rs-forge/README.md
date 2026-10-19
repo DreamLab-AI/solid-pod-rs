@@ -18,8 +18,20 @@ The forge is ~90% composition of existing solid-pod-rs primitives and
 
 New in this crate: the spine index (issue/PR/label pointers), the
 two-phase pod-write coordinator, hosted storage for podless `did:nostr`
-agents, the forge push token, a NIP-34 announcement builder/signer, the
+agents, the forge push token, NIP-34 emission (feature `announce`, below), the
 marks manager, and fork/PR/browse porcelain that extends the git API.
+
+**NIP-34 emission (feature `announce`).** The forge builds and signs a kind
+30617 repository announcement and a kind 30618 repository state for each
+repository (`GET /api/repos/<o>/<n>/nostr`), with the anchor tags
+(`r`, `anchor`, `chain`, `txo`, `commit`) for anchored repositories, signed by
+a forge-instance key (config `announce_key`, else a `0600` `announce-key`
+file in the plugin directory). Publication is opt-in: with `announce_relays`
+set (`ws://` and `wss://` only, each host passing the SSRF check) the owner
+can `POST /api/repos/<o>/<n>/announce`, and other tiers can call
+`ForgeService::announce_repo` or `announce_repo_in_background`. With no relays
+nothing is sent. Not included: ephemeral previews (kind 21617) and the
+web-edit tier that would trigger an announce.
 
 ## Architecture rule
 
@@ -45,7 +57,7 @@ adds zero dependencies to the core crate.
 | Feature | Effect |
 |---|---|
 | `anchoring` | Tier 3.5 Blocktrails anchoring (pulls `solid-pod-rs/mrc20` + `k256`) |
-| `announce` | NIP-34 discovery publication over WS (pulls `solid-pod-rs-nostr` + `k256`) |
+| `announce` | NIP-34 30617/30618 builders, announce key, relay publisher, `GET /nostr`, `POST /announce` (pulls `solid-pod-rs-nostr`, `k256`, `tokio-tungstenite`) |
 
 ## Entry point
 

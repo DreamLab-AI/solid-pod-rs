@@ -1,0 +1,34 @@
+{
+ "baseUrl": "https://forge.example",
+ "announceKey": "1111111111111111111111111111111111111111111111111111111111111111",
+ "relays": ["wss://relay.example", "ws://r2.example:7777"],
+ "trail": "{\n  \"@type\": \"Blocktrail\",\n  \"version\": \"0.0.3\",\n  \"profile\": \"gitmark\",\n  \"pubkeyBase\": \"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa\",\n  \"chain\": \"txbt4\",\n  \"states\": [\"1111111111111111111111111111111111111111\", \"2222222222222222222222222222222222222222\"],\n  \"txo\": [\"txo:txbt4:abababababababababababababababababababababababababababababababab:0?amount=9700&commit=1111111111111111111111111111111111111111\", \"txo:txbt4:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:1?amount=9400&commit=2222222222222222222222222222222222222222\"]\n}\n",
+ "repos": [
+  {"owner": "casey", "name": "demo", "cases": ["relays", "none"], "steps": [
+    {"files": {"README.md": "# Demo \"Project\" \\ ünï 🚀 end\n\nbody line\n", "src/main.js": "a\n"}, "message": "initial import"},
+    {"files": {"src/main.js": "b\n"}, "message": "tweak main"},
+    {"branch": "dev"},
+    {"files": {"dev.txt": "d\n"}, "message": "dev work"},
+    {"branch": "feature/x"},
+    {"files": {"x.txt": "x\n"}, "message": "feature x"},
+    {"switch": "main"}]},
+  {"owner": "4a578b54abababababababababababababababababababababababababababab", "name": "mrepo", "cases": ["relays"], "steps": [
+    {"files": {"README.md": "# mrepo\n\nnostr-owned mirror.\n"}, "message": "init"}]},
+  {"owner": "casey", "name": "empty", "cases": ["relays", "none"], "steps": []},
+  {"owner": "casey", "name": "described", "cases": ["relays"], "description": "Custom description from the description file\n", "steps": [
+    {"files": {"README.md": "# Ignored heading\n"}, "message": "init"}]},
+  {"owner": "casey", "name": "plain", "cases": ["relays"], "steps": [
+    {"files": {"notes.txt": "no readme here\n"}, "message": "lone file"}]},
+  {"owner": "casey", "name": "agent", "cases": ["relays"], "steps": [
+    {"files": {"README.md": "# agent\n", "blocktrails.json": "@TRAIL@"}, "message": "mark"}]},
+  {"owner": "casey", "name": "held", "cases": ["relays"],
+   "forgeHeld": {"chain": "tbtc4", "marks": [
+     {"status": "marked", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "vout": 0},
+     {"status": "marked", "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "vout": 1},
+     {"status": "pending", "txid": null, "vout": null}]},
+   "steps": [{"files": {"README.md": "# held\n", "blocktrails.json": "@TRAIL@"}, "message": "init"}]},
+  {"owner": "casey", "name": "heldpending", "cases": ["relays"],
+   "forgeHeld": {"chain": "tbtc4", "marks": [{"status": "pending", "txid": null, "vout": null}]},
+   "steps": [{"files": {"README.md": "# held pending\n", "blocktrails.json": "@TRAIL@"}, "message": "init"}]}
+ ]
+}

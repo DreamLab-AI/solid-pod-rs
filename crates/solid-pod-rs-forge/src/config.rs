@@ -31,8 +31,14 @@ pub struct ForgeConfig {
     /// any mainnet chain string. Mark custody here is testnet-grade.
     pub allow_mainnet: bool,
     /// Opt-in relays the NIP-34 announcement is published to. Empty =
-    /// build/sign only, never publish.
+    /// build/sign only, never publish. Only `ws://` and `wss://` entries
+    /// are used (JSS `announceRelays`).
     pub announce_relays: Vec<String>,
+    /// The forge-instance NIP-34 signing key (JSS `announceKey`): 32-byte
+    /// hex. When unset or malformed the key persisted at
+    /// `plugin_dir/announce-key` is used, generated once. Its `Debug`
+    /// output is redacted.
+    pub announce_key: Option<AnnounceKey>,
     /// Show the Anchors tab on every repository page, not only on
     /// repositories that already carry a trail (JSS `anchoringUi`). The
     /// `/marks` page then carries the Enable pitch where anchoring is off.
@@ -43,6 +49,46 @@ pub struct ForgeConfig {
     /// one, so anchoring HEAD costs one transaction however many commits
     /// landed. Default `false`.
     pub sparse_marks: bool,
+}
+
+/// A 32-byte hex secret key supplied through configuration.
+///
+/// The value is held verbatim and is never printed: `Debug` redacts it, so a
+/// logged [`ForgeConfig`] cannot leak the forge's NIP-34 identity.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::config::AnnounceKey;
+///
+/// let key = AnnounceKey::new("11".repeat(32));
+/// assert!(!format!("{key:?}").contains("1111"));
+/// assert_eq!(key.valid_hex(), Some("11".repeat(32)));
+/// assert_eq!(AnnounceKey::new("not hex").valid_hex(), None);
+/// ```
+#[derive(Clone)]
+pub struct AnnounceKey(String);
+
+impl AnnounceKey {
+    /// Wrap a configured key string (validated later by [`Self::valid_hex`]).
+    #[must_use]
+    pub fn new(hex: impl Into<String>) -> Self {
+        Self(hex.into())
+    }
+
+    /// The key as lowercase 64-character hex, or `None` when it is not
+    /// exactly 32 bytes of hex (JSS then falls back to the persisted key).
+    #[must_use]
+    pub fn valid_hex(&self) -> Option<String> {
+        let lc = self.0.to_ascii_lowercase();
+        (lc.len() == 64 && lc.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then_some(lc)
+    }
+}
+
+impl std::fmt::Debug for AnnounceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AnnounceKey(<redacted>)")
+    }
 }
 
 impl Default for ForgeConfig {
@@ -57,6 +103,7 @@ impl Default for ForgeConfig {
             default_chain: "tbtc4".to_string(),
             allow_mainnet: false,
             announce_relays: Vec::new(),
+            announce_key: None,
             anchoring_ui: false,
             sparse_marks: false,
         }

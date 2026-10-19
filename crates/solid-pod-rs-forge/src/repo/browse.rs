@@ -339,6 +339,32 @@ pub async fn list_tags(git_dir: &Path) -> Result<Vec<String>, ForgeError> {
         .collect())
 }
 
+/// Every local branch as `(full refname, full object id)`, for example
+/// `("refs/heads/main", "<40 hex>")`, in git's own ref order. An empty or
+/// unborn repository yields an empty list. Entries whose id is not a full
+/// 40- or 64-character hex object id are dropped.
+pub async fn list_heads_full(git_dir: &Path) -> Result<Vec<(String, String)>, ForgeError> {
+    let raw = git_text(
+        git_dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            "refs/heads",
+        ],
+    )
+    .await?;
+    Ok(raw
+        .lines()
+        .filter_map(|l| l.split_once('\0'))
+        .filter(|(r, sha)| {
+            r.starts_with("refs/heads/")
+                && matches!(sha.len(), 40 | 64)
+                && sha.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        .map(|(r, sha)| (r.to_string(), sha.to_string()))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

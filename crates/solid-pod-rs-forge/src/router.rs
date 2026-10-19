@@ -164,6 +164,22 @@ pub enum Route {
         /// Path segments after `marks`.
         tail: Vec<String>,
     },
+    /// `GET /api/repos/<owner>/<repo>/nostr` — the signed NIP-34 events
+    /// (kinds 30617 and 30618) the forge would publish (feature `announce`).
+    ApiNostr {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
+    /// `POST /api/repos/<owner>/<repo>/announce` — owner-only: build and
+    /// publish the NIP-34 events (feature `announce`).
+    ApiAnnounce {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
     /// `GET /<owner>/<repo>/marks` — the Anchors page.
     Marks {
         /// Owner namespace.
@@ -399,6 +415,14 @@ fn parse_api(segs: &[&str]) -> Route {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
         },
+        ["repos", owner, repo, "nostr"] => Route::ApiNostr {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
+        ["repos", owner, repo, "announce"] => Route::ApiAnnounce {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
         ["repos", owner, repo, "marks", tail @ ..] => Route::ApiMarks {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
@@ -504,6 +528,32 @@ mod tests {
             }
         );
         assert_eq!(parse_route("/api/repos/abc/agent/other"), Route::NotFound);
+    }
+
+    #[test]
+    fn nip34_routes() {
+        assert_eq!(
+            parse_route("/api/repos/casey/demo/nostr"),
+            Route::ApiNostr {
+                owner: "casey".into(),
+                repo: "demo".into()
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/demo/announce"),
+            Route::ApiAnnounce {
+                owner: "casey".into(),
+                repo: "demo".into()
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/demo/nostr/x"),
+            Route::NotFound
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/demo/announce/x"),
+            Route::NotFound
+        );
     }
 
     #[test]

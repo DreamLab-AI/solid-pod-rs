@@ -1,0 +1,746 @@
+{
+ "announceKey": "1111111111111111111111111111111111111111111111111111111111111111",
+ "baseUrl": "https://forge.example",
+ "relays": [
+  "wss://relay.example",
+  "ws://r2.example:7777"
+ ],
+ "cases": [
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "demo",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/demo"
+     ],
+     [
+      "name",
+      "demo"
+     ],
+     [
+      "description",
+      "Demo \"Project\" \\ ünï 🚀 end"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/demo"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/demo.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ]
+    ],
+    "content": "Demo \"Project\" \\ ünï 🚀 end",
+    "id": "cf3d9b9b7d8186d1978fa7dbc2c8464b7de50da75bb5033013d46854c194014b",
+    "sig": "109a2a7c05f09e23b69b05a01d54fa3f237c8daeb037139883bd62022d7ebb25ac1958ceb9fee63b50cf91d7b85f086db49bbac8d34a882548a128e83945b11b"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/demo"
+     ],
+     [
+      "refs/heads/main",
+      "7d824a73ba1fe3deda2cb3755e8679e0165550e0"
+     ],
+     [
+      "refs/heads/dev",
+      "2814045d75c2c3c6824b65a76d80ae684f024b21"
+     ],
+     [
+      "refs/heads/feature/x",
+      "dfbbee75645e7d46299bb6c3b30217b23cec65a6"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "03e5b5497a652f747ab0ff714cf39cf38195a1fcc3905bd56860c6b6b623041c",
+    "sig": "917774f887ec39308a3a9f780fdf1944ceb29f8b80e8bea77ee1b03080101a06d1060b098fee21c2c5c816dfed5810edaa8e85accce1744b2e5df989e51855b8"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "4a578b54abababababababababababababababababababababababababababab",
+   "name": "mrepo",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "4a578b54abababababababababababababababababababababababababababab/mrepo"
+     ],
+     [
+      "name",
+      "mrepo"
+     ],
+     [
+      "description",
+      "mrepo"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/4a578b54abababababababababababababababababababababababababababab/mrepo"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/4a578b54abababababababababababababababababababababababababababab/mrepo.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ],
+     [
+      "maintainers",
+      "4a578b54abababababababababababababababababababababababababababab"
+     ]
+    ],
+    "content": "mrepo",
+    "id": "83e8bc5212e07a4c4358e5296626ee4696fbbbeee4c25d05e15e0bc14c311269",
+    "sig": "76bfdb4dcd253a88e80a32933bab5b982f8197730212635800197c859b7684a07f1906917952febf221cea60859d7f1039c07ca7ac166794d200e2fc5521e2d0"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "4a578b54abababababababababababababababababababababababababababab/mrepo"
+     ],
+     [
+      "refs/heads/main",
+      "28336d48a13d0fd4e0586b0389cf97e7185ad37f"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "976fb6ce90e1338fd631d66ca51ed91f9406af8ab55b9008b6da25604802e42f",
+    "sig": "420aa19811e963fc2d25fccff376e4eaf55865cbb8fd07b00195ea2babe9547a24ef9775b8e8c47eeabe693c538e017bde8bcb24f78fbf3d7e35afcb054b1bb6"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "empty",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/empty"
+     ],
+     [
+      "name",
+      "empty"
+     ],
+     [
+      "description",
+      ""
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/empty"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/empty.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ]
+    ],
+    "content": "",
+    "id": "6749f1a10fa78645b68042cf8cbc9582721074a7d455c211e16d67295d5af7c2",
+    "sig": "f3a3b2af8f6a6d4baf8996c5d0fc25bd8a31b43230bd449bdcf95cfc47a84eb08329daddf612a9bec2f2e301413d414f19f64c7db63707a5028b04010b06bf2a"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/empty"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "99c709e3cb948c794542b2cf0cb233a93814c1aadd38f07686593aaf96ca216c",
+    "sig": "b2368e2f76fd1821b2432e3c8e00e3b4e669f04fffcba7e6731f86d4ea4d45898c152dd320958d87e46e685672af7d71c47e9c958cf86c9cd10a86edfb7b0562"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "described",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/described"
+     ],
+     [
+      "name",
+      "described"
+     ],
+     [
+      "description",
+      "Custom description from the description file"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/described"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/described.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ]
+    ],
+    "content": "Custom description from the description file",
+    "id": "4a63a403566977a261fdbd1f170078ddf0e227ab9985576942632997be50170d",
+    "sig": "f36effcf9b7d019d11f3d9a9da07ada102a2ec4967ddfada83771bbc5cb50be9c4b99d95985085161c38fd3b60158def2c7be6815935755b3e25e8e373b41cda"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/described"
+     ],
+     [
+      "refs/heads/main",
+      "3e898df6245c5505fba2bc75624e7d4d3035eb15"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "92eb760db5238f12efd7b97a1310d662a0b21c06ebddaef708112b78dfcc48f3",
+    "sig": "4f6e8488187df9f45e2f34b1cdbe39165b1c18e02e32fab1009bf2cbcacc31fda53764e16dad7a4415aa1cb6c4fc7fe9a5a8fc848e56a517f16ad42bc6c981d3"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "plain",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/plain"
+     ],
+     [
+      "name",
+      "plain"
+     ],
+     [
+      "description",
+      ""
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/plain"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/plain.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ]
+    ],
+    "content": "",
+    "id": "3a323ce9b24b8f2517a6e455c9942524c181824c3e8ba20ba681abfefe3ae7b0",
+    "sig": "f3f9b9240b92fec051681079886e3813bec12e947c40b72ab7e9846fa213e502cfb23a9873a7af40667d0f113add874183753dcf2e6eb394a5dc06ed65c7876a"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/plain"
+     ],
+     [
+      "refs/heads/main",
+      "37f0ea43d31f40962274f77b4ad05c8cfab53bda"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "3a0b1324208b795da6b50208966ff88ccac4d94367b5bc886756316b2416501b",
+    "sig": "7d80e7d373dfa13f190a0c1ba44d45bd99b8fef761234e207194206ac59bf7a50b142a9e0b306bbdcc8d8f7a256e1106991becb9db07583f8515e856fe330e2f"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "agent",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/agent"
+     ],
+     [
+      "name",
+      "agent"
+     ],
+     [
+      "description",
+      "agent"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/agent"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/agent.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ],
+     [
+      "r",
+      "https://forge.example/forge/casey/agent/blocktrails.json"
+     ],
+     [
+      "anchor",
+      "txbt4",
+      "abababababababababababababababababababababababababababababababab"
+     ],
+     [
+      "chain",
+      "txbt4"
+     ],
+     [
+      "txo",
+      "txo:txbt4:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:1"
+     ],
+     [
+      "commit",
+      "2222222222222222222222222222222222222222"
+     ]
+    ],
+    "content": "agent",
+    "id": "02cb25b6685636a2c9a2596b1566f595171526054f884c787e9dd78a7ace0c89",
+    "sig": "9aed5c18586911c67e877a91536b6962d3a40fda7ef8b4f13318993863147a011ebbdb722e54839be18c96bcd83e91de8a2390df2918f8aa3467b2d2bfe4b464"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443865,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/agent"
+     ],
+     [
+      "refs/heads/main",
+      "bc08a179183ac4c68262cbac770c82852cdd943e"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ],
+     [
+      "r",
+      "https://forge.example/forge/casey/agent/blocktrails.json"
+     ],
+     [
+      "anchor",
+      "txbt4",
+      "abababababababababababababababababababababababababababababababab"
+     ],
+     [
+      "chain",
+      "txbt4"
+     ],
+     [
+      "txo",
+      "txo:txbt4:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd:1"
+     ],
+     [
+      "commit",
+      "2222222222222222222222222222222222222222"
+     ]
+    ],
+    "content": "",
+    "id": "65522d482bfe4ff87f3e3296a54f96944565a61d45edefca798b96ae6b81af84",
+    "sig": "f3ea1c068a2387bff2282d1e6f15f10db6a77a46cd1aa8d0eb4dbea91bd844376b57a856d396d28d6ced0b8f3f50ae13bf5f282d28b5be23a0a25c7d23feda44"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "held",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/held"
+     ],
+     [
+      "name",
+      "held"
+     ],
+     [
+      "description",
+      "held"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/held"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/held.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ],
+     [
+      "r",
+      "https://forge.example/forge/casey/held/blocktrails.json"
+     ],
+     [
+      "anchor",
+      "tbtc4",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     [
+      "chain",
+      "tbtc4"
+     ],
+     [
+      "txo",
+      "txo:tbtc4:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1"
+     ],
+     [
+      "commit",
+      "c81839bcf0f7a6023b841e8b54b2f6e1f372b3bf"
+     ]
+    ],
+    "content": "held",
+    "id": "bcd14718e781882c67f6e0f7ac3a3725535703026173775818674cc2211cf1c6",
+    "sig": "c53ea0278d4f0bd9fb298453ecbab357069a05cfe69d4a42eb92f5e5ace0db71cdf0a26372307436cd5d207291f987f09795ef6c4c8b963d741b3e08f929020a"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/held"
+     ],
+     [
+      "refs/heads/main",
+      "c81839bcf0f7a6023b841e8b54b2f6e1f372b3bf"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ],
+     [
+      "r",
+      "https://forge.example/forge/casey/held/blocktrails.json"
+     ],
+     [
+      "anchor",
+      "tbtc4",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     [
+      "chain",
+      "tbtc4"
+     ],
+     [
+      "txo",
+      "txo:tbtc4:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1"
+     ],
+     [
+      "commit",
+      "c81839bcf0f7a6023b841e8b54b2f6e1f372b3bf"
+     ]
+    ],
+    "content": "",
+    "id": "b74e2ef1bc0f9b86c2aa777b73e2d49ec67027f3fe521d21a2234a54e77249cb",
+    "sig": "37f2e3898bfa2622b73a7ee14811fb6482b8510e35bdc37ba1396e31bc2da3ef171bd0168759a4f97620cd998dc57f91d9bd4fa321415dd6af7505c92682a656"
+   }
+  },
+  {
+   "mode": "relays",
+   "owner": "casey",
+   "name": "heldpending",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": true,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/heldpending"
+     ],
+     [
+      "name",
+      "heldpending"
+     ],
+     [
+      "description",
+      "held pending"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/heldpending"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/heldpending.git"
+     ],
+     [
+      "relays",
+      "wss://relay.example",
+      "ws://r2.example:7777"
+     ]
+    ],
+    "content": "held pending",
+    "id": "fa3a464679eec212295aaaa4e612cadacf9423d74523d520fed67656af28ebfb",
+    "sig": "69cab67234948980536caf512f62945402d7abfeae0a0ee228d2ddbd9ea5f592fa5198018f1c38da5234c6280089c899bf1fa6815851656d3acc7971313ae8f7"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/heldpending"
+     ],
+     [
+      "refs/heads/main",
+      "f623ff19c1f71d97ea242529be05778b746052c5"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "bbfc5b6e06abe67f30b1dddc6f6e475ee400ae2e591c74e790c41085d801ee3f",
+    "sig": "9bbef6ed68705cc6fa513b09ad87b5628cd9cd071bad75c078c0969ec37a0aa47bcd47b77c567b11d8ec63e6261493be856f299f505751789888a725c0ca5071"
+   }
+  },
+  {
+   "mode": "none",
+   "owner": "casey",
+   "name": "demo",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": false,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/demo"
+     ],
+     [
+      "name",
+      "demo"
+     ],
+     [
+      "description",
+      "Demo \"Project\" \\ ünï 🚀 end"
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/demo"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/demo.git"
+     ]
+    ],
+    "content": "Demo \"Project\" \\ ünï 🚀 end",
+    "id": "bfdcdbf9192bf614a97c2d627c03b0e969c7afc2c8b59cf45e5d650cf050ab93",
+    "sig": "a2f101052367c1e68a5ae485b1376209b8ba2d07a4d924a65efccd408af02b317159452d01524b3445d44a348266e6706ced5f76f6b2504fa8973b716982754c"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/demo"
+     ],
+     [
+      "refs/heads/main",
+      "7d824a73ba1fe3deda2cb3755e8679e0165550e0"
+     ],
+     [
+      "refs/heads/dev",
+      "2814045d75c2c3c6824b65a76d80ae684f024b21"
+     ],
+     [
+      "refs/heads/feature/x",
+      "dfbbee75645e7d46299bb6c3b30217b23cec65a6"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "109ad3c4fb459cacb8446e39ec8ab807a67de760c9fb568905c33174ff3e6d2f",
+    "sig": "05cfdccfcda46b902c608486b71ca58e99e74a926a9f424fb5f36850e98a7250ef31387a6d81c83a2be19dd4ee12c65be491c7cc3fe1f7ac3419bcf3db68716b"
+   }
+  },
+  {
+   "mode": "none",
+   "owner": "casey",
+   "name": "empty",
+   "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "npub": "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9",
+   "relaysConfigured": false,
+   "event": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30617,
+    "tags": [
+     [
+      "d",
+      "casey/empty"
+     ],
+     [
+      "name",
+      "empty"
+     ],
+     [
+      "description",
+      ""
+     ],
+     [
+      "web",
+      "https://forge.example/forge/casey/empty"
+     ],
+     [
+      "clone",
+      "https://forge.example/forge/casey/empty.git"
+     ]
+    ],
+    "content": "",
+    "id": "65e6403a76ae227f82da6cbd66daa9d3831e20c3afcec2cfd93366b033d55c40",
+    "sig": "ffc3749ff3aadf6be56fb3ff761f7bf0b85459ca04ebeb11edc0527df39bfd9fba4aab148e34502a01f7c0042898866d093b08028b8d1aae9be5330254903efc"
+   },
+   "state": {
+    "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "created_at": 1792443866,
+    "kind": 30618,
+    "tags": [
+     [
+      "d",
+      "casey/empty"
+     ],
+     [
+      "HEAD",
+      "ref: refs/heads/main"
+     ]
+    ],
+    "content": "",
+    "id": "af1c58ab506ef113cae55d6d309ed6cf549bdc623a900d79fe7af33738650582",
+    "sig": "f72e973b85bb029ef6a7cae0c1c3c933c4cf4efc519a2e92fe36a67c5907816ae1ee3f9ab83e0fe43009fccdc7f8662690aa970aa7bd103aa404a63d8e3172d5"
+   }
+  }
+ ]
+}

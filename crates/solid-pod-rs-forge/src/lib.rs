@@ -58,9 +58,13 @@ pub mod marks_ui;
 pub mod merge;
 #[cfg(feature = "mirror")]
 pub mod mirror;
+#[cfg(feature = "announce")]
+pub mod nip34;
 pub mod ownership;
 mod prgit;
 pub mod pulls;
+#[cfg(feature = "announce")]
+pub mod publish;
 pub mod repo;
 pub mod request;
 pub mod router;
@@ -147,6 +151,9 @@ pub struct ForgeService {
     token_key: Arc<[u8; 32]>,
     /// Per-service single-use guard for NIP-98 event ids.
     nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache,
+    /// NIP-34 identity, opted-in relays and publish policies.
+    #[cfg(feature = "announce")]
+    announcer: Arc<nip34::Announcer>,
     /// Forge-held Blocktrails trails (feature `anchoring`).
     #[cfg(feature = "anchoring")]
     trails: Arc<trail::TrailStore>,
@@ -179,6 +186,8 @@ impl ForgeService {
         let spine: Arc<dyn SpineStore> = Arc::new(FsSpineStore::new(plugin_dir.clone()));
         let hosted = Arc::new(HostedStore::new(plugin_dir.clone()));
         let token_key = Arc::new(load_or_create_token_key(&plugin_dir)?);
+        #[cfg(feature = "announce")]
+        let announcer = Arc::new(nip34::Announcer::new(&cfg, &plugin_dir)?);
         #[cfg(feature = "anchoring")]
         let trails = Arc::new(trail::TrailStore::new(&cfg, &plugin_dir)?);
         Ok(Self {
@@ -191,6 +200,8 @@ impl ForgeService {
             hosted,
             token_key,
             nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache::from_env(),
+            #[cfg(feature = "announce")]
+            announcer,
             #[cfg(feature = "anchoring")]
             trails,
             pr: pulls::PrExt::default(),
@@ -330,6 +341,10 @@ impl ForgeService {
                 "anchoring is not compiled into this build".into(),
             )),
             Route::ApiMirror { owner, repo } => Ok(self.h_api_mirror(&owner, &repo)),
+            Route::ApiNostr { owner, repo } => self.h_api_nostr(req, &owner, &repo).await,
+            Route::ApiAnnounce { owner, repo } => {
+                self.h_api_announce(req, _agent, &owner, &repo).await
+            }
             Route::Issues { owner, repo } => {
                 if req.method.eq_ignore_ascii_case("POST") {
                     self.h_issue_create(req, _agent, &owner, &repo).await
@@ -658,6 +673,35 @@ impl ForgeService {
             ),
             None => ForgeResponse::json(404, &serde_json::json!({"error": "not a mirror"})),
         }
+    }
+
+    /// Without the `announce` feature there is no NIP-34 emission (501).
+    #[cfg(not(feature = "announce"))]
+    #[allow(clippy::unused_self, clippy::unused_async)]
+    async fn h_api_nostr(
+        &self,
+        _req: &ForgeRequest,
+        _owner: &str,
+        _repo: &str,
+    ) -> Result<ForgeResponse, ForgeError> {
+        Err(ForgeError::Unsupported(
+            "NIP-34 emission needs the `announce` feature".into(),
+        ))
+    }
+
+    /// Without the `announce` feature there is no NIP-34 emission (501).
+    #[cfg(not(feature = "announce"))]
+    #[allow(clippy::unused_self, clippy::unused_async)]
+    async fn h_api_announce(
+        &self,
+        _req: &ForgeRequest,
+        _agent: &ForgeAgent,
+        _owner: &str,
+        _repo: &str,
+    ) -> Result<ForgeResponse, ForgeError> {
+        Err(ForgeError::Unsupported(
+            "NIP-34 emission needs the `announce` feature".into(),
+        ))
     }
 
     /// Without the `mirror` feature no repository is a mirror.
