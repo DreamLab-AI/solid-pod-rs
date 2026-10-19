@@ -3996,6 +3996,7 @@ version = "0.5.0-alpha.16"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bech32",
  "bytes",
  "futures-util",
  "hex",

@@ -36,6 +36,8 @@ sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
+# NIP-19 `npub` display encoding for JSON author metadata (BIP-173 bech32).
+bech32 = "0.11"
 # Schnorr signing for the NIP-34 instance key — only pulled by `anchoring`
 # (mark address derivation) and `announce` (event signing).
 k256 = { version = "0.13", features = ["schnorr"], optional = true }

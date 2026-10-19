@@ -155,7 +155,57 @@ pub enum Route {
     },
     /// Unmatched — the handler returns 404.
     NotFound,
+    /// `GET <prefix>/xlogin.js` — the vendored login widget, served without
+    /// authentication even under `private_repos`.
+    Xlogin,
+    /// `GET /api/repos/<owner>` — JSON repo list of one owner.
+    ApiOwnerRepos {
+        /// Owner namespace.
+        owner: String,
+    },
+    /// `/api/repos/<owner>/<repo>/<action>[/tail…]` for the read-feature
+    /// actions in [`API_ACTIONS`] (`issues`, `labels`, `search`, `releases`,
+    /// `tree`, `blob`, `commits`, `commit`). Other actions stay unrouted so
+    /// other features can claim them.
+    ApiRepoAction {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// The action segment.
+        action: String,
+        /// Remaining path segments.
+        tail: Vec<String>,
+    },
+    /// `GET /<owner>/<repo>/search?q=` — in-repo search page.
+    RepoSearch {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
+    /// `GET /<owner>/<repo>/releases` — tags as releases.
+    RepoReleases {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
+    /// `GET /<owner>/<repo>/archive/<ref>.tar.gz|.zip`.
+    RepoArchive {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// `<ref>.tar.gz` or `<ref>.zip` (the ref may contain slashes).
+        spec: String,
+    },
 }
+
+/// `/api/repos/<o>/<r>/<action>` actions routed to [`Route::ApiRepoAction`].
+pub const API_ACTIONS: &[&str] = &[
+    "issues", "labels", "search", "releases", "tree", "blob", "commits", "commit",
+];
 
 /// Git smart-HTTP suffixes that identify a CGI request.
 const GIT_SUFFIXES: &[&str] = &["/info/refs", "/git-upload-pack", "/git-receive-pack"];
@@ -217,6 +267,7 @@ pub fn parse_route(rel: &str) -> Route {
     }
 
     match segs.as_slice() {
+        ["xlogin.js"] => Route::Xlogin,
         [owner] => Route::OwnerIndex {
             owner: (*owner).to_string(),
         },
@@ -277,6 +328,13 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
         "branches" if rest.is_empty() => Route::Branches { owner, repo },
         "tags" if rest.is_empty() => Route::Tags { owner, repo },
         "blocktrails.json" if rest.is_empty() => Route::BlocktrailsJson { owner, repo },
+        "search" if rest.is_empty() => Route::RepoSearch { owner, repo },
+        "releases" if rest.is_empty() => Route::RepoReleases { owner, repo },
+        "archive" if !rest.is_empty() => Route::RepoArchive {
+            owner,
+            repo,
+            spec: rest.join("/"),
+        },
         "issues" => match rest {
             [] => Route::Issues { owner, repo },
             ["new"] => Route::IssueNew { owner, repo },
@@ -310,6 +368,17 @@ fn parse_api(segs: &[&str]) -> Route {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
         },
+        ["repos", owner] => Route::ApiOwnerRepos {
+            owner: (*owner).to_string(),
+        },
+        ["repos", owner, repo, action, tail @ ..] if API_ACTIONS.contains(action) => {
+            Route::ApiRepoAction {
+                owner: (*owner).to_string(),
+                repo: strip_git_suffix(repo),
+                action: (*action).to_string(),
+                tail: tail.iter().map(|s| (*s).to_string()).collect(),
+            }
+        }
         _ => Route::NotFound,
     }
 }
@@ -514,6 +583,51 @@ mod tests {
             Route::ApiHosted {
                 hex: "abc".into(),
                 id: "xyz".into()
+            }
+        );
+    }
+
+    #[test]
+    fn readfeat_routes() {
+        assert_eq!(parse_route("/xlogin.js"), Route::Xlogin);
+        assert_eq!(
+            parse_route("/api/repos/alice"),
+            Route::ApiOwnerRepos {
+                owner: "alice".into()
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/alice/repo/blob/main/src/lib.rs"),
+            Route::ApiRepoAction {
+                owner: "alice".into(),
+                repo: "repo".into(),
+                action: "blob".into(),
+                tail: vec!["main".into(), "src".into(), "lib.rs".into()]
+            }
+        );
+        // actions owned by other features stay unrouted here
+        assert_eq!(parse_route("/api/repos/alice/repo/marks"), Route::NotFound);
+        assert_eq!(
+            parse_route("/alice/repo/archive/feature/x.zip"),
+            Route::RepoArchive {
+                owner: "alice".into(),
+                repo: "repo".into(),
+                spec: "feature/x.zip".into()
+            }
+        );
+        assert_eq!(parse_route("/alice/repo/archive"), Route::NotFound);
+        assert_eq!(
+            parse_route("/alice/repo/search"),
+            Route::RepoSearch {
+                owner: "alice".into(),
+                repo: "repo".into()
+            }
+        );
+        assert_eq!(
+            parse_route("/alice/repo/releases"),
+            Route::RepoReleases {
+                owner: "alice".into(),
+                repo: "repo".into()
             }
         );
     }

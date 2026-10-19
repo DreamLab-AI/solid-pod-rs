@@ -31,6 +31,20 @@ pub struct ForgeConfig {
     /// Opt-in relays the NIP-34 announcement is published to. Empty =
     /// build/sign only, never publish.
     pub announce_relays: Vec<String>,
+    /// JSS `privateRepos`: when `true` every read (git, HTML, JSON) is
+    /// owner-only. Default `false`.
+    pub private_repos: bool,
+    /// JSS `baseUrl`: public origin used for absolute clone and hosted-body
+    /// URLs (reverse-proxy override). `None` falls back to the request's
+    /// `host_url`.
+    pub base_url: Option<String>,
+    /// JSS `loopbackUrl`: origin of the host's own HTTP surface for pod
+    /// body reads. Informational for embedders that build a
+    /// [`crate::LoopbackFetch`]; `None` means "derive it".
+    pub loopback_url: Option<String>,
+    /// JSS `cspConnect`: extra `http(s)` origins admitted into the
+    /// `connect-src` of the page CSP (see [`crate::xlogin::build_csp`]).
+    pub csp_connect: Vec<String>,
 }
 
 impl Default for ForgeConfig {
@@ -45,6 +59,10 @@ impl Default for ForgeConfig {
             default_chain: "tbtc4".to_string(),
             allow_mainnet: false,
             announce_relays: Vec::new(),
+            private_repos: false,
+            base_url: None,
+            loopback_url: None,
+            csp_connect: Vec::new(),
         }
     }
 }
