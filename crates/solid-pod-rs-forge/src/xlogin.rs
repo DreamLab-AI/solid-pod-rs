@@ -64,6 +64,43 @@ base-uri 'none'; form-action 'self'"
     )
 }
 
+/// Build the strict page `Content-Security-Policy` for pages that do **not**
+/// load the login widget (security review M4).
+///
+/// Identical to [`build_csp`] except `script-src` is `'self' 'nonce-<nonce>'`:
+/// no `'unsafe-inline'` and no `https://esm.sh`, so an HTML-injection bug on
+/// such a page cannot run script and the third-party CDN is never trusted.
+/// No forge page emits an inline script today; the nonce reserves the slot,
+/// so any future inline script must carry it. `nonce` must be unguessable
+/// and fresh per response; only `[A-Za-z0-9+/=_-]` characters are kept.
+///
+/// **Residual risk.** A page that loads [`XLOGIN_JS`] still needs the widget
+/// policy of [`build_csp`] (`'unsafe-inline'` and `esm.sh`, because the
+/// vendored widget, which must not be edited, dynamically imports from the
+/// CDN). Such a page keeps the weaker policy until the widget is vendored
+/// with its imports or pinned with subresource integrity.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::xlogin::build_strict_csp;
+///
+/// let csp = build_strict_csp(&[], "abc123");
+/// assert!(csp.contains("script-src 'self' 'nonce-abc123';"));
+/// assert!(!csp.contains("unsafe-inline'; connect") && !csp.contains("esm.sh"));
+/// ```
+#[must_use]
+pub fn build_strict_csp(csp_connect: &[String], nonce: &str) -> String {
+    let nonce: String = nonce
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
+        .collect();
+    build_csp(csp_connect).replace(
+        "script-src 'unsafe-inline' 'self' https://esm.sh;",
+        &format!("script-src 'self' 'nonce-{nonce}';"),
+    )
+}
+
 /// Serve the widget. Only `GET` / `HEAD` are allowed (`405` otherwise); the
 /// response is immutable-cached and `nosniff`.
 ///
@@ -141,6 +178,19 @@ mod tests {
         assert!(csp.contains("connect-src 'self';"));
         assert!(csp.contains("form-action 'self'"));
         assert!(csp.starts_with("default-src 'none';"));
+    }
+
+    #[test]
+    fn strict_csp_has_no_inline_or_cdn_and_sanitises_the_nonce() {
+        let csp = build_strict_csp(&[], "ab12'; script-src *");
+        assert!(csp.contains("'nonce-ab12script-src'"), "{csp}");
+        assert!(!csp.contains("esm.sh"));
+        assert!(!csp.contains("unsafe-inline' 'self'"));
+        assert!(
+            csp.contains("style-src 'unsafe-inline'"),
+            "styles unchanged"
+        );
+        assert!(csp.contains("connect-src 'self';"));
     }
 
     #[test]

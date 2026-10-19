@@ -224,6 +224,18 @@ pub(crate) struct KeyedLocks {
 }
 
 impl KeyedLocks {
+    /// Take the lock for `key`, giving up after `wait` with [`ForgeError::Busy`]
+    /// so a slow holder cannot queue unbounded requests behind it.
+    pub async fn lock_within(
+        &self,
+        key: &str,
+        wait: Duration,
+    ) -> Result<OwnedMutexGuard<()>, ForgeError> {
+        tokio::time::timeout(wait, self.lock(key))
+            .await
+            .map_err(|_| ForgeError::Busy(format!("{key} is busy, retry shortly")))
+    }
+
     /// Take the lock for `key`, waiting for any earlier holder.
     pub async fn lock(&self, key: &str) -> OwnedMutexGuard<()> {
         let m = {
@@ -257,6 +269,23 @@ pub(crate) fn fetch_locks() -> &'static KeyedLocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held fetch lock gives a bounded wait and then a 503, not a queue.
+    #[tokio::test]
+    async fn lock_within_times_out_as_busy() {
+        let locks = KeyedLocks::default();
+        let held = locks.lock("a/b").await;
+        let err = locks
+            .lock_within("a/b", Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 503);
+        drop(held);
+        assert!(locks
+            .lock_within("a/b", Duration::from_millis(50))
+            .await
+            .is_ok());
+    }
 
     fn git_available() -> bool {
         std::process::Command::new("git")

@@ -410,7 +410,8 @@ async fn get_nostr_404s_for_unknown_or_unsafe_repos_and_405s_for_writes() {
             .handle(request("GET", path), ForgeAgent::Anonymous)
             .await
             .unwrap();
-        assert!(matches!(r.status, 404), "{path}: {}", r.status);
+        // A `..` segment is now refused outright (400) by the percent guard.
+        assert!(matches!(r.status, 400 | 404), "{path}: {}", r.status);
     }
     let r = svc
         .handle(

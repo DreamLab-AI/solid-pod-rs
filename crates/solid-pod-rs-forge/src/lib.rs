@@ -81,6 +81,7 @@ pub mod repo;
 pub mod request;
 pub mod router;
 pub mod search;
+mod sizecap;
 pub mod spine;
 pub mod token;
 #[cfg(feature = "anchoring")]
@@ -346,10 +347,19 @@ impl ForgeService {
             .iter()
             .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.starts_with("text/html"));
         if is_html {
-            resp.headers.push((
-                "content-security-policy".into(),
-                xlogin::build_csp(&self.cfg.csp_connect),
-            ));
+            // Only a page that loads the vendored widget keeps the weaker
+            // widget policy; every other page gets a strict nonce policy.
+            let widget = resp
+                .body
+                .windows(b"xlogin.js".len())
+                .any(|w| w == b"xlogin.js");
+            let csp = if widget {
+                xlogin::build_csp(&self.cfg.csp_connect)
+            } else {
+                let nonce = uuid::Uuid::new_v4().simple().to_string();
+                xlogin::build_strict_csp(&self.cfg.csp_connect, &nonce)
+            };
+            resp.headers.push(("content-security-policy".into(), csp));
             if !resp
                 .headers
                 .iter()
@@ -433,12 +443,14 @@ impl ForgeService {
             Route::ApiHosted { hex, id } => self.h_api_hosted(req, _agent, &hex, &id).await,
             Route::ApiFork { owner, repo } => self.h_api_fork(req, _agent, &owner, &repo).await,
             Route::ApiCompare { owner, repo, spec } => {
-                self.h_api_compare(&owner, &repo, &spec).await
+                self.h_api_compare(_agent, &owner, &repo, &spec).await
             }
             Route::ApiPulls { owner, repo, tail } => {
                 self.h_api_pulls(req, _agent, &owner, &repo, &tail).await
             }
-            Route::Compare { owner, repo, spec } => self.h_compare_page(&owner, &repo, &spec).await,
+            Route::Compare { owner, repo, spec } => {
+                self.h_compare_page(_agent, &owner, &repo, &spec).await
+            }
             Route::Pulls { owner, repo, tail } => {
                 self.h_pulls_page(req, _agent, &owner, &repo, &tail).await
             }
@@ -1179,6 +1191,30 @@ mod tests {
             raw_body: Bytes::new(),
             host_url: Some("https://pod.example".into()),
         }
+    }
+
+    /// M4: a page that loads the widget keeps the widget policy; any other
+    /// HTML page gets the strict nonce policy with a fresh nonce.
+    #[test]
+    fn widget_pages_keep_the_widget_csp_and_others_get_a_nonce() {
+        let (_td, svc) = service();
+        let csp = |r: &ForgeResponse| {
+            r.headers
+                .iter()
+                .find(|(k, _)| k == "content-security-policy")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let plain = svc.finish_page(ForgeResponse::html(200, "<p>hi</p>".to_string()));
+        let widget = svc.finish_page(ForgeResponse::html(
+            200,
+            "<script src=\"/forge/xlogin.js\"></script>".to_string(),
+        ));
+        assert!(csp(&plain).contains("script-src 'self' 'nonce-"));
+        assert!(!csp(&plain).contains("unsafe-inline' 'self'"));
+        assert!(csp(&widget).contains("script-src 'unsafe-inline' 'self' https://esm.sh"));
+        let again = svc.finish_page(ForgeResponse::html(200, "<p>hi</p>".to_string()));
+        assert_ne!(csp(&plain), csp(&again), "the nonce is fresh per response");
     }
 
     fn service() -> (TempDir, ForgeService) {

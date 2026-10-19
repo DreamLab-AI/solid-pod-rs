@@ -57,7 +57,10 @@ impl ForgeService {
         if segs == ["xlogin.js"] {
             return None;
         }
-        let api = segs.first() == Some(&"api");
+        // A git smart-HTTP path is judged as git even when its first segment
+        // looks like the API namespace (`/api/<name>.git/info/refs`).
+        let git = matches!(route, Route::GitSmart { .. });
+        let api = !git && segs.first() == Some(&"api");
         if api && matches!(segs.get(1), Some(&"token" | &"hosted")) {
             return None;
         }
@@ -66,7 +69,10 @@ impl ForgeService {
             return Some(challenge(api));
         }
         // The namespace the request addresses (None for the root listings).
-        let target = if api {
+        // The parsed route's owner is what will be served, so it decides;
+        // the raw segments are only a fail-closed fallback for routes that
+        // carry no owner.
+        let target = route.owner().or(if api {
             if segs.get(1) == Some(&"repos") {
                 segs.get(2).copied()
             } else {
@@ -74,7 +80,7 @@ impl ForgeService {
             }
         } else {
             segs.first().copied()
-        };
+        });
         let Some(me) = me else {
             return Some(if api {
                 api_err(403, "no pod namespace for this agent")
@@ -334,6 +340,36 @@ mod tests {
                 .status,
             200
         );
+    }
+
+    // Security review L5: `/api/<name>.git/...` is git smart-HTTP to the
+    // router but looked like the API namespace to the gate, so any
+    // authenticated agent passed it. The git owner is now judged, and the
+    // route words are not usable as owner names at all.
+    #[tokio::test]
+    async fn api_prefixed_git_path_is_gated_as_git() {
+        let (_td, svc) = private_svc();
+        for p in [
+            "/forge/api/x.git/info/refs",
+            "/forge/api/x.git/git-upload-pack",
+            "/forge/xlogin.js/x.git/info/refs",
+        ] {
+            let r = status(&svc, "GET", p, "service=git-upload-pack", dana()).await;
+            assert_eq!(r.status, 403, "{p}");
+            let r = status(
+                &svc,
+                "GET",
+                p,
+                "service=git-upload-pack",
+                ForgeAgent::Anonymous,
+            )
+            .await;
+            assert_eq!(r.status, 401, "{p}");
+        }
+        assert!(!crate::guard::ok_owner("api"));
+        assert!(!crate::guard::ok_owner("Api"));
+        assert!(!crate::guard::ok_owner("xlogin.js"));
+        assert!(!crate::compare::valid_owner("api"));
     }
 
     // JSS "the repo list ?q= filter is a plain server-side GET form (no JS)"

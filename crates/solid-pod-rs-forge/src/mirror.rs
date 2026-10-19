@@ -82,11 +82,14 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::ownership::valid_name_segment;
+use crate::sizecap::dir_size;
 
 /// NIP-34 repository announcement kind.
 pub const KIND_ANNOUNCE: u64 = 30617;
 /// NIP-34 repository state kind.
 pub const KIND_STATE: u64 = 30618;
+/// How far ahead of the local clock a state's `created_at` may be, in seconds.
+pub const MAX_FUTURE_SKEW_SECS: u64 = 600;
 /// Most followed `(pubkey, name)` pairs one forge will mirror.
 pub const MAX_FOLLOW: usize = 50;
 /// Default floor between two fetches of one repository, in milliseconds.
@@ -973,6 +976,11 @@ pub struct MirrorRecord {
     /// the catch-up resend of a state that was rate-limited, and is kept.
     #[serde(default)]
     pub newest_seen_at: u64,
+    /// Event id of the state that set [`Self::newest_seen_at`]. Two states with
+    /// the same `created_at` are ordered by id (NIP-01: the lowest id wins), so
+    /// a sibling that loses the tie-break is dropped.
+    #[serde(default)]
+    pub newest_seen_id: String,
     /// Consecutive failed fetches. The floor between fetches doubles for each,
     /// up to [`MAX_BACKOFF_MS`], and a success resets it.
     #[serde(default)]
@@ -997,6 +1005,7 @@ impl MirrorRecord {
             announce_at: None,
             clones: Vec::new(),
             newest_seen_at: 0,
+            newest_seen_id: String::new(),
             failures: 0,
             retry_at: None,
         }
@@ -1305,27 +1314,6 @@ impl GitCli {
     }
 }
 
-/// Bytes under `path`, symlinks not followed (a mirror holds none, and
-/// following one would let a repository measure something it does not own).
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
-                stack.push(entry.path());
-            } else if meta.is_file() {
-                total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    total
-}
-
 /// Kill a process group by leader pid. `kill -KILL -- -<pid>` through the
 /// system `kill`, because `unsafe` is forbidden here; a no-op where there is
 /// no pid or no `kill`.
@@ -1585,6 +1573,47 @@ pub struct Mirror {
     permits: Arc<tokio::sync::Semaphore>,
 }
 
+/// Releases a repository's `busy` slot on every exit path of
+/// [`Mirror::drain`], including a panic in `on_event` or a closed permit
+/// semaphore. Without it the key stayed in `busy` for ever and the repository
+/// stopped updating until restart. When work is still queued the worker is
+/// restarted, so nothing that arrived meanwhile is stranded.
+struct BusyGuard {
+    mirror: Arc<Mirror>,
+    key: String,
+    /// Set by the normal exit, which has already removed the key.
+    released: bool,
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let m = &self.mirror;
+        let mut busy = m
+            .busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        busy.remove(&self.key);
+        let prefix = format!("{}#", self.key);
+        let more = m
+            .inbox
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .any(|k| k.starts_with(&prefix));
+        if more && !m.permits.is_closed() {
+            if let Ok(h) = tokio::runtime::Handle::try_current() {
+                busy.insert(self.key.clone());
+                let me = Arc::clone(m);
+                let key = self.key.clone();
+                h.spawn(async move { me.drain(key).await });
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for Mirror {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mirror")
@@ -1726,6 +1755,11 @@ impl Mirror {
     /// holding a fetch permit while it works, and re-apply a state the rate
     /// limit held back once its wait is over.
     async fn drain(self: Arc<Self>, key: String) {
+        let mut guard = BusyGuard {
+            mirror: Arc::clone(&self),
+            key: key.clone(),
+            released: false,
+        };
         loop {
             let next = {
                 let mut inbox = self
@@ -1750,6 +1784,7 @@ impl Mirror {
                     .any(|k| k.starts_with(&format!("{key}#")));
                 if !more {
                     busy.remove(&key);
+                    guard.released = true;
                     return;
                 }
                 continue;
@@ -1850,7 +1885,25 @@ impl Mirror {
         };
         let now = self.clock.now_ms();
         if let Some(st) = state.as_ref() {
-            if st.created_at < rec.newest_seen_at {
+            if st.created_at > now / 1000 + MAX_FUTURE_SKEW_SECS {
+                // A state stamped far ahead would otherwise freeze the replay
+                // clock and make every honest state look old.
+                rec.events += 1;
+                rec.last_seen = Some(LastSeen {
+                    id: ev.id.clone(),
+                    created_at: ev.created_at,
+                    at: now,
+                    action: SeenAction::Skip,
+                    reason: "created_at is too far in the future".into(),
+                });
+                self.save(&rec);
+                return rec;
+            }
+            let loses_tie = st.created_at == rec.newest_seen_at
+                && !rec.newest_seen_id.is_empty()
+                && ev.id != rec.newest_seen_id
+                && ev.id > rec.newest_seen_id;
+            if st.created_at < rec.newest_seen_at || loses_tie {
                 // A validly signed but older state: a relay replaying history.
                 // Moving branches back to it would be a rollback.
                 rec.events += 1;
@@ -1859,12 +1912,18 @@ impl Mirror {
                     created_at: ev.created_at,
                     at: now,
                     action: SeenAction::Skip,
-                    reason: "older than a state already seen (replay)".into(),
+                    reason: if loses_tie {
+                        "same time as a state already seen, which has the lower id (replay)"
+                    } else {
+                        "older than a state already seen (replay)"
+                    }
+                    .into(),
                 });
                 self.save(&rec);
                 return rec;
             }
             rec.newest_seen_at = st.created_at;
+            rec.newest_seen_id = ev.id.clone();
         }
         let plan = plan_mirror(&PlanInput {
             state: state.as_ref(),
@@ -3069,5 +3128,104 @@ mod tests {
         assert_eq!(store.read(&pubk, "x").unwrap(), rec);
         assert!(store.read("../..", "x").is_none());
         assert!(store.save(&MirrorRecord::new("../x", "y", None)).is_err());
+    }
+
+    // ---- security review L2 / L3 -----------------------------------------
+
+    fn entry_for(sk: &SigningKey) -> FollowEntry {
+        FollowEntry {
+            pubkey: pubhex(sk),
+            name: "up".into(),
+            clone: None,
+        }
+    }
+
+    fn quiet_engine(tmp: &Path, sk: &SigningKey) -> Arc<Mirror> {
+        engine(
+            tmp,
+            MirrorConfig {
+                relays: vec![],
+                follow: vec![entry_for(sk)],
+                min_interval_ms: 0,
+            },
+        )
+    }
+
+    /// L3: a state stamped hours ahead must not raise the replay clock.
+    #[tokio::test]
+    async fn far_future_state_is_refused_and_does_not_freeze_the_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = key(21);
+        let m = quiet_engine(tmp.path(), &sk);
+        let entry = entry_for(&sk);
+        let sha = "a".repeat(40);
+        let now = SystemClock.now_ms() / 1000;
+        let future = state_event(&sk, "up", &[("refs/heads/main", &sha)], None, now + 7200);
+        let rec = m.apply(&entry, &future).await;
+        assert_eq!(rec.newest_seen_at, 0, "clock untouched");
+        let seen = rec.last_seen.unwrap();
+        assert_eq!(seen.action, SeenAction::Skip);
+        assert!(seen.reason.contains("future"), "{}", seen.reason);
+        // An honest state afterwards is not mistaken for a replay.
+        let honest = state_event(&sk, "up", &[("refs/heads/main", &sha)], None, now);
+        let rec = m.apply(&entry, &honest).await;
+        assert!(
+            !rec.last_seen.unwrap().reason.contains("replay"),
+            "honest state wrongly treated as a replay"
+        );
+        assert_eq!(rec.newest_seen_at, now);
+    }
+
+    /// L3: two states at the same second are ordered by id; the higher id,
+    /// arriving second, is dropped, and the same id again is the catch-up
+    /// resend and is kept.
+    #[tokio::test]
+    async fn equal_timestamps_resolve_by_event_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = key(22);
+        let m = quiet_engine(tmp.path(), &sk);
+        let entry = entry_for(&sk);
+        let at = SystemClock.now_ms() / 1000 - 30;
+        let mut pair = [
+            state_event(&sk, "up", &[("refs/heads/main", &"a".repeat(40))], None, at),
+            state_event(&sk, "up", &[("refs/heads/main", &"b".repeat(40))], None, at),
+        ];
+        pair.sort_by(|x, y| x.id.cmp(&y.id));
+        let [low, high] = pair;
+        let rec = m.apply(&entry, &low).await;
+        assert!(!rec.last_seen.unwrap().reason.contains("replay"));
+        let rec = m.apply(&entry, &high).await;
+        let seen = rec.last_seen.unwrap();
+        assert_eq!(seen.action, SeenAction::Skip);
+        assert!(seen.reason.contains("replay"), "{}", seen.reason);
+        let rec = m.apply(&entry, &low).await;
+        assert!(
+            !rec.last_seen.unwrap().reason.contains("replay"),
+            "the same state resent is a catch-up, not a replay"
+        );
+    }
+
+    /// L2: when the worker cannot take a fetch permit it used to return with
+    /// the repository still marked busy, so later events never started a
+    /// worker. The guard must release the slot.
+    #[tokio::test]
+    async fn drain_releases_the_busy_slot_when_it_cannot_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = key(23);
+        let m = quiet_engine(tmp.path(), &sk);
+        m.permits.close();
+        let sha = "c".repeat(40);
+        let at = SystemClock.now_ms() / 1000 - 5;
+        m.enqueue(state_event(
+            &sk,
+            "up",
+            &[("refs/heads/main", &sha)],
+            None,
+            at,
+        ));
+        until("the busy slot to be released", || async {
+            m.busy.lock().unwrap().is_empty().then_some(())
+        })
+        .await;
     }
 }

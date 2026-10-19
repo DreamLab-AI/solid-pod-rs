@@ -26,7 +26,10 @@ async fn html_pages_carry_the_csp_and_json_does_not() {
         .await
         .unwrap();
     let csp = header(&page, "content-security-policy");
-    assert!(csp.contains("script-src 'unsafe-inline' 'self' https://esm.sh"));
+    // Security review M4: no page here loads the widget, so the strict
+    // nonce policy applies (no 'unsafe-inline', no esm.sh).
+    assert!(csp.contains("script-src 'self' 'nonce-"), "{csp}");
+    assert!(!csp.contains("esm.sh") && !csp.contains("unsafe-inline' 'self'"));
     assert!(csp.contains("connect-src 'self';"));
     assert_eq!(header(&page, "x-content-type-options"), "nosniff");
     let api = svc

@@ -176,7 +176,8 @@ impl ForgeService {
         let flat = rev.replace('/', "-");
         let prefix_arg = format!("--prefix={repo}-{flat}/");
         let fmt_arg = format!("--format={format}");
-        let o = gitrun::run(&dir, &["archive", &fmt_arg, &prefix_arg, rev], ARCHIVE_CAP).await?;
+        let o =
+            gitrun::run_heavy(&dir, &["archive", &fmt_arg, &prefix_arg, rev], ARCHIVE_CAP).await?;
         if o.truncated {
             return Ok(api_err(413, "archive too large"));
         }
