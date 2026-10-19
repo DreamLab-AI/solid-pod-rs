@@ -91,11 +91,157 @@ pub fn effective_scheme(req: &HttpRequest) -> &'static str {
     effective_scheme_with(req, trust)
 }
 
-/// `scheme://host` of the request, using [`effective_scheme`].
+/// Reduce a configured public base URL to its origin (`scheme://authority`,
+/// no path, no trailing slash). `None` when it is not an `http(s)` URL with a
+/// usable authority.
+///
+/// ```
+/// use solid_pod_rs_server::scheme::normalise_origin;
+/// assert_eq!(normalise_origin("https://pod.example/base/"), Some("https://pod.example".into()));
+/// assert_eq!(normalise_origin("ftp://pod.example"), None);
+/// ```
+pub fn normalise_origin(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw.split_once("://")?;
+    let scheme = clean_scheme(scheme)?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    valid_authority(authority).then(|| format!("{scheme}://{}", authority.to_ascii_lowercase()))
+}
+
+/// `true` for a plausible `host[:port]` (letters, digits, `.`, `-`, `:`,
+/// bracketed IPv6), so a forged header cannot smuggle a path, userinfo or
+/// whitespace into a generated URL.
+fn valid_authority(a: &str) -> bool {
+    !a.is_empty()
+        && a.len() <= 255
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+}
+
+/// Host named by the first hop of an `X-Forwarded-Host` list, else by the
+/// `host=` parameter of the first `Forwarded` element.
+fn proxy_header_host(req: &HttpRequest) -> Option<String> {
+    let xfh = req
+        .headers()
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim);
+    if let Some(h) = xfh.filter(|h| valid_authority(h)) {
+        return Some(h.to_string());
+    }
+    let fwd = req.headers().get("forwarded")?.to_str().ok()?;
+    let first = fwd.split(',').next()?;
+    first.split(';').find_map(|p| {
+        let (k, v) = p.split_once('=')?;
+        let v = v.trim().trim_matches('"');
+        (k.trim().eq_ignore_ascii_case("host") && valid_authority(v)).then(|| v.to_string())
+    })
+}
+
+/// The `Host` header (or the HTTP/2 `:authority`) exactly as received.
+fn raw_host(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|h| valid_authority(h))
+        .map(str::to_string)
+        .or_else(|| {
+            req.uri()
+                .authority()
+                .map(|a| a.as_str().to_string())
+                .filter(|a| valid_authority(a))
+        })
+}
+
+/// The authority a request should be treated as addressed to, with the
+/// configuration passed explicitly.
+///
+/// Order: the configured public origin; with `trust_proxy`, `X-Forwarded-Host`
+/// then `Forwarded`; the plain `Host` header; the request URI authority; the
+/// server's own bound address.
+/// Without `trust_proxy` the forwarding headers are never read, so a client
+/// cannot retarget NIP-98 URL matching or generated links by sending them.
+///
+/// ```
+/// use actix_web::test::TestRequest;
+/// use solid_pod_rs_server::scheme::host_with;
+///
+/// let req = TestRequest::get()
+///     .insert_header(("host", "pod.example"))
+///     .insert_header(("x-forwarded-host", "evil.example"))
+///     .to_http_request();
+/// assert_eq!(host_with(&req, None, false), "pod.example");
+/// assert_eq!(host_with(&req, None, true), "evil.example");
+/// assert_eq!(host_with(&req, Some("https://pod.example"), true), "pod.example");
+/// ```
+pub fn host_with(req: &HttpRequest, public_origin: Option<&str>, trust_proxy: bool) -> String {
+    if let Some(o) = public_origin {
+        if let Some((_, a)) = o.split_once("://") {
+            return a.to_string();
+        }
+    }
+    if trust_proxy {
+        if let Some(h) = proxy_header_host(req) {
+            return h;
+        }
+    }
+    // Last resort: the server's own bound address (never client-controlled).
+    raw_host(req).unwrap_or_else(|| req.app_config().host().to_string())
+}
+
+/// [`host_with`] using the server's configured public origin and
+/// trusted-proxy flag.
+pub fn request_host(req: &HttpRequest) -> String {
+    match req.app_data::<web::Data<AppState>>() {
+        Some(s) => host_with(req, s.public_origin().as_deref(), s.trust_proxy),
+        None => host_with(req, None, false),
+    }
+}
+
+/// `scheme://host` of the request. A configured public origin wins outright;
+/// otherwise [`effective_scheme`] plus [`request_host`].
 pub fn request_origin(req: &HttpRequest) -> String {
-    let scheme = effective_scheme(req);
-    let conn = req.connection_info();
-    format!("{scheme}://{}", conn.host())
+    if let Some(o) = req
+        .app_data::<web::Data<AppState>>()
+        .and_then(|s| s.public_origin())
+    {
+        return o;
+    }
+    format!("{}://{}", effective_scheme(req), request_host(req))
+}
+
+/// The absolute URL the client addressed (origin plus request target), the
+/// value a NIP-98 `u` tag is signed over.
+pub fn request_url(req: &HttpRequest) -> String {
+    format!("{}{}", request_origin(req), req.uri())
+}
+
+/// `true` when `host` (a `host[:port]`) is permitted by `allowed`, an empty
+/// list permitting everything. Entries match case-insensitively either the
+/// whole authority or just the host part.
+///
+/// ```
+/// use solid_pod_rs_server::scheme::host_allowed;
+/// let allow = vec!["pod.example".to_string()];
+/// assert!(host_allowed("POD.example:8443", &allow));
+/// assert!(!host_allowed("evil.example", &allow));
+/// assert!(host_allowed("anything", &[]));
+/// ```
+pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    let host = host.to_ascii_lowercase();
+    let bare = match host.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host.as_str(),
+    };
+    allowed.iter().any(|a| {
+        let a = a.trim().to_ascii_lowercase();
+        a == host || a == bare
+    })
 }
 
 #[cfg(test)]
@@ -160,6 +306,61 @@ mod tests {
             ("cf-visitor", r#"{"scheme":"https"}"#),
         ]);
         assert_eq!(effective_scheme_with(&r, true), "https");
+    }
+
+    #[test]
+    fn forwarded_host_is_ignored_without_trust_proxy() {
+        let r = req(&[
+            ("host", "pod.example"),
+            ("x-forwarded-host", "evil.example"),
+        ]);
+        assert_eq!(host_with(&r, None, false), "pod.example");
+        let r = req(&[("host", "pod.example"), ("forwarded", "host=evil.example")]);
+        assert_eq!(host_with(&r, None, false), "pod.example");
+    }
+
+    #[test]
+    fn forwarded_host_is_honoured_behind_trust_proxy() {
+        let r = req(&[
+            ("host", "10.0.0.5"),
+            ("x-forwarded-host", "pod.example, other"),
+        ]);
+        assert_eq!(host_with(&r, None, true), "pod.example");
+        let r = req(&[
+            ("host", "10.0.0.5"),
+            ("forwarded", "for=1.2.3.4;host=\"pod.example\""),
+        ]);
+        assert_eq!(host_with(&r, None, true), "pod.example");
+    }
+
+    #[test]
+    fn configured_origin_beats_every_header() {
+        let r = req(&[
+            ("host", "evil.example"),
+            ("x-forwarded-host", "evil.example"),
+        ]);
+        assert_eq!(
+            host_with(&r, Some("https://pod.example"), true),
+            "pod.example"
+        );
+    }
+
+    #[test]
+    fn hostile_host_values_are_not_reflected() {
+        for bad in ["a/b", "user@evil.example", "a b", "evil.example/path?x"] {
+            let r = req(&[("x-forwarded-host", bad)]);
+            assert_eq!(host_with(&r, None, true), r.app_config().host(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn allow_list_matches_host_and_authority() {
+        let a = vec!["pod.example".to_string(), "127.0.0.1:3000".to_string()];
+        assert!(host_allowed("pod.example", &a));
+        assert!(host_allowed("pod.example:8443", &a));
+        assert!(host_allowed("127.0.0.1:3000", &a));
+        assert!(!host_allowed("127.0.0.1:4000", &a));
+        assert!(!host_allowed("evil.example", &a));
     }
 
     #[test]

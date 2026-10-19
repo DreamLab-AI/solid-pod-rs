@@ -120,11 +120,25 @@ struct Cli {
     #[arg(long, env = "JSS_CONNEG")]
     conneg: bool,
 
-    /// Trust `X-Forwarded-Proto` / `cf-visitor` for the request scheme.
+    /// Trust `X-Forwarded-Proto` / `cf-visitor` for the request scheme and
+    /// `X-Forwarded-Host` / `Forwarded` for the request host.
     /// Enable only behind a reverse proxy that overwrites those headers;
     /// otherwise a client could forge the NIP-98 URL scheme.
     #[arg(long, env = "JSS_TRUST_PROXY")]
     trust_proxy: bool,
+
+    /// Public base URL of this server, e.g. `https://pod.example`. It
+    /// becomes the origin for NIP-98 URL matching and every generated
+    /// absolute URL, so a forged `Host` / `X-Forwarded-Host` cannot retarget
+    /// them. Strongly recommended for any internet-facing deployment.
+    #[arg(long, env = "JSS_PUBLIC_BASE_URL")]
+    public_base_url: Option<String>,
+
+    /// Hosts this server answers for (`host` or `host:port`, comma
+    /// separated). A request for any other `Host` gets `421`. Empty allows
+    /// any host.
+    #[arg(long, env = "JSS_ALLOWED_HOSTS", value_delimiter = ',')]
+    allowed_hosts: Vec<String>,
 
     /// Origins whose `/.well-known/did/nostr/<pk>.json` may link a Nostr key
     /// to a WebID (needs the `did-nostr` feature). Comma separated.
@@ -356,6 +370,24 @@ async fn main() -> anyhow::Result<()> {
 
     state.conneg_enabled = cli.conneg || cfg.extras.conneg_enabled == Some(true);
     state.trust_proxy = cli.trust_proxy || cfg.extras.trust_proxy == Some(true);
+    if let Some(raw) = cli.public_base_url.as_deref() {
+        match solid_pod_rs_server::scheme::normalise_origin(raw) {
+            Some(o) => {
+                info!("public origin pinned to {o}");
+                state.public_base_url = Some(o);
+            }
+            None => {
+                eprintln!("error: --public-base-url / JSS_PUBLIC_BASE_URL must be an http(s) URL");
+                std::process::exit(2);
+            }
+        }
+    }
+    state.allowed_hosts = cli
+        .allowed_hosts
+        .iter()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect();
     if state.trust_proxy {
         info!("trusting X-Forwarded-Proto / cf-visitor for the request scheme");
     }
