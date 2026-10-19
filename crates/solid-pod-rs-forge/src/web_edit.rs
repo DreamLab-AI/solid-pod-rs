@@ -485,9 +485,13 @@ pub(crate) async fn commit_file(
     )
     .await?;
     if !ui.ok() {
-        return Err(ForgeError::Conflict(format!(
-            "cannot place {rel_path} in the tree: {}",
+        // git's own message can name the scratch index path: log it, never send it.
+        tracing::warn!(
+            "forge: web edit update-index refused {rel_path}: {}",
             ui.stderr.trim()
+        );
+        return Err(ForgeError::Conflict(format!(
+            "cannot place {rel_path} in the tree"
         )));
     }
     let wt = prgit::run_at(dir, Some(dir), &["write-tree"], &idx_env).await?;
@@ -600,8 +604,13 @@ impl ForgeService {
         };
         let who = ed.authed_owner.as_deref().unwrap_or("anonymous");
         let outcome = {
-            // One writer per repository at a time; merges hold the same lock.
-            let _guard = self.locks.pulls.lock(owner, name).await;
+            // One writer per repository at a time: the spine pull lock, plus
+            // the lock `merge` holds while it moves a branch, so an edit and
+            // a merge never interleave (the CAS still guards pushes, which
+            // take neither). Order: spine lock first; `merge` takes only the
+            // second, so the two cannot deadlock.
+            let _spine = self.locks.pulls.lock(owner, name).await;
+            let _merge = prgit::pull_locks().lock(&format!("{owner}/{name}")).await;
             self.edit_locked(&dir, &branch, &ed, who).await
         };
         let done = match outcome {
