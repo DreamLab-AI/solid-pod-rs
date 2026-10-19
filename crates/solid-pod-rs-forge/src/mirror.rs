@@ -1258,6 +1258,23 @@ impl GitCli {
         timeout: Duration,
         cap: Option<u64>,
     ) -> Result<Vec<u8>, String> {
+        self.run_capped_with(dir, args, allow, timeout, cap, dir_size)
+            .await
+    }
+
+    /// [`Self::run_capped`] with the directory measurement injectable. The
+    /// walk runs on its own task and only signals when the cap is passed, so a
+    /// slow walk of a huge repository can neither stall the draining of git's
+    /// pipes nor delay the deadline (security review L4).
+    async fn run_capped_with(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        allow: Option<&str>,
+        timeout: Duration,
+        cap: Option<u64>,
+        measure: fn(&Path) -> u64,
+    ) -> Result<Vec<u8>, String> {
         let mut cmd = solid_pod_rs_git::hardened_git_async();
         cmd.args(args)
             .current_dir(dir)
@@ -1280,24 +1297,31 @@ impl GitCli {
         tokio::pin!(waited);
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
-        let mut poll = tokio::time::interval(Duration::from_millis(500));
-        let outcome = loop {
-            tokio::select! {
-                out = &mut waited => break Ok(out),
-                () = &mut deadline => break Err("git timed out".to_string()),
-                _ = poll.tick(), if cap.is_some() => {
-                    if let Some(limit) = cap {
-                        let d = dir.to_path_buf();
-                        let size = tokio::task::spawn_blocking(move || dir_size(&d))
-                            .await
-                            .unwrap_or(0);
-                        if size > limit {
-                            break Err("repository grew past the size cap".to_string());
-                        }
+        let (tx, mut grew) = tokio::sync::oneshot::channel::<()>();
+        let watcher = cap.map(|limit| {
+            let d = dir.to_path_buf();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let d2 = d.clone();
+                    let size = tokio::task::spawn_blocking(move || measure(&d2))
+                        .await
+                        .unwrap_or(0);
+                    if size > limit {
+                        let _ = tx.send(());
+                        return;
                     }
                 }
-            }
+            })
+        });
+        let outcome = tokio::select! {
+            out = &mut waited => Ok(out),
+            () = &mut deadline => Err("git timed out".to_string()),
+            Ok(()) = &mut grew => Err("repository grew past the size cap".to_string()),
         };
+        if let Some(w) = watcher {
+            w.abort();
+        }
         let out = match outcome {
             Ok(out) => out.map_err(|e| format!("git failed: {e}"))?,
             Err(why) => {
@@ -3257,5 +3281,37 @@ mod tests {
             now + 7200,
         ));
         assert!(m.inbox.lock().unwrap().is_empty());
+    }
+
+    /// L4: a size walk that takes far longer than the deadline must not
+    /// delay the deadline (it used to be awaited inside the `select!`).
+    #[tokio::test]
+    async fn slow_size_walk_cannot_starve_the_deadline() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        fn slow(_: &Path) -> u64 {
+            std::thread::sleep(Duration::from_secs(4));
+            0
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let m = GitCli::new(tmp.path().join("repos"));
+        let started = std::time::Instant::now();
+        let r = m
+            .run_capped_with(
+                tmp.path(),
+                &["-c", "alias.nap=!sleep 20", "nap"],
+                None,
+                Duration::from_millis(1700),
+                Some(1),
+                slow,
+            )
+            .await;
+        assert_eq!(r.unwrap_err(), "git timed out");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
