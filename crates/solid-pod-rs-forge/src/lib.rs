@@ -379,6 +379,25 @@ impl ForgeService {
                     "cannot push into namespace '{owner}'"
                 )));
             }
+            // A mirrored repository is written by the mirror alone: a push
+            // could race its ref updates and would be overwritten by the next
+            // state anyway.
+            #[cfg(feature = "mirror")]
+            {
+                let name = rel_path
+                    .trim_start_matches('/')
+                    .split('/')
+                    .nth(1)
+                    .map_or("", |n| n.strip_suffix(".git").unwrap_or(n));
+                if mirror::MirrorStore::new(&self.plugin_dir)
+                    .read(owner, name)
+                    .is_some()
+                {
+                    return Err(ForgeError::Forbidden(format!(
+                        "'{owner}/{name}' is a mirror and read-only"
+                    )));
+                }
+            }
         }
         let resp = self.git.handle(git_req).await?;
         Ok(ForgeResponse {
@@ -1788,5 +1807,35 @@ mod tests {
         };
         let r = svc.handle(push, nostr_agent(&hex)).await.unwrap();
         assert_ne!(r.status, 403, "own-namespace push must pass the guard");
+    }
+
+    #[cfg(feature = "mirror")]
+    #[tokio::test]
+    async fn a_mirrored_repository_refuses_even_its_owners_push() {
+        let (td, svc) = service();
+        let hex = hex64();
+        let dir = td.path().join("mirror").join(&hex);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("demo.json"),
+            serde_json::json!({
+                "pubkey": hex, "name": "demo", "clone": null, "events": 1,
+                "lastSeen": null, "lastEvent": null, "lastFetchAt": null,
+                "lastFetch": null, "announceAt": null, "clones": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let push = ForgeRequest {
+            method: "POST".into(),
+            path: format!("/forge/{hex}/demo.git/git-receive-pack"),
+            query: String::new(),
+            headers: vec![],
+            raw_body: Bytes::new(),
+            host_url: Some("https://pod.example".into()),
+        };
+        let r = svc.handle(push, nostr_agent(&hex)).await.unwrap();
+        assert_eq!(r.status, 403);
+        assert!(String::from_utf8_lossy(&r.body).contains("read-only"));
     }
 }

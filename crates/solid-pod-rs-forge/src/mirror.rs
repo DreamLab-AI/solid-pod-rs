@@ -99,6 +99,13 @@ pub const MAX_EVENT_TAGS: usize = 512;
 pub const MAX_TRAIL_BYTES: u64 = 1024 * 1024;
 /// Wall-clock budget for one `git fetch`.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Largest a mirrored repository may grow on disk, in bytes. A fetch that
+/// pushes it past this is killed and its refs and objects dropped.
+pub const MAX_REPO_BYTES: u64 = 512 * 1024 * 1024;
+/// Fetches that may run at once across all followed repositories.
+pub const MAX_CONCURRENT_FETCHES: usize = 4;
+/// Longest the failure backoff stretches the fetch floor to, in milliseconds.
+pub const MAX_BACKOFF_MS: u64 = 3_600_000;
 /// The relay subscription id this module uses.
 pub const SUBSCRIPTION_ID: &str = "forge-mirror";
 /// The trail document a marked commit must list.
@@ -155,6 +162,36 @@ fn is_remote_clone(s: &str) -> bool {
     (lower.starts_with("https://") || lower.starts_with("http://"))
         && s.len() > 8
         && clean_url_chars(s)
+}
+
+/// A remote clone URL in the form git is given: `http`/`https` only, no
+/// userinfo, no backslash or non-ASCII (the `url` crate and libcurl can read
+/// those differently), a host present. Returns the *normalised* URL together
+/// with the host, port and default-port so the caller can pin DNS to it.
+fn normalise_remote_clone(s: &str) -> Option<(String, String, u16)> {
+    if !is_remote_clone(s) || !s.is_ascii() || s.contains('\\') {
+        return None;
+    }
+    let u = url::Url::parse(s).ok()?;
+    if !matches!(u.scheme(), "http" | "https")
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.fragment().is_some()
+    {
+        return None;
+    }
+    let host = u.host_str()?.to_string();
+    let port = u.port_or_known_default()?;
+    Some((u.as_str().to_string(), host, port))
+}
+
+/// The floor between fetches after `failures` consecutive failures: the
+/// configured floor, doubled for each, capped at [`MAX_BACKOFF_MS`].
+#[must_use]
+pub fn backoff_interval(base_ms: u64, failures: u32) -> u64 {
+    base_ms
+        .saturating_mul(1u64 << failures.min(10))
+        .min(MAX_BACKOFF_MS.max(base_ms))
 }
 
 /// A branch ref: `refs/heads/` plus a conservative name. Stricter than
@@ -936,6 +973,14 @@ pub struct MirrorRecord {
     /// the catch-up resend of a state that was rate-limited, and is kept.
     #[serde(default)]
     pub newest_seen_at: u64,
+    /// Consecutive failed fetches. The floor between fetches doubles for each,
+    /// up to [`MAX_BACKOFF_MS`], and a success resets it.
+    #[serde(default)]
+    pub failures: u32,
+    /// Millisecond clock at which a state held back by the rate limit is
+    /// worth applying again, when one is waiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<u64>,
 }
 
 impl MirrorRecord {
@@ -952,6 +997,8 @@ impl MirrorRecord {
             announce_at: None,
             clones: Vec::new(),
             newest_seen_at: 0,
+            failures: 0,
+            retry_at: None,
         }
     }
 }
@@ -1019,6 +1066,20 @@ impl MirrorStore {
 // The git seam and the real adapter
 // ---------------------------------------------------------------------------
 
+/// The address a clone host was checked against, handed to git so it connects
+/// to exactly that address instead of resolving the name again (closing the
+/// DNS-rebinding window between the SSRF check and the fetch). Needs git 2.37
+/// or later; an older git ignores the setting and the window stays open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClonePin {
+    /// The host name in the URL.
+    pub host: String,
+    /// The port in effect (explicit, or the scheme's default).
+    pub port: u16,
+    /// The address the SSRF policy approved.
+    pub ip: std::net::IpAddr,
+}
+
 /// The git operations the engine needs. [`GitCli`] is the real adapter;
 /// tests substitute fakes. Every method takes the already-validated
 /// `(owner, name)` pair; implementations must still treat the strings as
@@ -1048,6 +1109,7 @@ pub trait MirrorGit: Send + Sync {
         name: &str,
         clone: &str,
         operator: bool,
+        pin: Option<&ClonePin>,
     ) -> Result<(), String>;
     /// Whether the commit is present after the fetch.
     async fn has_commit(&self, owner: &str, name: &str, sha: &str) -> bool;
@@ -1111,6 +1173,32 @@ impl GitCli {
     /// Keep `refs/mirror/*` out of what the forge serves. The fetch lands
     /// every branch of the remote there *before* any verdict, so advertising
     /// them would let a client fetch content the engine held back.
+    async fn drop_mirror_refs_and_gc(&self, dir: &Path) {
+        if let Ok(bytes) = self
+            .run(
+                dir,
+                &["for-each-ref", "--format=%(refname)", "refs/mirror"],
+                None,
+                Duration::from_secs(15),
+            )
+            .await
+        {
+            for r in String::from_utf8_lossy(&bytes).lines() {
+                let _ = self
+                    .run(dir, &["update-ref", "-d", r], None, Duration::from_secs(15))
+                    .await;
+            }
+        }
+        let _ = self
+            .run(
+                dir,
+                &["gc", "--quiet", "--prune=now"],
+                None,
+                Duration::from_secs(120),
+            )
+            .await;
+    }
+
     async fn hide_mirror_refs(&self, dir: &Path) -> Result<(), String> {
         for key in ["uploadpack.hideRefs", "transfer.hideRefs"] {
             self.run(
@@ -1146,6 +1234,21 @@ impl GitCli {
         allow: Option<&str>,
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
+        self.run_capped(dir, args, allow, timeout, None).await
+    }
+
+    /// Run git in its own process group so a timeout or an over-size repo can
+    /// take down the helpers it spawned (`git-remote-https`, `index-pack`) and
+    /// not only `git` itself. With `cap`, the repository directory is polled
+    /// while git runs and the group is killed when it grows past the cap.
+    async fn run_capped(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        allow: Option<&str>,
+        timeout: Duration,
+        cap: Option<u64>,
+    ) -> Result<Vec<u8>, String> {
         let mut cmd = solid_pod_rs_git::hardened_git_async();
         cmd.args(args)
             .current_dir(dir)
@@ -1155,19 +1258,86 @@ impl GitCli {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
         if let Some(a) = allow {
             cmd.env("GIT_ALLOW_PROTOCOL", a);
         }
-        let out = tokio::time::timeout(timeout, cmd.output())
-            .await
-            .map_err(|_| "git timed out".to_string())?
+        let child = cmd
+            .spawn()
             .map_err(|e| format!("git could not start: {e}"))?;
+        let pid = child.id();
+        let waited = child.wait_with_output();
+        tokio::pin!(waited);
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        let mut poll = tokio::time::interval(Duration::from_millis(500));
+        let outcome = loop {
+            tokio::select! {
+                out = &mut waited => break Ok(out),
+                () = &mut deadline => break Err("git timed out".to_string()),
+                _ = poll.tick(), if cap.is_some() => {
+                    if let Some(limit) = cap {
+                        let d = dir.to_path_buf();
+                        let size = tokio::task::spawn_blocking(move || dir_size(&d))
+                            .await
+                            .unwrap_or(0);
+                        if size > limit {
+                            break Err("repository grew past the size cap".to_string());
+                        }
+                    }
+                }
+            }
+        };
+        let out = match outcome {
+            Ok(out) => out.map_err(|e| format!("git failed: {e}"))?,
+            Err(why) => {
+                kill_group(pid).await;
+                return Err(why);
+            }
+        };
         if out.status.success() {
             Ok(out.stdout)
         } else {
             let err = String::from_utf8_lossy(&out.stderr);
             Err(err.lines().next().unwrap_or("git failed").to_string())
         }
+    }
+}
+
+/// Bytes under `path`, symlinks not followed (a mirror holds none, and
+/// following one would let a repository measure something it does not own).
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
+/// Kill a process group by leader pid. `kill -KILL -- -<pid>` through the
+/// system `kill`, because `unsafe` is forbidden here; a no-op where there is
+/// no pid or no `kill`.
+async fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = tokio::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
     }
 }
 
@@ -1221,6 +1391,7 @@ impl MirrorGit for GitCli {
         name: &str,
         clone: &str,
         operator: bool,
+        pin: Option<&ClonePin>,
     ) -> Result<(), String> {
         let dir = self.dir(owner, name).ok_or("unsafe repository key")?;
         let permitted = if operator {
@@ -1233,9 +1404,21 @@ impl MirrorGit for GitCli {
         }
         // Idempotent: also covers a repository that existed before the mirror.
         self.hide_mirror_refs(&dir).await?;
-        let mut args: Vec<&str> = vec!["-c", "transfer.fsckObjects=true"];
+        let mut args: Vec<&str> = vec![
+            "-c",
+            "transfer.fsckObjects=true",
+            "-c",
+            "fetch.unpackLimit=1",
+        ];
         if !operator {
             args.extend(["-c", "http.followRedirects=false"]);
+        }
+        let resolve;
+        if let Some(p) = pin {
+            // Connect to the address the SSRF policy approved; do not resolve
+            // the name again (git 2.37+, ignored by older git).
+            resolve = format!("http.curloptResolve={}:{}:{}", p.host, p.port, p.ip);
+            args.extend(["-c", &resolve]);
         }
         args.extend([
             "fetch",
@@ -1251,9 +1434,30 @@ impl MirrorGit for GitCli {
         } else {
             "http:https"
         };
-        self.run(&dir, &args, Some(allow), FETCH_TIMEOUT)
-            .await
-            .map(|_| ())
+        let ran = self
+            .run_capped(
+                &dir,
+                &args,
+                Some(allow),
+                FETCH_TIMEOUT,
+                Some(MAX_REPO_BYTES),
+            )
+            .await;
+        let over = tokio::task::spawn_blocking({
+            let d = dir.clone();
+            move || dir_size(&d) > MAX_REPO_BYTES
+        })
+        .await
+        .unwrap_or(false);
+        if over || ran.is_err() {
+            // A killed or oversize fetch leaves objects nothing references
+            // once refs/mirror is gone; drop both so the size cannot ratchet.
+            self.drop_mirror_refs_and_gc(&dir).await;
+        }
+        if over {
+            return Err("repository grew past the size cap".into());
+        }
+        ran.map(|_| ())
     }
 
     async fn has_commit(&self, owner: &str, name: &str, sha: &str) -> bool {
@@ -1372,6 +1576,13 @@ pub struct Mirror {
     clock: Arc<dyn MirrorClock>,
     ssrf: Arc<dyn SsrfCheck>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Newest verified-by-filter event per `(repo, kind)` waiting for a worker.
+    /// Bounded by construction: at most two entries per followed repository.
+    inbox: std::sync::Mutex<HashMap<String, Event>>,
+    /// Repositories that have a worker draining the inbox.
+    busy: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Caps fetches running at once across all repositories.
+    permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -1414,6 +1625,9 @@ impl Mirror {
             clock,
             ssrf,
             locks: Mutex::new(HashMap::new()),
+            inbox: std::sync::Mutex::new(HashMap::new()),
+            busy: std::sync::Mutex::new(std::collections::HashSet::new()),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES)),
         }
     }
 
@@ -1434,28 +1648,25 @@ impl Mirror {
         Arc::clone(map.entry(key.to_string()).or_default())
     }
 
-    async fn host_allowed(&self, url: &str) -> Result<(), String> {
+    async fn host_allowed(&self, url: &str) -> Result<Option<std::net::IpAddr>, String> {
         let parsed = url::Url::parse(url).map_err(|e| format!("bad URL: {e}"))?;
         let host = parsed.host_str().ok_or("URL has no host")?;
         let target = match parsed.port() {
             Some(p) => format!("{host}:{p}"),
             None => host.to_string(),
         };
-        self.ssrf.verify_host(&target).await.map(|_| ())
+        self.ssrf.verify_host(&target).await
     }
 
     /// Handle one relay event: verify it, keep only kinds 30617/30618 from
     /// a followed `(pubkey, d)`, record a 30617's clone URL, and apply a
     /// 30618. Returns the updated record when the event changed one.
     pub async fn on_event(&self, ev: &Event) -> Option<MirrorRecord> {
-        if ev.kind != KIND_ANNOUNCE && ev.kind != KIND_STATE {
-            return None;
-        }
+        let entry = self.wanted(ev)?;
+        // The signature check is the expensive step; everything cheap came first.
         if !verify_event(ev) {
             return None;
         }
-        let d = tag_value(ev, "d")?;
-        let entry = followed_entry(&self.cfg.follow, &ev.pubkey, d)?.clone();
         let key = format!("{}/{}", entry.pubkey, entry.name);
         let lock = self.lock_for(&key).await;
         let _guard = lock.lock().await;
@@ -1463,6 +1674,105 @@ impl Mirror {
             return self.on_announce(&entry, ev);
         }
         Some(self.apply(&entry, ev).await)
+    }
+
+    /// The followed entry an event is for, judged by the cheap fields alone
+    /// (kind, size, `d` tag, author) before any signature work.
+    fn wanted(&self, ev: &Event) -> Option<FollowEntry> {
+        if ev.kind != KIND_ANNOUNCE && ev.kind != KIND_STATE {
+            return None;
+        }
+        if ev.tags.len() > MAX_EVENT_TAGS {
+            return None;
+        }
+        let d = tag_value(ev, "d")?;
+        followed_entry(&self.cfg.follow, &ev.pubkey, d).cloned()
+    }
+
+    /// Queue an event from a relay for a per-repository worker, keeping only
+    /// the newest per `(repo, kind)`, so the socket loop never waits on git.
+    fn enqueue(self: &Arc<Self>, ev: Event) {
+        let Some(entry) = self.wanted(&ev) else {
+            return;
+        };
+        let key = format!("{}/{}", entry.pubkey, entry.name);
+        let slot = format!("{key}#{}", ev.kind);
+        {
+            let mut inbox = self
+                .inbox
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match inbox.get(&slot) {
+                Some(have) if have.created_at >= ev.created_at => return,
+                _ => {
+                    inbox.insert(slot, ev);
+                }
+            }
+        }
+        let start = {
+            let mut busy = self
+                .busy
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            busy.insert(key.clone())
+        };
+        if start {
+            let me = Arc::clone(self);
+            tokio::spawn(async move { me.drain(key).await });
+        }
+    }
+
+    /// Worker: apply queued events for one repository until none are left,
+    /// holding a fetch permit while it works, and re-apply a state the rate
+    /// limit held back once its wait is over.
+    async fn drain(self: Arc<Self>, key: String) {
+        loop {
+            let next = {
+                let mut inbox = self
+                    .inbox
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                [KIND_ANNOUNCE, KIND_STATE]
+                    .iter()
+                    .find_map(|k| inbox.remove(&format!("{key}#{k}")))
+            };
+            let Some(ev) = next else {
+                let mut busy = self
+                    .busy
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // A racing enqueue may have added work between the take and here.
+                let more = self
+                    .inbox
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .keys()
+                    .any(|k| k.starts_with(&format!("{key}#")));
+                if !more {
+                    busy.remove(&key);
+                    return;
+                }
+                continue;
+            };
+            let Ok(_permit) = Arc::clone(&self.permits).acquire_owned().await else {
+                return;
+            };
+            let rec = self.on_event(&ev).await;
+            drop(_permit);
+            if let Some(wait) = rec
+                .and_then(|r| r.retry_at)
+                .map(|at| at.saturating_sub(self.clock.now_ms()))
+            {
+                tokio::time::sleep(Duration::from_millis(wait.min(MAX_BACKOFF_MS) + 50)).await;
+                let slot = format!("{key}#{}", ev.kind);
+                let mut inbox = self
+                    .inbox
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Put the held state back unless something newer arrived.
+                inbox.entry(slot).or_insert(ev);
+            }
+        }
     }
 
     fn on_announce(&self, entry: &FollowEntry, ev: &Event) -> Option<MirrorRecord> {
@@ -1482,6 +1792,39 @@ impl Mirror {
         rec.clones = clones;
         self.save(&rec);
         Some(rec)
+    }
+
+    /// Check the clone host and fetch from it. A remote URL is normalised
+    /// first and the address the SSRF policy approves is pinned into git;
+    /// an operator `file://` clone is neither resolved nor pinned.
+    async fn fetch_checked(
+        &self,
+        owner: &str,
+        name: &str,
+        clone: &str,
+        operator: bool,
+    ) -> Result<(), String> {
+        if clone.to_ascii_lowercase().starts_with("file://") {
+            return self.git.fetch(owner, name, clone, operator, None).await;
+        }
+        let (url, host, port) = if operator {
+            let u = url::Url::parse(clone).map_err(|e| format!("bad URL: {e}"))?;
+            (
+                u.as_str().to_string(),
+                u.host_str().ok_or("URL has no host")?.to_string(),
+                u.port_or_known_default().ok_or("URL has no port")?,
+            )
+        } else {
+            normalise_remote_clone(clone).ok_or_else(|| "clone URL refused".to_string())?
+        };
+        let ip = self
+            .host_allowed(&url)
+            .await
+            .map_err(|why| format!("clone host refused: {why}"))?;
+        let pin = ip.map(|ip| ClonePin { host, port, ip });
+        self.git
+            .fetch(owner, name, &url, operator, pin.as_ref())
+            .await
     }
 
     fn save(&self, rec: &MirrorRecord) {
@@ -1529,9 +1872,10 @@ impl Mirror {
             last_seen_at: rec.last_event.as_ref().map_or(0, |e| e.created_at),
             last_fetch_at: rec.last_fetch_at.unwrap_or(0),
             now,
-            min_interval_ms: self.cfg.min_interval_ms,
+            min_interval_ms: backoff_interval(self.cfg.min_interval_ms, rec.failures),
         });
         rec.events += 1;
+        rec.retry_at = None;
         let mut seen = LastSeen {
             id: ev.id.clone(),
             created_at: ev.created_at,
@@ -1544,6 +1888,12 @@ impl Mirror {
             reason: plan.reason.clone(),
         };
         let (Some(state), PlanAction::Fetch) = (state, plan.action) else {
+            if !plan.changed.is_empty() {
+                // Held by the rate limit, not by being stale or in sync: ask
+                // for it again once the floor has passed.
+                let floor = backoff_interval(self.cfg.min_interval_ms, rec.failures);
+                rec.retry_at = Some(rec.last_fetch_at.unwrap_or(now) + floor);
+            }
             rec.last_seen = Some(seen);
             self.save(&rec);
             return rec;
@@ -1571,16 +1921,12 @@ impl Mirror {
             }
         }
         rec.last_fetch_at = Some(now);
-        let refused = if clone.to_ascii_lowercase().starts_with("file://") {
-            None
-        } else {
-            self.host_allowed(&clone).await.err()
-        };
-        let fetched = match refused {
-            Some(why) => Err(format!("clone host refused: {why}")),
-            None => self.git.fetch(owner, name, &clone, operator).await,
-        };
+        let fetched = self.fetch_checked(owner, name, &clone, operator).await;
+        if fetched.is_ok() {
+            rec.failures = 0;
+        }
         if let Err(why) = fetched {
+            rec.failures = rec.failures.saturating_add(1);
             seen.action = SeenAction::FetchFailed;
             seen.reason = why;
             tracing::warn!(pubkey = %owner, name = %name, reason = %seen.reason, "forge: mirror fetch failed");
@@ -1700,7 +2046,7 @@ impl Mirror {
     }
 
     async fn relay_session(
-        &self,
+        self: &Arc<Self>,
         relay: &str,
         attempt: &mut u32,
         stop: &mut watch::Receiver<bool>,
@@ -1744,7 +2090,7 @@ impl Mirror {
                         tracing::warn!(relay = %relay, "forge: mirror relay: {note}");
                     }
                     if let Some(ev) = frame.event {
-                        let _ = self.on_event(&ev).await;
+                        self.enqueue(ev);
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => return "closed".into(),
@@ -2034,6 +2380,82 @@ mod tests {
             })
             .reason,
             "not a repository state"
+        );
+    }
+
+    #[test]
+    fn remote_clone_urls_are_normalised_and_stripped_of_ambiguity() {
+        let ok = normalise_remote_clone("https://Example.com/a/b.git").unwrap();
+        assert_eq!(
+            ok,
+            (
+                "https://example.com/a/b.git".into(),
+                "example.com".into(),
+                443
+            )
+        );
+        let ok = normalise_remote_clone("http://example.com:8080/x").unwrap();
+        assert_eq!((ok.1.as_str(), ok.2), ("example.com", 8080));
+        for bad in [
+            "https://user:pw@example.com/x",
+            "https://user@example.com/x",
+            "https://example.com\\@evil.example/x",
+            "https://exämple.com/x",
+            "https://example.com/x#frag",
+            "file:///etc/passwd",
+            "ssh://example.com/x",
+            "https://",
+            "-https://example.com/x",
+        ] {
+            assert!(normalise_remote_clone(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn backoff_interval_doubles_and_caps() {
+        assert_eq!(backoff_interval(30_000, 0), 30_000);
+        assert_eq!(backoff_interval(30_000, 1), 60_000);
+        assert_eq!(backoff_interval(30_000, 3), 240_000);
+        assert_eq!(backoff_interval(30_000, 30), MAX_BACKOFF_MS);
+        // a floor already above the cap is left alone
+        assert_eq!(backoff_interval(7_200_000, 5), 7_200_000);
+    }
+
+    #[test]
+    fn dir_size_sums_files_and_ignores_symlinks() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join("a")).unwrap();
+        std::fs::write(td.path().join("a/x"), vec![0u8; 1000]).unwrap();
+        std::fs::write(td.path().join("y"), vec![0u8; 24]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc", td.path().join("link")).unwrap();
+        assert_eq!(dir_size(td.path()), 1024);
+    }
+
+    #[tokio::test]
+    async fn a_fetch_past_the_size_cap_is_killed_and_the_mirror_cleaned() {
+        // A tiny sleep wrapper stands in for a slow, large fetch: the watchdog
+        // is what ends it, not the 60 s budget.
+        let td = tempfile::tempdir().unwrap();
+        let git = GitCli::new(td.path());
+        let owner = "ab".repeat(32);
+        git.materialise(&owner, "agent").await.unwrap();
+        let dir = td.path().join(&owner).join("agent.git");
+        std::fs::write(dir.join("objects").join("bloat"), vec![0u8; 4096]).unwrap();
+        let started = std::time::Instant::now();
+        let r = git
+            .run_capped(
+                &dir,
+                &["-c", "alias.nap=!sleep 30", "nap"],
+                None,
+                Duration::from_secs(30),
+                Some(1024),
+            )
+            .await;
+        assert!(r.unwrap_err().contains("size cap"));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "killed promptly"
         );
     }
 
