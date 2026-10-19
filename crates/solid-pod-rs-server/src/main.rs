@@ -115,6 +115,43 @@ struct Cli {
     #[arg(long)]
     no_mcp: bool,
 
+    /// Content negotiation: accept and advertise `text/n3` request bodies
+    /// (JSS `--conneg`, `JSS_CONNEG`).
+    #[arg(long, env = "JSS_CONNEG")]
+    conneg: bool,
+
+    /// Trust `X-Forwarded-Proto` / `cf-visitor` for the request scheme.
+    /// Enable only behind a reverse proxy that overwrites those headers;
+    /// otherwise a client could forge the NIP-98 URL scheme.
+    #[arg(long, env = "JSS_TRUST_PROXY")]
+    trust_proxy: bool,
+
+    /// Origins whose `/.well-known/did/nostr/<pk>.json` may link a Nostr key
+    /// to a WebID (needs the `did-nostr` feature). Comma separated.
+    #[arg(long, env = "JSS_DID_NOSTR_ORIGINS", value_delimiter = ',')]
+    did_nostr_origins: Vec<String>,
+
+    /// Enable ActivityPub federation (JSS `--activitypub`). Needs the
+    /// `activitypub` feature.
+    #[arg(long, env = "JSS_ACTIVITYPUB")]
+    activitypub: bool,
+
+    /// ActivityPub username (default: me).
+    #[arg(long, env = "JSS_AP_USERNAME")]
+    ap_username: Option<String>,
+
+    /// ActivityPub display name (default: the username, else Anonymous).
+    #[arg(long, env = "JSS_AP_DISPLAY_NAME")]
+    ap_display_name: Option<String>,
+
+    /// ActivityPub bio/summary.
+    #[arg(long, env = "JSS_AP_SUMMARY")]
+    ap_summary: Option<String>,
+
+    /// Nostr pubkey (64 hex) linked as `alsoKnownAs did:nostr:<pk>`.
+    #[arg(long, env = "JSS_AP_NOSTR_PUBKEY")]
+    ap_nostr_pubkey: Option<String>,
+
     /// Operator subcommands (Sprint 11): `quota reconcile`,
     /// `account delete`, `invite create`. When absent the binary runs
     /// the HTTP server (default / existing behaviour).
@@ -316,6 +353,70 @@ async fn main() -> anyhow::Result<()> {
     }
     state.mashlib_cdn = cli.mashlib_cdn.clone();
     state.live_reload = cli.live_reload;
+
+    state.conneg_enabled = cli.conneg || cfg.extras.conneg_enabled == Some(true);
+    state.trust_proxy = cli.trust_proxy || cfg.extras.trust_proxy == Some(true);
+    if state.trust_proxy {
+        info!("trusting X-Forwarded-Proto / cf-visitor for the request scheme");
+    }
+
+    // Row 60: did:nostr to WebID cross-identity for NIP-98 callers. Local
+    // profile always; remote DID-document origins only when configured.
+    {
+        let origins: Vec<String> = if cli.did_nostr_origins.is_empty() {
+            cfg.extras.did_nostr_origins.clone()
+        } else {
+            cli.did_nostr_origins.clone()
+        };
+        let resolver = solid_pod_rs_server::cross_identity::PodCrossIdentity::new(
+            state.storage.clone(),
+            state.nodeinfo.base_url.clone(),
+        );
+        #[cfg(feature = "did-nostr")]
+        let resolver = if origins.is_empty() {
+            resolver
+        } else {
+            info!(
+                ?origins,
+                "did:nostr remote resolution enabled (SSRF policy from env)"
+            );
+            resolver.with_remote(
+                solid_pod_rs::interop::did_nostr::DidNostrResolver::new(Arc::new(
+                    solid_pod_rs::security::ssrf::SsrfPolicy::from_env(),
+                )),
+                origins,
+            )
+        };
+        #[cfg(not(feature = "did-nostr"))]
+        if !origins.is_empty() {
+            warn!("did-nostr origins configured but the `did-nostr` feature is not compiled in");
+        }
+        state.cross_identity = Some(Arc::new(resolver));
+    }
+
+    let ap_requested = cli.activitypub || cfg.extras.activitypub_enabled == Some(true);
+    #[cfg(feature = "activitypub")]
+    if ap_requested {
+        let pem =
+            solid_pod_rs_server::activitypub::load_or_create_public_key(state.data_root.as_deref())
+                .map_err(anyhow::Error::msg)
+                .context("ActivityPub keypair")?;
+        let pick = |c: &Option<String>, e: &Option<String>| c.clone().or_else(|| e.clone());
+        let ap = solid_pod_rs_server::activitypub::ApConfig::from_knobs(
+            pick(&cli.ap_username, &cfg.extras.ap_username).as_deref(),
+            pick(&cli.ap_display_name, &cfg.extras.ap_display_name).as_deref(),
+            pick(&cli.ap_summary, &cfg.extras.ap_summary).as_deref(),
+            pick(&cli.ap_nostr_pubkey, &cfg.extras.ap_nostr_pubkey).as_deref(),
+            pem,
+        )
+        .map_err(anyhow::Error::msg)?;
+        info!(username = %ap.username, "ActivityPub actor route enabled");
+        state.activitypub = Some(Arc::new(ap));
+    }
+    #[cfg(not(feature = "activitypub"))]
+    if ap_requested {
+        anyhow::bail!("--activitypub needs a build with the `activitypub` cargo feature");
+    }
 
     if !cfg.auth.oidc_enabled {
         warn!("auth.oidc_enabled=false — DPoP / OIDC routes disabled");

@@ -22,9 +22,7 @@ use super::{tool_error, tool_json, tool_text, McpCtx};
 use crate::AppState;
 use solid_pod_rs::ldp;
 use solid_pod_rs::storage::StorageEvent;
-use solid_pod_rs::wac::{
-    self, conditions::RequestContext, document::IdOrIds, parse_jsonld_acl, AccessMode,
-};
+use solid_pod_rs::wac::{self, document::IdOrIds, parse_jsonld_acl, AccessMode};
 
 const ACL_NS: &str = "http://www.w3.org/ns/auth/acl#";
 const FOAF_AGENT: &str = "http://xmlns.com/foaf/0.1/Agent";
@@ -117,24 +115,26 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
     };
     let payment_balance_sats =
         crate::resolve_balance_sats(&*state.storage, ctx.web_id.as_deref()).await;
-    let rc = RequestContext {
-        web_id: ctx.web_id.as_deref(),
-        client_id: None,
-        issuer: None,
-        payment_balance_sats,
-    };
     let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
     let groups = wac::StaticGroupMembership::default();
     let request_origin = ctx.request_origin.as_deref().and_then(wac::Origin::parse);
-    wac::evaluate_access_ctx_with_registry(
+    let linked = crate::cross_identity::linked_identities(
+        state.cross_identity.as_ref(),
+        ctx.web_id.as_deref(),
+    )
+    .await;
+    crate::grant_for_identities(
         acl_doc.as_ref(),
-        &rc,
+        ctx.web_id.as_deref(),
+        &linked,
+        payment_balance_sats,
         &check_path,
         effective_mode,
         request_origin.as_ref(),
         &groups,
         &registry,
     )
+    .is_some()
 }
 
 /// Authorise `path` through the same enforcement the REST handlers use

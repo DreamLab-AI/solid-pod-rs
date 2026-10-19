@@ -84,6 +84,29 @@ pub mod iri {
 /// client provides `*/*` the server defaults to Turtle.
 pub const ACCEPT_POST: &str = "text/turtle, application/ld+json, application/n-triples";
 
+/// `Accept-Post` / `Accept-Put` value when content negotiation is on.
+///
+/// JSS advertises `text/n3` alongside Turtle only when conneg is enabled
+/// (`src/rdf/conneg.js` `getAcceptHeaders`, lines 228-233); the request
+/// body is then parsed by [`crate::rdf_input`].
+pub const ACCEPT_POST_CONNEG: &str =
+    "text/turtle, application/ld+json, application/n-triples, text/n3";
+
+/// Pick the `Accept-Post` value for the conneg setting.
+///
+/// ```
+/// use solid_pod_rs::ldp::{accept_post_for, ACCEPT_POST, ACCEPT_POST_CONNEG};
+/// assert_eq!(accept_post_for(false), ACCEPT_POST);
+/// assert_eq!(accept_post_for(true), ACCEPT_POST_CONNEG);
+/// ```
+pub fn accept_post_for(conneg_enabled: bool) -> &'static str {
+    if conneg_enabled {
+        ACCEPT_POST_CONNEG
+    } else {
+        ACCEPT_POST
+    }
+}
+
 /// Return whether a path addresses an LDP container.
 pub fn is_container(path: &str) -> bool {
     path == "/" || path.ends_with('/')
@@ -1774,6 +1797,12 @@ pub struct OptionsResponse {
 pub const ACCEPT_PATCH: &str = "text/n3, application/sparql-update, application/json-patch+json";
 
 pub fn options_for(path: &str) -> OptionsResponse {
+    options_for_conneg(path, false)
+}
+
+/// [`options_for`] with the conneg setting: when `conneg_enabled`, the
+/// container `Accept-Post` also lists `text/n3` (JSS conneg.js 228-233).
+pub fn options_for_conneg(path: &str, conneg_enabled: bool) -> OptionsResponse {
     let container = is_container(path);
     let mut allow = vec!["GET", "HEAD", "OPTIONS"];
     if container {
@@ -1786,7 +1815,11 @@ pub fn options_for(path: &str) -> OptionsResponse {
     allow.push("DELETE");
     OptionsResponse {
         allow,
-        accept_post: if container { Some(ACCEPT_POST) } else { None },
+        accept_post: if container {
+            Some(accept_post_for(conneg_enabled))
+        } else {
+            None
+        },
         accept_patch: ACCEPT_PATCH,
         // Containers are not byte-rangeable — they render server-side
         // RDF representations. Only leaf resources carry bytes that a
@@ -1833,7 +1866,7 @@ pub fn not_found_headers(path: &str, conneg_enabled: bool) -> Vec<(&'static str,
         h.push(("Cache-Control", CACHE_CONTROL_RDF.into()));
     }
     if container {
-        h.push(("Accept-Post", ACCEPT_POST.into()));
+        h.push(("Accept-Post", accept_post_for(conneg_enabled).into()));
     }
     h
 }

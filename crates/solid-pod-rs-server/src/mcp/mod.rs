@@ -152,8 +152,7 @@ async fn dispatch(msg: &Value, state: &AppState, ctx: &McpCtx) -> Option<Value> 
 // ---------------------------------------------------------------------------
 
 fn origin_of(req: &HttpRequest) -> String {
-    let conn = req.connection_info();
-    format!("{}://{}", conn.scheme(), conn.host())
+    crate::scheme::request_origin(req)
 }
 
 /// `POST /mcp` — JSON-RPC 2.0 over the MCP Streamable HTTP transport.

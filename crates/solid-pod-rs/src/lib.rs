@@ -148,6 +148,7 @@ pub mod mrc20;
 pub mod multitenant;
 pub mod payments;
 pub mod provenance;
+pub mod rdf_input;
 pub mod security;
 pub mod trading;
 pub mod wac;

@@ -2872,6 +2872,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxttl"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d385f1776d7cace455ef6b7c54407838eff902ca897303d06eb12a26f4cf8a0"
+dependencies = [
+ "memchr",
+ "oxilangtag",
+ "oxiri",
+ "oxrdf",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3919,6 +3932,8 @@ dependencies = [
  "mime_guess",
  "notify",
  "openidconnect",
+ "oxrdf",
+ "oxttl",
  "p256",
  "parking_lot",
  "pkcs8",
@@ -4117,6 +4132,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "solid-pod-rs",
+ "solid-pod-rs-activitypub",
  "solid-pod-rs-forge",
  "solid-pod-rs-git",
  "solid-pod-rs-idp",

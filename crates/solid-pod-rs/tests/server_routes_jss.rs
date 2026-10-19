@@ -82,6 +82,10 @@ async fn make_state() -> AppState {
         admin_key: None,
         mcp_enabled: false,
         mempool_url: None,
+        conneg_enabled: false,
+        trust_proxy: false,
+        cross_identity: None,
+        activitypub: None,
     };
     state.nodeinfo.base_url = "https://pod.example".into();
     state

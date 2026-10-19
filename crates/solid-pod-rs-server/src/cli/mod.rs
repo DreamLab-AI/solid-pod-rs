@@ -17,6 +17,9 @@ use clap::{Args, Subcommand};
 mod install;
 pub use install::{parse_app_spec, run_install, AppSpec, InstallArgs};
 
+mod invite_store;
+pub use invite_store::{FileInviteStore, InviteRow};
+
 // ---------------------------------------------------------------------------
 // Public CLI surface
 // ---------------------------------------------------------------------------
@@ -34,9 +37,23 @@ pub enum OperatorCommand {
     #[command(subcommand)]
     Account(AccountCommand),
 
-    /// Invite-token operations — currently only `create`.
-    #[command(subcommand)]
-    Invite(InviteCommand),
+    /// Invite-token operations: `create`, `list`, `revoke` (JSS
+    /// `bin/jss.js` 457-540). Invites persist in
+    /// `<root>/.server/invites.json`.
+    Invite {
+        /// Data directory holding `.server/invites.json` (JSS `-r, --root`).
+        #[arg(
+            short = 'r',
+            long,
+            global = true,
+            env = "JSS_STORAGE_ROOT",
+            default_value = "./data"
+        )]
+        root: std::path::PathBuf,
+        /// The invite operation.
+        #[command(subcommand)]
+        cmd: InviteCommand,
+    },
 
     /// Clone Solid apps and push them into a pod over git (JSS `install`).
     Install(InstallArgs),
@@ -109,6 +126,20 @@ pub struct AccountDeleteArgs {
 pub enum InviteCommand {
     /// Mint an opaque invite token, store it, print the invite URL.
     Create(InviteCreateArgs),
+
+    /// List every stored invite (JSS `invite list`).
+    List,
+
+    /// Delete an invite so it can no longer be redeemed (JSS
+    /// `invite revoke <code>`). Exits non-zero if the token is unknown.
+    Revoke(InviteRevokeArgs),
+}
+
+/// Arguments for `invite revoke`.
+#[derive(Debug, Args, Clone)]
+pub struct InviteRevokeArgs {
+    /// The invite token to revoke (case-sensitive).
+    pub token: String,
 }
 
 /// Arguments for `invite create`.
@@ -354,8 +385,54 @@ pub async fn dispatch(cmd: OperatorCommand) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        OperatorCommand::Invite(InviteCommand::Create(args)) => {
-            let store = solid_pod_rs_idp::InMemoryInviteStore::new();
+        OperatorCommand::Invite { root, cmd } => run_invite_command(&root, cmd).await,
+        OperatorCommand::Install(args) => run_install(&args).await,
+    }
+}
+
+/// Run an `invite` subcommand against the file store under `root`.
+pub async fn run_invite_command(root: &std::path::Path, cmd: InviteCommand) -> anyhow::Result<()> {
+    let store = FileInviteStore::new(root);
+    match cmd {
+        InviteCommand::List => {
+            let rows = store
+                .list()
+                .await
+                .map_err(|e| anyhow::anyhow!("invite store: {e}"))?;
+            if rows.is_empty() {
+                println!("No invite codes found.");
+                return Ok(());
+            }
+            println!("TOKEN  USES  CREATED  EXPIRES");
+            for r in rows {
+                let cap = r
+                    .max_uses
+                    .map_or("unlimited".to_string(), |n| n.to_string());
+                let exp = r.expires_at.map_or("never".to_string(), |t| t.to_rfc3339());
+                println!(
+                    "{}  {}/{}  {}  {}",
+                    r.token,
+                    r.uses,
+                    cap,
+                    r.created.format("%Y-%m-%d"),
+                    exp
+                );
+            }
+            Ok(())
+        }
+        InviteCommand::Revoke(args) => {
+            let removed = store
+                .revoke(&args.token)
+                .await
+                .map_err(|e| anyhow::anyhow!("invite store: {e}"))?;
+            if removed {
+                println!("Revoked invite code: {}", args.token);
+                Ok(())
+            } else {
+                anyhow::bail!("Invite code not found: {}", args.token)
+            }
+        }
+        InviteCommand::Create(args) => {
             let (invite, url) = run_invite_create(&args, &store).await?;
             println!("token: {}", invite.token);
             match invite.max_uses {
@@ -369,6 +446,5 @@ pub async fn dispatch(cmd: OperatorCommand) -> anyhow::Result<()> {
             println!("url: {url}");
             Ok(())
         }
-        OperatorCommand::Install(args) => run_install(&args).await,
     }
 }
