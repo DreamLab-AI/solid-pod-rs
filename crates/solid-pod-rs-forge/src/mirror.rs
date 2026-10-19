@@ -1731,8 +1731,18 @@ impl Mirror {
                 .inbox
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A far-future stamp must not squat the slot and shadow honest
+            // events (L3), and a tie at the same second keeps the lowest id.
+            if ev.created_at > self.clock.now_ms() / 1000 + MAX_FUTURE_SKEW_SECS {
+                return;
+            }
             match inbox.get(&slot) {
-                Some(have) if have.created_at >= ev.created_at => return,
+                Some(have)
+                    if have.created_at > ev.created_at
+                        || (have.created_at == ev.created_at && have.id <= ev.id) =>
+                {
+                    return
+                }
                 _ => {
                     inbox.insert(slot, ev);
                 }
@@ -3227,5 +3237,25 @@ mod tests {
             m.busy.lock().unwrap().is_empty().then_some(())
         })
         .await;
+    }
+
+    /// L3: the inbox itself refuses a far-future event, so it cannot shadow an
+    /// honest one while a worker is busy.
+    #[tokio::test]
+    async fn enqueue_drops_far_future_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = key(24);
+        let m = quiet_engine(tmp.path(), &sk);
+        m.permits.close();
+        let sha = "d".repeat(40);
+        let now = SystemClock.now_ms() / 1000;
+        m.enqueue(state_event(
+            &sk,
+            "up",
+            &[("refs/heads/main", &sha)],
+            None,
+            now + 7200,
+        ));
+        assert!(m.inbox.lock().unwrap().is_empty());
     }
 }
