@@ -18,7 +18,7 @@ mod install;
 pub use install::{parse_app_spec, run_install, AppSpec, InstallArgs};
 
 mod invite_store;
-pub use invite_store::{FileInviteStore, InviteRow};
+pub use invite_store::{Consume, FileInviteStore, InviteRow};
 
 // ---------------------------------------------------------------------------
 // Public CLI surface
@@ -403,7 +403,7 @@ pub async fn run_invite_command(root: &std::path::Path, cmd: InviteCommand) -> a
                 println!("No invite codes found.");
                 return Ok(());
             }
-            println!("TOKEN  USES  CREATED  EXPIRES");
+            println!("ID  USES  CREATED  EXPIRES");
             for r in rows {
                 let cap = r
                     .max_uses
@@ -411,7 +411,7 @@ pub async fn run_invite_command(root: &std::path::Path, cmd: InviteCommand) -> a
                 let exp = r.expires_at.map_or("never".to_string(), |t| t.to_rfc3339());
                 println!(
                     "{}  {}/{}  {}  {}",
-                    r.token,
+                    r.id,
                     r.uses,
                     cap,
                     r.created.format("%Y-%m-%d"),

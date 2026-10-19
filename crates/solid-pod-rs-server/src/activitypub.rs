@@ -134,33 +134,74 @@ pub fn html_escape(s: &str) -> String {
 /// generate an RSA-2048 pair and persist it there (mode 0600 on Unix).
 /// Without a data root the pair lives only for this process. Mirrors JSS
 /// `src/ap/keys.js` `loadOrCreateKeypair`, which stores `data/ap-keys.json`.
+///
+/// Creation is atomic and race-safe (security review L8): the pair is written
+/// to a uniquely named 0600 temp file and then published with `hard_link`,
+/// which fails rather than replaces if another process got there first, in
+/// which case the winner's key is read back. A crash can therefore never leave
+/// a half-written `keys.json`, and two processes starting together agree on
+/// one key. An empty `keys.json` left by the earlier, non-atomic writer is
+/// discarded and regenerated.
 pub fn load_or_create_public_key(data_root: Option<&Path>) -> Result<String, String> {
     let file = data_root.map(|r| r.join(".ap").join("keys.json"));
-    if let Some(f) = &file {
-        if let Ok(text) = std::fs::read_to_string(f) {
-            let v: serde_json::Value =
-                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", f.display()))?;
-            return v
-                .get("publicKey")
-                .and_then(|p| p.as_str())
-                .map(String::from)
-                .ok_or_else(|| format!("{}: missing publicKey", f.display()));
+    let Some(f) = &file else {
+        return generate_actor_keypair()
+            .map(|(_, public)| public)
+            .map_err(|e| e.to_string());
+    };
+    for _ in 0..4 {
+        if let Some(public) = read_public_key(f)? {
+            return Ok(public);
         }
-    }
-    let (private_pem, public_pem) = generate_actor_keypair().map_err(|e| e.to_string())?;
-    if let Some(f) = &file {
+        let (private_pem, public_pem) = generate_actor_keypair().map_err(|e| e.to_string())?;
         if let Some(dir) = f.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let body = serde_json::json!({"publicKey": public_pem, "privateKey": private_pem});
-        write_private(f, body.to_string().as_bytes())
-            .map_err(|e| format!("{}: {e}", f.display()))?;
+        match publish_private(f, body.to_string().as_bytes()) {
+            Ok(()) => return Ok(public_pem),
+            // Another process published first: use its key.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("{}: {e}", f.display())),
+        }
     }
-    Ok(public_pem)
+    Err(format!("{}: could not settle on a key file", f.display()))
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// The stored public key, `None` when the file is absent or empty (a crashed
+/// legacy writer; the empty file is removed so it can be recreated).
+fn read_public_key(f: &Path) -> Result<Option<String>, String> {
+    let text = match std::fs::read_to_string(f) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", f.display())),
+    };
+    if text.trim().is_empty() {
+        let _ = std::fs::remove_file(f);
+        return Ok(None);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", f.display()))?;
+    v.get("publicKey")
+        .and_then(|p| p.as_str())
+        .map(|p| Some(p.to_string()))
+        .ok_or_else(|| format!("{}: missing publicKey", f.display()))
+}
+
+/// Write `bytes` to a fresh 0600 temp file beside `path`, then link it into
+/// place without replacing anything (`AlreadyExists` if `path` is taken).
+fn publish_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = path.with_extension(format!(
+        "{}.{}.{nanos}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -168,7 +209,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    opts.open(path)?.write_all(bytes)
+    let written = opts.open(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    linked
 }
 
 #[cfg(test)]
@@ -228,5 +275,38 @@ mod tests {
         let b = load_or_create_public_key(Some(dir.path())).unwrap();
         assert_eq!(a, b);
         assert!(a.contains("BEGIN PUBLIC KEY"));
+    }
+
+    /// L8: an empty `keys.json` (a crash under the old writer) is replaced
+    /// rather than failing every boot.
+    #[test]
+    fn empty_key_file_is_regenerated() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ap")).unwrap();
+        std::fs::write(dir.path().join(".ap/keys.json"), b"").unwrap();
+        let pem = load_or_create_public_key(Some(dir.path())).unwrap();
+        assert!(pem.contains("PUBLIC KEY"));
+        assert_eq!(load_or_create_public_key(Some(dir.path())).unwrap(), pem);
+    }
+
+    /// L8: processes (threads here) starting together settle on one key and
+    /// leave no temp files behind.
+    #[test]
+    fn racing_creators_agree_on_one_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let handles: Vec<_> = (0..6)
+            .map(|_| {
+                let r = root.clone();
+                std::thread::spawn(move || load_or_create_public_key(Some(&r)).unwrap())
+            })
+            .collect();
+        let keys: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(keys.windows(2).all(|w| w[0] == w[1]), "one key for all");
+        let names: Vec<_> = std::fs::read_dir(dir.path().join(".ap"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["keys.json".to_string()], "no temp files left");
     }
 }

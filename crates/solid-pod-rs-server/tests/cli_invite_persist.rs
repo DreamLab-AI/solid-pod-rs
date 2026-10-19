@@ -38,7 +38,11 @@ fn create_list_revoke_persist_between_processes() {
 
     let listed = run(dir.path(), &["list"]);
     let text = String::from_utf8_lossy(&listed.stdout).to_string();
-    assert!(text.contains(&token), "{text}");
+    // Tokens are hashed at rest, so the list shows an id, never the token.
+    assert!(!text.contains(&token), "{text}");
+    assert!(text.contains("ID  USES"), "{text}");
+    let raw = std::fs::read_to_string(dir.path().join(".server/invites.json")).unwrap();
+    assert!(!raw.contains(&token), "token must not be stored in clear");
     assert!(text.contains("0/3"), "{text}");
 
     let revoked = run(dir.path(), &["revoke", &token]);
