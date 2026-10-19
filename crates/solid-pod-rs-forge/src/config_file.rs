@@ -5,7 +5,7 @@
 //! explicitly supplied key always wins; an unset variable or an unreadable
 //! file is a no-op that only logs). Keys use the JSS camelCase spelling
 //! (`privateRepos`, `baseUrl`, `loopbackUrl`, `cspConnect`, `pushTokenTtl`,
-//! `chain`, `allowMainnet`, `announceRelays`, `prefix`).
+//! `chain`, `allowMainnet`, `announceRelays`, `prefix`, `openEdit`).
 //!
 //! The loader takes an explicit path so tests never touch process
 //! environment; [`ForgeConfig::from_env`] is the thin `FORGE_CONFIG` wrapper.
@@ -126,6 +126,9 @@ impl ForgeConfig {
         }
         if let Some(x) = v.get("cspConnect") {
             c.csp_connect = str_list(x);
+        }
+        if let Some(b) = v.get("openEdit").and_then(Value::as_bool) {
+            c.open_edit = b;
         }
         c
     }

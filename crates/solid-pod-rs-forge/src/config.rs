@@ -63,6 +63,11 @@ pub struct ForgeConfig {
     /// JSS `cspConnect`: extra `http(s)` origins admitted into the
     /// `connect-src` of the page CSP (see [`crate::xlogin::build_csp`]).
     pub csp_connect: Vec<String>,
+    /// JSS `openEdit`: when `true`, the web-edit and preview endpoints
+    /// (`POST api/repos/<o>/<n>/edit` and `/preview`) accept **anonymous**
+    /// callers on **any** repository. Demo use only; default `false`, and
+    /// [`crate::ForgeService::new`] logs a loud warning when it is on.
+    pub open_edit: bool,
 }
 
 /// A 32-byte hex secret key supplied through configuration.
@@ -123,6 +128,7 @@ impl Default for ForgeConfig {
             private_repos: false,
             base_url: None,
             loopback_url: None,
+            open_edit: false,
             csp_connect: Vec::new(),
         }
     }

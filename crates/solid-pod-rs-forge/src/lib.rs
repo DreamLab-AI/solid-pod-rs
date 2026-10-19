@@ -71,6 +71,7 @@ pub mod mirror;
 #[cfg(feature = "announce")]
 pub mod nip34;
 pub mod ownership;
+pub mod preview;
 mod prgit;
 mod privacy;
 #[cfg(feature = "announce")]
@@ -85,6 +86,7 @@ pub mod spine;
 pub mod token;
 #[cfg(feature = "anchoring")]
 pub mod trail;
+pub mod web_edit;
 pub mod xlogin;
 
 #[cfg(test)]
@@ -205,6 +207,13 @@ impl ForgeService {
         let spine: Arc<dyn SpineStore> = Arc::new(FsSpineStore::new(plugin_dir.clone()));
         let hosted = Arc::new(HostedStore::new(plugin_dir.clone()));
         let token_key = Arc::new(load_or_create_token_key(&plugin_dir)?);
+        // JSS `activate`: the open web-edit relaxation is warned about, loudly, once.
+        if cfg.open_edit {
+            tracing::warn!(
+                "forge: config.open_edit is ON: anyone can edit repos via the web-edit endpoint \
+                 (no owner signature required). DEMO ONLY; never enable on a real forge."
+            );
+        }
         #[cfg(feature = "announce")]
         let announcer = Arc::new(nip34::Announcer::new(&cfg, &plugin_dir)?);
         #[cfg(feature = "anchoring")]
@@ -458,6 +467,10 @@ impl ForgeService {
             Route::RepoSearch { owner, repo } => self.h_search_page(req, &owner, &repo).await,
             Route::RepoReleases { owner, repo } => self.h_releases_page(&owner, &repo).await,
             Route::RepoArchive { owner, repo, spec } => self.h_archive(&owner, &repo, &spec).await,
+            Route::ApiEdit { owner, repo } => Ok(self.h_api_edit(req, _agent, &owner, &repo).await),
+            Route::ApiPreview { owner, repo } => {
+                Ok(self.h_api_preview(req, _agent, &owner, &repo).await)
+            }
             // The remaining routes are implemented in later phases.
             _ => Err(ForgeError::NotFound("not implemented".into())),
         }
