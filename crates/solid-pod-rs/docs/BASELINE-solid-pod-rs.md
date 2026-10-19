@@ -1,7 +1,7 @@
 ---
 title: solid-pod-rs Architecture Baseline
 doc_id: SPR-BASELINE
-version: 0.1.0
+version: 0.2.0
 status: active-normative
 verified_commit: 0ccad60
 sources:
@@ -154,6 +154,21 @@ from the stored resource via `seed_graph_from_patch_target` (`lib.rs:1769`)
 before applying the patch, failing closed on an unparseable existing body. This
 is the REC-1 fix (commit `791977a`).
 
+### Forge: comparators, repo-held trails and the mirror (ADR-2009)
+
+Parity is stated against two comparators: JSS core (`8d68ceb`, package
+`0.0.221`) and, for the forge only, the JSS `plugins` repository (`63a16cb`),
+bounded to the commits `PARITY-CHECKLIST.md` §25 lists. A repo-held git-mark
+trail is read by `solid_pod_rs_forge::gitmark` (`parse_repo_trail`,
+`read_repo_trail`): the walk is core's `mrc20::bt_trail_outputs` and
+`bt_trail_addresses`, so the forge adds no cryptography, and it serves the
+committed document at `<forge>/<owner>/<repo>/blocktrails.json`. The kind-30618
+mirror is `solid_pod_rs_forge::mirror`, behind the default-off `mirror` feature;
+`solid-pod-rs-server` does not start it. JSS #616 (core git lane defers to a
+plugin prefix) holds because the `/forge` routes are registered before the pod
+git routes, pinned by `crates/solid-pod-rs-server/tests/forge_prefix_precedence.rs`;
+the pod lane still refuses push (ER-28).
+
 ## Known divergences & open items
 
 1. **LWS10 OIDC delta unshipped (legacy ADR-057).** The "negligible-cost P1"
@@ -246,6 +261,14 @@ is the REC-1 fix (commit `791977a`).
    Any response an anonymous client would not have received carries
    `private, no-store`, whatever its media type. Reverting to a media-type-only
    policy leaves private binaries heuristically cacheable by shared caches.
+8. **The mirror stays opt-in and fail-closed** (ADR-2009). `mirror` is
+   default-off and nothing in the server starts it. Refs, names, relay and
+   clone URLs are validated before a socket or a git argv; git runs with an
+   argv, the URL after `--`; a clone URL from a remote event is `http`/`https`
+   only; hosts pass the injected `SsrfCheck`; and a branch moves only to a
+   commit the fetch brought whose committed trail lists the marked commit.
+   Loosening any of these turns a configured follow into a remote-influenced
+   fetch.
 
 ## Change process
 

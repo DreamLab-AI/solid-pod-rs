@@ -1,7 +1,7 @@
 //! Concrete page renderers. Phase 0 ships the index shell; browse and
 //! issue views are layered on in later phases.
 
-use crate::html::{crumbs, page};
+use crate::html::{agent_label, crumbs, page};
 use crate::request::esc;
 
 /// The global landing page listing `(owner, repo)` pairs. Each row links
@@ -20,7 +20,7 @@ pub fn index_page(prefix: &str, repos: &[(String, String)]) -> String {
             body.push_str(&format!(
                 "<tr><td><a href=\"{}\">{}/{}</a></td></tr>",
                 esc(&href),
-                esc(owner),
+                esc(&agent_label(owner)),
                 esc(repo)
             ));
         }
@@ -32,8 +32,9 @@ pub fn index_page(prefix: &str, repos: &[(String, String)]) -> String {
 /// A single owner's repo list.
 #[must_use]
 pub fn owner_page(prefix: &str, owner: &str, repos: &[String]) -> String {
-    let mut body = crumbs(&[("forge", Some(prefix.to_string())), (owner, None)]);
-    body.push_str(&format!("<h1>{}</h1>", esc(owner)));
+    let label = agent_label(owner);
+    let mut body = crumbs(&[("forge", Some(prefix.to_string())), (&label, None)]);
+    body.push_str(&format!("<h1>{}</h1>", esc(&label)));
     if repos.is_empty() {
         body.push_str("<p class=\"muted\">No repositories.</p>");
     } else {
@@ -48,7 +49,7 @@ pub fn owner_page(prefix: &str, owner: &str, repos: &[String]) -> String {
         }
         body.push_str("</tbody></table>");
     }
-    page(&format!("{owner} \u{2013} forge"), &body)
+    page(&format!("{label} \u{2013} forge"), &body)
 }
 
 // ---------------------------------------------------------------------------
@@ -82,12 +83,13 @@ fn repo_tabs(prefix: &str, owner: &str, repo: &str, rev: &str) -> String {
 }
 
 fn repo_header(prefix: &str, owner: &str, repo: &str, rev: &str) -> String {
+    let label = agent_label(owner);
     let mut h = crumbs(&[
         ("forge", Some(prefix.to_string())),
-        (owner, Some(format!("{prefix}/{owner}"))),
+        (&label, Some(format!("{prefix}/{owner}"))),
         (repo, Some(format!("{prefix}/{owner}/{repo}"))),
     ]);
-    h.push_str(&format!("<h1>{}/{}</h1>", esc(owner), esc(repo)));
+    h.push_str(&format!("<h1>{}/{}</h1>", esc(&label), esc(repo)));
     h.push_str(&repo_tabs(prefix, owner, repo, rev));
     h
 }
@@ -398,7 +400,7 @@ pub fn issues_list_page(
                 e.number,
                 e.number,
                 esc(&e.title),
-                esc(&e.author)
+                esc(&agent_label(&e.author))
             ));
         }
         body.push_str("</tbody></table>");
@@ -470,7 +472,7 @@ pub fn issue_detail_page(
         let role = if i == 0 { "opened" } else { "commented" };
         body.push_str(&format!(
             "<div><p class=\"muted\">{} {} \u{b7} {}</p>{}</div>",
-            esc(&t.author),
+            esc(&agent_label(&t.author)),
             role,
             t.at,
             render_body_outcome(&t.body)
@@ -508,6 +510,21 @@ mod tests {
         let p = index_page("/forge", &repos);
         assert!(p.contains("/forge/alice/&lt;b&gt;"));
         assert!(!p.contains("/forge/alice/<b>"));
+    }
+
+    #[test]
+    fn a_did_nostr_owner_is_shown_short_but_linked_by_hex() {
+        let hex = format!("4a578b54{}", "ef".repeat(28));
+        let p = owner_page("/forge", &hex, &["agent".into()]);
+        assert!(p.contains("<h1>did:nostr:4a578b54…</h1>"), "{p}");
+        assert!(
+            p.contains(&format!("href=\"/forge/{hex}/agent\"")),
+            "link keeps the hex"
+        );
+        assert!(!p.contains("npub1"));
+        let landing = index_page("/forge", &[(hex.clone(), "agent".into())]);
+        assert!(landing.contains("did:nostr:4a578b54…/agent"));
+        assert!(landing.contains(&format!("href=\"/forge/{hex}/agent\"")));
     }
 
     #[test]

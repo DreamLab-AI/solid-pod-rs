@@ -15,6 +15,12 @@
 > Node runtime-plugin cluster is intentionally not applicable to the static
 > Cargo feature architecture. The final `0.0.220` DID context change already
 > matches the Rust CG 0.1.1 renderer.
+>
+> **Later delta (2026-10-19):** the inventory itself remains audited at
+> `0.0.220`. The `0.0.220 → 0.0.221` core delta (CORS expose list, git lane
+> deferring to plugin prefixes, root WebSocket registration) and the JSS
+> `plugins` repository's forge changes are classified in
+> [`PARITY-CHECKLIST.md` §24 and §25](../../PARITY-CHECKLIST.md#24-jss-00220--00221-delta-core-audited-2026-10-19).
 
 ## 1. Identification
 

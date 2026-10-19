@@ -15,7 +15,7 @@
 //! Everything here is derived from the forge plugin's *published
 //! behaviour* and expressed as fresh Rust on solid-pod-rs's own
 //! primitives. JSS is cited by function/section name only — no upstream
-//! JavaScript is transcribed. This mirrors how [`solid_pod_rs::bitcoin_tx`]
+//! JavaScript is transcribed. This mirrors how `solid_pod_rs::bitcoin_tx`
 //! and [`solid_pod_rs::auth::nip98`] cite JSS while carrying an
 //! independent implementation.
 //!
@@ -48,8 +48,11 @@ pub mod auth;
 pub mod bodies;
 pub mod config;
 pub mod error;
+pub mod gitmark;
 pub mod hosted;
 pub mod html;
+#[cfg(feature = "mirror")]
+pub mod mirror;
 pub mod ownership;
 pub mod repo;
 pub mod request;
@@ -285,6 +288,8 @@ impl ForgeService {
             Route::Commit { owner, repo, sha } => self.h_commit(&owner, &repo, &sha).await,
             Route::Branches { owner, repo } => self.h_branches(&owner, &repo).await,
             Route::Tags { owner, repo } => self.h_tags(&owner, &repo).await,
+            Route::BlocktrailsJson { owner, repo } => self.h_blocktrails_json(&owner, &repo).await,
+            Route::ApiMirror { owner, repo } => Ok(self.h_api_mirror(&owner, &repo)),
             Route::Issues { owner, repo } => {
                 if req.method.eq_ignore_ascii_case("POST") {
                     self.h_issue_create(req, _agent, &owner, &repo).await
@@ -542,6 +547,61 @@ impl ForgeService {
                 "commits",
             ),
         ))
+    }
+
+    /// `api/repos/<owner>/<repo>/mirror`: the mirror record, or 404 when the
+    /// repository is not a mirror. Served without a repo-exists check: a
+    /// followed repository has a record before it has a bare repository
+    /// (no clone URL yet, a failing remote), and the record is the diagnosis
+    /// the operator needs. Without the `mirror` feature there are no records.
+    #[cfg(feature = "mirror")]
+    fn h_api_mirror(&self, owner: &str, repo: &str) -> ForgeResponse {
+        match mirror::MirrorStore::new(&self.plugin_dir).read(owner, repo) {
+            Some(rec) => ForgeResponse::json(
+                200,
+                &serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null),
+            ),
+            None => ForgeResponse::json(404, &serde_json::json!({"error": "not a mirror"})),
+        }
+    }
+
+    /// Without the `mirror` feature no repository is a mirror.
+    #[cfg(not(feature = "mirror"))]
+    #[allow(clippy::unused_self)]
+    fn h_api_mirror(&self, _owner: &str, _repo: &str) -> ForgeResponse {
+        ForgeResponse::json(404, &serde_json::json!({"error": "not a mirror"}))
+    }
+
+    /// `blocktrails.json` for a repo-held git-mark trail: the committed
+    /// document itself, re-serialised so only JSON goes out, with the
+    /// wide-open CORS the hosted verifier needs. A repository without a trail
+    /// answers 404 in the same shape and with the same CORS, so a browser
+    /// client can tell "no trail" from "blocked".
+    async fn h_blocktrails_json(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<ForgeResponse, ForgeError> {
+        let dir = self.resolve_repo(owner, repo).await?;
+        let branch = repo::browse::default_branch(&dir).await;
+        let (status, body) = match gitmark::read_repo_trail(&dir, &branch).await {
+            Some(trail) => (200, trail.document_json()),
+            None => (
+                404,
+                serde_json::json!({"error": "anchoring is not enabled for this repository"})
+                    .to_string(),
+            ),
+        };
+        let mut resp = ForgeResponse::with_type(
+            status,
+            "application/json; charset=utf-8",
+            bytes::Bytes::from(body),
+        );
+        resp.headers
+            .push(("access-control-allow-origin".into(), "*".into()));
+        resp.headers
+            .push(("x-content-type-options".into(), "nosniff".into()));
+        Ok(resp)
     }
 
     async fn h_tags(&self, owner: &str, repo: &str) -> Result<ForgeResponse, ForgeError> {
@@ -1079,6 +1139,143 @@ mod tests {
         assert!(html.contains("src"));
         // README rendered.
         assert!(html.contains("hello forge"));
+    }
+
+    #[tokio::test]
+    async fn blocktrails_json_serves_a_repo_held_trail_with_cors() {
+        if !git_available() {
+            return;
+        }
+        let (td, svc) = service();
+        seed_repo(&td, "casey", "agent");
+        seed_repo(&td, "casey", "demo");
+        let header = |r: &ForgeResponse, k: &str| {
+            r.headers
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+
+        // No trail file: 404, still CORS-readable, same JSON shape.
+        let none = svc
+            .handle(
+                req("GET", "/forge/casey/demo/blocktrails.json"),
+                ForgeAgent::Anonymous,
+            )
+            .await
+            .unwrap();
+        assert_eq!(none.status, 404);
+        assert_eq!(
+            header(&none, "access-control-allow-origin").as_deref(),
+            Some("*")
+        );
+        assert!(String::from_utf8_lossy(&none.body).contains("anchoring is not enabled"));
+
+        // Commit the trail the way the git-mark CLI writes it, push it, serve it.
+        let (c0, c1) = ("1".repeat(40), "2".repeat(40));
+        let doc = serde_json::json!({
+            "@type": "Blocktrail", "version": "0.0.3", "profile": "gitmark",
+            "pubkeyBase": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "chain": "txbt4", "states": [c0, c1],
+            "txo": [
+                format!("txo:txbt4:{}:0?amount=9700&commit={c0}", "ab".repeat(32)),
+                format!("txo:txbt4:{}:0?amount=9400&commit={c1}", "cd".repeat(32)),
+            ],
+        });
+        let work = td.path().join("work-casey-agent");
+        std::fs::write(work.join("blocktrails.json"), doc.to_string()).unwrap();
+        run_git(&work, &["add", "-A"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.email=t@e.st",
+                "-c",
+                "user.name=Tester",
+                "commit",
+                "-m",
+                "trail",
+            ],
+        );
+        let bare = td.path().join("repos").join("casey").join("agent.git");
+        run_git(&work, &["push", bare.to_str().unwrap(), "main"]);
+
+        let held = svc
+            .handle(
+                req("GET", "/forge/casey/agent/blocktrails.json"),
+                ForgeAgent::Anonymous,
+            )
+            .await
+            .unwrap();
+        assert_eq!(held.status, 200);
+        assert_eq!(
+            header(&held, "access-control-allow-origin").as_deref(),
+            Some("*")
+        );
+        assert_eq!(
+            header(&held, "x-content-type-options").as_deref(),
+            Some("nosniff")
+        );
+        let served: serde_json::Value = serde_json::from_slice(&held.body).unwrap();
+        assert_eq!(served["profile"], "gitmark");
+        assert_eq!(served["states"], serde_json::json!([c0, c1]));
+        assert_eq!(served["pubkeyBase"], doc["pubkeyBase"]);
+    }
+
+    #[tokio::test]
+    async fn api_mirror_is_404_for_a_repo_that_is_not_a_mirror() {
+        let (_td, svc) = service();
+        let r = svc
+            .handle(
+                req(
+                    "GET",
+                    &format!("/forge/api/repos/{}/agent/mirror", "ab".repeat(32)),
+                ),
+                ForgeAgent::Anonymous,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status, 404);
+        assert!(String::from_utf8_lossy(&r.body).contains("not a mirror"));
+    }
+
+    /// A followed repository has a record before it has a bare repository
+    /// (JSS plugins bd55eda): the diagnosis is served ahead of the
+    /// repo-exists guard.
+    #[cfg(feature = "mirror")]
+    #[tokio::test]
+    async fn api_mirror_serves_the_record_before_the_repo_exists() {
+        let (td, svc) = service();
+        let pubkey = "ab".repeat(32);
+        let dir = td.path().join("mirror").join(&pubkey);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            serde_json::json!({
+                "pubkey": pubkey, "name": "agent", "clone": null, "events": 1,
+                "lastSeen": null, "lastEvent": null, "lastFetchAt": null,
+                "lastFetch": null, "announceAt": null, "clones": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!td
+            .path()
+            .join("repos")
+            .join(&pubkey)
+            .join("agent.git")
+            .exists());
+        let r = svc
+            .handle(
+                req("GET", &format!("/forge/api/repos/{pubkey}/agent/mirror")),
+                ForgeAgent::Anonymous,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["name"], "agent");
+        assert_eq!(v["events"], 1);
     }
 
     #[tokio::test]

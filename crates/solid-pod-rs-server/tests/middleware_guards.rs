@@ -131,6 +131,14 @@ async fn cors_wildcard_mode_does_not_reflect_origin_with_credentials() {
         .unwrap_or("");
     assert!(expose.contains("Updates-Via"), "Expose-Headers = {expose}");
     assert!(expose.contains("WAC-Allow"), "Expose-Headers = {expose}");
+    // JSS 0.0.221 (#628): the auth challenge, cache validator and query
+    // advertisement must be readable by cross-origin clients.
+    for h in ["WWW-Authenticate", "Last-Modified", "Accept-Query"] {
+        assert!(
+            expose.split(", ").any(|e| e == h),
+            "Expose-Headers missing {h}: {expose}"
+        );
+    }
 }
 
 /// Allowlist configured + origin present in it: the response reflects that

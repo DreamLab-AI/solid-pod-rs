@@ -44,6 +44,31 @@ pub fn page(title: &str, body_html: &str) -> String {
     )
 }
 
+/// The label to *show* for an owner or author: a `did:nostr` agent (a bare
+/// 64-hex public key, or `did:nostr:` plus one) is shown shortened with
+/// [`crate::gitmark::did_short`] and never as an `npub`; anything else is shown
+/// as it is. Display only: hrefs, ids and API fields keep the canonical hex.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::html::agent_label;
+///
+/// let hex = format!("4a578b54{}", "ab".repeat(28));
+/// assert_eq!(agent_label(&hex), "did:nostr:4a578b54…");
+/// assert_eq!(agent_label(&format!("did:nostr:{hex}")), "did:nostr:4a578b54…");
+/// assert_eq!(agent_label("alice"), "alice");
+/// ```
+#[must_use]
+pub fn agent_label(agent: &str) -> String {
+    let hex = agent.strip_prefix("did:nostr:").unwrap_or(agent);
+    if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        crate::gitmark::did_short(hex)
+    } else {
+        agent.to_string()
+    }
+}
+
 /// Render a breadcrumb nav bar from `(label, href)` pairs. The last
 /// entry is rendered as plain (non-link) text.
 #[must_use]
@@ -72,6 +97,16 @@ mod tests {
         assert!(p.contains("<title>&lt;x&gt;</title>"));
         assert!(p.contains("<p>ok</p>"));
         assert!(p.starts_with("<!doctype html>"));
+    }
+
+    #[test]
+    fn agent_label_shortens_only_nostr_keys() {
+        let hex = format!("4a578b54{}", "cd".repeat(28));
+        assert_eq!(agent_label(&hex), "did:nostr:4a578b54…");
+        assert_eq!(agent_label(&hex.to_uppercase()), "did:nostr:4A578B54…");
+        // a 63-character string is not a key
+        assert_eq!(agent_label(&hex[1..]), hex[1..]);
+        assert_eq!(agent_label("did:web:example.com"), "did:web:example.com");
     }
 
     #[test]

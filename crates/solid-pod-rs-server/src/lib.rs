@@ -3388,6 +3388,15 @@ where
     }
 }
 
+/// `Access-Control-Expose-Headers` value stamped on every pod response.
+///
+/// Matches JSS 0.0.221 `getCorsHeaders` (`src/ldp/headers.js`): the 0.0.221
+/// delta (PR #629) adds `Accept-Query`, `Last-Modified` and `WWW-Authenticate`
+/// so cross-origin clients can read the auth challenge, cache validators and
+/// the query-format advertisement. `Accept-Query` is exposed for parity; this
+/// server does not emit it yet (no QUERY method), so listing it is inert.
+pub(crate) const CORS_EXPOSE_HEADERS: &str = "Accept-Patch, Accept-Post, Accept-Query, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Last-Modified, Link, Location, Updates-Via, WAC-Allow, WWW-Authenticate, X-Cost, X-Balance, X-Pay-Currency";
+
 fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allowed: &[String]) {
     // Handler-authoritative CORS (JSS #548 parity): the git smart-HTTP and
     // forge surfaces stamp their own deliberate `*` CORS trio (those
@@ -3434,7 +3443,7 @@ fn add_cors_headers(headers: &mut header::HeaderMap, origin: Option<&str>, allow
         ),
         (
             "access-control-expose-headers",
-            "Accept-Patch, Accept-Post, Accept-Ranges, Allow, Content-Length, Content-Range, Content-Type, ETag, Link, Location, Updates-Via, WAC-Allow, X-Cost, X-Balance, X-Pay-Currency",
+            CORS_EXPOSE_HEADERS,
         ),
         ("access-control-max-age", "86400"),
     ];

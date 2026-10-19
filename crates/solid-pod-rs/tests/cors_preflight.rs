@@ -114,7 +114,10 @@ fn cors_response_emits_expose_headers() {
         "etag",
         "accept-patch",
         "accept-post",
+        "accept-query",
+        "last-modified",
         "updates-via",
+        "www-authenticate",
     ] {
         assert!(
             expose.contains(h),

@@ -775,6 +775,36 @@ mod anchor {
         taproot_address(&chained[1..], network)
     }
 
+    /// The taproot address of every link of a trail: `addr(P_1) .. addr(P_k)`,
+    /// one per state, in a single walk.
+    ///
+    /// Equivalent to calling [`bt_address`] on each prefix of `state_strings`
+    /// but linear rather than quadratic in the trail length, which matters to
+    /// a page that lists every mark of a long trail (the forge's Anchors view).
+    /// `network` is read as [`bt_address`] reads it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs::mrc20::{bt_address, bt_trail_addresses};
+    ///
+    /// let g = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    /// let states: Vec<String> = ["s1", "s2"].map(String::from).to_vec();
+    /// let all = bt_trail_addresses(g, &states, "testnet4").unwrap();
+    /// assert_eq!(all[0], bt_address(g, &states[..1], "testnet4").unwrap());
+    /// assert_eq!(all[1], bt_address(g, &states, "testnet4").unwrap());
+    /// ```
+    pub fn bt_trail_addresses(
+        pubkey_base: &str,
+        state_strings: &[String],
+        network: &str,
+    ) -> Result<Vec<String>, PaymentError> {
+        walk_points(base_point(pubkey_base)?, state_strings)?
+            .iter()
+            .map(|p| taproot_address(&p.x_only_public_key().0.serialize(), network))
+            .collect()
+    }
+
     /// Encode the BIP-350 (bech32m) P2TR address paying `x_only` directly as
     /// the output key: `bc` on `"mainnet"`, `gm` on `"gitmark"`, `tb` for
     /// every other network name.

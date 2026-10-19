@@ -1,8 +1,10 @@
 # JSS ↔ solid-pod-rs Parity Checklist
 
-Exhaustive row-per-feature tracker against JavaScriptSolidServer (JSS),
-verified from upstream `gh-pages` at `f9f7a4d` / package `0.0.220` on
-2026-08-19. Canonical JSS
+Exhaustive row-per-feature tracker against JavaScriptSolidServer (JSS).
+Two comparators: the JSS core tree at `8d68ceb` / package `0.0.221`
+(2026-10-18; §1–§24, with §22 audited from `f9f7a4d` / `0.0.220` on 2026-08-19
+and §23 from `e7e0525`), and the out-of-tree `plugins` repository at `63a16cb`
+(2026-10-19; §25, forge only). Canonical JSS
 surface: [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md).
 Prose companion (categorical summary, port tickets, architecture
 discussion): [`GAP-ANALYSIS.md`](./GAP-ANALYSIS.md). This document is the
@@ -28,9 +30,13 @@ and our status against it.
 
 ---
 
-## Current state (2026-09-24, alpha.9 — JSS `e7e0525`, package 0.0.220)
+## Current state (2026-10-19, alpha.15 plus Unreleased — JSS `8d68ceb`, package 0.0.221; plugins `63a16cb`)
 
-**232 rows tracked** across 23 functional sections. §23 records the one-commit
+**244 rows tracked** across 25 functional sections. §25 audits the JSS `plugins`
+repository's forge commits for repo-held git-mark trails, `did:nostr` display and
+the kind-30618 mirror (a second comparator, bounded as that section says). §24
+records the `0.0.220` → `0.0.221` core delta (CORS expose list, git lane deferring
+to plugin prefixes, root WebSocket registration). §23 records the one-commit
 `0.0.220` → `e7e0525` delta (#619), both rows present. §21 records the JSS
 v0.0.197 → v0.0.204 delta. §22 audits every portable behaviour in the
 v0.0.204 → v0.0.220 delta, including the runtime-plugin cluster, body-limit
@@ -41,36 +47,39 @@ and the DID Core-first context update.
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.7%** raw checklist gate — 208/213 classified in-scope rows |
-| Half-credit (partial-parity counted 0.5) | **98.8%** raw checklist gate |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.3%** raw checklist gate — 218/224 classified in-scope rows |
+| Half-credit (partial-parity counted 0.5) | **98.7%** raw checklist gate |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
-> **Authoritative figure.** The **97.7% strict** value is the current gate
-> over all 232 tracked rows: 208 passing rows ÷ 213 classified in-scope rows.
+> **Authoritative figure.** The **97.3% strict** value is the current gate
+> over all 244 tracked rows: 218 passing rows ÷ 224 classified in-scope rows.
 > The denominator excludes explicitly deferred, wontfix-in-crate,
 > and not-applicable/present-by-absence rows. It supersedes the
 > Sprint 12–14 headline figures (~98–99%), which were computed against the
 > smaller 132–137-row denominators before §19–§21 added rows and the
 > counts were reconciled — the strict percentage *dropped* only because the
-> denominator grew, not because parity regressed. `README.md` and
-> `GAP-ANALYSIS.md` are aligned to this 97.7% figure.
+> denominator grew, not because parity regressed. The same holds for the move
+> from 97.7% (232 rows) to 97.3% (244 rows): §25 adds one new partial-parity row
+> (239, NIP-34 anchor tags with no event publisher yet) and its in-scope rows
+> raise the denominator by 11. `README.md` and `GAP-ANALYSIS.md` are aligned to
+> this 97.3% figure.
 
 ### By status
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 184 | Includes present-by-absence classifications; +2 at §23 |
-| partial-parity | 5 | -5 |
+| present | 194 | Includes present-by-absence classifications; +2 at §23, +10 at §24–§25 |
+| partial-parity | 6 | -4 (row 239 added at §25) |
 | semantic-difference | 5 | — |
 | missing | 0 | -4 |
 | net-new (ours; not in JSS) | 19 | S3 dependency-only scaffold removed and reclassified as absent on both sides |
-| explicitly-deferred | 6 | — |
+| explicitly-deferred | 7 | +1 (row 240, the Anchors tab, at §25) |
 | wontfix-in-crate | 3 | — |
-| not-applicable / present-by-absence | 13 | +13 (Node/Fastify/browser/tunnel/runtime-plugin constructs) |
+| not-applicable / present-by-absence | 14 | +14 (Node/Fastify/browser/tunnel/runtime-plugin constructs; +1 at §24, row 235) |
 | other/unclassified | 10 | Architectural and test-meta rows excluded from the denominator |
-| **Total** | **232** | Comparator fetched directly from upstream `gh-pages` at `e7e0525`, package `0.0.220`, on 2026-09-24 |
+| **Total** | **244** | Core comparator: upstream `JavaScriptSolidServer` at `8d68ceb`, package `0.0.221`, 2026-10-19; forge comparator: `plugins` at `63a16cb`, 2026-10-19 |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -581,6 +590,43 @@ lives downstream in nostr-rust-forum (its ADR-2015), not here.
 | 231 | Atomic quota reservation: check-and-commit under a per-pod lock on PUT/POST, released on a failed write | `e7e0525`, #619 (`reserveQuota`, `withPodLock`) | `QuotaPolicy::reserve` is the write-path primitive; `FsQuotaStore` serialises it | present | `src/quota/mod.rs:73`, `:272`; `tests/quota_race.rs` | JSS adopted the Rust shape; the commit cites `QuotaPolicy::reserve`. |
 | 232 | Idempotent deposit credit: the ledger and the "already credited" key commit together | `e7e0525`, #619 (`creditOnce`, `credited`) | Ledger and replay set live in one `state.json`, committed with one observer-atomic `Storage::put`; `GET /pay/.balance` only reads | present | `solid-pod-rs-server/src/handlers/pay.rs:87-130` (`PaymentState`), `:363-381` (`handle_balance`) | The double-credit window JSS closed never existed here: balance reads never credit, and a deposit's credit and replay key share one write. |
 
+## 24. JSS `0.0.220` → `0.0.221` delta (core, audited 2026-10-19)
+
+Comparator: upstream `JavaScriptSolidServer/JavaScriptSolidServer` `main` at
+`8d68ceb` (package `0.0.221`, published 2026-10-18), six commits after `e7e0525`.
+Three portable behaviours; the rest is a version bump and merge commits.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 233 | CORS `Access-Control-Expose-Headers` adds `Accept-Query`, `Last-Modified`, `WWW-Authenticate` so cross-origin clients can read the auth challenge and cache validators | `7b38261`, PR #629 (`getCorsHeaders`) | `CORS_EXPOSE_HEADERS` is the JSS 0.0.221 list verbatim; the library default `DEFAULT_EXPOSE_HEADERS` gains the same three names | present | `crates/solid-pod-rs-server/src/lib.rs:3398, 3446`; `src/security/cors.rs:45`; `crates/solid-pod-rs-server/tests/middleware_guards.rs`; `tests/cors_preflight.rs` | `Accept-Query` is exposed for parity but this server emits no such header (no QUERY method), so listing it is inert. |
+| 234 | Core `--git` lane defers to plugin-owned prefixes: a git-looking URL under a mounted app path (the forge) falls through to the plugin | `372678d`, #616 (`appPaths` check in the git hook) | Structural, not a runtime check: the `/forge` routes are registered before the pod-git smart-HTTP routes, so the forge owns its prefix; pinned by a test because the pod git lane refuses every push (`push_not_served`, ER-28) | present | `crates/solid-pod-rs-server/src/lib.rs:4924`; `crates/solid-pod-rs-server/tests/forge_prefix_precedence.rs` | Does not reopen push: the pod lane still refuses it, and the forge authorises its own pushes with forge push tokens. |
+| 235 | `@fastify/websocket` registered once at the server root; a child plugin skips a second registration | `ca88517`, #545 / #620 | Fastify decorator scoping and `upgrade` listener bookkeeping; the Rust server has one WebSocket upgrade path per route, no shared plugin registry | present-by-absence | none | Node/Fastify construct with no Rust counterpart. |
+
+---
+
+## 25. JSS `plugins` repository, `forge/` delta (audited 2026-10-19)
+
+Comparator: `JavaScriptSolidServer/plugins` at `63a16cb` (2026-10-19). Unlike §1–§24
+this is **not** the JSS core tree: the forge, and the gitmark console it feeds, live
+in the out-of-tree plugins repository. This section audits only the forge commits
+`5069759` (repo-held trails, `git mark`, anchor tags), `a730b0b` (`did:nostr` display),
+`40efb47`, `bd55eda` and `80a83d9` (mirror on kind-30618). The earlier forge history
+(web-edit tiers, `sparseMarks`, the Anchors UI of July 2026, the forge-held trail model)
+is **not** row-tracked here: `solid-pod-rs-forge` ships Phases 0–3 of that plugin and
+the remainder stays scaffolded, so this section must not be read as full forge parity.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 236 | Repo-held git-mark trail: read `blocktrails.json` (profile `gitmark`) at the default-branch tip and re-derive every mark's address with gitmark's state bytes, `sha256` of the commit hash as text | `5069759` (`repoTrail`, `gitmarkStateHash`) | `gitmark::parse_repo_trail` / `read_repo_trail`; the chained walk is `mrc20::bt_trail_outputs` / `bt_trail_addresses` (linear, where JSS re-walks per mark) | present | `crates/solid-pod-rs-forge/src/gitmark.rs:319, 406`; `src/mrc20.rs:797` | Address derivation needs feature `anchoring`; without it the trail is read and tagged but not re-derived. Expected addresses are differential vectors generated by running the JSS `trailAddress` / `trailProgram`. Adds a `gitmark` chain (`gm1p…`) JSS does not have; `regtest` (`bcrt`) is not derived. |
+| 237 | `blocktrails.json` served with `Access-Control-Allow-Origin: *` for the hosted verifier; 404 in the same shape with CORS when there is no trail | `5069759` (`blocktrailsResp`) | `Route::BlocktrailsJson` / `h_blocktrails_json` | present | `crates/solid-pod-rs-forge/src/router.rs`; `crates/solid-pod-rs-forge/src/lib.rs:580` | Repo-held trails only: the forge-held trail document is unported (row 240). |
+| 238 | Explorer links per chain: mempool.space, `txbt4` on mempool.guide, `xbt` on Kilombino | `5069759` (`EXPLORER_WEB`) | `gitmark::explorer_web`, `explorer_tx_url` | present | `crates/solid-pod-rs-forge/src/gitmark.rs:84, 112` | Helpers only; they feed the Anchors page, row 240. |
+| 239 | NIP-34 events 30617 and 30618 name the latest on-chain mark with `chain`, `txo`, `commit` tags beside `anchor` and `r` | `5069759` (`anchorTags`) | `gitmark::anchor_tags` builds the five tags from `RepoTrail::anchor_facts` | partial-parity | `crates/solid-pod-rs-forge/src/gitmark.rs:259` | The Rust forge has no kind 30617 / 30618 builder, signer or publisher yet (`announce` is a config field and a feature flag), so nothing emits these tags. |
+| 240 | Anchors tab, and the six-line flow (`npm init agent`, `npx fund-agent`, `git mark init`, commit, `git mark`, `git mark announce`) | `5069759` (`marksPage`) | none | explicitly-deferred | none | The tab shell and the forge-held anchoring model it is built on are not ported. Deferred with the rest of the forge anchoring phase, not dropped. |
+| 241 | `did:nostr` agents are displayed as `did:nostr:<8 hex>…`, never as an npub; hex stays canonical in paths and ids | `a730b0b` (`didShort`) | `gitmark::did_short`; `html::agent_label` applied to owner crumbs, headings, repo list and author names | present | `crates/solid-pod-rs-forge/src/gitmark.rs:61`; `crates/solid-pod-rs-forge/src/html/mod.rs:63` | Display only. The JSON API field `npub` is not emitted by the Rust forge, so there is nothing to keep. |
+| 242 | Mirror repos on their agent's kind-30618 state (opt-in `config.mirror`): one REQ per relay, one `git fetch` per real change into `refs/mirror/*`, a branch moves only to a fetched commit whose trail lists the marked commit | `40efb47` (`lib/mirror.js`, mirror driver) | `mirror::parse_mirror_config`, `verify_event`, `plan_mirror`, `branch_verdict`; `Mirror::apply` / `start` over `MirrorGit` / `GitCli` | present | `crates/solid-pod-rs-forge/src/mirror.rs:248, 359, 570, 670, 1392, 1536` | Behind the default-off feature `mirror` (relay egress plus a remote-influenced `git fetch`); see ADR-2009 for the security posture. Stricter than JSS on ref names, clone schemes and redirects, and on three points an independent security review found upstream also lacks: the committed trail must carry the followed agent's key (`pubkeyBase`), the marked commit must be in the history of the commit a branch moves to, and a state older than one already seen is dropped as a replay; a partial or garbled mark makes a state unusable instead of markless. Residual risks are listed in ADR-2009. The engine is a library: `solid-pod-rs-server` does not start it at boot (there is no `forge-mirror` server feature or config key), so an embedder calls `Mirror::start`. |
+| 243 | Mirror record served before the repo-exists guard, so an unfetchable mirror still shows why | `bd55eda` (`apiMirror`) | `Route::ApiMirror` / `h_api_mirror`, served without `resolve_repo` | present | `crates/solid-pod-rs-forge/src/lib.rs:558`; `crates/solid-pod-rs-forge/src/router.rs` | |
+| 244 | Mirror backoff resets when a relay answers, not on open; `CLOSED` and `NOTICE` are logged | `80a83d9` | `mirror::backoff_delay`, `classify_relay_frame` | present | `crates/solid-pod-rs-forge/src/mirror.rs:719, 750` | |
+
 ---
 
 ## Sprint history
@@ -597,3 +643,4 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 12 close (2026-05-06)**: JSS v0.0.60–v0.0.71 drift closed. 11 new rows (169–179); 8 landed as `present` (security hardening: size-capped ACL parsing, iterative podName sanitization, DNS failure blocking, `.account` dotfile; IdP: min password length; AP: outbox POST + Note wrapping, User-Agent, Accept-negotiation, follower fan-out, actor cache datetime). 3 deferred (cf-visitor, AP CLI, error pages). 922 insertions across 23 files, ~35 new tests. 132 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 13 close (2026-05-16, alpha.11)**: JSS v0.0.190 Phase 1 absorption complete. 3 new rows (196–198): key provisioning (`provision-keys`), pod-resident NIP-05 endpoint (`nip05-endpoint`), JSON-LD export (`export-jsonld`). All three shipped with bodies + tests. 135 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 14 close (2026-05-16, alpha.12)**: Git pod auto-init (JSS #466/#469/#471). 2 new rows (199–200): `GitInitHook` wasm32-safe trait in core + `GitAutoInit` subprocess impl in `solid-pod-rs-git`. 4 unit tests. `provision_pod_ext` call-site API. 137 rows, **~99% strict / ~100% spec-normative**.
+- **Sprint 15 (2026-10-19, alpha.15 plus Unreleased)**: JSS `0.0.220` → `0.0.221` core delta (rows 233–235: CORS expose list, plugin-prefix precedence, root WebSocket) and the JSS `plugins` forge delta (rows 236–244: repo-held git-mark trails, `blocktrails.json`, explorer links, `did:nostr` display, kind-30618 mirror). 244 rows, 97.3% strict; one new partial row (239) and one deferred row (240).

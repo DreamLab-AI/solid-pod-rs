@@ -48,7 +48,10 @@ pub const DEFAULT_EXPOSE_HEADERS: &[&str] = &[
     "ETag",
     "Accept-Patch",
     "Accept-Post",
+    "Accept-Query",
+    "Last-Modified",
     "Updates-Via",
+    "WWW-Authenticate",
 ];
 
 /// Origin-matching strategy.

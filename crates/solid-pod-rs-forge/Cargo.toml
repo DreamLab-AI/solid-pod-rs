@@ -39,6 +39,10 @@ uuid = { version = "1", features = ["v4"] }
 # Schnorr signing for the NIP-34 instance key — only pulled by `anchoring`
 # (mark address derivation) and `announce` (event signing).
 k256 = { version = "0.13", features = ["schnorr"], optional = true }
+# Mirror on kind-30618 (`mirror` feature): relay sockets and URL parsing.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
+futures-util = { version = "0.3", optional = true }
+url = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -51,6 +55,10 @@ anchoring = ["solid-pod-rs/mrc20", "dep:k256"]
 # NIP-34 discovery publication (WS to relays). The builder/signer always
 # compiles when `announce` is on; the feature also links the nostr crate.
 announce = ["dep:solid-pod-rs-nostr", "dep:k256"]
+# Mirror repos on their agent's NIP-34 kind-30618 state (opt-in, default
+# off): relay subscription plus `git fetch` from operator-configured
+# follow entries.
+mirror = ["dep:solid-pod-rs-nostr", "dep:k256", "dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
 
 [lints]
 workspace = true

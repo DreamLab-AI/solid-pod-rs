@@ -96,6 +96,14 @@ pub enum Route {
         /// Repository name.
         repo: String,
     },
+    /// `GET /<owner>/<repo>/blocktrails.json` — the repo-held git-mark
+    /// trail document, served with CORS for the hosted verifier.
+    BlocktrailsJson {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
     /// `GET/POST /<owner>/<repo>/issues` — list or create.
     Issues {
         /// Owner namespace.
@@ -133,6 +141,14 @@ pub enum Route {
     /// `GET /api/repos/<owner>/<repo>` — JSON repo model.
     ApiRepo {
         /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
+    /// `GET /api/repos/<owner>/<repo>/mirror` — the mirror record of a repo
+    /// pulled on its agent's NIP-34 kind-30618 state (feature `mirror`).
+    ApiMirror {
+        /// Agent key (owner namespace).
         owner: String,
         /// Repository name.
         repo: String,
@@ -260,6 +276,7 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
         }
         "branches" if rest.is_empty() => Route::Branches { owner, repo },
         "tags" if rest.is_empty() => Route::Tags { owner, repo },
+        "blocktrails.json" if rest.is_empty() => Route::BlocktrailsJson { owner, repo },
         "issues" => match rest {
             [] => Route::Issues { owner, repo },
             ["new"] => Route::IssueNew { owner, repo },
@@ -285,6 +302,10 @@ fn parse_api(segs: &[&str]) -> Route {
             id: (*id).to_string(),
         },
         ["repos"] => Route::ApiReposList,
+        ["repos", owner, repo, "mirror"] => Route::ApiMirror {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
         ["repos", owner, repo] => Route::ApiRepo {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
@@ -317,6 +338,38 @@ mod tests {
         assert_eq!(
             strip_prefix("", "/alice/repo").as_deref(),
             Some("/alice/repo")
+        );
+    }
+
+    #[test]
+    fn api_mirror_route() {
+        assert_eq!(
+            parse_route("/api/repos/abc/agent/mirror"),
+            Route::ApiMirror {
+                owner: "abc".into(),
+                repo: "agent".into()
+            }
+        );
+        assert_eq!(parse_route("/api/repos/abc/agent/other"), Route::NotFound);
+    }
+
+    #[test]
+    fn blocktrails_json_route() {
+        assert_eq!(
+            parse_route("/casey/agent/blocktrails.json"),
+            Route::BlocktrailsJson {
+                owner: "casey".into(),
+                repo: "agent".into()
+            }
+        );
+        // the clone-URL spelling addresses the same repository
+        assert_eq!(
+            parse_route("/casey/agent.git/blocktrails.json"),
+            parse_route("/casey/agent/blocktrails.json")
+        );
+        assert_eq!(
+            parse_route("/casey/agent/blocktrails.json/x"),
+            Route::NotFound
         );
     }
 

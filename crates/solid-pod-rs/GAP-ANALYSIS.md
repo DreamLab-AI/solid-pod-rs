@@ -2,11 +2,15 @@
 
 > Comparison against JavaScriptSolidServer (JSS). The row-per-feature table
 > lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
-> Re-synchronised 2026-09-24 against upstream `gh-pages` `e7e0525`, package
-> `0.0.220`. The tracker now contains 232 rows and reports **97.7% strict
-> classified in-scope parity** (208/213 rows) and ~100% of the
+> Re-synchronised 2026-10-19 against upstream JSS `8d68ceb`, package
+> `0.0.221`, and the JSS `plugins` repository at `63a16cb` (forge only). The
+> tracker now contains 244 rows and reports **97.3% strict
+> classified in-scope parity** (218/224 rows) and ~100% of the
 > spec-normative surface. Section 22 records the complete `0.0.204 → 0.0.220`
-> progression; section 23 the one-commit `e7e0525` delta (#619). No row remains classified as missing: live reload, development
+> progression; section 23 the one-commit `e7e0525` delta (#619); section 24 the
+> `0.0.220 → 0.0.221` core delta; section 25 the plugins-repository forge delta
+> (repo-held git-mark trails, `did:nostr` display, kind-30618 mirror), which is
+> a bounded second comparator and not a claim of full forge parity. No row remains classified as missing: live reload, development
 > bearer tokens, the external CTH runner, and busy-port shifting now ship. The runtime-plugin
 > cluster is deliberately not applicable to a statically linked Cargo feature
 > architecture.
@@ -925,9 +929,9 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **97.7% strict parity** (208/213 classified in-scope rows,
+solid-pod-rs has **97.3% strict parity** (218/224 classified in-scope rows,
 derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) and **~100%
-spec-normative parity** as of the 2026-09-24 JSS `e7e0525` sync. Six net-new features push us **ahead** of
+spec-normative parity** as of the 2026-10-19 JSS `8d68ceb` / plugins `63a16cb` sync. Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL
@@ -949,7 +953,7 @@ must be remediated before an open production deployment.
 
 - [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) — row-per-feature tracker.
 - [`docs/reference/jss-feature-inventory.md`](./docs/reference/jss-feature-inventory.md) — canonical JSS surface (the source-of-truth used for this document).
-- JSS source: upstream `gh-pages` `f9f7a4d` / package `0.0.220`, fetched 2026-08-19.
+- JSS source: upstream `gh-pages` `f9f7a4d` / package `0.0.220`, fetched 2026-08-19; delta to `8d68ceb` / `0.0.221` and the plugins repository (`63a16cb`) audited 2026-10-19 (checklist §24–§25).
 - **Referenced decision records not present in this crate's `docs/adr/`
   set** (which holds ADR-057, ADR-058, ADR-059 only): ADR-053 (backend
   boundary + extraction scope), ADR-054 (library-vs-server separation) and
