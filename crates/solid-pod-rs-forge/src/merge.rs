@@ -423,6 +423,16 @@ impl ForgeService {
             if fast_forward { ", ff" } else { "" }
         );
         self.pr.tip.record_tip(owner, name).await;
+        // Forge-held anchoring: a merge moves the default branch, so the
+        // trail's tip is re-read (the hook above is for embedders; this is
+        // the built-in recorder and a no-op without the feature).
+        #[cfg(feature = "anchoring")]
+        if let Ok(dir) = self.resolve_repo(owner, name).await {
+            let branch = repo::browse::default_branch(&dir).await;
+            if let Err(e) = self.record_tip(owner, name, &branch, &merged_sha).await {
+                tracing::warn!("forge: recording the anchor tip after merge failed: {e}");
+            }
+        }
         Ok(json(
             200,
             &serde_json::json!({

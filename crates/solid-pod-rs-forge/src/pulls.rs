@@ -14,10 +14,10 @@
 //!
 //! * [`PullLabels`]: how label names on a pull request resolve to
 //!   `{name, color}`; the labels tier installs its own with
-//!   [`ForgeService::with_pull_labels`]. The `PUT pulls/<n>/labels` route is
-//!   not served here.
-//! * [`render_body_html`]: the markdown renderer for thread bodies. Until the
-//!   markdown tier lands it escapes the text, which is always safe.
+//!   [`ForgeService::with_pull_labels`]. `PUT pulls/<n>/labels` is served
+//!   through [`ForgeService::put_item_labels`].
+//! * [`render_body_html`]: renders thread bodies with the crate's escape-first
+//!   markdown renderer.
 //! * [`crate::merge::TipRecorder`]: the anchoring hook called after a merge.
 
 use std::collections::BTreeMap;
@@ -235,11 +235,10 @@ impl std::fmt::Debug for PrExt {
     }
 }
 
-/// Render a thread body to HTML. Integration point for the markdown tier;
-/// this stand-in escapes the text and keeps line breaks, which is safe.
+/// Render a thread body to HTML with the escape-first markdown renderer.
 #[must_use]
 pub fn render_body_html(text: &str) -> String {
-    format!("<p>{}</p>", esc(text).replace('\n', "<br>"))
+    crate::markdown::render(text)
 }
 
 /// The owner namespace a stored author id maps to (JSS `ownerFromAgent`).
@@ -405,7 +404,11 @@ impl ForgeService {
             .collect()
     }
 
-    fn pull_summary(&self, owner: &str, repo: &str, p: &PullEntry) -> serde_json::Value {
+    fn pull_summary(
+        &self,
+        defs: &[crate::spine::issues::Label],
+        p: &PullEntry,
+    ) -> serde_json::Value {
         serde_json::json!({
             "number": p.number,
             "title": p.title,
@@ -416,7 +419,7 @@ impl ForgeService {
             "base": p.base,
             "head": p.head,
             "merged": p.merged,
-            "labels": self.pr.labels.resolve(owner, repo, p.labels.as_deref().unwrap_or(&[])),
+            "labels": crate::labels::resolve_labels(p.labels.as_deref().unwrap_or(&[]), defs),
             "comments": p.thread.len().saturating_sub(1),
         })
     }
@@ -466,7 +469,17 @@ impl ForgeService {
                 };
                 self.api_pull_state(agent, owner, name, number, st).await
             }
-            // `PUT pulls/<n>/labels` belongs to the labels tier (integration point).
+            Some("labels") if tail.len() == 2 && req.method.eq_ignore_ascii_case("PUT") => {
+                self.put_item_labels(
+                    req,
+                    agent,
+                    owner,
+                    name,
+                    number,
+                    crate::labels::ItemKind::Pull,
+                )
+                .await
+            }
             _ => not_found(),
         }
     }
@@ -491,11 +504,12 @@ impl ForgeService {
                     && (label.is_empty() || p.labels.as_ref().is_some_and(|l| l.contains(&label)))
             })
             .collect();
+        let defs = self.label_defs(owner, name).await.unwrap_or_default();
         let pulls: Vec<_> = filtered
             .iter()
             .skip((page_no - 1) * PULLS_PER_PAGE)
             .take(PULLS_PER_PAGE)
-            .map(|p| self.pull_summary(owner, name, p))
+            .map(|p| self.pull_summary(&defs, p))
             .collect();
         Ok(ForgeResponse::json(
             200,
@@ -537,7 +551,8 @@ impl ForgeService {
             }
         };
         let thread = self.thread_json(&pr.thread).await;
-        let mut v = self.pull_summary(owner, name, pr);
+        let defs = self.label_defs(owner, name).await.unwrap_or_default();
+        let mut v = self.pull_summary(&defs, pr);
         let obj = v.as_object_mut().expect("object");
         obj.remove("comments");
         obj.insert("baseSha".into(), serde_json::json!(info.base_sha));
@@ -1258,6 +1273,9 @@ mod tests {
 
     #[test]
     fn body_html_escapes() {
-        assert_eq!(render_body_html("<b>&\nx"), "<p>&lt;b&gt;&amp;<br>x</p>");
+        let h = render_body_html("<b>&\nx <script>alert(1)</script>");
+        assert!(h.contains("&lt;b&gt;&amp;"), "{h}");
+        assert!(!h.contains("<b>") && !h.contains("<script"), "{h}");
+        assert!(h.contains('x'), "{h}");
     }
 }
