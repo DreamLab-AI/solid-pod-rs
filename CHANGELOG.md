@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.15] — 2026-10-19
+
 ### Removed
 
 - **solid-pod-rs-server no longer serves `git push`.** `git-receive-pack` and
