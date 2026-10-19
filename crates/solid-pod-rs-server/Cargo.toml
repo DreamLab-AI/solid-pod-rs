@@ -165,6 +165,11 @@ git = ["dep:solid-pod-rs-git", "solid-pod-rs/git-auto-init"]
 forge = ["dep:solid-pod-rs-forge", "git"]
 forge-anchoring = ["forge", "solid-pod-rs-forge/anchoring", "solid-pod-rs/mrc20"]
 forge-announce = ["forge", "solid-pod-rs-forge/announce"]
+# Mirror repositories on their agents' NIP-34 kind-30618 state. Started at boot
+# when FORGE_MIRROR_RELAYS and FORGE_MIRROR_FOLLOW name something to follow.
+forge-mirror = ["forge", "solid-pod-rs-forge/mirror"]
+# Everything the forge can do, for builds that run it (ADR-2010).
+forge-full = ["forge", "forge-anchoring", "forge-announce", "forge-mirror"]
 
 # `install` subcommand NIP-98 signing (JSS `src/cli/install.js`). Pulls
 # the schnorr signer so `--nostr-privkey` can mint push tokens. The

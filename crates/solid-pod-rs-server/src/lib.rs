@@ -4825,6 +4825,159 @@ impl solid_pod_rs_forge::LoopbackFetch for ServerLoopback {
     }
 }
 
+/// A comma-separated environment list, trimmed, empties dropped.
+#[cfg(feature = "forge")]
+fn env_list(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The forge configuration: the `FORGE_CONFIG` JSON file (if any) under the
+/// `FORGE_*` environment overrides. Everything is optional; with nothing set
+/// the defaults hold (testnet chain, mainnet refused, no announce relays,
+/// no private repos).
+#[cfg(feature = "forge")]
+fn forge_config() -> solid_pod_rs_forge::ForgeConfig {
+    use serde_json::{json, Map, Value};
+    let mut o = Map::new();
+    let flag = |n: &str| {
+        std::env::var(n)
+            .ok()
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    };
+    if let Some(b) = flag("FORGE_PRIVATE_REPOS") {
+        o.insert("privateRepos".into(), json!(b));
+    }
+    if let Some(b) = flag("FORGE_ALLOW_MAINNET") {
+        o.insert("allowMainnet".into(), json!(b));
+    }
+    if let Some(b) = flag("FORGE_OPEN_EDIT") {
+        o.insert("openEdit".into(), json!(b));
+    }
+    if let Some(b) = flag("FORGE_ANCHORING_UI") {
+        o.insert("anchoringUi".into(), json!(b));
+    }
+    if let Some(b) = flag("FORGE_SPARSE_MARKS") {
+        o.insert("sparseMarks".into(), json!(b));
+    }
+    if let Ok(c) = std::env::var("FORGE_CHAIN") {
+        if !c.trim().is_empty() {
+            o.insert("chain".into(), Value::String(c.trim().to_string()));
+        }
+    }
+    if let Ok(u) = std::env::var("FORGE_BASE_URL") {
+        if !u.trim().is_empty() {
+            o.insert("baseUrl".into(), Value::String(u.trim().to_string()));
+        }
+    }
+    let relays = env_list("FORGE_ANNOUNCE_RELAYS");
+    if !relays.is_empty() {
+        o.insert("announceRelays".into(), json!(relays));
+    }
+    solid_pod_rs_forge::ForgeConfig::from_env(Value::Object(o))
+}
+
+/// The mirror configuration from `FORGE_MIRROR_RELAYS` (comma-separated
+/// `ws(s)://` URLs), `FORGE_MIRROR_FOLLOW` (comma-separated
+/// `<64-hex pubkey>/<repo>`) and `FORGE_MIRROR_MIN_INTERVAL_MS`. `None` (the
+/// mirror stays off) unless at least one relay and one valid entry survive.
+#[cfg(feature = "forge-mirror")]
+fn mirror_config() -> Option<solid_pod_rs_forge::mirror::MirrorConfig> {
+    use serde_json::json;
+    let relays = env_list("FORGE_MIRROR_RELAYS");
+    let follow: Vec<serde_json::Value> = env_list("FORGE_MIRROR_FOLLOW")
+        .iter()
+        .filter_map(|e| e.split_once('/'))
+        .map(|(pk, name)| json!({"pubkey": pk.trim(), "name": name.trim()}))
+        .collect();
+    let mut cfg = json!({"relays": relays, "follow": follow});
+    if let Some(ms) = std::env::var("FORGE_MIRROR_MIN_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        cfg["minIntervalMs"] = json!(ms);
+    }
+    solid_pod_rs_forge::mirror::parse_mirror_config(&cfg)
+}
+
+/// A forge service plus the running mirror (kept alive with it).
+#[cfg(feature = "forge")]
+struct ForgeRuntime {
+    service: Arc<solid_pod_rs_forge::ForgeService>,
+    #[cfg(feature = "forge-mirror")]
+    _mirror: Option<solid_pod_rs_forge::mirror::MirrorHandle>,
+}
+
+/// One long-lived forge service per forge data directory. It owns state that
+/// must outlive a request (the per-repository locks, the mirror's relay
+/// sessions and its inbox), so it is built once and shared.
+#[cfg(feature = "forge")]
+fn forge_service(
+    plugin_dir: PathBuf,
+) -> Result<Arc<solid_pod_rs_forge::ForgeService>, solid_pod_rs_forge::ForgeError> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Arc<ForgeRuntime>>>> = OnceLock::new();
+    let reg = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut reg = reg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(rt) = reg.get(&plugin_dir) {
+        return Ok(Arc::clone(&rt.service));
+    }
+    let cfg = forge_config();
+    #[cfg(feature = "forge-announce")]
+    let relay_policy: Arc<dyn solid_pod_rs_forge::publish::SsrfCheck> = Arc::new(
+        solid_pod_rs_forge::publish::OperatorRelays::new(&cfg.announce_relays),
+    );
+    let loopback: Arc<dyn solid_pod_rs_forge::LoopbackFetch> = Arc::new(ServerLoopback {
+        client: reqwest::Client::new(),
+    });
+    let svc =
+        solid_pod_rs_forge::ForgeService::new(cfg, plugin_dir.clone())?.with_loopback(loopback);
+    #[cfg(feature = "forge-announce")]
+    let svc = svc.with_announce_ssrf(relay_policy);
+    let service = Arc::new(svc);
+    #[cfg(feature = "forge-mirror")]
+    let mirror = mirror_config().map(|mcfg| {
+        use solid_pod_rs_forge::mirror::{GitCli, Mirror, MirrorStore};
+        let git = Arc::new(GitCli::new(plugin_dir.join("repos")));
+        let engine = Arc::new(Mirror::new(mcfg, MirrorStore::new(&plugin_dir), git));
+        tracing::info!("forge: mirror on kind-30618 started");
+        engine.start()
+    });
+    reg.insert(
+        plugin_dir,
+        Arc::new(ForgeRuntime {
+            service: Arc::clone(&service),
+            #[cfg(feature = "forge-mirror")]
+            _mirror: mirror,
+        }),
+    );
+    Ok(service)
+}
+
+/// Start the forge (and, with `forge-mirror`, its relay sessions) at boot
+/// rather than on the first request, so a mirror follows its repositories
+/// from the moment the server is up. A no-op without a filesystem data root.
+#[cfg(feature = "forge")]
+pub fn start_forge(state: &AppState) {
+    if let Some(dir) = forge_plugin_dir(state) {
+        match forge_service(dir) {
+            Ok(_) => tracing::info!("forge: started"),
+            Err(e) => tracing::error!("forge: could not start: {e}"),
+        }
+    }
+}
+
 /// Single actix handler for every `/forge/*` path. Translates actix →
 /// `ForgeRequest`, resolves the caller identity, and dispatches to the
 /// forge service. WAC/namespace authorization is enforced inside the
@@ -4836,7 +4989,7 @@ async fn handle_forge(
     body: web::Bytes,
     state: web::Data<AppState>,
 ) -> HttpResponse {
-    use solid_pod_rs_forge::{ForgeConfig, ForgeRequest, ForgeService};
+    use solid_pod_rs_forge::ForgeRequest;
 
     let Some(plugin_dir) = forge_plugin_dir(&state) else {
         return HttpResponse::NotImplemented().json(serde_json::json!({
@@ -4845,15 +4998,8 @@ async fn handle_forge(
         }));
     };
 
-    // The forge service is cheap to construct (idempotent mkdirs + a git
-    // CGI wrapper). Building it per-request keeps `AppState` untouched.
-    // The reqwest-backed loopback lets pod-hosted body verification work
-    // (own-area guard pins it to our own origin).
-    let loopback: Arc<dyn solid_pod_rs_forge::LoopbackFetch> = Arc::new(ServerLoopback {
-        client: reqwest::Client::new(),
-    });
-    let service = match ForgeService::new(ForgeConfig::default(), plugin_dir) {
-        Ok(s) => s.with_loopback(loopback),
+    let service = match forge_service(plugin_dir) {
+        Ok(s) => s,
         Err(e) => {
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": e.to_string()}));
@@ -5756,5 +5902,51 @@ mod payment_gating_tests {
             Some("/a/b")
         );
         assert_eq!(protected_resource_for_acl("/a/b").as_deref(), None);
+    }
+}
+
+#[cfg(all(test, feature = "forge-mirror"))]
+mod forge_env_tests {
+    use super::*;
+
+    /// One test owns the `FORGE_MIRROR_*` variables, so there is no race.
+    #[test]
+    fn mirror_config_comes_from_the_environment() {
+        let pk = "ab".repeat(32);
+        std::env::remove_var("FORGE_MIRROR_RELAYS");
+        std::env::remove_var("FORGE_MIRROR_FOLLOW");
+        assert!(mirror_config().is_none(), "nothing configured: mirror off");
+
+        std::env::set_var(
+            "FORGE_MIRROR_RELAYS",
+            "ws://127.0.0.1:7777, wss://r.example , nope",
+        );
+        assert!(mirror_config().is_none(), "relays alone follow nothing");
+
+        std::env::set_var(
+            "FORGE_MIRROR_FOLLOW",
+            format!("{pk}/agent, bad/entry, {pk}/../x"),
+        );
+        std::env::set_var("FORGE_MIRROR_MIN_INTERVAL_MS", "1000");
+        let cfg = mirror_config().expect("one relay and one valid entry");
+        assert_eq!(cfg.relays, ["ws://127.0.0.1:7777", "wss://r.example"]);
+        assert_eq!(cfg.follow.len(), 1);
+        assert_eq!(cfg.follow[0].name, "agent");
+        assert_eq!(cfg.min_interval_ms, 1000);
+
+        std::env::remove_var("FORGE_MIRROR_RELAYS");
+        std::env::remove_var("FORGE_MIRROR_FOLLOW");
+        std::env::remove_var("FORGE_MIRROR_MIN_INTERVAL_MS");
+    }
+
+    #[test]
+    fn the_forge_service_is_built_once_per_data_directory() {
+        let td = tempfile::tempdir().unwrap();
+        let a = forge_service(td.path().join(".forge")).unwrap();
+        let b = forge_service(td.path().join(".forge")).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        let other = tempfile::tempdir().unwrap();
+        let c = forge_service(other.path().join(".forge")).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c));
     }
 }

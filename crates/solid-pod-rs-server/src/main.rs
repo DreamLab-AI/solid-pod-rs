@@ -424,6 +424,9 @@ async fn main() -> anyhow::Result<()> {
 
     info!(%bind_addr, "solid-pod-rs-server starting");
 
+    #[cfg(feature = "forge")]
+    solid_pod_rs_server::start_forge(&state);
+
     let state_factory = state.clone();
     let server_builder = HttpServer::new(move || build_app(state_factory.clone()));
 
