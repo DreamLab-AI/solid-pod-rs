@@ -88,6 +88,18 @@ fn heavy() -> &'static Semaphore {
 /// at most four run at once process-wide, and a request that
 /// cannot get a permit within a few seconds is [`ForgeError::Busy`] (503).
 ///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::gitrun::run_heavy;
+///
+/// # async fn demo(repo: &std::path::Path) -> Result<(), solid_pod_rs_forge::error::ForgeError> {
+/// let out = run_heavy(repo, &["grep", "-F", "-i", "-e", "needle", "HEAD"], 1 << 20).await?;
+/// // `git grep` exits 1 when nothing matches; that is not an error.
+/// assert!(out.code == Some(0) || out.code == Some(1));
+/// # Ok(()) }
+/// ```
+///
 /// # Errors
 ///
 /// As [`run`], plus [`ForgeError::Busy`].

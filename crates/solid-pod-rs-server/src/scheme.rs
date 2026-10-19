@@ -193,6 +193,18 @@ pub fn host_with(req: &HttpRequest, public_origin: Option<&str>, trust_proxy: bo
 
 /// [`host_with`] using the server's configured public origin and
 /// trusted-proxy flag.
+///
+/// ```
+/// use actix_web::test::TestRequest;
+/// use solid_pod_rs_server::scheme::request_host;
+///
+/// // No `AppState` is attached, so forwarding headers are ignored.
+/// let req = TestRequest::get()
+///     .insert_header(("host", "pod.example"))
+///     .insert_header(("x-forwarded-host", "evil.example"))
+///     .to_http_request();
+/// assert_eq!(request_host(&req), "pod.example");
+/// ```
 pub fn request_host(req: &HttpRequest) -> String {
     match req.app_data::<web::Data<AppState>>() {
         Some(s) => host_with(req, s.public_origin().as_deref(), s.trust_proxy),
@@ -214,6 +226,17 @@ pub fn request_origin(req: &HttpRequest) -> String {
 
 /// The absolute URL the client addressed (origin plus request target), the
 /// value a NIP-98 `u` tag is signed over.
+///
+/// ```
+/// use actix_web::test::TestRequest;
+/// use solid_pod_rs_server::scheme::request_url;
+///
+/// let req = TestRequest::get()
+///     .uri("/pod/file.ttl?x=1")
+///     .insert_header(("host", "pod.example"))
+///     .to_http_request();
+/// assert_eq!(request_url(&req), "http://pod.example/pod/file.ttl?x=1");
+/// ```
 pub fn request_url(req: &HttpRequest) -> String {
     format!("{}{}", request_origin(req), req.uri())
 }

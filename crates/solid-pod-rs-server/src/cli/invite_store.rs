@@ -258,13 +258,37 @@ impl FileInviteStore {
         Ok(rows)
     }
 
-    /// Delete an invite. `Ok(true)` if it existed (JSS `revokeInvite`).
+    /// Delete an invite by its token, or by the unique id prefix shown in
+    /// `invite list` (8 or more hex characters). `Ok(true)` if it existed
+    /// (JSS `revokeInvite`).
     pub async fn revoke(&self, token: &str) -> Result<bool, InviteStoreError> {
         let _g = self.lock.lock().await;
         let _f = self.lock_file().await?;
         let mut map = self.load().await?;
         if map.remove(&digest(token)).is_none() {
-            return Ok(false);
+            // The token is not stored, so `invite list` shows ids; accept a
+            // unique id prefix (8+ hex characters) for a lost token.
+            let hexish = token.len() >= 8 && token.bytes().all(|b| b.is_ascii_hexdigit());
+            let prefix = token.to_ascii_lowercase();
+            let hits: Vec<String> = if hexish {
+                map.keys()
+                    .filter(|k| k.starts_with(&prefix))
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            match hits.as_slice() {
+                [one] => {
+                    map.remove(one);
+                }
+                [] => return Ok(false),
+                _ => {
+                    return Err(InviteStoreError::Backend(
+                        "id prefix is ambiguous, give more characters".into(),
+                    ))
+                }
+            }
         }
         self.save(&map).await?;
         Ok(true)
@@ -274,6 +298,20 @@ impl FileInviteStore {
     /// records the use, all under the store lock, so two concurrent
     /// redemptions of a single-use invite cannot both succeed. A redemption
     /// path must call this and proceed only on [`Consume::Granted`].
+    ///
+    /// ```no_run
+    /// use solid_pod_rs_idp::{Invite, InviteStore};
+    /// use solid_pod_rs_server::cli::{Consume, FileInviteStore};
+    ///
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// let store = FileInviteStore::new("/var/lib/pod");
+    /// store
+    ///     .insert(Invite { token: "t".into(), max_uses: Some(1), expires_at: None })
+    ///     .await?;
+    /// assert_eq!(store.consume("t").await?, Consume::Granted);
+    /// assert_eq!(store.consume("t").await?, Consume::Exhausted);
+    /// # Ok(()) }
+    /// ```
     pub async fn consume(&self, token: &str) -> Result<Consume, InviteStoreError> {
         let _g = self.lock.lock().await;
         let _f = self.lock_file().await?;
@@ -490,5 +528,17 @@ mod tests {
             .unwrap();
         s.insert(inv("t", None)).await.unwrap();
         assert!(!lock.exists(), "released after use");
+    }
+
+    /// L7: a lost token can still be revoked through the id `list` prints.
+    #[tokio::test]
+    async fn revoke_accepts_a_unique_id_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = FileInviteStore::new(dir.path());
+        s.insert(inv("lost-token", None)).await.unwrap();
+        let id = s.list().await.unwrap()[0].id.clone();
+        assert!(!s.revoke(&id[..4]).await.unwrap(), "too short to be an id");
+        assert!(s.revoke(&id).await.unwrap());
+        assert!(s.list().await.unwrap().is_empty());
     }
 }

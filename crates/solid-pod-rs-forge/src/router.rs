@@ -281,6 +281,14 @@ impl Route {
     /// none (the root listing, token mint, hosted bodies, the widget script).
     /// The privacy gate uses this so it judges the namespace the router will
     /// actually serve, not a guess from the raw path.
+    ///
+    /// ```
+    /// use solid_pod_rs_forge::router::parse_route;
+    ///
+    /// assert_eq!(parse_route("/alice/demo/issues").owner(), Some("alice"));
+    /// assert_eq!(parse_route("/api/x.git/info/refs").owner(), Some("api"));
+    /// assert_eq!(parse_route("/").owner(), None);
+    /// ```
     #[must_use]
     pub fn owner(&self) -> Option<&str> {
         match self {
