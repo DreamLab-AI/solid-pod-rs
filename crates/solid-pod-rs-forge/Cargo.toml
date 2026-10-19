@@ -45,7 +45,8 @@ futures-util = { version = "0.3", optional = true }
 url = { version = "2", optional = true }
 # OS randomness for the NIP-34 announce key and BIP-340 aux nonce (`announce`).
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
-# NIP-19 `npub` for `GET /nostr` (the rust-bitcoin bech32 already in the graph).
+# Segwit v1 (bech32m) address encoding for the forge-held trail (`anchoring`),
+# and NIP-19 `npub` for `GET /nostr` (`announce`).
 bech32 = { version = "0.11", optional = true }
 
 [dev-dependencies]
@@ -55,7 +56,7 @@ tokio = { version = "1", features = ["full"] }
 [features]
 default = []
 # The anchoring tier is opt-in and pulls the server-only Bitcoin stack.
-anchoring = ["solid-pod-rs/mrc20", "dep:k256"]
+anchoring = ["solid-pod-rs/mrc20", "dep:k256", "dep:bech32"]
 # NIP-34 emission: the kind-30617/30618 builders, the forge-instance announce
 # key, the opt-in relay publisher (`ws(s)` only), `GET /nostr` and
 # `POST /announce`.

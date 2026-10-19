@@ -38,10 +38,10 @@
 //! A repository is anchored when it carries a Blocktrails trail with an
 //! on-chain mark. A **repo-held** trail (a committed `blocktrails.json`) is
 //! read directly. A **forge-held** trail (stored by the forge itself) is
-//! reached through the [`ForgeTrailSource`] hook, which takes precedence and
-//! has three answers ([`TrailState`]): nothing (fall back to the repository),
-//! a trail with nothing on-chain yet (no anchor tags, no fallback), or the
-//! anchor facts.
+//! consulted first (feature `anchoring`, `crate::trail::ForgeTrailSource`)
+//! and has three answers ([`TrailState`]): no forge trail (fall back to the
+//! repository), a forge trail with nothing on-chain yet (no anchor tags and
+//! **no** fallback to a repo-held trail), or the anchor facts.
 //!
 //! # Example
 //!
@@ -68,7 +68,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use k256::schnorr::SigningKey;
 use rand_core::{OsRng, RngCore};
 use serde_json::{json, Value};
@@ -511,17 +510,6 @@ pub enum TrailState {
     Anchored(AnchorFacts),
 }
 
-/// The seam through which forge-held trail storage tells the announcer about
-/// anchoring (the repo-held model needs no hook). Implemented by the
-/// forge-held anchoring tier.
-#[async_trait]
-pub trait ForgeTrailSource: Send + Sync {
-    /// The forge-held trail state of `owner/name`. `trail_url` is where the
-    /// forge serves that repository's `blocktrails.json`; the implementation
-    /// puts it in [`AnchorFacts::trail_url`].
-    async fn trail_state(&self, owner: &str, name: &str, trail_url: &str) -> TrailState;
-}
-
 /// `true` for a README file name: `readme`, optionally `.md`, `.markdown` or
 /// `.txt`, in any case.
 fn is_readme(name: &str) -> bool {
@@ -594,7 +582,9 @@ async fn read_description_file(git_dir: &Path) -> Option<String> {
 /// `buildStateEvent` inputs): description, default branch, branches and the
 /// anchor facts. `base` is the public browse URL
 /// (`<origin><prefix>/<owner>/<name>`); `relays` must already be filtered
-/// with [`valid_relay_url`]. `trails` is the forge-held trail hook.
+/// with [`valid_relay_url`]. `forge_trail` is what the forge-held trail
+/// store says (`TrailState::Absent` when there is none); its facts must carry
+/// `<base>/blocktrails.json` as the trail URL.
 ///
 /// # Errors
 ///
@@ -606,7 +596,7 @@ pub async fn gather_facts(
     name: &str,
     base: &str,
     relays: &[String],
-    trails: Option<&dyn ForgeTrailSource>,
+    forge_trail: TrailState,
 ) -> Result<RepoFacts, ForgeError> {
     if !valid_name_segment(owner) || !valid_name_segment(name) {
         return Err(ForgeError::PathTraversal(format!("{owner}/{name}")));
@@ -617,13 +607,10 @@ pub async fn gather_facts(
     // names the default branch.
     let heads = browse::list_heads_full(git_dir).await.unwrap_or_default();
     let trail_url = format!("{base}/{TRAIL_FILE}");
-    let anchor = match trails {
-        Some(source) => match source.trail_state(owner, name, &trail_url).await {
-            TrailState::Anchored(facts) => Some(facts),
-            TrailState::Unanchored => None,
-            TrailState::Absent => repo_held_anchor(git_dir, &default_branch, &trail_url).await,
-        },
-        None => repo_held_anchor(git_dir, &default_branch, &trail_url).await,
+    let anchor = match forge_trail {
+        TrailState::Anchored(facts) => Some(facts),
+        TrailState::Unanchored => None,
+        TrailState::Absent => repo_held_anchor(git_dir, &default_branch, &trail_url).await,
     };
     Ok(RepoFacts {
         owner: owner.to_string(),
@@ -654,7 +641,6 @@ pub(crate) struct Announcer {
     pub(crate) signer: AnnounceSigner,
     pub(crate) relays: Vec<String>,
     pub(crate) ssrf: Arc<dyn SsrfCheck>,
-    pub(crate) trails: Option<Arc<dyn ForgeTrailSource>>,
 }
 
 impl Announcer {
@@ -680,7 +666,6 @@ impl Announcer {
             signer,
             relays,
             ssrf: Arc::new(DefaultSsrfCheck),
-            trails: None,
         })
     }
 }
@@ -736,14 +721,24 @@ impl ForgeService {
         self
     }
 
-    /// Install the forge-held trail source consulted when building anchor
-    /// tags (see [`ForgeTrailSource`]).
-    #[must_use]
-    pub fn with_trail_source(mut self, source: Arc<dyn ForgeTrailSource>) -> Self {
-        let mut a = (*self.announcer).clone();
-        a.trails = Some(source);
-        self.announcer = Arc::new(a);
-        self
+    /// What the forge-held trail store says about `owner/name`.
+    #[cfg(feature = "anchoring")]
+    fn forge_trail_state(&self, owner: &str, name: &str, trail_url: &str) -> TrailState {
+        use crate::trail::ForgeTrailSource;
+        if !self.has_forge_trail(owner, name) {
+            return TrailState::Absent;
+        }
+        match self.anchor_facts(owner, name, trail_url) {
+            Some(facts) => TrailState::Anchored(facts),
+            None => TrailState::Unanchored,
+        }
+    }
+
+    /// Without the `anchoring` feature there is no forge-held trail.
+    #[cfg(not(feature = "anchoring"))]
+    #[allow(clippy::unused_self)]
+    fn forge_trail_state(&self, _owner: &str, _name: &str, _trail_url: &str) -> TrailState {
+        TrailState::Absent
     }
 
     /// The forge-instance announce public key (64 lowercase hex).
@@ -776,8 +771,9 @@ impl ForgeService {
         let git_dir = self.resolve_repo(owner, name).await?;
         let base = repo_base(origin, &self.prefix(), owner, name);
         let a = &self.announcer;
-        let facts =
-            gather_facts(&git_dir, owner, name, &base, &a.relays, a.trails.as_deref()).await?;
+        let trail_url = format!("{base}/{TRAIL_FILE}");
+        let forge_trail = self.forge_trail_state(owner, name, &trail_url);
+        let facts = gather_facts(&git_dir, owner, name, &base, &a.relays, forge_trail).await?;
         let now = crate::now_secs();
         Ok(AnnounceEvents {
             event: build_repo_event(&a.signer, &facts, now)?,

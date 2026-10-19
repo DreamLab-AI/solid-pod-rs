@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use solid_pod_rs_forge::config::AnnounceKey;
 use solid_pod_rs_forge::gitmark::AnchorFacts;
 use solid_pod_rs_forge::nip34::{
-    build_repo_event, build_state_event, gather_facts, AnnounceSigner, ForgeTrailSource, TrailState,
+    build_repo_event, build_state_event, gather_facts, AnnounceSigner, TrailState,
 };
 use solid_pod_rs_forge::{ForgeAgent, ForgeConfig, ForgeRequest, ForgeService};
 use solid_pod_rs_nostr::SsrfCheck;
@@ -136,36 +136,29 @@ fn build_repo(spec: &Value, trail: &str, repos_root: &Path, scratch: &Path) -> P
     bare
 }
 
-/// The forge-held trail source the spec describes, following the JSS
+/// The forge-held trail state the spec describes, following the JSS
 /// `anchorTags` rule: a marked genesis anchors at the last marked frontier,
-/// a forge-held trail with nothing on-chain is `Unanchored`, no trail is
-/// `Absent`.
-struct SpecTrails {
-    held: Vec<(String, String, Value)>,
-}
-
-#[async_trait]
-impl ForgeTrailSource for SpecTrails {
-    async fn trail_state(&self, owner: &str, name: &str, trail_url: &str) -> TrailState {
-        let Some((_, _, held)) = self.held.iter().find(|(o, n, _)| o == owner && n == name) else {
-            return TrailState::Absent;
-        };
-        let chain = held["chain"].as_str().unwrap().to_string();
-        let marks = held["marks"].as_array().unwrap();
-        if marks[0]["status"] != "marked" {
-            return TrailState::Unanchored;
-        }
-        let frontier = marks.iter().rfind(|m| m["status"] == "marked").unwrap();
-        TrailState::Anchored(AnchorFacts {
-            chain,
-            genesis_txid: marks[0]["txid"].as_str().unwrap().to_string(),
-            frontier_txid: frontier["txid"].as_str().unwrap().to_string(),
-            frontier_vout: u32::try_from(frontier["vout"].as_u64().unwrap()).unwrap(),
-            // the spec's forge-held marks all commit the repository tip
-            frontier_commit: String::new(),
-            trail_url: trail_url.to_string(),
-        })
+/// a forge-held trail with nothing on-chain is `Unanchored` (no fallback to
+/// the repository), no trail is `Absent`.
+fn spec_trail_state(held: Option<&Value>, trail_url: &str, tip: &str) -> TrailState {
+    let Some(held) = held else {
+        return TrailState::Absent;
+    };
+    let chain = held["chain"].as_str().unwrap().to_string();
+    let marks = held["marks"].as_array().unwrap();
+    if marks[0]["status"] != "marked" {
+        return TrailState::Unanchored;
     }
+    let frontier = marks.iter().rfind(|m| m["status"] == "marked").unwrap();
+    TrailState::Anchored(AnchorFacts {
+        chain,
+        genesis_txid: marks[0]["txid"].as_str().unwrap().to_string(),
+        frontier_txid: frontier["txid"].as_str().unwrap().to_string(),
+        frontier_vout: u32::try_from(frontier["vout"].as_u64().unwrap()).unwrap(),
+        // the spec's forge-held marks all commit the repository tip
+        frontier_commit: tip.to_string(),
+        trail_url: trail_url.to_string(),
+    })
 }
 
 fn tags_of(ev: &Value) -> Vec<Vec<String>> {
@@ -207,11 +200,6 @@ async fn builders_reproduce_the_jss_events_byte_for_byte() {
         } else {
             vec![]
         };
-        // forge-held trails: the commit every mark names is the repo tip
-        let mut held = Vec::new();
-        if let Some(h) = repo_spec.get("forgeHeld") {
-            held.push((owner.to_string(), name.to_string(), h.clone()));
-        }
         let tip = Command::new("git")
             .args([
                 "--git-dir",
@@ -222,16 +210,15 @@ async fn builders_reproduce_the_jss_events_byte_for_byte() {
             .output()
             .unwrap();
         let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
-        let source = SpecTrails { held };
         let base = format!("{ORIGIN}/forge/{owner}/{name}");
-        let mut facts = gather_facts(&bare, owner, name, &base, &want_relays, Some(&source))
+        let forge_trail = spec_trail_state(
+            repo_spec.get("forgeHeld"),
+            &format!("{base}/blocktrails.json"),
+            &tip,
+        );
+        let facts = gather_facts(&bare, owner, name, &base, &want_relays, forge_trail)
             .await
             .unwrap();
-        if let Some(a) = facts.anchor.as_mut() {
-            if a.frontier_commit.is_empty() {
-                a.frontier_commit = tip.clone();
-            }
-        }
 
         let ev = build_repo_event(
             &signer,
@@ -659,4 +646,84 @@ async fn announce_repo_is_a_no_op_without_relays_and_the_background_hook_deliver
     assert!(tags_of(&state).iter().any(|t| t[0] == "HEAD"));
     // an unknown repository is reported, not published
     assert!(svc.announce_repo("casey", "missing", ORIGIN).await.is_err());
+}
+
+// A forge-held trail takes precedence over a repo-held one, and when the forge
+// holds one with nothing on-chain the repository is NOT consulted (JSS
+// `anchorTags`: `if (trail) return tags`).
+#[cfg(feature = "anchoring")]
+#[tokio::test]
+async fn forge_held_trail_wins_and_never_falls_back_to_the_repo_held_one() {
+    let spec: Value = serde_json::from_str(SPEC).unwrap();
+    let td = tempfile::tempdir().unwrap();
+    let svc = ForgeService::new(ForgeConfig::default(), td.path().join("plugin")).unwrap();
+    let agent = spec["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "agent")
+        .unwrap();
+    let bare = build_repo(
+        agent,
+        spec["trail"].as_str().unwrap(),
+        &svc.plugin_dir().join("repos"),
+        td.path(),
+    );
+    let tags_for = |svc: &ForgeService| {
+        let svc = svc.clone();
+        async move {
+            let b = svc
+                .build_announce_events("casey", "agent", ORIGIN)
+                .await
+                .unwrap();
+            (b.event.tags, b.state.tags)
+        }
+    };
+    // repo-held only: the committed trail's txo anchors the events
+    let (ev, st) = tags_for(&svc).await;
+    for tags in [&ev, &st] {
+        assert!(tags
+            .iter()
+            .any(|t| t[0] == "anchor" && t[2] == "ab".repeat(32)));
+    }
+    // forge-held enabled, nothing on-chain: no anchor tags at all
+    let tip = Command::new("git")
+        .args([
+            "--git-dir",
+            bare.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+    svc.trails()
+        .enable("casey", "agent", "main", &tip)
+        .await
+        .unwrap();
+    let (ev, st) = tags_for(&svc).await;
+    for tags in [&ev, &st] {
+        assert!(
+            !tags
+                .iter()
+                .any(|t| matches!(t[0].as_str(), "anchor" | "r" | "chain" | "txo" | "commit")),
+            "no fallback to the repo-held trail: {tags:?}"
+        );
+    }
+    // mark 0 recorded: the forge-held genesis is the anchor
+    let txid = "c".repeat(64);
+    svc.trails()
+        .record_txo("casey", "agent", 0, &txid, 2, 9000)
+        .await
+        .unwrap();
+    let (ev, st) = tags_for(&svc).await;
+    for tags in [&ev, &st] {
+        assert!(tags.contains(&vec!["anchor".into(), "tbtc4".into(), txid.clone()]));
+        assert!(tags.contains(&vec!["txo".into(), format!("txo:tbtc4:{txid}:2")]));
+        assert!(tags.contains(&vec!["commit".into(), tip.clone()]));
+        assert!(tags.contains(&vec![
+            "r".into(),
+            format!("{ORIGIN}/forge/casey/agent/blocktrails.json")
+        ]));
+    }
 }
