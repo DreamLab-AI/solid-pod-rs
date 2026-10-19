@@ -7,7 +7,7 @@ implementation_status: partial
 activation_status: inactive
 supersedes: []
 superseded_by: []
-verified_commit: f382039
+verified_commit: 4e97893
 owner: jjohare
 review_trigger: the first release that carries the `gitmark` module or the `mirror` feature; a consumer enabling `forge` or `mirror`; the JSS plugins repository changing its forge contract; the Rust forge gaining a NIP-34 event builder
 repo: solid-pod-rs
@@ -45,7 +45,7 @@ lineage: "Implements the solid-pod-rs half of VisionFlow ADR-2018 (a parity clai
 
 ## Verification
 
-Status is partial and inactive. Verified against base `f382039` with the changes uncommitted in the working tree; re-record the commit when they land. Evidence:
+Status is partial and inactive. Verified at `4e97893` (base `f382039`). Evidence:
 
 - `bash scripts/parity-check.sh`: 244 rows, 218/224 = 97.3%.
 - Forge tests per feature set: default 111 unit, `anchoring` 112, `mirror` 126 plus 20 doctests, `anchoring,mirror,announce` all passing. Workspace: default features 1,996 passed, 0 failed; `--all-features` 2,369 passed, 0 failed. `cargo clippy --workspace --all-targets` (default and `--all-features`) with `-D warnings`, `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps` (both), and `cargo check --target wasm32-unknown-unknown --no-default-features --features core` are clean.
