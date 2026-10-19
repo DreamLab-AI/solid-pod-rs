@@ -45,12 +45,14 @@ where
     F: Future<Output = Result<T, ForgeError>>,
 {
     let d: PathBuf = dir.to_path_buf();
+    // Take the baseline before `work` starts, so a slow walk of a large
+    // repository cannot swallow the bytes the work is about to add.
+    let d0 = d.clone();
+    let base = tokio::task::spawn_blocking(move || dir_size(&d0))
+        .await
+        .unwrap_or(0);
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let watcher = tokio::spawn(async move {
-        let d0 = d.clone();
-        let base = tokio::task::spawn_blocking(move || dir_size(&d0))
-            .await
-            .unwrap_or(0);
         loop {
             tokio::time::sleep(POLL).await;
             let d1 = d.clone();
@@ -83,8 +85,6 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let p = td.path().to_path_buf();
         let r: Result<(), ForgeError> = guard_growth(&p, 1024, async {
-            // Let the watchdog take its baseline before the directory grows.
-            tokio::time::sleep(Duration::from_millis(150)).await;
             std::fs::write(p.join("big"), vec![0u8; 8192]).unwrap();
             tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(())
