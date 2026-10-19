@@ -62,9 +62,9 @@ pub mod mirror;
 pub mod nip34;
 pub mod ownership;
 mod prgit;
-pub mod pulls;
 #[cfg(feature = "announce")]
 pub mod publish;
+pub mod pulls;
 pub mod repo;
 pub mod request;
 pub mod router;
