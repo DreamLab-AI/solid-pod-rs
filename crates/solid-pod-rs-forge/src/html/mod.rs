@@ -7,7 +7,9 @@
 
 use crate::request::esc;
 
+mod extra;
 mod views;
+pub use extra::*;
 pub use views::*;
 
 /// Minimal inline stylesheet shared by every page. Kept tiny and inline
@@ -26,6 +28,8 @@ td,th{text-align:left;padding:.35rem .5rem;border-bottom:1px solid #8883}\
 .state-open{background:#2c9e4b33;color:#2c9e4b}.state-closed{background:#b5433933;color:#b54339}\
 .state-merged{background:#8250df33;color:#8250df}\
 nav.crumbs{font-size:.95rem;margin-bottom:.75rem}\
+.label-chip{display:inline-block;font-size:.75rem;font-weight:500;line-height:1.4;padding:0 .6em;border-radius:2em}\
+.repocard{border:1px solid #8884;border-radius:8px;padding:.5rem 1rem;margin-bottom:.75rem}\
 ";
 
 /// Wrap `body_html` in a full HTML document with a shared header and the

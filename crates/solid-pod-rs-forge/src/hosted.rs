@@ -58,6 +58,34 @@ impl HostedStore {
         Ok(format!("{REF_SCHEME}{hex}/{id}"))
     }
 
+    /// Persist a JSON document (the JSS `ForgeIssue` / `ForgeComment` shape)
+    /// for owner `hex`, returning its `hosted:<hex>/<uuid>` resource ref.
+    pub async fn write_doc(
+        &self,
+        hex: &str,
+        doc: &serde_json::Value,
+    ) -> Result<String, ForgeError> {
+        self.write(hex, &serde_json::to_vec(doc)?).await
+    }
+
+    /// Atomically replace the stored bytes of an **existing** body, keeping
+    /// the `0600` mode. `Ok(false)` when there is nothing to replace.
+    pub async fn replace(&self, hex: &str, uuid: &str, bytes: &[u8]) -> Result<bool, ForgeError> {
+        let Some(path) = self.path_for(hex, uuid) else {
+            return Err(ForgeError::PathTraversal(format!("{hex}/{uuid}")));
+        };
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            return Ok(false);
+        }
+        crate::spine::atomic_write(&path, bytes).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await;
+        }
+        Ok(true)
+    }
+
     /// Read a stored body by `(hex, uuid)`, bounded to `max_bytes`.
     pub async fn read(
         &self,
@@ -101,6 +129,14 @@ impl HostedStore {
     /// Parse a `hosted:<hex>/<uuid>` ref into its parts.
     #[must_use]
     pub fn parse_ref(resource_ref: &str) -> Option<(String, String)> {
+        // JSS stores the public URL `<origin><prefix>/api/hosted/<hex>/<uuid>`;
+        // accept that spelling too so a JSS spine file reads unchanged.
+        if let Some((_, tail)) = resource_ref.split_once("/api/hosted/") {
+            let (hex, uuid) = tail.split_once('/')?;
+            let uuid = uuid.split(['?', '#']).next().unwrap_or(uuid);
+            return (is_valid_hex_pubkey(hex) && Self::valid_uuid(uuid))
+                .then(|| (hex.to_string(), uuid.to_string()));
+        }
         let rest = resource_ref.strip_prefix(REF_SCHEME)?;
         let (hex, uuid) = rest.split_once('/')?;
         if is_valid_hex_pubkey(hex) && Self::valid_uuid(uuid) {
@@ -197,5 +233,37 @@ mod tests {
         assert!(store.write("nothex", b"x").await.is_err());
         assert!(store.read(&hex(), "../escape", 1024).await.is_err());
         assert_eq!(HostedStore::parse_ref("hosted:short/uuid"), None);
+    }
+
+    #[test]
+    fn parse_ref_accepts_the_jss_url_spelling() {
+        let id = "0b9f3f0e-1111-4222-8333-444455556666";
+        let url = format!("https://f.example/forge/api/hosted/{}/{id}", hex());
+        assert_eq!(HostedStore::parse_ref(&url), Some((hex(), id.to_string())));
+        assert_eq!(
+            HostedStore::parse_ref("https://f.example/forge/api/hosted/zz/x"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_overwrites_only_existing() {
+        let td = TempDir::new().unwrap();
+        let store = HostedStore::new(td.path());
+        let rref = store
+            .write_doc(&hex(), &serde_json::json!({"body":"a"}))
+            .await
+            .unwrap();
+        let (h, u) = HostedStore::parse_ref(&rref).unwrap();
+        assert!(store.replace(&h, &u, b"{\"body\":\"b\"}").await.unwrap());
+        assert_eq!(
+            store.read(&h, &u, 1024).await.unwrap().unwrap(),
+            b"{\"body\":\"b\"}"
+        );
+        assert!(!store
+            .replace(&h, "0b9f3f0e-1111-4222-8333-444455556666", b"x")
+            .await
+            .unwrap());
+        assert!(store.replace(&h, "../x", b"x").await.is_err());
     }
 }

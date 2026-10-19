@@ -124,11 +124,35 @@ pub struct RenderedThread {
     pub body: BodyOutcome,
 }
 
+/// A stored issue / comment body is a JSON document with a string `body`
+/// field (the JSS `ForgeIssue` / `ForgeComment` shape, in pods and in forge
+/// hosting alike). Return that field; any other text is treated as a legacy
+/// bare body and returned unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::bodies::body_of_doc;
+/// assert_eq!(body_of_doc(r#"{"type":"ForgeIssue","body":"hello"}"#), "hello");
+/// assert_eq!(body_of_doc("plain words"), "plain words");
+/// assert_eq!(body_of_doc(r#"{"no":"body"}"#), r#"{"no":"body"}"#);
+/// ```
+#[must_use]
+pub fn body_of_doc(text: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(m)) => match m.get("body") {
+            Some(serde_json::Value::String(b)) => b.clone(),
+            _ => text.to_string(),
+        },
+        _ => text.to_string(),
+    }
+}
+
 fn to_outcome(res: FetchResult) -> BodyOutcome {
     match res {
         FetchResult::Body(bytes) => {
             if looks_textual(&bytes) {
-                BodyOutcome::Present(String::from_utf8_lossy(&bytes).into_owned())
+                BodyOutcome::Present(body_of_doc(&String::from_utf8_lossy(&bytes)))
             } else {
                 BodyOutcome::Unavailable("non-textual body".into())
             }

@@ -44,15 +44,25 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
+pub mod api;
+pub mod api_issues;
 pub mod auth;
 pub mod bodies;
 pub mod compare;
 pub mod config;
+pub mod config_file;
+pub mod diff;
 pub mod error;
 pub mod forks;
 pub mod gitmark;
+pub mod gitrun;
+pub mod guard;
 pub mod hosted;
+pub mod hosted_edit;
 pub mod html;
+pub mod labels;
+pub mod locks;
+pub mod markdown;
 #[cfg(feature = "anchoring")]
 pub mod marks_ui;
 pub mod merge;
@@ -62,16 +72,23 @@ pub mod mirror;
 pub mod nip34;
 pub mod ownership;
 mod prgit;
+mod privacy;
 #[cfg(feature = "announce")]
 pub mod publish;
 pub mod pulls;
+pub mod releases;
 pub mod repo;
 pub mod request;
 pub mod router;
+pub mod search;
 pub mod spine;
 pub mod token;
 #[cfg(feature = "anchoring")]
 pub mod trail;
+pub mod xlogin;
+
+#[cfg(test)]
+mod readfeat_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -159,6 +176,8 @@ pub struct ForgeService {
     trails: Arc<trail::TrailStore>,
     /// Fork, compare and pull-request runtime (merge hook, labels, git gate).
     pr: pulls::PrExt,
+    /// Per-repo serialisation locks for spine writes (JSS `serializeOn`).
+    locks: Arc<locks::ForgeLocks>,
 }
 
 impl std::fmt::Debug for ForgeService {
@@ -205,7 +224,23 @@ impl ForgeService {
             #[cfg(feature = "anchoring")]
             trails,
             pr: pulls::PrExt::default(),
+            locks: Arc::new(locks::ForgeLocks::default()),
         })
+    }
+
+    /// The per-repository spine locks. Hold an issue lock across the
+    /// load-modify-save of `issues/<owner>/<repo>.json` and a pull lock across
+    /// the same for the pulls index and merges; when both are needed take the
+    /// issue lock first. See [`locks`].
+    #[must_use]
+    pub fn locks(&self) -> &locks::ForgeLocks {
+        &self.locks
+    }
+
+    /// The service configuration.
+    #[must_use]
+    pub fn config(&self) -> &ForgeConfig {
+        &self.cfg
     }
 
     /// Inject the loopback fetcher (the server's reqwest client) used to
@@ -264,7 +299,7 @@ impl ForgeService {
                     ("access-control-allow-origin".into(), "*".into()),
                     (
                         "access-control-allow-methods".into(),
-                        "GET, POST, PUT, DELETE, OPTIONS".into(),
+                        "GET, POST, PUT, PATCH, DELETE, OPTIONS".into(),
                     ),
                     (
                         "access-control-allow-headers".into(),
@@ -279,7 +314,16 @@ impl ForgeService {
         let Some(rel) = router::strip_prefix(&prefix, &req.path) else {
             return Ok(ForgeResponse::error(404, "not under forge prefix"));
         };
+        // Percent-forms of . / \ NUL never name a real object (JSS dispatcher).
+        if let Err(e) = guard::percent_guard(&rel) {
+            return Ok(self.finish_page(e.to_response()));
+        }
         let route = parse_route(&rel);
+        if self.cfg.private_repos {
+            if let Some(denied) = self.private_gate(&rel, &route, &agent) {
+                return Ok(self.finish_page(denied));
+            }
+        }
 
         #[cfg(feature = "anchoring")]
         let scope = route
@@ -291,7 +335,31 @@ impl ForgeService {
             (Some((o, r)), Ok(resp)) => Ok(self.decorate_repo_page(&o, &r, resp).await),
             (_, other) => other,
         };
-        Ok(result.unwrap_or_else(|e| e.to_response()))
+        Ok(self.finish_page(result.unwrap_or_else(|e| e.to_response())))
+    }
+
+    /// Attach the page `Content-Security-Policy` and `nosniff` to HTML
+    /// responses (JSS `sendHtml`).
+    fn finish_page(&self, mut resp: ForgeResponse) -> ForgeResponse {
+        let is_html = resp
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.starts_with("text/html"));
+        if is_html {
+            resp.headers.push((
+                "content-security-policy".into(),
+                xlogin::build_csp(&self.cfg.csp_connect),
+            ));
+            if !resp
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("x-content-type-options"))
+            {
+                resp.headers
+                    .push(("x-content-type-options".into(), "nosniff".into()));
+            }
+        }
+        resp
     }
 
     /// Route → handler. Handlers return `Result` and errors are mapped to
@@ -303,7 +371,7 @@ impl ForgeService {
         _agent: &ForgeAgent,
     ) -> Result<ForgeResponse, ForgeError> {
         match route {
-            Route::Index => self.h_index().await,
+            Route::Index => self.h_index_filtered(req, _agent).await,
             Route::OwnerIndex { owner } => self.h_owner(&owner).await,
             Route::GitSmart { rel_path } => self.h_git_smart(req, _agent, &rel_path).await,
             Route::RepoOverview { owner, repo } => self.h_overview(&owner, &repo).await,
@@ -360,6 +428,7 @@ impl ForgeService {
                     self.h_issue_detail(&owner, &repo, num).await
                 }
             }
+            Route::ApiReposList => self.h_api_repo_list(req, _agent, None).await,
             Route::ApiToken => self.h_api_token(req, _agent).await,
             Route::ApiHosted { hex, id } => self.h_api_hosted(req, _agent, &hex, &id).await,
             Route::ApiFork { owner, repo } => self.h_api_fork(req, _agent, &owner, &repo).await,
@@ -373,6 +442,22 @@ impl ForgeService {
             Route::Pulls { owner, repo, tail } => {
                 self.h_pulls_page(req, _agent, &owner, &repo, &tail).await
             }
+            // Read features (readfeat): JSON API, search, releases, xlogin.
+            Route::Xlogin => Ok(xlogin::xlogin_response(&req.method)),
+            Route::ApiOwnerRepos { owner } => self.h_api_repo_list(req, _agent, Some(&owner)).await,
+            Route::ApiRepo { owner, repo } => self.h_api_repo(req, _agent, &owner, &repo).await,
+            Route::ApiRepoAction {
+                owner,
+                repo,
+                action,
+                tail,
+            } => {
+                self.h_api_repo_action(req, _agent, &owner, &repo, &action, &tail)
+                    .await
+            }
+            Route::RepoSearch { owner, repo } => self.h_search_page(req, &owner, &repo).await,
+            Route::RepoReleases { owner, repo } => self.h_releases_page(&owner, &repo).await,
+            Route::RepoArchive { owner, repo, spec } => self.h_archive(&owner, &repo, &spec).await,
             // The remaining routes are implemented in later phases.
             _ => Err(ForgeError::NotFound("not implemented".into())),
         }
@@ -393,15 +478,6 @@ impl ForgeService {
     }
 
     // ---- Tier 1: index + git smart-HTTP ---------------------------------
-
-    async fn h_index(&self) -> Result<ForgeResponse, ForgeError> {
-        let repos = repo::list_all(&self.repo_root).await;
-        let page = html::index_page(&self.prefix(), &repos);
-        Ok(ForgeResponse::html(
-            200,
-            self.decorate_listing(&page, &repos),
-        ))
-    }
 
     async fn h_owner(&self, owner: &str) -> Result<ForgeResponse, ForgeError> {
         let repos = repo::list_owner(&self.repo_root, owner).await;
@@ -500,11 +576,19 @@ impl ForgeService {
     async fn h_overview(&self, owner: &str, repo: &str) -> Result<ForgeResponse, ForgeError> {
         let dir = self.resolve_repo(owner, repo).await?;
         let prefix = self.prefix();
+        // Description, search box and open-issue badge under the header.
+        let open = spine::issues::load_issue_index(self.spine.as_ref(), owner, repo)
+            .await
+            .map(|i| i.count(spine::issues::IssueState::Open))
+            .unwrap_or(0);
+        let description = api::repo_description(&dir).await;
+        let extras = html::repo_extras(&prefix, owner, repo, &description, open);
         if !repo::browse::has_commits(&dir).await {
             let page = html::repo_overview_page(&prefix, owner, repo, "main", &[], None);
+            let page = self.decorate_overview(page, owner, repo).await;
             return Ok(ForgeResponse::html(
                 200,
-                self.decorate_overview(page, owner, repo).await,
+                html::inject_after_header(&page, &extras),
             ));
         }
         let branch = repo::browse::default_branch(&dir).await;
@@ -513,9 +597,10 @@ impl ForgeService {
         let readme = self.find_readme(&dir, &branch, &entries).await;
         let page =
             html::repo_overview_page(&prefix, owner, repo, &branch, &entries, readme.as_deref());
+        let page = self.decorate_overview(page, owner, repo).await;
         Ok(ForgeResponse::html(
             200,
-            self.decorate_overview(page, owner, repo).await,
+            html::inject_after_header(&page, &extras),
         ))
     }
 
@@ -760,9 +845,10 @@ impl ForgeService {
     async fn h_tags(&self, owner: &str, repo: &str) -> Result<ForgeResponse, ForgeError> {
         let dir = self.resolve_repo(owner, repo).await?;
         let tags = repo::browse::list_tags(&dir).await?;
+        let page = html::refs_page(&self.prefix(), owner, repo, "Tags", None, &tags, "tree");
         Ok(ForgeResponse::html(
             200,
-            html::refs_page(&self.prefix(), owner, repo, "Tags", None, &tags, "tree"),
+            html::inject_after_header(&page, &html::releases_link(&self.prefix(), owner, repo)),
         ))
     }
 
@@ -780,7 +866,15 @@ impl ForgeService {
             Some("closed") => spine::issues::IssueState::Closed,
             _ => spine::issues::IssueState::Open,
         };
-        let issues = idx.by_state(filter);
+        let label = req
+            .query_param("label")
+            .map(|l| request::percent_decode(&l))
+            .filter(|l| !l.is_empty());
+        let mut issues = idx.by_state(filter);
+        if let Some(l) = &label {
+            issues.retain(|i| i.labels.iter().any(|x| x == l));
+        }
+        let defs = labels::effective_labels(&idx);
         Ok(ForgeResponse::html(
             200,
             html::issues_list_page(
@@ -791,6 +885,7 @@ impl ForgeService {
                 idx.count(spine::issues::IssueState::Open),
                 idx.count(spine::issues::IssueState::Closed),
                 &issues,
+                &defs,
             ),
         ))
     }
@@ -826,7 +921,15 @@ impl ForgeService {
         .await;
         Ok(ForgeResponse::html(
             200,
-            html::issue_detail_page(&self.prefix(), owner, repo, entry, &threads, truncated),
+            html::issue_detail_page(
+                &self.prefix(),
+                owner,
+                repo,
+                entry,
+                &threads,
+                truncated,
+                &labels::effective_labels(&idx),
+            ),
         ))
     }
 
@@ -876,7 +979,17 @@ impl ForgeService {
                     .map(str::trim)
                     .filter(|b| !b.is_empty())
                     .ok_or_else(|| ForgeError::BadRequest("body required".into()))?;
-                let rref = self.hosted.write(pubkey_hex, body.as_bytes()).await?;
+                let doc = hosted_edit::hosted_doc(
+                    "ForgeComment",
+                    owner,
+                    repo,
+                    None,
+                    None,
+                    body,
+                    &agent.author_id(),
+                    now_secs(),
+                );
+                let rref = self.hosted.write_doc(pubkey_hex, &doc).await?;
                 Ok(spine::issues::ThreadPointer {
                     author: agent.author_id(),
                     resource_url: rref,
@@ -970,6 +1083,7 @@ impl ForgeService {
             )
             .await?;
 
+        let _guard = self.locks.issues.lock(owner, repo).await;
         let mut idx = spine::issues::load_issue_index(self.spine.as_ref(), owner, repo).await?;
         let entry = spine::issues::IssueEntry {
             number: 0,
@@ -978,6 +1092,7 @@ impl ForgeService {
             author: agent.author_id(),
             created_at: now_secs(),
             thread: vec![pointer],
+            labels: Vec::new(),
         };
         let num = idx.allocate(entry);
         spine::issues::save_issue_index(self.spine.as_ref(), owner, repo, &idx).await?;
@@ -1007,6 +1122,7 @@ impl ForgeService {
             )
             .await?;
 
+        let _guard = self.locks.issues.lock(owner, repo).await;
         let mut idx = spine::issues::load_issue_index(self.spine.as_ref(), owner, repo).await?;
         let entry = idx
             .issues
@@ -1045,49 +1161,6 @@ impl ForgeService {
             "agent": agent.author_id(),
         });
         Ok(ForgeResponse::json(200, &v))
-    }
-
-    /// `GET/DELETE /api/hosted/<hex>/<uuid>` — the podless body store.
-    /// GET is public (bodies are public by construction); DELETE is
-    /// owner-only (`agent` hex must equal `hex`).
-    async fn h_api_hosted(
-        &self,
-        req: &ForgeRequest,
-        agent: &ForgeAgent,
-        hex: &str,
-        id: &str,
-    ) -> Result<ForgeResponse, ForgeError> {
-        if req.method.eq_ignore_ascii_case("DELETE") {
-            // Only the owning nostr agent may delete their hosted body.
-            if agent.owner() != Some(hex) {
-                return Err(ForgeError::Forbidden(
-                    "only the owner may delete a hosted body".into(),
-                ));
-            }
-            let removed = self.hosted.delete(hex, id).await?;
-            if removed {
-                return Ok(ForgeResponse::with_type(
-                    204,
-                    "application/json",
-                    bytes::Bytes::new(),
-                ));
-            }
-            return Err(ForgeError::NotFound(format!("hosted {hex}/{id}")));
-        }
-
-        // GET (default).
-        match self.hosted.read(hex, id, self.cfg.max_body_bytes).await? {
-            Some(bytes) => Ok(ForgeResponse {
-                status: 200,
-                headers: vec![
-                    ("content-type".into(), "application/json".into()),
-                    ("x-content-type-options".into(), "nosniff".into()),
-                    ("access-control-allow-origin".into(), "*".into()),
-                ],
-                body: bytes::Bytes::from(bytes),
-            }),
-            None => Err(ForgeError::NotFound(format!("hosted {hex}/{id}"))),
-        }
     }
 }
 
@@ -1894,9 +1967,9 @@ mod tests {
             .unwrap();
         assert_eq!(r1.status, 403);
 
-        // The owner DELETE succeeds (204), then the body is gone (404).
+        // The owner DELETE succeeds (200 {"deleted":true}, as JSS), then the body is gone (404).
         let r2 = svc.handle(del_other, nostr_agent(&hex)).await.unwrap();
-        assert_eq!(r2.status, 204);
+        assert_eq!(r2.status, 200);
         let (s2, _) = body(&svc, &format!("/forge/api/hosted/{h}/{u}")).await;
         assert_eq!(s2, 404);
     }

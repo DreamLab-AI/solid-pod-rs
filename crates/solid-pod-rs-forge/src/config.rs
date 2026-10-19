@@ -49,6 +49,20 @@ pub struct ForgeConfig {
     /// one, so anchoring HEAD costs one transaction however many commits
     /// landed. Default `false`.
     pub sparse_marks: bool,
+    /// JSS `privateRepos`: when `true` every read (git, HTML, JSON) is
+    /// owner-only. Default `false`.
+    pub private_repos: bool,
+    /// JSS `baseUrl`: public origin used for absolute clone and hosted-body
+    /// URLs (reverse-proxy override). `None` falls back to the request's
+    /// `host_url`.
+    pub base_url: Option<String>,
+    /// JSS `loopbackUrl`: origin of the host's own HTTP surface for pod
+    /// body reads. Informational for embedders that build a
+    /// [`crate::LoopbackFetch`]; `None` means "derive it".
+    pub loopback_url: Option<String>,
+    /// JSS `cspConnect`: extra `http(s)` origins admitted into the
+    /// `connect-src` of the page CSP (see [`crate::xlogin::build_csp`]).
+    pub csp_connect: Vec<String>,
 }
 
 /// A 32-byte hex secret key supplied through configuration.
@@ -106,6 +120,10 @@ impl Default for ForgeConfig {
             announce_key: None,
             anchoring_ui: false,
             sparse_marks: false,
+            private_repos: false,
+            base_url: None,
+            loopback_url: None,
+            csp_connect: Vec::new(),
         }
     }
 }
