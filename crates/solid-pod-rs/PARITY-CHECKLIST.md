@@ -30,7 +30,7 @@ and our status against it.
 
 ---
 
-## Current state (2026-10-19, alpha.15 plus Unreleased — JSS `8d68ceb`, package 0.0.221; plugins `63a16cb`)
+## Current state (2026-10-19, alpha.16 — JSS `8d68ceb`, package 0.0.221; plugins `63a16cb`)
 
 **244 rows tracked** across 25 functional sections. §25 audits the JSS `plugins`
 repository's forge commits for repo-held git-mark trails, `did:nostr` display and
@@ -643,4 +643,4 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 12 close (2026-05-06)**: JSS v0.0.60–v0.0.71 drift closed. 11 new rows (169–179); 8 landed as `present` (security hardening: size-capped ACL parsing, iterative podName sanitization, DNS failure blocking, `.account` dotfile; IdP: min password length; AP: outbox POST + Note wrapping, User-Agent, Accept-negotiation, follower fan-out, actor cache datetime). 3 deferred (cf-visitor, AP CLI, error pages). 922 insertions across 23 files, ~35 new tests. 132 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 13 close (2026-05-16, alpha.11)**: JSS v0.0.190 Phase 1 absorption complete. 3 new rows (196–198): key provisioning (`provision-keys`), pod-resident NIP-05 endpoint (`nip05-endpoint`), JSON-LD export (`export-jsonld`). All three shipped with bodies + tests. 135 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 14 close (2026-05-16, alpha.12)**: Git pod auto-init (JSS #466/#469/#471). 2 new rows (199–200): `GitInitHook` wasm32-safe trait in core + `GitAutoInit` subprocess impl in `solid-pod-rs-git`. 4 unit tests. `provision_pod_ext` call-site API. 137 rows, **~99% strict / ~100% spec-normative**.
-- **Sprint 15 (2026-10-19, alpha.15 plus Unreleased)**: JSS `0.0.220` → `0.0.221` core delta (rows 233–235: CORS expose list, plugin-prefix precedence, root WebSocket) and the JSS `plugins` forge delta (rows 236–244: repo-held git-mark trails, `blocktrails.json`, explorer links, `did:nostr` display, kind-30618 mirror). 244 rows, 97.3% strict; one new partial row (239) and one deferred row (240).
+- **Sprint 15 (2026-10-19, alpha.16)**: JSS `0.0.220` → `0.0.221` core delta (rows 233–235: CORS expose list, plugin-prefix precedence, root WebSocket) and the JSS `plugins` forge delta (rows 236–244: repo-held git-mark trails, `blocktrails.json`, explorer links, `did:nostr` display, kind-30618 mirror). 244 rows, 97.3% strict; one new partial row (239) and one deferred row (240).

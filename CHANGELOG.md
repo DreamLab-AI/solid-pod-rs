@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.16] — 2026-10-19
+
 Tracks JSS `0.0.221` (`8d68ceb`) and the JSS `plugins` repository's forge at
 `63a16cb`. Parity: 244 rows, 97.3% strict (see `PARITY-CHECKLIST.md` §24, §25).
 
