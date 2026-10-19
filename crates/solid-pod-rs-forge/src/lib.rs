@@ -46,14 +46,19 @@
 
 pub mod auth;
 pub mod bodies;
+pub mod compare;
 pub mod config;
 pub mod error;
+pub mod forks;
 pub mod gitmark;
 pub mod hosted;
 pub mod html;
+pub mod merge;
 #[cfg(feature = "mirror")]
 pub mod mirror;
 pub mod ownership;
+mod prgit;
+pub mod pulls;
 pub mod repo;
 pub mod request;
 pub mod router;
@@ -138,6 +143,8 @@ pub struct ForgeService {
     token_key: Arc<[u8; 32]>,
     /// Per-service single-use guard for NIP-98 event ids.
     nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache,
+    /// Fork, compare and pull-request runtime (merge hook, labels, git gate).
+    pr: pulls::PrExt,
 }
 
 impl std::fmt::Debug for ForgeService {
@@ -173,6 +180,7 @@ impl ForgeService {
             hosted,
             token_key,
             nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache::from_env(),
+            pr: pulls::PrExt::default(),
         })
     }
 
@@ -307,6 +315,17 @@ impl ForgeService {
             }
             Route::ApiToken => self.h_api_token(req, _agent).await,
             Route::ApiHosted { hex, id } => self.h_api_hosted(req, _agent, &hex, &id).await,
+            Route::ApiFork { owner, repo } => self.h_api_fork(req, _agent, &owner, &repo).await,
+            Route::ApiCompare { owner, repo, spec } => {
+                self.h_api_compare(&owner, &repo, &spec).await
+            }
+            Route::ApiPulls { owner, repo, tail } => {
+                self.h_api_pulls(req, _agent, &owner, &repo, &tail).await
+            }
+            Route::Compare { owner, repo, spec } => self.h_compare_page(&owner, &repo, &spec).await,
+            Route::Pulls { owner, repo, tail } => {
+                self.h_pulls_page(req, _agent, &owner, &repo, &tail).await
+            }
             // The remaining routes are implemented in later phases.
             _ => Err(ForgeError::NotFound("not implemented".into())),
         }
@@ -330,9 +349,10 @@ impl ForgeService {
 
     async fn h_index(&self) -> Result<ForgeResponse, ForgeError> {
         let repos = repo::list_all(&self.repo_root).await;
+        let page = html::index_page(&self.prefix(), &repos);
         Ok(ForgeResponse::html(
             200,
-            html::index_page(&self.prefix(), &repos),
+            self.decorate_listing(&page, &repos),
         ))
     }
 
@@ -341,9 +361,14 @@ impl ForgeService {
         if repos.is_empty() {
             return Err(ForgeError::NotFound(format!("owner {owner}")));
         }
+        let page = html::owner_page(&self.prefix(), owner, &repos);
+        let pairs: Vec<(String, String)> = repos
+            .iter()
+            .map(|r| (owner.to_string(), r.clone()))
+            .collect();
         Ok(ForgeResponse::html(
             200,
-            html::owner_page(&self.prefix(), owner, &repos),
+            self.decorate_listing(&page, &pairs),
         ))
     }
 
@@ -413,18 +438,21 @@ impl ForgeService {
         let dir = self.resolve_repo(owner, repo).await?;
         let prefix = self.prefix();
         if !repo::browse::has_commits(&dir).await {
+            let page = html::repo_overview_page(&prefix, owner, repo, "main", &[], None);
             return Ok(ForgeResponse::html(
                 200,
-                html::repo_overview_page(&prefix, owner, repo, "main", &[], None),
+                self.decorate_overview(page, owner, repo).await,
             ));
         }
         let branch = repo::browse::default_branch(&dir).await;
         let entries = repo::browse::list_tree(&dir, &branch, "").await?;
         // README detection (case-insensitive common names).
         let readme = self.find_readme(&dir, &branch, &entries).await;
+        let page =
+            html::repo_overview_page(&prefix, owner, repo, &branch, &entries, readme.as_deref());
         Ok(ForgeResponse::html(
             200,
-            html::repo_overview_page(&prefix, owner, repo, &branch, &entries, readme.as_deref()),
+            self.decorate_overview(page, owner, repo).await,
         ))
     }
 
