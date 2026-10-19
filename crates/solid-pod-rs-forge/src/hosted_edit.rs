@@ -116,8 +116,16 @@ impl ForgeService {
         let is_author = matches!(agent, ForgeAgent::Nostr { pubkey_hex } if pubkey_hex == hex);
         match m.as_str() {
             "GET" | "HEAD" => {
-                if self.cfg.private_repos && matches!(agent, ForgeAgent::Anonymous) {
-                    return Ok(unauthorised());
+                if self.cfg.private_repos {
+                    if matches!(agent, ForgeAgent::Anonymous) {
+                        return Ok(unauthorised());
+                    }
+                    // The UUID is not a credential: under `private_repos` only
+                    // the author of a hosted body may read it back over HTTP
+                    // (security review L6). Pages render bodies server-side.
+                    if !is_author {
+                        return Ok(api_err(403, "private forge"));
+                    }
                 }
                 match self
                     .hosted
@@ -465,7 +473,10 @@ mod tests {
                 .status,
             401
         );
-        assert_eq!(call(&s, "GET", &h, &id, "", nostr(HEX_B)).await.status, 200);
+        // L6: another authenticated agent holding the UUID is refused; only
+        // the author reads the body back over HTTP.
+        assert_eq!(call(&s, "GET", &h, &id, "", nostr(HEX_B)).await.status, 403);
+        assert_eq!(call(&s, "GET", &h, &id, "", nostr(HEX_A)).await.status, 200);
     }
 
     #[test]

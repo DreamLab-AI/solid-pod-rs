@@ -25,9 +25,17 @@ use crate::error::ForgeError;
 /// assert!(percent_guard("/alice/repo/blob/main/%2e%2e/x").is_err());
 /// assert!(percent_guard("/alice/repo/blob/main/a%2Fb").is_err());
 /// assert!(percent_guard("/alice/repo/a\\b").is_err());
+/// assert!(percent_guard("/me/../victim/demo.git/info/refs").is_err());
+/// assert!(percent_guard("/alice/repo?q=a/../b").is_ok());
 /// ```
 pub fn percent_guard(path: &str) -> Result<(), ForgeError> {
     if path.chars().any(|c| c == '\\' || c.is_control()) {
+        return Err(ForgeError::BadRequest("bad path".into()));
+    }
+    // `.` and `..` segments never name a forge object. git's CGI refuses an
+    // aliased path today, but relying on that is brittle (security review).
+    let target = path.split(['?', '#']).next().unwrap_or(path);
+    if target.split('/').any(|seg| seg == "." || seg == "..") {
         return Err(ForgeError::BadRequest("bad path".into()));
     }
     let b = path.as_bytes();
@@ -54,7 +62,28 @@ pub fn percent_guard(path: &str) -> Result<(), ForgeError> {
 /// ```
 #[must_use]
 pub fn ok_owner(s: &str) -> bool {
-    name_ok(s, 64) && !s.contains("..")
+    name_ok(s, 64) && !s.contains("..") && !reserved_owner(s)
+}
+
+/// First path segments the router gives a meaning of its own. An owner with
+/// one of these names would be routed one way and gated another (for example
+/// `/api/<name>.git/info/refs` is smart-HTTP git but looks like the API
+/// namespace to a path-segment check), so they can never be owner names.
+pub const RESERVED_OWNERS: &[&str] = &["api", "xlogin.js"];
+
+/// `true` when `s` is a [`RESERVED_OWNERS`] word (ASCII case-insensitive).
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::guard::{ok_owner, reserved_owner};
+/// assert!(reserved_owner("API"));
+/// assert!(!ok_owner("api"));
+/// assert!(ok_owner("apiary"));
+/// ```
+#[must_use]
+pub fn reserved_owner(s: &str) -> bool {
+    RESERVED_OWNERS.iter().any(|r| r.eq_ignore_ascii_case(s))
 }
 
 /// JSS `REPO_NAME`: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, no `..`, no `.git`
@@ -148,6 +177,22 @@ pub fn ok_path(segs: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dot_segments_are_refused_but_dotted_names_are_not() {
+        use super::percent_guard;
+        for bad in [
+            "/a/./b",
+            "/a/../b",
+            "/..",
+            "/me/../victim/demo.git/info/refs",
+        ] {
+            assert!(percent_guard(bad).is_err(), "{bad}");
+        }
+        for ok in ["/a/.b", "/a/b.c/d", "/a/...x", "/a/b?x=/../y"] {
+            assert!(percent_guard(ok).is_ok(), "{ok}");
+        }
+    }
+
     use super::*;
 
     #[test]

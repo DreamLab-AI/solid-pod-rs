@@ -26,7 +26,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::bodies::{self, BodyOutcome, HostedReader};
-use crate::compare::{self, commit_rows, query_decoded, valid_owner, valid_ref};
+use crate::compare::{self, commit_rows, query_decoded, valid_owner, valid_ref, HeadAccess};
 use crate::error::ForgeError;
 use crate::html::{agent_label, crumbs, page};
 use crate::merge::{NoopTipRecorder, TipRecorder};
@@ -607,7 +607,12 @@ impl ForgeService {
             ));
         };
         let Some(head) = self
-            .resolve_head(owner, name, inp.head.as_deref().unwrap_or(""))
+            .resolve_head(
+                owner,
+                name,
+                inp.head.as_deref().unwrap_or(""),
+                HeadAccess::Caller(agent),
+            )
             .await?
         else {
             return Ok(ForgeResponse::error(
@@ -771,7 +776,11 @@ impl ForgeService {
             ));
         }
         pr.state = state;
+        let snapshot = pr.clone();
         save_pull_index(self.spine.as_ref(), owner, name, &idx).await?;
+        if state == IssueState::Closed {
+            self.release_head_ref(owner, name, &idx, &snapshot).await;
+        }
         Ok(ForgeResponse::json(
             200,
             &serde_json::json!({"number": number, "state": state_str(state)}),
@@ -807,7 +816,7 @@ impl ForgeService {
                 Ok(r)
             }
             [] => self.pulls_list_page(req, owner, name).await,
-            [n] if n == "new" => self.new_pull_page(req, owner, name).await,
+            [n] if n == "new" => self.new_pull_page(req, agent, owner, name).await,
             [n, rest @ ..] => {
                 let Some(number) = parse_number(n) else {
                     return nf();
@@ -947,11 +956,15 @@ impl ForgeService {
     async fn new_pull_page(
         &self,
         req: &ForgeRequest,
+        agent: &ForgeAgent,
         owner: &str,
         name: &str,
     ) -> Result<ForgeResponse, ForgeError> {
         let (b, h) = (query_decoded(req, "base"), query_decoded(req, "head"));
-        let Some(c) = self.compare_data(owner, name, &b, &h).await? else {
+        let Some(c) = self
+            .compare_data(owner, name, &b, &h, HeadAccess::Caller(agent))
+            .await?
+        else {
             return Ok(ForgeResponse::error(404, "not found"));
         };
         let base = format!("{}/{owner}/{name}", self.prefix());
@@ -1164,7 +1177,17 @@ impl ForgeService {
                 (c, m, compare::diff_files(&dir, mb.as_deref(), &b, &h).await)
             }
             _ => match self
-                .compare_data(owner, name, &pr.base, &pr.head_spec())
+                .compare_data(
+                    owner,
+                    name,
+                    &pr.base,
+                    &pr.head_spec(),
+                    if pr.state == IssueState::Open {
+                        HeadAccess::ExistingPr
+                    } else {
+                        HeadAccess::Cached
+                    },
+                )
                 .await?
             {
                 Some(c) => (c.commits, c.has_more, c.files),

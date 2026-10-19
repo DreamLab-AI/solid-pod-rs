@@ -48,6 +48,10 @@ pub enum ForgeError {
     #[error("serialisation: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A shared resource is held by another request; retry shortly (503).
+    #[error("busy: {0}")]
+    Busy(String),
+
     /// A generic backend failure (500).
     #[error("backend: {0}")]
     Backend(String),
@@ -64,6 +68,7 @@ impl ForgeError {
             ForgeError::Forbidden(_) => 403,
             ForgeError::Conflict(_) => 409,
             ForgeError::Unsupported(_) => 501,
+            ForgeError::Busy(_) => 503,
             ForgeError::Git(g) => g.status_code(),
             ForgeError::Io(_) | ForgeError::Serde(_) | ForgeError::Backend(_) => 500,
         }

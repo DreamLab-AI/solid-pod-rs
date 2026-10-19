@@ -262,9 +262,17 @@ pub struct AppState {
     /// and advertised alongside Turtle for request bodies; when off a
     /// `text/n3` body is refused with 415 as in JSS `canAcceptInput`.
     pub conneg_enabled: bool,
-    /// Honour `X-Forwarded-Proto` / `cf-visitor` for the request scheme.
+    /// Honour `X-Forwarded-Proto` / `cf-visitor` for the request scheme and
+    /// `X-Forwarded-Host` / `Forwarded` for the host.
     /// Off by default: only enable behind a proxy that overwrites them.
     pub trust_proxy: bool,
+    /// Public base URL of this server (`JSS_PUBLIC_BASE_URL`). When set it
+    /// is the origin used for NIP-98 URL matching and every generated
+    /// absolute URL, whatever `Host` or forwarding headers say.
+    pub public_base_url: Option<String>,
+    /// Hosts this server answers for (`JSS_ALLOWED_HOSTS`). Empty permits
+    /// any `Host`; otherwise a request for another host gets `421`.
+    pub allowed_hosts: Vec<String>,
     /// did:nostr to WebID resolver applied to NIP-98 callers. `None`
     /// disables cross-identity (the caller is the `did:nostr` agent only).
     pub cross_identity: Option<Arc<dyn cross_identity::CrossIdentityResolver>>,
@@ -379,6 +387,13 @@ pub fn body_cap_from_env() -> usize {
 }
 
 impl AppState {
+    /// The configured public origin (`scheme://authority`), if any.
+    pub fn public_origin(&self) -> Option<String> {
+        self.public_base_url
+            .as_deref()
+            .and_then(scheme::normalise_origin)
+    }
+
     /// Convenience constructor for tests and the binary. Callers may
     /// replace fields after creation since `AppState` is a plain struct.
     pub fn new(storage: Arc<dyn Storage>) -> Self {
@@ -400,6 +415,8 @@ impl AppState {
             mempool_url: None,
             conneg_enabled: false,
             trust_proxy: false,
+            public_base_url: None,
+            allowed_hosts: Vec::new(),
             cross_identity: None,
             activitypub: None,
         }
@@ -599,7 +616,7 @@ pub(crate) async fn extract_pubkey_with_body(
     }
     // Reconstruct the request URL the NIP-98 event was signed over. The
     // scheme must reflect the externally-visible scheme (honouring
-    // `X-Forwarded-Proto` via actix `connection_info`) — a pod behind TLS
+    // `X-Forwarded-Proto`, only behind `trust_proxy`) — a pod behind TLS
     // or a federation reverse proxy is reached at `https://`, and the agent
     // signs that URL. Hardcoding `http://` would break URL matching for
     // every TLS-fronted deployment. Mirrors the base-URI construction used
@@ -607,13 +624,9 @@ pub(crate) async fn extract_pubkey_with_body(
     // Scope the actix `Ref<ConnectionInfo>` guard to a block so it is dropped
     // before the `.await` below (clippy::await_holding_refcell_ref keys on
     // lexical scope, not liveness, so an explicit `drop` does not suffice).
-    let url = {
-        // Scheme via `scheme::effective_scheme`: forwarding headers count
-        // only behind the trusted-proxy flag (JSS cf-visitor row 177).
-        let scheme = scheme::effective_scheme(req);
-        let conn = req.connection_info();
-        format!("{}://{}{}", scheme, conn.host(), req.uri())
-    };
+    // Origin from configuration or the plain Host header, never from
+    // client-controlled forwarding headers (`scheme::request_url`).
+    let url = scheme::request_url(req);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -2568,10 +2581,7 @@ async fn handle_export_all(
     // Pod base URL stamped into the bundle envelope: the externally-visible
     // scheme + host (honours `X-Forwarded-Proto`), matching the URL agents
     // sign over elsewhere in this file.
-    let pod_base = {
-        let conn = req.connection_info();
-        format!("{}://{}/", scheme::effective_scheme(&req), conn.host())
-    };
+    let pod_base = format!("{}/", scheme::request_origin(&req));
 
     let options = solid_pod_rs::ExportOptions { include_private };
     let bundle = solid_pod_rs::export::export_pod_jsonld(&*state.storage, &pod_base, options)
@@ -2820,10 +2830,7 @@ async fn handle_create_pod(
         );
     }
 
-    let base_uri = {
-        let conn = req.connection_info();
-        format!("{}://{}", scheme::effective_scheme(&req), conn.host())
-    };
+    let base_uri = scheme::request_origin(&req);
     let outcome = provision_named_pod(&state, &body.name, None, &base_uri).await?;
 
     Ok(HttpResponse::Created()
@@ -2891,7 +2898,7 @@ async fn handle_copy(
         Some(s) => s,
         None => return Ok(HttpResponse::BadRequest().body("Source header required")),
     };
-    let host = req.connection_info().host().to_string();
+    let host = scheme::request_host(&req);
     let source = match normalise_copy_source(&source, &host) {
         Some(s) => s,
         None => return Ok(HttpResponse::BadRequest().body("invalid Source")),
@@ -3710,11 +3717,33 @@ fn format_error_chain(e: &actix_web::Error) -> String {
 /// Actix middleware that blocks dotfile paths unless they appear on the allowlist.
 pub struct DotfileGuard {
     allow: Arc<DotfileAllowlist>,
+    hosts: Option<Arc<HostPolicy>>,
+}
+
+/// `Host` allow-list enforced by [`DotfileGuard`] (security review M1).
+///
+/// A request whose effective host (the plain `Host` header, or the
+/// forwarding headers behind `trust_proxy`) is not on the list is refused with
+/// `421 Misdirected Request` before any handler runs, so a client cannot
+/// address the server under a name it does not serve.
+pub struct HostPolicy {
+    /// Permitted hosts (`host` or `host:port`, case-insensitive).
+    pub allowed: Vec<String>,
+    /// Honour `X-Forwarded-Host` / `Forwarded` when computing the host.
+    pub trust_proxy: bool,
 }
 
 impl DotfileGuard {
     pub fn new(allow: Arc<DotfileAllowlist>) -> Self {
-        Self { allow }
+        Self { allow, hosts: None }
+    }
+
+    /// Also enforce a `Host` allow-list; an empty list changes nothing.
+    pub fn with_host_policy(mut self, policy: HostPolicy) -> Self {
+        if !policy.allowed.is_empty() {
+            self.hosts = Some(Arc::new(policy));
+        }
+        self
     }
 }
 
@@ -3733,6 +3762,7 @@ where
         ready(Ok(DotfileGuardMiddleware {
             service,
             allow: self.allow.clone(),
+            hosts: self.hosts.clone(),
         }))
     }
 }
@@ -3741,6 +3771,7 @@ where
 pub struct DotfileGuardMiddleware<S> {
     service: S,
     allow: Arc<DotfileAllowlist>,
+    hosts: Option<Arc<HostPolicy>>,
 }
 
 impl<S, B> Service<ServiceRequest> for DotfileGuardMiddleware<S>
@@ -3755,6 +3786,15 @@ where
     actix_web::dev::forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
+        if let Some(p) = &self.hosts {
+            let host = scheme::host_with(req.request(), None, p.trust_proxy);
+            if !scheme::host_allowed(&host, &p.allowed) {
+                let rsp = HttpResponse::build(actix_web::http::StatusCode::MISDIRECTED_REQUEST)
+                    .body("host not served here");
+                let sr = req.into_response(rsp.map_into_boxed_body());
+                return Box::pin(async move { Ok(sr.map_into_right_body()) });
+            }
+        }
         let path = req.path().to_string();
         // Whitelist the well-known discovery paths even though they
         // contain a dotfile component — they are part of Solid's stable
@@ -4651,14 +4691,7 @@ async fn handle_git(
     }
 
     let query = req.uri().query().unwrap_or("").to_string();
-    let host_url = {
-        let conn = req.connection_info();
-        Some(format!(
-            "{}://{}",
-            scheme::effective_scheme(&req),
-            conn.host()
-        ))
-    };
+    let host_url = Some(scheme::request_origin(&req));
     let headers: Vec<(String, String)> = req
         .headers()
         .iter()
@@ -5008,14 +5041,7 @@ async fn handle_forge(
 
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
-    let host_url = {
-        let conn = req.connection_info();
-        Some(format!(
-            "{}://{}",
-            scheme::effective_scheme(&req),
-            conn.host()
-        ))
-    };
+    let host_url = Some(scheme::request_origin(&req));
     let headers: Vec<(String, String)> = req
         .headers()
         .iter()
@@ -5082,6 +5108,7 @@ pub fn build_app(
     let body_cap = state.body_cap;
     let dotfiles = state.dotfiles.clone();
     let allowed_origins = Arc::new(state.allowed_origins.clone());
+    let allowed_hosts = state.allowed_hosts.clone();
 
     let mut app = App::new()
         .app_data(web::Data::new(state.clone()))
@@ -5097,7 +5124,10 @@ pub fn build_app(
         // discriminator in LDP.
         .wrap(NormalizePath::new(TrailingSlash::MergeOnly))
         .wrap(PathTraversalGuard)
-        .wrap(DotfileGuard::new(dotfiles));
+        .wrap(DotfileGuard::new(dotfiles).with_host_policy(HostPolicy {
+            allowed: allowed_hosts,
+            trust_proxy: state.trust_proxy,
+        }));
 
     // CORS / rate-limit: middleware is driven by the library types from
     // S7-A. We register pass-through headers when the env-driven policy

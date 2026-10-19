@@ -220,6 +220,11 @@ impl Fx {
             .await
     }
 
+    async fn get_as(&self, path: &str, a: ForgeAgent) -> (u16, Value, String) {
+        let (p, q) = path.split_once('?').unwrap_or((path, ""));
+        self.call(req("GET", p, q, None), a).await
+    }
+
     async fn post(&self, path: &str, a: ForgeAgent, body: Option<Value>) -> (u16, Value, String) {
         self.call(req("POST", path, "", body), a).await
     }
@@ -361,7 +366,9 @@ async fn compare_json_and_html() {
         "# Contributing\n\nPlease be kind.\n",
         "add contributing guide",
     );
-    let (s, c, _) = fx.get(&format!("{API}/compare/main...dana:feature")).await;
+    let (s, c, _) = fx
+        .get_as(&format!("{API}/compare/main...dana:feature"), pod("dana"))
+        .await;
     assert_eq!(s, 200);
     assert_eq!(c["aheadBy"], 1);
     assert_eq!(c["behindBy"], 0);
@@ -388,14 +395,16 @@ async fn compare_json_and_html() {
         "...dana:feature",
     ] {
         assert_eq!(
-            fx.get(&format!("{API}/compare/{bad}")).await.0,
+            fx.get_as(&format!("{API}/compare/{bad}"), pod("dana"))
+                .await
+                .0,
             404,
             "{bad}"
         );
     }
 
     let (s, _, html) = fx
-        .get("/forge/casey/demo/compare/main...dana:feature")
+        .get_as("/forge/casey/demo/compare/main...dana:feature", pod("dana"))
         .await;
     assert_eq!(s, 200);
     assert!(html.contains("1 ahead, 0 behind"));
@@ -414,7 +423,7 @@ async fn hidden_refs_leak_without_config_and_heal_lazily() {
     fx.push_branch("dana", "feature", "main", "a.txt", "a\n", "a");
     let base = fx.repo("casey", "demo");
     let cmp = format!("{API}/compare/main...dana:feature");
-    assert_eq!(fx.get(&cmp).await.0, 200);
+    assert_eq!(fx.get_as(&cmp, pod("dana")).await.0, 200);
     let ls = git(fx.td.path(), &["ls-remote", base.to_str().unwrap()]);
     assert!(
         !ls.contains("refs/forge/"),
@@ -427,11 +436,11 @@ async fn hidden_refs_leak_without_config_and_heal_lazily() {
     assert!(ls.contains("refs/forge/"), "leaks without the config");
     // Having only one of the two settings is not enough: the other is healed.
     git(&base, &["config", "uploadpack.hideRefs", "refs/forge/"]);
-    assert_eq!(fx.get(&cmp).await.0, 200);
+    assert_eq!(fx.get_as(&cmp, pod("dana")).await.0, 200);
     assert!(git(&base, &["config", "--get-all", "transfer.hideRefs"]).contains("refs/forge/"));
     git(&base, &["config", "--unset-all", "uploadpack.hideRefs"]);
     git(&base, &["config", "--unset-all", "transfer.hideRefs"]);
-    assert_eq!(fx.get(&cmp).await.0, 200);
+    assert_eq!(fx.get_as(&cmp, pod("dana")).await.0, 200);
     let ls = git(fx.td.path(), &["ls-remote", base.to_str().unwrap()]);
     assert!(
         !ls.contains("refs/forge/"),
@@ -440,7 +449,7 @@ async fn hidden_refs_leak_without_config_and_heal_lazily() {
     // An unrelated hideRefs value is preserved, not overwritten.
     git(&base, &["config", "--unset-all", "uploadpack.hideRefs"]);
     git(&base, &["config", "uploadpack.hideRefs", "refs/mirror/"]);
-    assert_eq!(fx.get(&cmp).await.0, 200);
+    assert_eq!(fx.get_as(&cmp, pod("dana")).await.0, 200);
     let all = git(&base, &["config", "--get-all", "uploadpack.hideRefs"]);
     assert!(all.contains("refs/mirror/") && all.contains("refs/forge/"));
 }
@@ -1054,4 +1063,128 @@ async fn comments_are_bounded_and_authenticated() {
         .headers
         .iter()
         .any(|(k, v)| k == "location" && v.ends_with("/pulls/1")));
+}
+
+// ---- security review H1 / M2: who may pull a foreign head -----------------
+
+fn refs_forge(fx: &Fx, owner: &str) -> String {
+    git(&fx.repo(owner, "demo"), &["for-each-ref", "refs/forge"])
+}
+
+/// Anonymous and unrelated callers must not make the forge fetch dana's
+/// branch into casey's repository (storage and lock amplification, M2).
+#[tokio::test]
+async fn cross_fork_fetch_needs_head_owner_or_an_open_pr() {
+    if !git_ok() {
+        return;
+    }
+    let fx = forked().await;
+    fx.push_branch("dana", "feature", "main", "a.txt", "a\n", "a");
+    let cmp = format!("{API}/compare/main...dana:feature");
+    assert_eq!(fx.get(&cmp).await.0, 404, "anonymous");
+    assert_eq!(fx.get_as(&cmp, pod("mallory")).await.0, 404, "stranger");
+    assert_eq!(
+        fx.get_as(&cmp, pod("casey")).await.0,
+        404,
+        "base owner, no PR"
+    );
+    assert!(
+        refs_forge(&fx, "casey").is_empty(),
+        "nothing was fetched: {}",
+        refs_forge(&fx, "casey")
+    );
+    // The head owner may.
+    assert_eq!(fx.get_as(&cmp, pod("dana")).await.0, 200);
+    assert!(refs_forge(&fx, "casey").contains("refs/forge/heads/dana/feature"));
+}
+
+/// Once dana opens a pull request the base owner can follow it, and closing
+/// it drops the fetched ref again.
+#[tokio::test]
+async fn open_pr_authorises_base_owner_and_close_prunes() {
+    if !git_ok() {
+        return;
+    }
+    let fx = forked().await;
+    fx.push_branch("dana", "feature", "main", "a.txt", "a\n", "a");
+    let cmp = format!("{API}/compare/main...dana:feature");
+    let (s, v) = fx.open_pr("dana", "from dana", "dana:feature").await;
+    assert_eq!(s, 201, "{v}");
+    let n = v["number"].as_u64().unwrap();
+    assert_eq!(
+        fx.get_as(&cmp, pod("casey")).await.0,
+        200,
+        "open PR names it"
+    );
+    assert!(refs_forge(&fx, "casey").contains("refs/forge/heads/dana/feature"));
+    let (s, ..) = fx
+        .post(&format!("{API}/pulls/{n}/close"), pod("casey"), None)
+        .await;
+    assert_eq!(s, 200);
+    assert!(
+        !refs_forge(&fx, "casey").contains("refs/forge/heads/dana/feature"),
+        "pruned on close: {}",
+        refs_forge(&fx, "casey")
+    );
+    // Closed: the compare no longer authorises a fetch for the base owner.
+    assert_eq!(fx.get_as(&cmp, pod("casey")).await.0, 404);
+    assert!(refs_forge(&fx, "casey").is_empty());
+}
+
+/// H1: with `private_repos`, a caller must not read another namespace by
+/// naming it as the head of a compare or pull request on their own repo.
+#[tokio::test]
+async fn private_repos_cross_owner_head_does_not_leak() {
+    if !git_ok() {
+        return;
+    }
+    let td = TempDir::new().unwrap();
+    let lb = Arc::new(MockLb::default());
+    let cfg = ForgeConfig {
+        private_repos: true,
+        ..ForgeConfig::default()
+    };
+    let svc = ForgeService::new(cfg, td.path().join("plugin"))
+        .unwrap()
+        .with_loopback(lb.clone() as Arc<dyn LoopbackFetch>);
+    let fx = Fx {
+        td,
+        svc,
+        lb,
+        n: Mutex::new(0),
+    };
+    fx.seed("victim", "demo");
+    fx.seed("mallory", "demo");
+    fx.push_branch(
+        "victim",
+        "secret",
+        "main",
+        "key.txt",
+        "hunter2\n",
+        "private work",
+    );
+    let cmp = "/forge/api/repos/mallory/demo/compare/main...victim:secret";
+    let (s, body, _) = fx.get_as(cmp, pod("mallory")).await;
+    assert_eq!(s, 404, "{body}");
+    assert!(
+        refs_forge(&fx, "mallory").is_empty(),
+        "no victim objects fetched"
+    );
+    let url = fx.pod_body("mallory", "pull-x.jsonld", "x");
+    let (s, v, _) = fx
+        .post(
+            "/forge/api/repos/mallory/demo/pulls",
+            pod("mallory"),
+            Some(json!({"title":"x","base":"main","head":"victim:secret","resourceUrl":url})),
+        )
+        .await;
+    assert_eq!(s, 422, "{v}");
+    assert!(
+        refs_forge(&fx, "mallory").is_empty(),
+        "still nothing fetched"
+    );
+    // Same-namespace compare keeps working.
+    fx.push_branch("mallory", "mine", "main", "m.txt", "m\n", "mine");
+    let ok = "/forge/api/repos/mallory/demo/compare/main...mine";
+    assert_eq!(fx.get_as(ok, pod("mallory")).await.0, 200);
 }

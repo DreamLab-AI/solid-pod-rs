@@ -154,11 +154,11 @@ pub async fn search_data(dir: &Path, branch: &str, q: &str) -> Result<SearchResu
         branch,
         "--",
     ];
-    let mut o = gitrun::run(dir, &args, GREP_OUTPUT_CAP).await?;
+    let mut o = gitrun::run_heavy(dir, &args, GREP_OUTPUT_CAP).await?;
     if o.code.is_some_and(|c| c >= 2) && o.stderr.contains("max-count") {
         // git older than 2.38: no per-file cap, the total cap still holds.
         args.remove(6);
-        o = gitrun::run(dir, &args, GREP_OUTPUT_CAP).await?;
+        o = gitrun::run_heavy(dir, &args, GREP_OUTPUT_CAP).await?;
     }
     // Exit 1 is "no match": an empty result, not an error. Anything else
     // (empty repo, unknown branch) is also an empty result.

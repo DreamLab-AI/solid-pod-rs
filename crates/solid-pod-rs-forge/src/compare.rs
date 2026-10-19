@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::error::ForgeError;
 use crate::forks;
 use crate::html::{agent_label, crumbs, page};
+use crate::ownership::ForgeAgent;
 use crate::prgit;
 use crate::repo;
 use crate::request::{esc, percent_decode};
@@ -37,6 +38,7 @@ pub fn valid_owner(s: &str) -> bool {
         && b.iter()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
         && !s.contains("..")
+        && !crate::guard::reserved_owner(s)
 }
 
 /// JSS `REPO_NAME` (at most 128) tightened to the crate's 100-character
@@ -449,14 +451,45 @@ pub struct Compare {
     pub files: Vec<DiffFile>,
 }
 
+/// Why a caller may (or may not) pull a foreign head into a base repository.
+///
+/// A cross-owner head costs the base repository disk, refs and a fetch lock,
+/// and under `private_repos` it reads another namespace. So the fetch is
+/// authorised by who is asking, never by the spec alone (security review H1 and
+/// M2; JSS fetches for anyone, which is a deliberate divergence).
+#[derive(Clone, Copy)]
+pub(crate) enum HeadAccess<'a> {
+    /// A live request. A cross-owner head is fetched only when the agent owns
+    /// the head's namespace (so it could read it directly) or an open pull
+    /// request in the base repository already names that head.
+    Caller(&'a ForgeAgent),
+    /// An open pull request already names this head: its creation was
+    /// authorised by the head owner, so the base owner may follow it.
+    ExistingPr,
+    /// Never fetch; a cross-owner head resolves only from a ref already held
+    /// (closed pull requests and the PR pages that render them).
+    Cached,
+}
+
+/// Most `refs/forge/heads/*` refs one base repository keeps.
+pub(crate) const MAX_FORGE_HEADS: usize = 64;
+
+/// Most bytes one cross-fork fetch may add to the base repository.
+pub(crate) const MAX_HEAD_FETCH_BYTES: u64 = 256 * 1024 * 1024;
+
+/// How long a request waits for the per-repository fetch lock before a 503.
+pub(crate) const FETCH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl ForgeService {
     /// Resolve a compare/PR head (JSS `resolveHead`). `Ok(None)` for any
-    /// invalid, missing or unfetchable head; the caller answers 404 or 422.
+    /// invalid, missing, unauthorised or unfetchable head; the caller answers
+    /// 404 or 422. [`ForgeError::Busy`] when another fetch holds the lock.
     pub(crate) async fn resolve_head(
         &self,
         base_owner: &str,
         name: &str,
         spec: &str,
+        access: HeadAccess<'_>,
     ) -> Result<Option<HeadRef>, ForgeError> {
         let Some((owner, r)) = parse_head_spec(base_owner, spec) else {
             return Ok(None);
@@ -476,6 +509,20 @@ impl ForgeService {
                 .await
                 .map(make));
         }
+        let local = format!("refs/forge/heads/{owner}/{r}");
+        let may_fetch = match access {
+            HeadAccess::Cached => {
+                return Ok(prgit::rev_parse(&dir, &local).await.map(make));
+            }
+            HeadAccess::ExistingPr => true,
+            HeadAccess::Caller(agent) => {
+                agent.owner() == Some(owner.as_str())
+                    || self.open_pr_names_head(base_owner, name, &owner, &r).await
+            }
+        };
+        if !may_fetch {
+            return Ok(None);
+        }
         let Ok(head_dir) = repo::repo_git_dir(&self.repo_root, &owner, name) else {
             return Ok(None);
         };
@@ -486,33 +533,91 @@ impl ForgeService {
         {
             return Ok(None);
         }
-        let local = format!("refs/forge/heads/{owner}/{r}");
         let refspec = format!("+refs/heads/{r}:{local}");
         let head_path = head_dir.to_string_lossy().into_owned();
         let _g = prgit::fetch_locks()
-            .lock(&format!("{base_owner}/{name}"))
-            .await;
+            .lock_within(&format!("{base_owner}/{name}"), FETCH_LOCK_WAIT)
+            .await?;
         // Lazy heal for repositories that predate the hidden-refs config.
         forks::ensure_forge_refs_hidden(&dir).await;
-        let fetched = prgit::run(
+        let held = prgit::text(
             &dir,
-            &[
-                "-c",
-                "fetch.fsckObjects=true",
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--no-write-fetch-head",
-                "--",
-                &head_path,
-                &refspec,
-            ],
+            &["for-each-ref", "--format=%(refname)", "refs/forge/heads/"],
         )
-        .await?;
+        .await
+        .unwrap_or_default();
+        if held.lines().count() >= MAX_FORGE_HEADS && !held.lines().any(|l| l == local) {
+            return Err(ForgeError::Conflict(
+                "too many foreign heads are held for this repository".into(),
+            ));
+        }
+        let args = [
+            "-c",
+            "fetch.fsckObjects=true",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            head_path.as_str(),
+            refspec.as_str(),
+        ];
+        let fetch = prgit::run(&dir, &args);
+        let fetched = crate::sizecap::guard_growth(&dir, MAX_HEAD_FETCH_BYTES, fetch).await?;
         if !fetched.ok() {
             return Ok(None);
         }
         Ok(prgit::rev_parse(&dir, &local).await.map(make))
+    }
+
+    /// `true` when an open pull request of `<base_owner>/<name>` names exactly
+    /// this head.
+    async fn open_pr_names_head(
+        &self,
+        base_owner: &str,
+        name: &str,
+        head_owner: &str,
+        head_ref: &str,
+    ) -> bool {
+        use crate::spine::issues::IssueState;
+        match crate::pulls::load_pull_index(self.spine.as_ref(), base_owner, name).await {
+            Ok(idx) => idx.pulls.values().any(|p| {
+                p.state == IssueState::Open
+                    && p.head.owner == head_owner
+                    && p.head.ref_name == head_ref
+            }),
+            Err(_) => false,
+        }
+    }
+
+    /// Drop the fetched copy of a pull request's foreign head once it is
+    /// closed or merged, unless another open pull request still uses it.
+    /// Best effort: a failure only leaves a hidden ref behind.
+    pub(crate) async fn release_head_ref(
+        &self,
+        base_owner: &str,
+        name: &str,
+        idx: &crate::pulls::PullIndex,
+        pr: &crate::pulls::PullEntry,
+    ) {
+        use crate::spine::issues::IssueState;
+        if pr.head.owner == base_owner {
+            return;
+        }
+        let shared = idx.pulls.values().any(|p| {
+            p.number != pr.number
+                && p.state == IssueState::Open
+                && p.head.owner == pr.head.owner
+                && p.head.ref_name == pr.head.ref_name
+        });
+        if shared || !valid_owner(&pr.head.owner) || !valid_ref(&pr.head.ref_name) {
+            return;
+        }
+        let Ok(dir) = repo::repo_git_dir(&self.repo_root, base_owner, name) else {
+            return;
+        };
+        let local = format!("refs/forge/heads/{}/{}", pr.head.owner, pr.head.ref_name);
+        let _ = prgit::run(&dir, &["update-ref", "-d", &local]).await;
     }
 
     /// Resolve the base ref: branch, then tag, then a hex sha.
@@ -539,12 +644,13 @@ impl ForgeService {
         name: &str,
         base_ref: &str,
         head_spec: &str,
+        access: HeadAccess<'_>,
     ) -> Result<Option<Compare>, ForgeError> {
         let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
         let Some(base_sha) = self.resolve_base(&dir, base_ref).await else {
             return Ok(None);
         };
-        let Some(head) = self.resolve_head(owner, name, head_spec).await? else {
+        let Some(head) = self.resolve_head(owner, name, head_spec, access).await? else {
             return Ok(None);
         };
         let counts = prgit::text(
@@ -583,6 +689,7 @@ impl ForgeService {
     /// `GET api/repos/<o>/<n>/compare/<base>...<head>` (JSS `apiCompare`).
     pub(crate) async fn h_api_compare(
         &self,
+        agent: &ForgeAgent,
         owner: &str,
         repo_name: &str,
         spec: &str,
@@ -592,7 +699,10 @@ impl ForgeService {
         let Some((b, h)) = split_spec(spec) else {
             return not_found();
         };
-        let Some(c) = self.compare_data(owner, repo_name, b, h).await? else {
+        let Some(c) = self
+            .compare_data(owner, repo_name, b, h, HeadAccess::Caller(agent))
+            .await?
+        else {
             return not_found();
         };
         Ok(ForgeResponse::json(
@@ -613,6 +723,7 @@ impl ForgeService {
     /// `GET <owner>/<repo>/compare/<base>...<head>` (JSS `comparePage`).
     pub(crate) async fn h_compare_page(
         &self,
+        agent: &ForgeAgent,
         owner: &str,
         repo_name: &str,
         spec: &str,
@@ -621,7 +732,10 @@ impl ForgeService {
         let Some((b, h)) = split_spec(spec) else {
             return Ok(ForgeResponse::error(404, "not found"));
         };
-        let Some(c) = self.compare_data(owner, repo_name, b, h).await? else {
+        let Some(c) = self
+            .compare_data(owner, repo_name, b, h, HeadAccess::Caller(agent))
+            .await?
+        else {
             return Ok(ForgeResponse::error(404, "not found"));
         };
         let prefix = self.prefix();

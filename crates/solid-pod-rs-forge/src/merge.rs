@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 
-use crate::compare::{parse_head_spec, valid_ref, valid_sha};
+use crate::compare::{parse_head_spec, valid_ref, valid_sha, HeadAccess};
 use crate::error::ForgeError;
 use crate::html::agent_label;
 use crate::prgit;
@@ -228,7 +228,14 @@ impl ForgeService {
             return Ok(info);
         }
         info.base_sha = prgit::rev_parse(&dir, &format!("refs/heads/{}", pr.base)).await;
-        let head = self.resolve_head(owner, name, &pr.head_spec()).await?;
+        let access = if pr.state == crate::spine::issues::IssueState::Open {
+            HeadAccess::ExistingPr
+        } else {
+            HeadAccess::Cached
+        };
+        let head = self
+            .resolve_head(owner, name, &pr.head_spec(), access)
+            .await?;
         info.head_sha = head.as_ref().map(|h| h.sha.clone());
         let (Some(base), Some(head)) = (info.base_sha.clone(), head) else {
             return Ok(info);
@@ -326,7 +333,10 @@ impl ForgeService {
                 ));
             }
         }
-        let Some(head) = self.resolve_head(owner, name, &pr.head_spec()).await? else {
+        let Some(head) = self
+            .resolve_head(owner, name, &pr.head_spec(), HeadAccess::ExistingPr)
+            .await?
+        else {
             return Ok(ForgeResponse::error(
                 422,
                 "the head branch no longer exists",
@@ -416,6 +426,7 @@ impl ForgeService {
             });
         }
         pulls::save_pull_index(self.spine.as_ref(), owner, name, &idx).await?;
+        self.release_head_ref(owner, name, &idx, &pr).await;
         tracing::info!(
             "forge: merged PR #{number} into {owner}/{name}@{} ({}{})",
             pr.base,

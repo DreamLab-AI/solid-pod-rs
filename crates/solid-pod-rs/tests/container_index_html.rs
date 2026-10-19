@@ -80,6 +80,8 @@ async fn make_state() -> AppState {
         mempool_url: None,
         conneg_enabled: false,
         trust_proxy: false,
+        public_base_url: None,
+        allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
     }

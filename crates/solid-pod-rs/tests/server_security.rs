@@ -65,6 +65,8 @@ async fn public_read_state() -> AppState {
         mempool_url: None,
         conneg_enabled: false,
         trust_proxy: false,
+        public_base_url: None,
+        allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
     }
@@ -111,6 +113,8 @@ async fn public_write_state(body_cap: usize) -> AppState {
         mempool_url: None,
         conneg_enabled: false,
         trust_proxy: false,
+        public_base_url: None,
+        allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
     }
@@ -278,6 +282,8 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         mempool_url: None,
         conneg_enabled: false,
         trust_proxy: false,
+        public_base_url: None,
+        allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
     };

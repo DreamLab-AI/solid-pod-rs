@@ -9,8 +9,11 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 
 use crate::error::ForgeError;
 
@@ -43,6 +46,82 @@ impl GitOut {
 /// [`ForgeError::Io`] on spawn or read failures. A non-zero exit is **not**
 /// an error here: inspect [`GitOut::code`] (`git grep` exits 1 on no match).
 pub async fn run(git_dir: &Path, args: &[&str], cap: usize) -> Result<GitOut, ForgeError> {
+    run_within(git_dir, args, cap, GIT_TIMEOUT).await
+}
+
+/// Wall-clock budget for one read-side git invocation. Dropping the future
+/// on expiry kills the child (`kill_on_drop`), so a `git grep` over a huge
+/// branch cannot hold a CPU for longer than this.
+pub const GIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`run`] with an explicit wall-clock `limit`.
+///
+/// # Errors
+///
+/// As [`run`], plus [`ForgeError::Backend`] (`timed out`) when git outlives
+/// `limit`; the child is killed.
+pub async fn run_within(
+    git_dir: &Path,
+    args: &[&str],
+    cap: usize,
+    limit: Duration,
+) -> Result<GitOut, ForgeError> {
+    let sub = args.first().copied().unwrap_or("");
+    match tokio::time::timeout(limit, run_unbounded(git_dir, args, cap)).await {
+        Ok(r) => r,
+        Err(_) => Err(ForgeError::Backend(format!("git {sub}: timed out"))),
+    }
+}
+
+/// Permits for the expensive read operations (`git grep`, `git archive`).
+const HEAVY_PERMITS: usize = 4;
+
+/// How long a heavy request waits for a permit before a 503.
+const HEAVY_WAIT: Duration = Duration::from_secs(5);
+
+fn heavy() -> &'static Semaphore {
+    static S: OnceLock<Semaphore> = OnceLock::new();
+    S.get_or_init(|| Semaphore::new(HEAVY_PERMITS))
+}
+
+/// [`run`] for operations that can burn real CPU or memory (search, archive):
+/// at most four run at once process-wide, and a request that
+/// cannot get a permit within a few seconds is [`ForgeError::Busy`] (503).
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::gitrun::run_heavy;
+///
+/// # async fn demo(repo: &std::path::Path) -> Result<(), solid_pod_rs_forge::error::ForgeError> {
+/// let out = run_heavy(repo, &["grep", "-F", "-i", "-e", "needle", "HEAD"], 1 << 20).await?;
+/// // `git grep` exits 1 when nothing matches; that is not an error.
+/// assert!(out.code == Some(0) || out.code == Some(1));
+/// # Ok(()) }
+/// ```
+///
+/// # Errors
+///
+/// As [`run`], plus [`ForgeError::Busy`].
+pub async fn run_heavy(git_dir: &Path, args: &[&str], cap: usize) -> Result<GitOut, ForgeError> {
+    run_gated(heavy(), HEAVY_WAIT, git_dir, args, cap).await
+}
+
+async fn run_gated(
+    gate: &Semaphore,
+    wait: Duration,
+    git_dir: &Path,
+    args: &[&str],
+    cap: usize,
+) -> Result<GitOut, ForgeError> {
+    let _permit = tokio::time::timeout(wait, gate.acquire())
+        .await
+        .map_err(|_| ForgeError::Busy("too many search or archive requests, retry shortly".into()))?
+        .map_err(|_| ForgeError::Busy("search is shutting down".into()))?;
+    run(git_dir, args, cap).await
+}
+
+async fn run_unbounded(git_dir: &Path, args: &[&str], cap: usize) -> Result<GitOut, ForgeError> {
     let mut cmd = solid_pod_rs_git::hardened_git_async();
     cmd.args(args)
         .current_dir(git_dir)
@@ -216,5 +295,46 @@ pub(crate) mod testutil {
             ],
         );
         (bare, sha2)
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// A git process that outlives its budget is abandoned with a timeout
+    /// error instead of holding the request (and a CPU) indefinitely.
+    #[tokio::test]
+    async fn slow_git_is_cut_off_by_the_wall_clock() {
+        let td = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let r = run_within(
+            td.path(),
+            &["-c", "alias.slow=!sleep 20", "slow"],
+            1024,
+            Duration::from_millis(200),
+        )
+        .await;
+        match r {
+            Err(ForgeError::Backend(m)) => assert!(m.contains("timed out"), "{m}"),
+            other => panic!("expected a timeout, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn gated_runs_fail_busy_when_every_permit_is_taken() {
+        let gate = Semaphore::new(1);
+        let _held = gate.acquire().await.unwrap();
+        let td = tempfile::tempdir().unwrap();
+        let r = run_gated(
+            &gate,
+            Duration::from_millis(100),
+            td.path(),
+            &["--version"],
+            1024,
+        )
+        .await;
+        assert!(matches!(r, Err(ForgeError::Busy(_))), "{r:?}");
     }
 }

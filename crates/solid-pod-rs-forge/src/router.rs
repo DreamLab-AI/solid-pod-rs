@@ -293,6 +293,55 @@ pub enum Route {
 }
 
 impl Route {
+    /// The owner namespace this route addresses, `None` for routes that name
+    /// none (the root listing, token mint, hosted bodies, the widget script).
+    /// The privacy gate uses this so it judges the namespace the router will
+    /// actually serve, not a guess from the raw path.
+    ///
+    /// ```
+    /// use solid_pod_rs_forge::router::parse_route;
+    ///
+    /// assert_eq!(parse_route("/alice/demo/issues").owner(), Some("alice"));
+    /// assert_eq!(parse_route("/api/x.git/info/refs").owner(), Some("api"));
+    /// assert_eq!(parse_route("/").owner(), None);
+    /// ```
+    #[must_use]
+    pub fn owner(&self) -> Option<&str> {
+        match self {
+            Route::OwnerIndex { owner }
+            | Route::ApiOwnerRepos { owner }
+            | Route::RepoOverview { owner, .. }
+            | Route::Tree { owner, .. }
+            | Route::Blob { owner, .. }
+            | Route::Raw { owner, .. }
+            | Route::Commits { owner, .. }
+            | Route::Commit { owner, .. }
+            | Route::Branches { owner, .. }
+            | Route::Tags { owner, .. }
+            | Route::BlocktrailsJson { owner, .. }
+            | Route::Issues { owner, .. }
+            | Route::IssueNew { owner, .. }
+            | Route::IssueDetail { owner, .. }
+            | Route::ApiRepo { owner, .. }
+            | Route::ApiMirror { owner, .. }
+            | Route::ApiMarks { owner, .. }
+            | Route::ApiNostr { owner, .. }
+            | Route::ApiAnnounce { owner, .. }
+            | Route::Marks { owner, .. }
+            | Route::ApiFork { owner, .. }
+            | Route::ApiCompare { owner, .. }
+            | Route::ApiPulls { owner, .. }
+            | Route::Compare { owner, .. }
+            | Route::Pulls { owner, .. }
+            | Route::ApiRepoAction { owner, .. }
+            | Route::RepoSearch { owner, .. }
+            | Route::RepoReleases { owner, .. }
+            | Route::RepoArchive { owner, .. } => Some(owner),
+            Route::GitSmart { rel_path } => rel_path.split('/').find(|s| !s.is_empty()),
+            _ => None,
+        }
+    }
+
     /// The `(owner, repo)` of a route that renders a repository page with the
     /// browse tab strip, so the Anchors tab can be added to it.
     #[must_use]
