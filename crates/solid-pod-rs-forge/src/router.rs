@@ -153,8 +153,47 @@ pub enum Route {
         /// Repository name.
         repo: String,
     },
+    /// `GET/POST /api/repos/<owner>/<repo>/marks[/enable | /<i>/txo]` — the
+    /// forge-held Blocktrails trail: list, enable (owner) and record a mark's
+    /// transaction (owner). `tail` is the segments after `marks`.
+    ApiMarks {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// Path segments after `marks`.
+        tail: Vec<String>,
+    },
+    /// `GET /<owner>/<repo>/marks` — the Anchors page.
+    Marks {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+    },
     /// Unmatched — the handler returns 404.
     NotFound,
+}
+
+impl Route {
+    /// The `(owner, repo)` of a route that renders a repository page with the
+    /// browse tab strip, so the Anchors tab can be added to it.
+    #[must_use]
+    pub fn repo_page_scope(&self) -> Option<(&str, &str)> {
+        match self {
+            Route::RepoOverview { owner, repo }
+            | Route::Tree { owner, repo, .. }
+            | Route::Blob { owner, repo, .. }
+            | Route::Commits { owner, repo, .. }
+            | Route::Commit { owner, repo, .. }
+            | Route::Branches { owner, repo }
+            | Route::Tags { owner, repo }
+            | Route::Issues { owner, repo }
+            | Route::IssueNew { owner, repo }
+            | Route::IssueDetail { owner, repo, .. } => Some((owner, repo)),
+            _ => None,
+        }
+    }
 }
 
 /// Git smart-HTTP suffixes that identify a CGI request.
@@ -277,6 +316,7 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
         "branches" if rest.is_empty() => Route::Branches { owner, repo },
         "tags" if rest.is_empty() => Route::Tags { owner, repo },
         "blocktrails.json" if rest.is_empty() => Route::BlocktrailsJson { owner, repo },
+        "marks" if rest.is_empty() => Route::Marks { owner, repo },
         "issues" => match rest {
             [] => Route::Issues { owner, repo },
             ["new"] => Route::IssueNew { owner, repo },
@@ -306,6 +346,11 @@ fn parse_api(segs: &[&str]) -> Route {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
         },
+        ["repos", owner, repo, "marks", tail @ ..] => Route::ApiMarks {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+            tail: tail.iter().map(|s| (*s).to_string()).collect(),
+        },
         ["repos", owner, repo] => Route::ApiRepo {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
@@ -324,6 +369,47 @@ pub fn strip_git_suffix(repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_routes_parse() {
+        assert_eq!(
+            parse_route("/casey/trail/marks"),
+            Route::Marks {
+                owner: "casey".into(),
+                repo: "trail".into()
+            }
+        );
+        assert_eq!(parse_route("/casey/trail/marks/x"), Route::NotFound);
+        assert_eq!(
+            parse_route("/api/repos/casey/trail/marks"),
+            Route::ApiMarks {
+                owner: "casey".into(),
+                repo: "trail".into(),
+                tail: vec![]
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/trail/marks/enable"),
+            Route::ApiMarks {
+                owner: "casey".into(),
+                repo: "trail".into(),
+                tail: vec!["enable".into()]
+            }
+        );
+        assert_eq!(
+            parse_route("/api/repos/casey/trail.git/marks/3/txo"),
+            Route::ApiMarks {
+                owner: "casey".into(),
+                repo: "trail".into(),
+                tail: vec!["3".into(), "txo".into()]
+            }
+        );
+        assert_eq!(
+            parse_route("/casey/trail").repo_page_scope(),
+            Some(("casey", "trail"))
+        );
+        assert_eq!(parse_route("/casey/trail/marks").repo_page_scope(), None);
+    }
 
     #[test]
     fn strip_prefix_variants() {

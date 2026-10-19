@@ -4,6 +4,8 @@
 //! (README §Configuration) — cited by name only. All bounds that keep
 //! the read-time body fetch cheap and DoS-resistant live here.
 
+use crate::error::ForgeError;
+
 /// All tunables for a [`crate::ForgeService`].
 #[derive(Debug, Clone)]
 pub struct ForgeConfig {
@@ -31,6 +33,16 @@ pub struct ForgeConfig {
     /// Opt-in relays the NIP-34 announcement is published to. Empty =
     /// build/sign only, never publish.
     pub announce_relays: Vec<String>,
+    /// Show the Anchors tab on every repository page, not only on
+    /// repositories that already carry a trail (JSS `anchoringUi`). The
+    /// `/marks` page then carries the Enable pitch where anchoring is off.
+    /// Default `false`. Needs the `anchoring` feature to link anywhere.
+    pub anchoring_ui: bool,
+    /// Sparse marking (JSS `sparseMarks`): a trailing *unfunded* mark is
+    /// re-targeted at each new default-branch tip instead of stacking a new
+    /// one, so anchoring HEAD costs one transaction however many commits
+    /// landed. Default `false`.
+    pub sparse_marks: bool,
 }
 
 impl Default for ForgeConfig {
@@ -45,13 +57,49 @@ impl Default for ForgeConfig {
             default_chain: "tbtc4".to_string(),
             allow_mainnet: false,
             announce_relays: Vec::new(),
+            anchoring_ui: false,
+            sparse_marks: false,
         }
     }
 }
 
 /// Chain strings this build treats as Bitcoin mainnet (custody refused
 /// unless explicitly allowed).
-const MAINNET_ALIASES: &[&str] = &["btc", "bitcoin", "mainnet", "main"];
+///
+/// The JSS `MAINNET_CHAINS` set is `btc`, `mainnet`, `bitcoin` and `xbt`;
+/// `main` is kept as an extra fail-closed spelling (it is not a *known* chain,
+/// so [`chain_hrp`] refuses it anyway).
+const MAINNET_ALIASES: &[&str] = &["btc", "bitcoin", "mainnet", "xbt", "main"];
+
+/// The bech32 human-readable part of a chain token's P2TR addresses, or
+/// `None` for a chain this forge does not know (JSS `CHAIN_HRP`).
+///
+/// Matching is case-insensitive.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::config::chain_hrp;
+///
+/// assert_eq!(chain_hrp("tbtc4"), Some("tb"));
+/// assert_eq!(chain_hrp("XBT"), Some("bc"));
+/// assert_eq!(chain_hrp("regtest"), Some("bcrt"));
+/// assert_eq!(chain_hrp("dogecoin"), None);
+/// ```
+#[must_use]
+pub fn chain_hrp(chain: &str) -> Option<&'static str> {
+    match chain.to_ascii_lowercase().as_str() {
+        "btc" | "mainnet" | "bitcoin" | "xbt" => Some("bc"),
+        "tbtc4" | "tbtc3" | "signet" | "txbt4" => Some("tb"),
+        "regtest" => Some("bcrt"),
+        _ => None,
+    }
+}
+
+/// The chain tokens [`chain_hrp`] knows, for error messages.
+pub const KNOWN_CHAINS: &[&str] = &[
+    "btc", "mainnet", "bitcoin", "tbtc4", "tbtc3", "signet", "regtest", "txbt4", "xbt",
+];
 
 impl ForgeConfig {
     /// Normalise the configured prefix: ensure a single leading slash and
@@ -78,6 +126,46 @@ impl ForgeConfig {
             true
         }
     }
+
+    /// Check [`Self::default_chain`] the way JSS `activate` does, before any
+    /// other work: a mainnet chain is an error unless
+    /// [`allow_mainnet`](Self::allow_mainnet), and a chain with no known
+    /// address prefix is an error too (no address beats a wrong-network
+    /// address someone might fund).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::BadRequest`] naming the stakes (`MAINNET`, `allow_mainnet`)
+    /// or the unknown chain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solid_pod_rs_forge::ForgeConfig;
+    ///
+    /// assert!(ForgeConfig::default().validate_chain().is_ok());
+    /// let mainnet = ForgeConfig { default_chain: "xbt".into(), ..Default::default() };
+    /// assert!(mainnet.validate_chain().unwrap_err().to_string().contains("MAINNET"));
+    /// let unknown = ForgeConfig { default_chain: "dogecoin".into(), ..Default::default() };
+    /// assert!(unknown.validate_chain().unwrap_err().to_string().contains("unknown"));
+    /// ```
+    pub fn validate_chain(&self) -> Result<(), ForgeError> {
+        let chain = &self.default_chain;
+        if !self.chain_allowed(chain) {
+            return Err(ForgeError::BadRequest(format!(
+                "forge: config.chain \"{chain}\" is Bitcoin MAINNET: refusing to derive mainnet \
+anchor addresses. The forge holds the trail key server-side (testnet posture) and never \
+verifies or broadcasts; set allow_mainnet only if you accept that custody"
+            )));
+        }
+        if chain_hrp(chain).is_none() {
+            return Err(ForgeError::BadRequest(format!(
+                "forge: unknown config.chain \"{chain}\" (supported: {})",
+                KNOWN_CHAINS.join(", ")
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -98,7 +186,7 @@ mod tests {
     #[test]
     fn mainnet_guard_fails_closed() {
         let c = ForgeConfig::default();
-        for m in ["btc", "BTC", "Bitcoin", "mainnet", "main"] {
+        for m in ["btc", "BTC", "Bitcoin", "mainnet", "main", "xbt", "XBT"] {
             assert!(!c.chain_allowed(m), "{m} must be refused by default");
         }
         assert!(c.chain_allowed("tbtc4"));
@@ -114,6 +202,61 @@ mod tests {
         };
         assert!(c.chain_allowed("btc"));
         assert!(c.chain_allowed("mainnet"));
+    }
+
+    #[test]
+    fn validate_chain_refuses_mainnet_and_unknown_like_jss_activate() {
+        // Transcribed from forge/test.js 'a mainnet chain without allowMainnet
+        // refuses to activate, loudly' (plus xbt, which JSS also treats as mainnet).
+        for chain in ["btc", "mainnet", "bitcoin", "xbt"] {
+            let c = ForgeConfig {
+                default_chain: chain.into(),
+                ..Default::default()
+            };
+            let e = c.validate_chain().unwrap_err().to_string();
+            assert!(e.contains("MAINNET"), "{e}");
+            assert!(e.contains("allow_mainnet"), "{e}");
+        }
+        let unknown = ForgeConfig {
+            default_chain: "dogecoin".into(),
+            ..Default::default()
+        };
+        assert!(unknown
+            .validate_chain()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown config.chain"));
+        // with the override the gate opens
+        let open = ForgeConfig {
+            default_chain: "btc".into(),
+            allow_mainnet: true,
+            ..Default::default()
+        };
+        assert!(open.validate_chain().is_ok());
+        // every testnet token is fine
+        for chain in ["tbtc4", "tbtc3", "signet", "regtest", "txbt4"] {
+            let c = ForgeConfig {
+                default_chain: chain.into(),
+                ..Default::default()
+            };
+            assert!(c.validate_chain().is_ok(), "{chain}");
+        }
+    }
+
+    #[test]
+    fn chain_hrp_table_matches_jss() {
+        assert_eq!(chain_hrp("btc"), Some("bc"));
+        assert_eq!(chain_hrp("xbt"), Some("bc"));
+        assert_eq!(chain_hrp("txbt4"), Some("tb"));
+        assert_eq!(chain_hrp("regtest"), Some("bcrt"));
+        assert_eq!(chain_hrp("testnet"), None);
+    }
+
+    #[test]
+    fn new_anchoring_keys_default_off() {
+        let c = ForgeConfig::default();
+        assert!(!c.anchoring_ui);
+        assert!(!c.sparse_marks);
     }
 
     #[test]

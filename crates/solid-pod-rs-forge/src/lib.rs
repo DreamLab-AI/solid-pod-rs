@@ -51,6 +51,8 @@ pub mod error;
 pub mod gitmark;
 pub mod hosted;
 pub mod html;
+#[cfg(feature = "anchoring")]
+pub mod marks_ui;
 #[cfg(feature = "mirror")]
 pub mod mirror;
 pub mod ownership;
@@ -59,6 +61,8 @@ pub mod request;
 pub mod router;
 pub mod spine;
 pub mod token;
+#[cfg(feature = "anchoring")]
+pub mod trail;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -138,6 +142,9 @@ pub struct ForgeService {
     token_key: Arc<[u8; 32]>,
     /// Per-service single-use guard for NIP-98 event ids.
     nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache,
+    /// Forge-held Blocktrails trails (feature `anchoring`).
+    #[cfg(feature = "anchoring")]
+    trails: Arc<trail::TrailStore>,
 }
 
 impl std::fmt::Debug for ForgeService {
@@ -154,6 +161,8 @@ impl ForgeService {
     /// (`repos/`, `issues/`, `pulls/`, `hosted/`, `marks/`) if absent.
     /// The git CGI service is rooted at `plugin_dir/repos`.
     pub fn new(cfg: ForgeConfig, plugin_dir: impl Into<PathBuf>) -> Result<Self, ForgeError> {
+        // The chain guard runs first, before any other work (JSS `activate`).
+        cfg.validate_chain()?;
         let plugin_dir = plugin_dir.into();
         let repo_root = plugin_dir.join("repos");
         for sub in ["repos", "issues", "pulls", "hosted", "marks"] {
@@ -163,6 +172,8 @@ impl ForgeService {
         let spine: Arc<dyn SpineStore> = Arc::new(FsSpineStore::new(plugin_dir.clone()));
         let hosted = Arc::new(HostedStore::new(plugin_dir.clone()));
         let token_key = Arc::new(load_or_create_token_key(&plugin_dir)?);
+        #[cfg(feature = "anchoring")]
+        let trails = Arc::new(trail::TrailStore::new(&cfg, &plugin_dir)?);
         Ok(Self {
             cfg,
             plugin_dir,
@@ -173,6 +184,8 @@ impl ForgeService {
             hosted,
             token_key,
             nip98_replay: solid_pod_rs::auth::replay::Nip98ReplayCache::from_env(),
+            #[cfg(feature = "anchoring")]
+            trails,
         })
     }
 
@@ -249,7 +262,16 @@ impl ForgeService {
         };
         let route = parse_route(&rel);
 
+        #[cfg(feature = "anchoring")]
+        let scope = route
+            .repo_page_scope()
+            .map(|(o, r)| (o.to_string(), r.to_string()));
         let result = self.dispatch(route, &req, &agent).await;
+        #[cfg(feature = "anchoring")]
+        let result = match (scope, result) {
+            (Some((o, r)), Ok(resp)) => Ok(self.decorate_repo_page(&o, &r, resp).await),
+            (_, other) => other,
+        };
         Ok(result.unwrap_or_else(|e| e.to_response()))
     }
 
@@ -289,6 +311,16 @@ impl ForgeService {
             Route::Branches { owner, repo } => self.h_branches(&owner, &repo).await,
             Route::Tags { owner, repo } => self.h_tags(&owner, &repo).await,
             Route::BlocktrailsJson { owner, repo } => self.h_blocktrails_json(&owner, &repo).await,
+            #[cfg(feature = "anchoring")]
+            Route::ApiMarks { owner, repo, tail } => {
+                self.h_api_marks(req, _agent, &owner, &repo, &tail).await
+            }
+            #[cfg(feature = "anchoring")]
+            Route::Marks { owner, repo } => self.h_marks_page(req, &owner, &repo).await,
+            #[cfg(not(feature = "anchoring"))]
+            Route::ApiMarks { .. } | Route::Marks { .. } => Err(ForgeError::Unsupported(
+                "anchoring is not compiled into this build".into(),
+            )),
             Route::ApiMirror { owner, repo } => Ok(self.h_api_mirror(&owner, &repo)),
             Route::Issues { owner, repo } => {
                 if req.method.eq_ignore_ascii_case("POST") {
@@ -399,7 +431,23 @@ impl ForgeService {
                 }
             }
         }
+        // A completed push to a default branch advances an anchored trail
+        // (JSS `recordTip` on receive-pack exit). The CGI response is fully
+        // buffered, so by the time `handle` returns the refs are updated.
+        #[cfg(feature = "anchoring")]
+        let pushed = git_req.method.eq_ignore_ascii_case("POST")
+            && rel_path
+                .trim_end_matches('/')
+                .ends_with("/git-receive-pack");
         let resp = self.git.handle(git_req).await?;
+        #[cfg(feature = "anchoring")]
+        if pushed && resp.status < 300 {
+            let mut parts = rel_path.trim_start_matches('/').split('/');
+            if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
+                let name = name.strip_suffix(".git").unwrap_or(name);
+                self.record_pushed_tip(owner, name).await;
+            }
+        }
         Ok(ForgeResponse {
             status: resp.status,
             headers: resp.headers,
@@ -601,6 +649,20 @@ impl ForgeService {
         owner: &str,
         repo: &str,
     ) -> Result<ForgeResponse, ForgeError> {
+        // A forge-held trail wins; its pending marks ride additively.
+        #[cfg(feature = "anchoring")]
+        if let Some(doc) = self.forge_blocktrails_json(owner, repo)? {
+            let mut resp = ForgeResponse::with_type(
+                200,
+                "application/json; charset=utf-8",
+                bytes::Bytes::from(doc),
+            );
+            resp.headers
+                .push(("access-control-allow-origin".into(), "*".into()));
+            resp.headers
+                .push(("x-content-type-options".into(), "nosniff".into()));
+            return Ok(resp);
+        }
         let dir = self.resolve_repo(owner, repo).await?;
         let branch = repo::browse::default_branch(&dir).await;
         let (status, body) = match gitmark::read_repo_trail(&dir, &branch).await {
