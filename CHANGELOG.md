@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **solid-pod-rs-server no longer serves `git push`.** `git-receive-pack` and
+  its `info/refs?service=git-receive-pack` discovery are refused with 403
+  (`push_not_served`) for every caller, before any credential is read. The
+  path never worked (the git service had no auth provider, so every push was
+  refused), and serving it safely would have needed a WAC check on every
+  pushed file. The route stays registered so the request cannot fall through
+  to the LDP catch-all. The server's pre-receive guard module goes with it;
+  the `solid-pod-rs-git` push guard is unchanged. Clone and fetch are
+  unaffected.
+
 ## [0.5.0-alpha.14] — 2026-10-18
 
 ### Security

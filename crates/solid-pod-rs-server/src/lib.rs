@@ -118,10 +118,6 @@ pub(crate) mod hardened_git;
 /// with JSS-parity JSON.
 mod handlers;
 
-/// Pre-receive path policy for `git push` (shares the REST/MCP path rules).
-#[cfg(feature = "git")]
-mod git_push;
-
 /// MCP (Model Context Protocol) server subsystem — `POST /mcp`, mounted
 /// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
 mod mcp;
@@ -4541,41 +4537,44 @@ async fn handle_git(
         host_url,
     };
 
+    // Push is not served: `git-receive-pack` and its `info/refs` discovery
+    // are refused for every caller, before any credential is read. The path
+    // never worked (the service had no auth provider, so every push was
+    // refused), and making it work would have needed per-path WAC on every
+    // pushed file; the owner chose to delete it instead (ER-28).
+    if git_req.is_write() {
+        let mut builder = HttpResponse::Forbidden();
+        for (k, v) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+            builder.insert_header((k, v));
+        }
+        return builder.json(serde_json::json!({
+            "error": "git push is not served by this server",
+            "reason": "push_not_served"
+        }));
+    }
+
     // WAC gate (mirrors JSS `server.js` checkAccess before git, ~498-530).
     // Git requests were previously handed straight to the CGI with no
     // authorisation: a private pod's history was anonymously clonable and
     // pushes were anonymous (R5 "No WAC" finding / ADR-059 D6). Resolve the
     // caller's `did:nostr` from the git `Basic nostr:`/`Nostr` NIP-98
     // credential — an absent or invalid credential resolves to anonymous,
-    // and WAC then decides, fail-closed. Enforce Read for clone/fetch and
-    // Write for push against the pod-root container ACL. `enforce_read`
-    // grants public pods to anonymous callers and replies 401 on a private
-    // pod so the git client knows to retry with credentials; `enforce_write`
-    // denies anonymous/unauthorised push.
-    let is_write = git_req.is_write();
+    // and WAC then decides, fail-closed. Enforce Read for clone/fetch
+    // against the pod-root container ACL; push was refused above.
+    // `enforce_read` grants public pods to anonymous callers and replies 401
+    // on a private pod so the git client knows to retry with credentials.
     let agent = match BasicNostrExtractor::new().authorise(&git_req).await {
         Ok(pk) => Some(format!("did:nostr:{pk}")),
         Err(_) => None,
     };
     let wac_path = format!("/{pod_name}/");
     let origin = req_origin(&req);
-    let wac = if is_write {
-        enforce_write_ctx(
-            &state,
-            &wac_path,
-            AccessMode::Write,
-            agent.as_deref(),
-            origin,
-        )
+    // Only the denial matters on this path; discard the read gate's
+    // cache-audience classification (ADR-2002), which is a response concern
+    // the git transport does not have.
+    let wac = enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin)
         .await
-    } else {
-        // Only the denial matters on this path; discard the read gate's
-        // cache-audience classification (ADR-2002), which is a response
-        // concern the git transport does not have.
-        enforce_read_ctx(&state, &wac_path, agent.as_deref(), origin)
-            .await
-            .map(|_audience| ())
-    };
+        .map(|_audience| ());
     if let Err(e) = wac {
         // JSS #548: the WAC gate's 401/402/403 must carry the git CORS
         // headers, or browser-based git clients see a generic CORS/network
@@ -4592,7 +4591,7 @@ async fn handle_git(
         return resp;
     }
 
-    let service = git_push::pod_git_service(repo_root, state.dotfiles.clone());
+    let service = solid_pod_rs_git::service::GitHttpService::new(repo_root);
     match service.handle(git_req).await {
         Ok(git_resp) => {
             let mut builder = HttpResponse::build(
@@ -4951,7 +4950,12 @@ pub fn build_app(
 
     #[cfg(feature = "git")]
     {
-        // Git smart-HTTP: info/refs discovery + upload/receive pack.
+        // Git smart-HTTP: info/refs discovery + upload-pack (clone/fetch).
+        // `git-receive-pack` stays routed here only so `handle_git` refuses
+        // it: unrouted, the POST would fall through to the LDP catch-all and
+        // create a resource named `git-receive-pack`. Push is not served
+        // (estate register ER-28, owner decision 2026-10-18); agentbox serves
+        // pod git push through its own owner-only route.
         app = app
             .route("/{tail:.*}/info/refs", web::get().to(handle_git))
             .route("/{tail:.*}/git-upload-pack", web::post().to(handle_git))

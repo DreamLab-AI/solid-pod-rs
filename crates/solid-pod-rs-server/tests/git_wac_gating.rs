@@ -61,6 +61,29 @@ fn public_read_acl(container: &str) -> String {
     )
 }
 
+/// Anyone may read and write: a pod where WAC alone would admit a push.
+fn public_write_acl(container: &str) -> String {
+    public_read_acl(container).replace(
+        r#""acl:mode": {"@id": "acl:Read"}"#,
+        r#""acl:mode": [{"@id": "acl:Read"}, {"@id": "acl:Write"}, {"@id": "acl:Append"}]"#,
+    )
+}
+
+/// The push refusal is the server's own, not a WAC verdict (ER-28).
+async fn assert_push_not_served<B: actix_web::body::MessageBody>(
+    rsp: actix_web::dev::ServiceResponse<B>,
+    ctx: &str,
+) {
+    assert_eq!(rsp.status().as_u16(), 403, "{ctx}: push must be refused");
+    assert_git_cors(&rsp, ctx);
+    let body = actix_web::test::read_body(rsp).await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("push_not_served"),
+        "{ctx}: wrong refusal: {text}"
+    );
+}
+
 /// Build an fs-backed `AppState` rooted at a fresh temp dir, with `data_root`
 /// set (git requires it), seeding pod containers + their `.acl` sidecars.
 async fn fs_state_with_pods(pods: &[(&str, String)]) -> (AppState, tempfile::TempDir) {
@@ -122,20 +145,45 @@ async fn anonymous_push_to_private_pod_is_denied() {
     let (state, _tmp) = fs_state_with_pods(&[("alice", owner_only_acl("/alice/"))]).await;
     let app = actix_web::test::init_service(build_app(state)).await;
 
-    // A push is `git-receive-pack` — gated as Write.
     let req = actix_web::test::TestRequest::post()
         .uri("/alice/git-receive-pack")
         .insert_header(("content-type", "application/x-git-receive-pack-request"))
         .set_payload(actix_web::web::Bytes::from_static(b""))
         .to_request();
     let rsp = actix_web::test::call_service(&app, req).await;
+    assert_push_not_served(rsp, "anonymous push to a private pod").await;
+}
 
-    let status = rsp.status().as_u16();
+/// ER-28: push is not served at all. A pod whose ACL lets anyone write still
+/// refuses `git-receive-pack` and its `info/refs` discovery, and the refusal
+/// leaves nothing on disk (no auto-initialised repository).
+#[actix_web::test]
+async fn push_is_refused_even_where_wac_would_allow_it() {
+    let (state, tmp) = fs_state_with_pods(&[("open", public_write_acl("/open/"))]).await;
+    let app = actix_web::test::init_service(build_app(state)).await;
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/open/git-receive-pack")
+        .insert_header(("content-type", "application/x-git-receive-pack-request"))
+        .set_payload(actix_web::web::Bytes::from_static(b""))
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    assert_push_not_served(rsp, "receive-pack on a world-writable pod").await;
+
+    let req = actix_web::test::TestRequest::get()
+        .uri("/open/info/refs?service=git-receive-pack")
+        .to_request();
+    let rsp = actix_web::test::call_service(&app, req).await;
+    assert_push_not_served(rsp, "push discovery on a world-writable pod").await;
+
     assert!(
-        status == 401 || status == 403,
-        "anonymous push must be denied by WAC (expected 401/403, got {status})"
+        !tmp.path().join("open/.git").exists(),
+        "a refused push auto-initialised a repository"
     );
-    assert_git_cors(&rsp, "WAC-denied push (#548)");
+    assert!(
+        !tmp.path().join("open/git-receive-pack").exists(),
+        "the push fell through to LDP and created a resource"
+    );
 }
 
 #[actix_web::test]
