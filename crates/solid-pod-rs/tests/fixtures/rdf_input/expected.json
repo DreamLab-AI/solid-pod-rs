@@ -1,0 +1,898 @@
+{
+ "prefix_a_semicolon_comma": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/alice"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/Person"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/alice"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/name"
+    },
+    {
+     "t": "lit",
+     "v": "Alice"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/alice"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/knows"
+    },
+    {
+     "t": "iri",
+     "v": "http://example.org/bob"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/alice"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/knows"
+    },
+    {
+     "t": "iri",
+     "v": "http://example.org/carol"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/bob"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/name"
+    },
+    {
+     "t": "lit",
+     "v": "Bob"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "relative_iris": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#p"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/up"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#p"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/sub/child"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#p"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#frag"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#p"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/root"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc"
+    },
+    {
+     "t": "iri",
+     "v": "https://pod.example/data/doc#p"
+    },
+    {
+     "t": "iri",
+     "v": "https://other.example/x"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "base_directive_changes_resolution": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "https://b.example/dir/a"
+    },
+    {
+     "t": "iri",
+     "v": "https://b.example/dir/b"
+    },
+    {
+     "t": "iri",
+     "v": "https://b.example/c"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://c.example/d"
+    },
+    {
+     "t": "iri",
+     "v": "https://c.example/e"
+    },
+    {
+     "t": "iri",
+     "v": "https://c.example/f"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "sparql_style_prefix": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://example.org/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://example.org/p"
+    },
+    {
+     "t": "iri",
+     "v": "http://example.org/o"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "numeric_boolean_literals": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/int"
+    },
+    {
+     "t": "lit",
+     "v": "42",
+     "dt": "http://www.w3.org/2001/XMLSchema#integer"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/neg"
+    },
+    {
+     "t": "lit",
+     "v": "-7",
+     "dt": "http://www.w3.org/2001/XMLSchema#integer"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/dec"
+    },
+    {
+     "t": "lit",
+     "v": "3.14",
+     "dt": "http://www.w3.org/2001/XMLSchema#decimal"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/dbl"
+    },
+    {
+     "t": "lit",
+     "v": "1.5e3",
+     "dt": "http://www.w3.org/2001/XMLSchema#double"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/t"
+    },
+    {
+     "t": "lit",
+     "v": "true",
+     "dt": "http://www.w3.org/2001/XMLSchema#boolean"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/f"
+    },
+    {
+     "t": "lit",
+     "v": "false",
+     "dt": "http://www.w3.org/2001/XMLSchema#boolean"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "lang_and_datatype_literals": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/a"
+    },
+    {
+     "t": "lit",
+     "v": "hello",
+     "lang": "en"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/b"
+    },
+    {
+     "t": "lit",
+     "v": "bonjour",
+     "lang": "fr-ca"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/c"
+    },
+    {
+     "t": "lit",
+     "v": "2024-01-02",
+     "dt": "http://www.w3.org/2001/XMLSchema#date"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/d"
+    },
+    {
+     "t": "lit",
+     "v": "x",
+     "dt": "http://e/T"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/e"
+    },
+    {
+     "t": "lit",
+     "v": "plain"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/f"
+    },
+    {
+     "t": "lit",
+     "v": "s"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "string_escapes_and_long_strings": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/a"
+    },
+    {
+     "t": "lit",
+     "v": "line\nbreak\ttab \"q\" \\ é 😀"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/b"
+    },
+    {
+     "t": "lit",
+     "v": "multi\nline \"quoted\" text"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/c"
+    },
+    {
+     "t": "lit",
+     "v": "single"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/d"
+    },
+    {
+     "t": "lit",
+     "v": "long\nsingle"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "unicode_names_and_values": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/café"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/p"
+    },
+    {
+     "t": "lit",
+     "v": "日本語"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/café"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/q"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/über"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "blank_node_property_list": {
+  "triples": [
+   [
+    {
+     "t": "bnode",
+     "v": "n3-0"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/q"
+    },
+    {
+     "t": "lit",
+     "v": "v"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-0"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/r"
+    },
+    {
+     "t": "lit",
+     "v": "1",
+     "dt": "http://www.w3.org/2001/XMLSchema#integer"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/p"
+    },
+    {
+     "t": "bnode",
+     "v": "n3-0"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "labelled_blank_nodes": {
+  "triples": [
+   [
+    {
+     "t": "bnode",
+     "v": "b9_a"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/p"
+    },
+    {
+     "t": "bnode",
+     "v": "b9_b"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "b9_b"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/p"
+    },
+    {
+     "t": "bnode",
+     "v": "b9_a"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "b9_a"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/name"
+    },
+    {
+     "t": "lit",
+     "v": "A"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "collection": {
+  "triples": [
+   [
+    {
+     "t": "bnode",
+     "v": "n3-1"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"
+    },
+    {
+     "t": "lit",
+     "v": "1",
+     "dt": "http://www.w3.org/2001/XMLSchema#integer"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-1"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"
+    },
+    {
+     "t": "bnode",
+     "v": "n3-2"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-2"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"
+    },
+    {
+     "t": "lit",
+     "v": "two"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-2"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"
+    },
+    {
+     "t": "bnode",
+     "v": "n3-3"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-3"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/three"
+    }
+   ],
+   [
+    {
+     "t": "bnode",
+     "v": "n3-3"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/list"
+    },
+    {
+     "t": "bnode",
+     "v": "n3-1"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "empty_collection_and_anon": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/list"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/s"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/anon"
+    },
+    {
+     "t": "bnode",
+     "v": "n3-4"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "profile_card_like": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/PersonalProfileDocument"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/primaryTopic"
+    },
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card#me"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card#me"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/Person"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card#me"
+    },
+    {
+     "t": "iri",
+     "v": "http://xmlns.com/foaf/0.1/name"
+    },
+    {
+     "t": "lit",
+     "v": "Alice"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card#me"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/ns/solid/terms#oidcIssuer"
+    },
+    {
+     "t": "iri",
+     "v": "https://alice.example/"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://alice.example/profile/card#me"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/ns/pim/space#storage"
+    },
+    {
+     "t": "iri",
+     "v": "https://alice.example/"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "empty_document": {
+  "triples": [],
+  "restricted": false
+ },
+ "n3_plain_triples": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/a"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/b"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/c"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "http://e/a"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/b"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/d"
+    }
+   ],
+   [
+    {
+     "t": "iri",
+     "v": "https://pod.example/x"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/p"
+    },
+    {
+     "t": "lit",
+     "v": "v"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "n3_keyword_a": {
+  "triples": [
+   [
+    {
+     "t": "iri",
+     "v": "http://e/a"
+    },
+    {
+     "t": "iri",
+     "v": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+    },
+    {
+     "t": "iri",
+     "v": "http://e/Thing"
+    }
+   ]
+  ],
+  "restricted": false
+ },
+ "err_missing_object": {
+  "error": "Expected entity but got . on line 1."
+ },
+ "err_unterminated_string": {
+  "error": "Unexpected \"\"oops\" on line 1."
+ },
+ "err_undefined_prefix": {
+  "error": "Undefined prefix \"nope:\" on line 1."
+ },
+ "err_literal_predicate": {
+  "error": "Expected entity but got literal on line 1."
+ },
+ "n3_formula": {
+  "error": "Expected entity but got . on line 2."
+ },
+ "n3_variable": {
+  "error": "Unexpected \"?x\" on line 2."
+ },
+ "n3_rule": {
+  "error": "Unexpected \"?x\" on line 2."
+ }
+}

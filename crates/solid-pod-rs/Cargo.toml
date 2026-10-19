@@ -50,6 +50,11 @@ mime_guess = "2"
 # SPARQL-Update parsing for PATCH bodies (pure-logic; always compiled).
 spargebra = "0.3"
 
+# Turtle / N3 request-body parsing (JSS src/rdf/turtle.js uses n3.js). Same
+# oxigraph family as spargebra; shares oxrdf 0.2 so no second RDF stack.
+oxttl = "0.1"
+oxrdf = "0.2"
+
 # WebSocketChannel2023 (Solid Notifications 0.2). Optional: only needed
 # when a tokio runtime is configured for the notifications feature.
 tokio-tungstenite = { version = "0.24", optional = true }
