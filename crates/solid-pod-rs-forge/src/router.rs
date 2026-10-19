@@ -173,6 +173,49 @@ pub enum Route {
     },
     /// Unmatched — the handler returns 404.
     NotFound,
+    /// `POST /api/repos/<owner>/<repo>/fork` — fork into the caller's namespace.
+    ApiFork {
+        /// Parent owner namespace.
+        owner: String,
+        /// Parent repository name.
+        repo: String,
+    },
+    /// `GET /api/repos/<owner>/<repo>/compare/<base>...<head>`.
+    ApiCompare {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// The `<base>...<head>` spec (may contain `/`).
+        spec: String,
+    },
+    /// `/api/repos/<owner>/<repo>/pulls[/<num>[/<verb>]]` — pull-request API.
+    ApiPulls {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// Path segments after `pulls`.
+        tail: Vec<String>,
+    },
+    /// `GET /<owner>/<repo>/compare/<base>...<head>` — compare page.
+    Compare {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// The `<base>...<head>` spec (may contain `/`).
+        spec: String,
+    },
+    /// `/<owner>/<repo>/pulls[/new|/<num>[/commits|files|merge|close|reopen]]`.
+    Pulls {
+        /// Owner namespace.
+        owner: String,
+        /// Repository name.
+        repo: String,
+        /// Path segments after `pulls`.
+        tail: Vec<String>,
+    },
 }
 
 impl Route {
@@ -330,6 +373,16 @@ fn parse_repo_verb(owner: &str, repo: &str, verb: &str, rest: &[&str]) -> Route 
             },
             _ => Route::NotFound,
         },
+        "compare" if !rest.is_empty() => Route::Compare {
+            owner,
+            repo,
+            spec: rest.join("/"),
+        },
+        "pulls" => Route::Pulls {
+            owner,
+            repo,
+            tail: rest.iter().map(|s| (*s).to_string()).collect(),
+        },
         _ => Route::NotFound,
     }
 }
@@ -354,6 +407,20 @@ fn parse_api(segs: &[&str]) -> Route {
         ["repos", owner, repo] => Route::ApiRepo {
             owner: (*owner).to_string(),
             repo: strip_git_suffix(repo),
+        },
+        ["repos", owner, repo, "fork"] => Route::ApiFork {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+        },
+        ["repos", owner, repo, "compare", spec @ ..] if !spec.is_empty() => Route::ApiCompare {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+            spec: spec.join("/"),
+        },
+        ["repos", owner, repo, "pulls", tail @ ..] => Route::ApiPulls {
+            owner: (*owner).to_string(),
+            repo: strip_git_suffix(repo),
+            tail: tail.iter().map(|s| (*s).to_string()).collect(),
         },
         _ => Route::NotFound,
     }
