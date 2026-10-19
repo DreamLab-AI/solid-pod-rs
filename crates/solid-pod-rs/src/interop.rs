@@ -475,7 +475,10 @@ pub mod did_nostr {
                 }
             }
 
-            let result = self.resolve_uncached(origin, pubkey).await;
+            let result =
+                tokio::time::timeout(RESOLVE_DEADLINE, self.resolve_uncached(origin, pubkey))
+                    .await
+                    .unwrap_or(None);
 
             if let Ok(mut guard) = self.cache.write() {
                 // Bounded like JSS (10k entries): pubkeys are attacker
@@ -501,15 +504,33 @@ pub mod did_nostr {
             result
         }
 
+        /// A client that connects `url`'s host to `ip`, the address the SSRF
+        /// policy approved, instead of resolving the name again (closes the
+        /// DNS-rebinding window between check and connect). IP-literal hosts
+        /// need no pin. Redirects stay off and the timeout is kept.
+        fn pinned_client(&self, url: &Url, ip: std::net::IpAddr) -> Client {
+            let Some(url::Host::Domain(host)) = url.host() else {
+                return self.client.clone();
+            };
+            let port = url.port_or_known_default().unwrap_or(80);
+            Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve(host, std::net::SocketAddr::new(ip, port))
+                .build()
+                .unwrap_or_else(|_| self.client.clone())
+        }
+
         async fn resolve_uncached(&self, origin: &str, pubkey: &str) -> Option<String> {
             // 1. SSRF check on origin.
             let origin_url = Url::parse(origin).ok()?;
-            self.ssrf.resolve_and_check(&origin_url).await.ok()?;
+            let origin_ip = self.ssrf.resolve_and_check(&origin_url).await.ok()?;
 
-            // 2. Fetch DID Doc.
+            // 2. Fetch DID Doc, connecting to the address the SSRF check
+            // vetted (a second DNS lookup could answer differently).
             let url = did_nostr_well_known_url(origin, pubkey);
             let resp = self
-                .client
+                .pinned_client(&origin_url, origin_ip)
                 .get(&url)
                 .header("accept", "application/did+json, application/json")
                 .send()
@@ -525,7 +546,8 @@ pub mod did_nostr {
 
             // 3. Iterate candidates; return the first verified WebID.
             let did_iri = format!("did:nostr:{pubkey}");
-            for candidate in &doc.also_known_as {
+            // The list comes from a remote document: bound the fetches.
+            for candidate in doc.also_known_as.iter().take(MAX_CANDIDATES) {
                 if let Some(web_id) = self.try_candidate(candidate, &did_iri).await {
                     return Some(web_id);
                 }
@@ -535,9 +557,9 @@ pub mod did_nostr {
 
         async fn try_candidate(&self, candidate: &str, did_iri: &str) -> Option<String> {
             let url = Url::parse(candidate).ok()?;
-            self.ssrf.resolve_and_check(&url).await.ok()?;
+            let ip = self.ssrf.resolve_and_check(&url).await.ok()?;
             let resp = self
-                .client
+                .pinned_client(&url, ip)
                 .get(url.as_str())
                 .header("accept", "text/turtle, application/ld+json")
                 .send()
@@ -560,6 +582,10 @@ pub mod did_nostr {
         }
     }
 
+    /// Most `alsoKnownAs` entries one resolution will fetch.
+    pub const MAX_CANDIDATES: usize = 4;
+    /// Wall-clock budget for one whole resolution (document plus candidates).
+    const RESOLVE_DEADLINE: Duration = Duration::from_secs(15);
     /// Largest DID document / WebID profile body the resolver reads.
     const MAX_DOC_BYTES: usize = 512 * 1024;
     /// Resolver cache bound (JSS `CACHE_MAX_ENTRIES`).
@@ -657,6 +683,36 @@ pub mod did_nostr {
                 None => false,
             })
         })
+    }
+
+    #[cfg(test)]
+    mod pin_tests {
+        use super::*;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// A hostname that cannot resolve is reachable only through the pin:
+        /// proves the client connects to the vetted IP, not a fresh lookup.
+        #[tokio::test]
+        async fn pinned_client_connects_to_the_vetted_address() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+            let port = server.address().port();
+            let url = Url::parse(&format!("http://rebind.invalid:{port}/x")).unwrap();
+            let r = DidNostrResolver::new(Arc::new(SsrfPolicy::new()));
+            let unpinned = r.client.get(url.as_str()).send().await;
+            assert!(unpinned.is_err(), "the name must not resolve by itself");
+            let ok = r
+                .pinned_client(&url, "127.0.0.1".parse().unwrap())
+                .get(url.as_str())
+                .send()
+                .await
+                .expect("pinned request reaches the vetted address");
+            assert_eq!(ok.status(), 200);
+        }
     }
 }
 

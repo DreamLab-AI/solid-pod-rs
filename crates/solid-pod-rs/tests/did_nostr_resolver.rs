@@ -421,3 +421,36 @@ async fn did_nostr_resolver_rejects_malformed_pubkey() {
         .is_none());
     assert!(r.resolve("http://127.0.0.1:9", "abcd").await.is_none());
 }
+
+// --- security review M3 ---------------------------------------------------
+
+/// A remote DID document may list any number of `alsoKnownAs` entries; only
+/// the first `MAX_CANDIDATES` are fetched.
+#[tokio::test]
+async fn did_nostr_resolver_caps_also_known_as_candidates() {
+    use solid_pod_rs::interop::did_nostr::MAX_CANDIDATES;
+    let server = MockServer::start().await;
+    let base = server.uri();
+    let candidates: Vec<String> = (0..10).map(|i| format!("{base}/profile/{i}#me")).collect();
+    Mock::given(method("GET"))
+        .and(path(format!("/.well-known/did/nostr/{TEST_PUBKEY}.json")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(did_nostr_document(TEST_PUBKEY, &candidates)),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let resolver = DidNostrResolver::new(Arc::new(SsrfPolicy::new().with_allow_loopback(true)));
+    assert_eq!(resolver.resolve(&base, TEST_PUBKEY).await, None);
+    let hits = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().starts_with("/profile/"))
+        .count();
+    assert_eq!(hits, MAX_CANDIDATES, "only the first four are fetched");
+}
