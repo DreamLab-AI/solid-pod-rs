@@ -2697,7 +2697,7 @@ async fn handle_create_account(
     state: web::Data<AppState>,
     body: web::Json<CreateAccountRequest>,
 ) -> Result<HttpResponse, ActixError> {
-    if let Some(response) = provisioning_gate(&req, &state, &body.username) {
+    if let Some(response) = provisioning_gate(&req, &state, &body.username).await {
         return Ok(response);
     }
     let pod_root = format!("/{}/", body.username);
@@ -2724,7 +2724,11 @@ struct NamedPodOutcome {
 
 /// Apply the same closed-by-default registration policy, validation, and
 /// per-IP rate limiter to every public provisioning surface.
-fn provisioning_gate(req: &HttpRequest, state: &AppState, name: &str) -> Option<HttpResponse> {
+async fn provisioning_gate(
+    req: &HttpRequest,
+    state: &AppState,
+    name: &str,
+) -> Option<HttpResponse> {
     if !valid_pod_name(name) {
         return Some(HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Invalid pod name. Use alphanumeric, dash, or underscore only."
@@ -2741,7 +2745,14 @@ fn provisioning_gate(req: &HttpRequest, state: &AppState, name: &str) -> Option<
         .admin_key
         .as_deref()
         .is_some_and(|expected| bool::from(supplied_key.as_bytes().ct_eq(expected.as_bytes())));
-    if !state.nodeinfo.open_registrations && !admin_override {
+    let invite = req
+        .headers()
+        .get("x-invite-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let closed = !state.nodeinfo.open_registrations && !admin_override;
+    if closed && invite.is_none() {
         return Some(HttpResponse::Forbidden().json(serde_json::json!({
             "error": "pod registration is closed"
         })));
@@ -2757,6 +2768,32 @@ fn provisioning_gate(req: &HttpRequest, state: &AppState, name: &str) -> Option<
                     "retryAfter": retry_after
                 })),
         );
+    }
+    // Registration is closed and the caller brought an invite: redeem it
+    // (JSS `validateInvite`). The use is recorded before the pod exists, so a
+    // single-use invite cannot be spent twice by racing requests; a request
+    // that then fails validation downstream has still used it.
+    if closed {
+        let (Some(token), Some(root)) = (invite, state.data_root.as_deref()) else {
+            return Some(HttpResponse::Forbidden().json(serde_json::json!({
+                "error": "pod registration is closed"
+            })));
+        };
+        let refusal =
+            |why: &str| HttpResponse::Forbidden().json(serde_json::json!({ "error": why }));
+        match cli::FileInviteStore::new(root).consume(token).await {
+            Ok(cli::Consume::Granted) => {}
+            Ok(cli::Consume::Expired) => return Some(refusal("invite has expired")),
+            Ok(cli::Consume::Exhausted) => return Some(refusal("invite has been used")),
+            Ok(cli::Consume::Unknown) => return Some(refusal("invalid invite code")),
+            Err(e) => {
+                tracing::error!("invite store: {e}");
+                return Some(
+                    HttpResponse::InternalServerError()
+                        .json(serde_json::json!({ "error": "invite store unavailable" })),
+                );
+            }
+        }
     }
     None
 }
@@ -2819,7 +2856,7 @@ async fn handle_create_pod(
     state: web::Data<AppState>,
     body: web::Json<CreatePodRequest>,
 ) -> Result<HttpResponse, ActixError> {
-    if let Some(response) = provisioning_gate(&req, &state, &body.name) {
+    if let Some(response) = provisioning_gate(&req, &state, &body.name).await {
         return Ok(response);
     }
 

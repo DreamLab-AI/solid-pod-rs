@@ -89,3 +89,66 @@ async fn admin_key_overrides_closed_registration_without_root_pollution() {
     assert!(storage.exists("/alice/profile/card").await.unwrap());
     assert!(!storage.exists("/profile/card").await.unwrap());
 }
+
+/// JSS `validateInvite`: with registration closed, a valid invite opens it for
+/// exactly as many uses as the invite allows.
+#[actix_web::test]
+async fn a_valid_invite_opens_closed_registration_for_its_allowed_uses() {
+    use solid_pod_rs_idp::{Invite, InviteStore};
+    use solid_pod_rs_server::cli::FileInviteStore;
+
+    let root = tempfile::tempdir().unwrap();
+    FileInviteStore::new(root.path())
+        .insert(Invite {
+            token: "welcome-token".into(),
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    let mut state = state();
+    state.data_root = Some(root.path().to_path_buf());
+    let app = test::init_service(build_app(state)).await;
+
+    let with = |name: &str, token: &str| {
+        test::TestRequest::post()
+            .uri("/.pods")
+            .insert_header(("X-Invite-Token", token.to_string()))
+            .set_json(serde_json::json!({ "name": name }))
+            .to_request()
+    };
+
+    // no invite and an unknown invite are both refused
+    let none = test::TestRequest::post()
+        .uri("/.pods")
+        .set_json(serde_json::json!({"name": "carol"}))
+        .to_request();
+    assert_eq!(test::call_service(&app, none).await.status().as_u16(), 403);
+    assert_eq!(
+        test::call_service(&app, with("carol", "nope"))
+            .await
+            .status()
+            .as_u16(),
+        403
+    );
+
+    // the valid invite works once...
+    let ok = test::call_service(&app, with("alice", "welcome-token")).await;
+    assert!(ok.status().is_success(), "{}", ok.status());
+    // ...and then is spent
+    let spent = test::call_service(&app, with("bob", "welcome-token")).await;
+    assert_eq!(spent.status().as_u16(), 403);
+    let body = test::read_body(spent).await;
+    assert!(String::from_utf8_lossy(&body).contains("invite has been used"));
+}
+
+#[actix_web::test]
+async fn an_invite_does_nothing_without_a_data_root() {
+    let app = test::init_service(build_app(state())).await;
+    let req = test::TestRequest::post()
+        .uri("/.pods")
+        .insert_header(("X-Invite-Token", "anything"))
+        .set_json(serde_json::json!({"name": "alice"}))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+}
