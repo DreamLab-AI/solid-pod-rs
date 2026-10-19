@@ -43,6 +43,10 @@ k256 = { version = "0.13", features = ["schnorr"], optional = true }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { version = "0.3", optional = true }
 url = { version = "2", optional = true }
+# OS randomness for the NIP-34 announce key and BIP-340 aux nonce (`announce`).
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+# NIP-19 `npub` for `GET /nostr` (the rust-bitcoin bech32 already in the graph).
+bech32 = { version = "0.11", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -52,9 +56,10 @@ tokio = { version = "1", features = ["full"] }
 default = []
 # The anchoring tier is opt-in and pulls the server-only Bitcoin stack.
 anchoring = ["solid-pod-rs/mrc20", "dep:k256"]
-# NIP-34 discovery publication (WS to relays). The builder/signer always
-# compiles when `announce` is on; the feature also links the nostr crate.
-announce = ["dep:solid-pod-rs-nostr", "dep:k256"]
+# NIP-34 emission: the kind-30617/30618 builders, the forge-instance announce
+# key, the opt-in relay publisher (`ws(s)` only), `GET /nostr` and
+# `POST /announce`.
+announce = ["dep:solid-pod-rs-nostr", "dep:k256", "dep:tokio-tungstenite", "dep:futures-util", "dep:url", "dep:rand_core", "dep:bech32"]
 # Mirror repos on their agent's NIP-34 kind-30618 state (opt-in, default
 # off): relay subscription plus `git fetch` from operator-configured
 # follow entries.
