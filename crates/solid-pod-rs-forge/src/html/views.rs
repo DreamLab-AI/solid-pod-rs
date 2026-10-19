@@ -365,8 +365,10 @@ fn state_badge(state: IssueState) -> &'static str {
     }
 }
 
-/// The issues list, with an open/closed filter and a "new issue" link.
+/// The issues list, with an open/closed filter, label chips (resolved against
+/// `label_defs`) and a "new issue" link.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn issues_list_page(
     prefix: &str,
     owner: &str,
@@ -375,6 +377,7 @@ pub fn issues_list_page(
     open_count: usize,
     closed_count: usize,
     issues: &[&IssueEntry],
+    label_defs: &[crate::spine::issues::Label],
 ) -> String {
     let base = format!("{prefix}/{owner}/{repo}");
     let mut body = repo_header(prefix, owner, repo, "HEAD");
@@ -386,20 +389,25 @@ pub fn issues_list_page(
         o = open_count,
         c = closed_count
     ));
-    let _ = filter;
     if issues.is_empty() {
-        body.push_str("<p class=\"muted\">No issues.</p>");
+        let which = if filter == IssueState::Closed {
+            "closed"
+        } else {
+            "open"
+        };
+        body.push_str(&format!("<p class=\"muted\">No {which} issues.</p>"));
     } else {
         body.push_str("<table><tbody>");
         for e in issues {
             body.push_str(&format!(
-                "<tr><td>{} <a href=\"{}/issues/{}\">#{} {}</a></td>\
+                "<tr><td>{} <a href=\"{}/issues/{}\">#{} {}</a> {}</td>\
 <td class=\"muted\">{}</td></tr>",
                 state_badge(e.state),
                 esc(&base),
                 e.number,
                 e.number,
                 esc(&e.title),
+                crate::labels::chips_html(&crate::labels::resolve_labels(&e.labels, label_defs)),
                 esc(&agent_label(&e.author))
             ));
         }
@@ -455,6 +463,7 @@ pub fn issue_detail_page(
     entry: &IssueEntry,
     threads: &[RenderedThread],
     truncated: bool,
+    label_defs: &[crate::spine::issues::Label],
 ) -> String {
     let base = format!("{prefix}/{owner}/{repo}");
     let mut body = repo_header(prefix, owner, repo, "HEAD");
@@ -462,6 +471,12 @@ pub fn issue_detail_page(
         "<nav class=\"crumbs\"><a href=\"{}/issues\">issues</a></nav>",
         esc(&base)
     ));
+    if !entry.labels.is_empty() {
+        body.push_str(&format!(
+            "<p>{}</p>",
+            crate::labels::chips_html(&crate::labels::resolve_labels(&entry.labels, label_defs))
+        ));
+    }
     body.push_str(&format!(
         "<h2>{} #{} {}</h2>",
         state_badge(entry.state),

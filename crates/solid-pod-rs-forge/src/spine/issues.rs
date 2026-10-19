@@ -69,6 +69,11 @@ pub struct IssueEntry {
     pub created_at: u64,
     /// Ordered thread pointers (the opening body is index 0).
     pub thread: Vec<ThreadPointer>,
+    /// Label **names** assigned to this issue (resolved against
+    /// [`IssueIndex::labels`] at read time, as in JSS: items store names, so a
+    /// recolour needs no cascade). Omitted from the file when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
 }
 
 /// The issue index for one repo.
@@ -171,6 +176,7 @@ mod tests {
             state: IssueState::Open,
             author: "did:nostr:abc".to_string(),
             created_at: 100,
+            labels: Vec::new(),
             thread: vec![ThreadPointer {
                 author: "did:nostr:abc".to_string(),
                 resource_url: "https://pod/x.jsonld".to_string(),
