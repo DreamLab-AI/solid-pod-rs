@@ -6,10 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.17] — 2026-10-20
+
+The rest of the JSS `plugins/forge` feature set, the mirror hardening that lets
+the forge and the kind-30618 mirror ship on (ADR-2010), and the fixes from an
+independent security review. Parity: 264 rows, 99.2% strict (`PARITY-CHECKLIST.md`
+§26 and rows 245 to 264).
+
+### Added
+
+- **`solid-pod-rs-forge`:** JSON API (repo list, meta, tree, blob, commits,
+  commit with structured diff), issue state/retitle, repo PATCH, labels, search,
+  releases and archives, private repositories, `FORGE_CONFIG`, forks with hidden
+  `refs/forge/*`, compare, pull requests, real merges (`merge-tree
+  --write-tree`, compare-and-swap, git 2.38+), forge-held Blocktrails trails and
+  the Anchors page, the NIP-34 builder, signer and relay publisher, `POST
+  /announce`, `GET /nostr`, web-edit (`POST api/repos/<o>/<n>/edit`) and the
+  ephemeral preview, an escape-first markdown renderer, and the vendored login
+  widget with a page CSP.
+- **`solid-pod-rs-server`:** a long-lived forge service per data directory, read
+  from `FORGE_CONFIG` and `FORGE_*` environment overrides; the mirror started at
+  boot from `FORGE_MIRROR_RELAYS` and `FORGE_MIRROR_FOLLOW`; features
+  `forge-mirror` and `forge-full`; `X-Invite-Token` redeemed at registration;
+  `--trust-proxy` with `cf-visitor`; ActivityPub actor knobs (`activitypub`
+  feature); cross-identity between a Nostr caller and its WebID; a configurable
+  public origin (`JSS_PUBLIC_BASE_URL`, host allow-list).
+- **`solid-pod-rs`:** Turtle and N3 request bodies (oxttl), with N3 formulas
+  and rules refused.
+
+### Changed
+
+- **Mirror hardening:** DNS pinned to the SSRF-approved address, remote clone
+  URLs normalised, a repository size cap enforced by a watchdog that kills the
+  git process group, cheap event filters before signature checks, a bounded
+  per-repository queue, per-repository failure backoff, pushes to a mirrored
+  repository refused, the trail bound to the followed key, the marked commit
+  required to be reachable, replayed and far-future states dropped, `refs/mirror`
+  hidden from upload-pack.
+- **Security review fixes:** cross-owner compare/PR heads refused in private
+  mode (H1), NIP-98 and absolute URLs no longer trust forwarded host headers
+  (M1), cross-fork fetches limited to the head owner or an open pull request
+  (M2), did:nostr resolver pins the vetted address (M3), wall-clock limits on
+  `git grep`/archive (L1), invite use counts and hashed tokens (L7), and more.
+- **Behaviour to know about:** behind a TLS-terminating proxy, NIP-98 URL
+  matching needs `--trust-proxy` (or a configured public origin) to see `https`.
+
+
 ## [0.5.0-alpha.16] — 2026-10-19
 
 Tracks JSS `0.0.221` (`8d68ceb`) and the JSS `plugins` repository's forge at
-`63a16cb`. Parity: 244 rows, 97.3% strict (see `PARITY-CHECKLIST.md` §24, §25).
+`63a16cb`. Parity: 264 rows, 99.2% strict (see `PARITY-CHECKLIST.md` §24, §25).
 
 ### Added
 

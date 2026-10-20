@@ -1,7 +1,7 @@
 ---
 title: solid-pod-rs Architecture Baseline
 doc_id: SPR-BASELINE
-version: 0.2.0
+version: 0.3.0
 status: active-normative
 verified_commit: 0ccad60
 sources:
@@ -163,8 +163,9 @@ trail is read by `solid_pod_rs_forge::gitmark` (`parse_repo_trail`,
 `read_repo_trail`): the walk is core's `mrc20::bt_trail_outputs` and
 `bt_trail_addresses`, so the forge adds no cryptography, and it serves the
 committed document at `<forge>/<owner>/<repo>/blocktrails.json`. The kind-30618
-mirror is `solid_pod_rs_forge::mirror`, behind the default-off `mirror` feature;
-`solid-pod-rs-server` does not start it. JSS #616 (core git lane defers to a
+mirror is `solid_pod_rs_forge::mirror`, behind the `mirror` feature, which the
+server enables through `forge-mirror` / `forge-full` and starts at boot
+(ADR-2010). JSS #616 (core git lane defers to a
 plugin prefix) holds because the `/forge` routes are registered before the pod
 git routes, pinned by `crates/solid-pod-rs-server/tests/forge_prefix_precedence.rs`;
 the pod lane still refuses push (ER-28).
@@ -261,14 +262,18 @@ the pod lane still refuses push (ER-28).
    Any response an anonymous client would not have received carries
    `private, no-store`, whatever its media type. Reverting to a media-type-only
    policy leaves private binaries heuristically cacheable by shared caches.
-8. **The mirror stays opt-in and fail-closed** (ADR-2009). `mirror` is
-   default-off and nothing in the server starts it. Refs, names, relay and
-   clone URLs are validated before a socket or a git argv; git runs with an
-   argv, the URL after `--`; a clone URL from a remote event is `http`/`https`
-   only; hosts pass the injected `SsrfCheck`; and a branch moves only to a
-   commit the fetch brought whose committed trail lists the marked commit.
-   Loosening any of these turns a configured follow into a remote-influenced
-   fetch.
+8. **The mirror is on in shipped builds and fails closed** (ADR-2009, ADR-2010).
+   Shipped servers build with `forge-full` and start the mirror at boot, but
+   it follows nothing until `FORGE_MIRROR_RELAYS` and `FORGE_MIRROR_FOLLOW`
+   name something, and the cargo defaults of the library crates do not turn
+   it on. Refs, names, relay and clone URLs are validated before a socket or a
+   git argv; git runs with an argv, the URL after `--`; a clone URL from a
+   remote event is `http`/`https` only and is normalised, userinfo-free and
+   pinned to the address the SSRF check approved; a repository past the size
+   cap is killed with its process group; and a branch moves only to a commit
+   the fetch brought whose committed trail carries the followed key and lists
+   the marked commit, reachable from that commit. `open_edit` and
+   `allow_mainnet` stay opt-in: no shipped default sets either.
 
 ## Change process
 

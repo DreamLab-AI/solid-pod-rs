@@ -217,16 +217,43 @@ jobs:
         with:
           workspaces: crates/solid-pod-rs -> target
           key: release-publish
-      - name: cargo publish (skip if version already on the index)
+      - name: cargo publish every crate, in dependency order (skip any already on the index)
+        working-directory: ${{ github.workspace }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           VERSION: ${{ needs.verify-tag.outputs.version }}
         run: |
-          # Idempotency: a re-dispatched tag whose version already sits on the
-          # sparse index is a no-op success, not a failure — re-runs after a
-          # partially-failed release (or a manual publish) stay green.
-          if curl -fsSL "https://index.crates.io/so/li/solid-pod-rs"              | grep -q "\"vers\":\"${VERSION}\""; then
-            echo "::notice::solid-pod-rs ${VERSION} already on crates.io — skipping publish."
-            exit 0
-          fi
-          cargo publish --all-features
+          # Core first; the satellites depend only on core; the forge also on
+          # git and nostr; the server on all of them. Idempotency: a
+          # re-dispatched tag whose crate version already sits on the sparse
+          # index is a no-op success, so re-runs after a partial release (or a
+          # manual publish) stay green.
+          index_path() {
+            n="$1"
+            case ${#n} in
+              1) echo "1/$n" ;;
+              2) echo "2/$n" ;;
+              3) echo "3/${n:0:1}/$n" ;;
+              *) echo "${n:0:2}/${n:2:2}/$n" ;;
+            esac
+          }
+          on_index() {
+            curl -fsSL "https://index.crates.io/$(index_path "$1")" 2>/dev/null \
+              | grep -q "\"vers\":\"${VERSION}\""
+          }
+          for crate in solid-pod-rs solid-pod-rs-git solid-pod-rs-nostr solid-pod-rs-idp \
+                       solid-pod-rs-didkey solid-pod-rs-activitypub solid-pod-rs-forge \
+                       solid-pod-rs-server; do
+            if on_index "$crate"; then
+              echo "::notice::$crate ${VERSION} already on crates.io, skipping."
+              continue
+            fi
+            cargo publish -p "$crate" --all-features
+            # A dependent resolves its dependencies from the index, so wait
+            # until this crate is visible before publishing the next.
+            for _ in $(seq 1 30); do
+              on_index "$crate" && break
+              sleep 10
+            done
+            on_index "$crate" || { echo "::error::$crate ${VERSION} not visible on the index"; exit 1; }
+          done

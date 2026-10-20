@@ -26,7 +26,7 @@ redirect table).
 (`node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr` — it fails CI on
 invalid frontmatter).
 
-_9 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
+_10 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-rs/docs/adr`.
 
 | ID | Title | Date | Decision | Impl | Activation | Supersedes | Superseded by | Owner | Repo |
 |----|-------|------|----------|------|------------|------------|---------------|-------|------|
@@ -39,3 +39,4 @@ _9 record(s). Regenerate with_ `node scripts/adr-index-gen.js crates/solid-pod-r
 | [ADR-2007](ADR-2007-mempool-single-url-no-fallback.md) | Anchor against one configured explorer URL, public default, no silent fallback | 2026-08-31 | accepted | complete | live | — | — | jjohare | solid-pod-rs |
 | [ADR-2008](ADR-2008-port-bitcoin-tx-to-rust-bitcoin-and-make-the-web-ledger-a-chain-view.md) | Port bitcoin_tx.rs and mrc20.rs to rust-bitcoin, make WebLedger a derived view over the sidestr chain, remove credit/debit from the public API and delete the TXO stand-in deposit | 2026-09-21 | proposed | partial | staged | — | — | jjohare | solid-pod-rs |
 | [ADR-2009](ADR-2009-forge-plugins-comparator-and-default-off-mirror.md) | Track the JSS plugins forge as a bounded second parity comparator, read repo-held git-mark trails, and ship the kind-30618 mirror default-off | 2026-10-19 | accepted | partial | inactive | — | — | jjohare | solid-pod-rs |
+| [ADR-2010](ADR-2010-forge-and-mirror-are-on-in-shipped-builds.md) | The forge and the kind-30618 mirror are on in shipped builds; anchoring, open edit and the mainnet stay opt-in | 2026-10-20 | accepted | partial | inactive | — | — | jjohare | solid-pod-rs |

@@ -4,8 +4,8 @@ Framework-agnostic Rust library for serving [Solid Protocol 0.11]
 pods: LDP resources and containers, Web Access Control, WebID,
 Solid Notifications 0.2, Solid-OIDC 0.1, and NIP-98 HTTP auth.
 
-**Parity vs JSS: ~100% spec-normative** (97.3% strict on the full
-244-row tracker through JSS `8d68ceb`, package `0.0.221`, and the JSS
+**Parity vs JSS: ~100% spec-normative** (99.2% strict on the full
+264-row tracker through JSS `8d68ceb`, package `0.0.221`, and the JSS
 `plugins` forge commits to `63a16cb` — see
 [`PARITY-CHECKLIST.md`](PARITY-CHECKLIST.md)). The current workspace-wide,
 all-target, all-feature test command passed on 2026-08-19; no fixed test count

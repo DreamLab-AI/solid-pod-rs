@@ -189,7 +189,7 @@ curl -i http://127.0.0.1:3000/notes/hello.ttl
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.16", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.17", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run
@@ -239,10 +239,10 @@ Full documentation follows the [Diátaxis](https://diataxis.fr/) framework and l
 ## Status & remaining work (2026-08-19)
 
 Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
-`workspace.package.version` = **`0.5.0-alpha.16`** at time of writing.
+`workspace.package.version` = **`0.5.0-alpha.17`** at time of writing.
 
 - **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
-- **97.3% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 244 rows tracked through JSS `8d68ceb` (package `0.0.221`) plus the JSS `plugins` forge commits to `63a16cb` (a second comparator, bounded in §25) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
+- **99.2% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 264 rows tracked through JSS `8d68ceb` (package `0.0.221`) plus the JSS `plugins` forge commits to `63a16cb` (a second comparator, bounded in §25) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
 - **Provenance is git-mark-first.** git-marks are always-on; Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr, bech32m) comes from rust-bitcoin and libsecp256k1 and is validated against the official BIP-340/341/350 test vectors (ADR-2008).
 - **Supply-chain gates are green; the code audit is not.** As of 2026-09-21,
   formatting, strict Clippy, compilation, the complete all-feature workspace

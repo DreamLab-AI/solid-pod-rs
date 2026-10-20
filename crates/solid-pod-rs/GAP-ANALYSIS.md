@@ -4,8 +4,8 @@
 > lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
 > Re-synchronised 2026-10-19 against upstream JSS `8d68ceb`, package
 > `0.0.221`, and the JSS `plugins` repository at `63a16cb` (forge only). The
-> tracker now contains 244 rows and reports **97.3% strict
-> classified in-scope parity** (218/224 rows) and ~100% of the
+> tracker now contains 264 rows and reports **99.2% strict
+> classified in-scope parity** (245/247 rows) and ~100% of the
 > spec-normative surface. Section 22 records the complete `0.0.204 → 0.0.220`
 > progression; section 23 the one-commit `e7e0525` delta (#619); section 24 the
 > `0.0.220 → 0.0.221` core delta; section 25 the plugins-repository forge delta
@@ -929,7 +929,7 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **97.3% strict parity** (218/224 classified in-scope rows,
+solid-pod-rs has **99.2% strict parity** (245/247 classified in-scope rows,
 derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) and **~100%
 spec-normative parity** as of the 2026-10-19 JSS `8d68ceb` / plugins `63a16cb` sync. Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`

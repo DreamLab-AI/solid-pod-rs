@@ -32,7 +32,7 @@ and our status against it.
 
 ## Current state (2026-10-19, alpha.16 — JSS `8d68ceb`, package 0.0.221; plugins `63a16cb`)
 
-**244 rows tracked** across 25 functional sections. §25 audits the JSS `plugins`
+**264 rows tracked** across 25 functional sections. §25 audits the JSS `plugins`
 repository's forge commits for repo-held git-mark trails, `did:nostr` display and
 the kind-30618 mirror (a second comparator, bounded as that section says). §24
 records the `0.0.220` → `0.0.221` core delta (CORS expose list, git lane deferring
@@ -47,14 +47,14 @@ and the DID Core-first context update.
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **97.3%** raw checklist gate — 218/224 classified in-scope rows |
-| Half-credit (partial-parity counted 0.5) | **98.7%** raw checklist gate |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **99.2%** raw checklist gate — 245/247 classified in-scope rows |
+| Half-credit (partial-parity counted 0.5) | **99.6%** raw checklist gate |
 | Spec-normative surface | **~100%** — every portable row present or net-new |
 | Protocol-visible surface | **~100%** |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
 
-> **Authoritative figure.** The **97.3% strict** value is the current gate
-> over all 244 tracked rows: 218 passing rows ÷ 224 classified in-scope rows.
+> **Authoritative figure.** The **99.2% strict** value is the current gate
+> over all 264 tracked rows: 245 passing rows ÷ 247 classified in-scope rows.
 > The denominator excludes explicitly deferred, wontfix-in-crate,
 > and not-applicable/present-by-absence rows. It supersedes the
 > Sprint 12–14 headline figures (~98–99%), which were computed against the
@@ -64,22 +64,22 @@ and the DID Core-first context update.
 > from 97.7% (232 rows) to 97.3% (244 rows): §25 adds one new partial-parity row
 > (239, NIP-34 anchor tags with no event publisher yet) and its in-scope rows
 > raise the denominator by 11. `README.md` and `GAP-ANALYSIS.md` are aligned to
-> this 97.3% figure.
+> this 99.2% figure. Rows 245 to 264 (the rest of the forge, ported in the 0.5.0-alpha.17 cycle) lift it from 97.3%.
 
 ### By status
 
 | Status | Count | Delta vs Sprint 13 |
 |---|---|---|
-| present | 194 | Includes present-by-absence classifications; +2 at §23, +10 at §24–§25 |
-| partial-parity | 6 | -4 (row 239 added at §25) |
+| present | 220 | Includes present-by-absence classifications; +2 at §23, +10 at §24–§25, +26 at §26 (rows 245–264 and reclassifications) |
+| partial-parity | 2 | Rows 135 (account persistence) and 247 (issue delete/edit server side) |
 | semantic-difference | 5 | — |
 | missing | 0 | -4 |
 | net-new (ours; not in JSS) | 19 | S3 dependency-only scaffold removed and reclassified as absent on both sides |
-| explicitly-deferred | 7 | +1 (row 240, the Anchors tab, at §25) |
+| explicitly-deferred | 3 | Rows 36, 119, 151: JSS lacks them too |
 | wontfix-in-crate | 3 | — |
-| not-applicable / present-by-absence | 14 | +14 (Node/Fastify/browser/tunnel/runtime-plugin constructs; +1 at §24, row 235) |
+| not-applicable / present-by-absence | 14 | +14 (Node/Fastify/browser/tunnel/runtime-plugin constructs; row 70 WebID-TLS is deployment-inert) |
 | other/unclassified | 10 | Architectural and test-meta rows excluded from the denominator |
-| **Total** | **244** | Core comparator: upstream `JavaScriptSolidServer` at `8d68ceb`, package `0.0.221`, 2026-10-19; forge comparator: `plugins` at `63a16cb`, 2026-10-19 |
+| **Total** | **264** | Core comparator: upstream `JavaScriptSolidServer` at `8d68ceb`, package `0.0.221`, 2026-10-19; forge comparator: `plugins` at `63a16cb`, 2026-10-19 |
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -246,7 +246,7 @@ interaction pages stay `wontfix-in-crate`.
 | 80 | Passkeys (WebAuthn) via `@simplewebauthn/server` | `src/idp/passkey.js` + wiring `src/idp/index.js:319-380` | `WebauthnPasskey` backed by `webauthn-rs 0.5`, per-user `DashMap` state, base64url credential lookup | present | `crates/solid-pod-rs-idp/src/passkey.rs` | Sprint 11. `passkey` feature-gated. |
 | 81 | Schnorr SSO (NIP-07 handshake) | `src/idp/interactions.js` | `Nip07SchnorrSso` full handshake: 32-byte CSPRNG tokens, 5-min TTL, one-shot, BIP-340 Schnorr verify | present | `crates/solid-pod-rs-idp/src/schnorr.rs` | Sprint 11. `schnorr-sso` feature-gated. |
 | 82 | HTML login/register/consent/interaction pages | `src/idp/index.js:239-315` | not implemented | wontfix-in-crate | — | Consumer concern. |
-| 83 | Invite-only flag + `bin/jss.js invite` | `bin/jss.js invite {create,list,revoke}` | `FileInviteStore` persists invites at `<root>/.server/invites.json` (0600, atomic); `invite create`, `list` and `revoke` work; the registration gate checks only `open_registration` and does not redeem a token | partial-parity | `crates/solid-pod-rs-server/src/cli/invite_store.rs`; `crates/solid-pod-rs-server/src/cli/mod.rs` `run_invite_command`; `tests/cli_invite_persist.rs` | Gap: invite redemption at registration. The earlier "present" note was wrong: `invite create` used a throwaway in-memory store. |
+| 83 | Invite-only flag + `bin/jss.js invite` | `bin/jss.js invite {create,list,revoke}` | `FileInviteStore` persists invites at `<root>/.server/invites.json` (0600, atomic, tokens hashed at rest); `invite create`, `list` and `revoke` work; the provisioning gate redeems an `X-Invite-Token` when registration is closed, enforcing `max_uses` and expiry | present | `crates/solid-pod-rs-server/src/cli/invite_store.rs`; `crates/solid-pod-rs-server/src/cli/mod.rs` `run_invite_command`; `tests/cli_invite_persist.rs` | Redemption is on the two provisioning routes (`/.pods`, `/api/accounts/new`), where JSS validates the code on the IdP register form. The use is recorded before the pod exists, so a failing request still spends it. |
 
 ## 7. WebID
 
@@ -663,4 +663,5 @@ Compressed appendix — one line per sprint. Consult git history for per-row cor
 - **Sprint 12 close (2026-05-06)**: JSS v0.0.60–v0.0.71 drift closed. 11 new rows (169–179); 8 landed as `present` (security hardening: size-capped ACL parsing, iterative podName sanitization, DNS failure blocking, `.account` dotfile; IdP: min password length; AP: outbox POST + Note wrapping, User-Agent, Accept-negotiation, follower fan-out, actor cache datetime). 3 deferred (cf-visitor, AP CLI, error pages). 922 insertions across 23 files, ~35 new tests. 132 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 13 close (2026-05-16, alpha.11)**: JSS v0.0.190 Phase 1 absorption complete. 3 new rows (196–198): key provisioning (`provision-keys`), pod-resident NIP-05 endpoint (`nip05-endpoint`), JSON-LD export (`export-jsonld`). All three shipped with bodies + tests. 135 rows, **~98% strict / ~100% spec-normative**.
 - **Sprint 14 close (2026-05-16, alpha.12)**: Git pod auto-init (JSS #466/#469/#471). 2 new rows (199–200): `GitInitHook` wasm32-safe trait in core + `GitAutoInit` subprocess impl in `solid-pod-rs-git`. 4 unit tests. `provision_pod_ext` call-site API. 137 rows, **~99% strict / ~100% spec-normative**.
-- **Sprint 15 (2026-10-19, alpha.16)**: JSS `0.0.220` → `0.0.221` core delta (rows 233–235: CORS expose list, plugin-prefix precedence, root WebSocket) and the JSS `plugins` forge delta (rows 236–244: repo-held git-mark trails, `blocktrails.json`, explorer links, `did:nostr` display, kind-30618 mirror). 244 rows, 97.3% strict; one new partial row (239) and one deferred row (240).
+- **Sprint 15 (2026-10-20, alpha.17)**: JSS `0.0.220` → `0.0.221` core delta (rows 233–235: CORS expose list, plugin-prefix precedence, root WebSocket) and the JSS `plugins` forge delta (rows 236–244: repo-held git-mark trails, `blocktrails.json`, explorer links, `did:nostr` display, kind-30618 mirror). 244 rows, 97.3% strict; one new partial row (239) and one deferred row (240).
+- **Sprint 16 (2026-10-20, alpha.17)**: the rest of the JSS plugins forge (rows 245–264: JSON API, labels, search, releases, private repos, forks, compare, pull requests, merges, forge-held anchoring, NIP-34 publisher, web-edit, preview), the mirror hardening and review fixes, core rows 35, 60, 83, 177, 178 closed and 70, 195 reclassified. 264 rows, 99.2% strict; open: 135, 247.

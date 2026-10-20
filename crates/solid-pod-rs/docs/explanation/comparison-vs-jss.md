@@ -13,7 +13,7 @@ feature-level status table.
 
 ## At a glance
 
-|                                | JSS 0.0.221 (`8d68ceb`) | solid-pod-rs 0.5.0-alpha.16 |
+|                                | JSS 0.0.221 (`8d68ceb`) | solid-pod-rs 0.5.0-alpha.17 |
 |--------------------------------|-----------------------|---------------------------|
 | Language                       | JavaScript (Node 18+) | Rust 2021 / MSRV 1.88     |
 | Binary distribution            | `npm install -g javascript-solid-server` → `jss` | Build from source; drop-in crate |
