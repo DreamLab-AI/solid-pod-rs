@@ -110,9 +110,15 @@ async fn a_valid_invite_opens_closed_registration_for_its_allowed_uses() {
     state.data_root = Some(root.path().to_path_buf());
     let app = test::init_service(build_app(state)).await;
 
+    // The per-IP limiter counts every attempt that reaches it, so each request
+    // here comes from its own address.
+    let next_ip = std::cell::Cell::new(10u8);
     let with = |name: &str, token: &str| {
+        let n = next_ip.get();
+        next_ip.set(n + 1);
         test::TestRequest::post()
             .uri("/.pods")
+            .peer_addr(std::net::SocketAddr::from(([203, 0, 113, n], 4000)))
             .insert_header(("X-Invite-Token", token.to_string()))
             .set_json(serde_json::json!({ "name": name }))
             .to_request()
