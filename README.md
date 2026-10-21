@@ -1,6 +1,8 @@
 # solid-pod-rs
 
-**A Rust-native port of [JavaScriptSolidServer](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer) (JSS)** — the reference implementation of the [Solid Protocol](https://solidproject.org/TR/protocol). solid-pod-rs is the **personal-data-sovereignty layer** of the DreamLab ecosystem: it gives every human and every agent a self-owned RDF data store — a **pod** — under their own key, with WAC access control, did:nostr identity, and a sovereign, Bitcoin-settled HTTP-402 trust ledger. Every write to a pod is a git-mark commit; high-value writes anchor to the Bitcoin chain. The exit right sits in the floor, not granted at the door. Pre-1.0, AGPL-3.0 by design.
+**A Rust Solid pod server and library workspace, ported from Melvin Carvalho's JavaScriptSolidServer.** Store resources over HTTP, control access with WAC, authenticate with Nostr or Solid-OIDC, and add provenance, payments or a git forge through explicit features.
+
+[Start](#quick-start) · [Architecture](#architecture) · [Capabilities](#what-it-does) · [Status](#working-status) · [Docs](crates/solid-pod-rs/docs/README.md)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 [![crates.io](https://img.shields.io/crates/v/solid-pod-rs.svg)](https://crates.io/crates/solid-pod-rs)
@@ -12,98 +14,17 @@
 
 New to Solid, RDF/JSON-LD, WAC, or did:nostr? The concepts live in one place: the [Solid primer for Rust developers](crates/solid-pod-rs/docs/explanation/solid-primer.md). This README stays on what solid-pod-rs is and where it sits.
 
----
+## Where it sits in VisionFlow
 
-> **Your data's exit right should sit in the floor, not be granted at the door — solid-pod-rs gives every human and agent a self-owned RDF pod under their own key.** A Rust-native Solid Protocol server with WAC access control and `did:nostr` identity; every write is a git-mark commit and high-value writes anchor to Bitcoin. Standards-based sovereignty: leave at any time, and take everything with you.
+solid-pod-rs owns storage and access-control primitives in the [VisionFlow estate](https://github.com/DreamLab-AI/VisionFlow). It can run independently or be embedded by a consumer. A pod authenticates and authorises requests; ontology consistency is the responsibility of the knowledge tools and their configured write paths, not an automatic property of pod storage.
 
----
+| Consumer | Integration boundary |
+|---|---|
+| [Agentbox](https://github.com/DreamLab-AI/agentbox) | Builds a native server and configures identity, storage and optional forge services. Check its source pin and running image separately. |
+| [VisionClaw](https://github.com/DreamLab-AI/VisionClaw) | Embeds pod-library functionality behind its own handlers. A library upgrade does not install the standalone server's routes or forge. |
+| [nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Uses a Worker-compatible tier with different storage and process constraints; native git services are not available there. |
 
-## Part of VisionFlow
-
-solid-pod-rs is the sovereign data layer of [**VisionFlow**](https://github.com/DreamLab-AI/VisionFlow) — a nine-repo mesh for human–AI coordination built on one identity spine: `did:nostr` as login, WAC principal, provenance author, DID subject, and payment account, all from a single keypair. Pods are the canonical store the other components read from and write to. The mesh pairs that data sovereignty with a shared formal semantic layer — OWL 2 EL reasoning in VisionClaw bounds what agents assert, the arrangement the industry now calls neurosymbolic — so a pod holds data whose meaning is checked, not merely stored.
-
-| Repository | Role |
-|:-----------|:-----|
-| [DreamLab-AI/VisionFlow](https://github.com/DreamLab-AI/VisionFlow) | Ecosystem canon — ADRs, PRDs, the compatibility matrix, marketing site and vision report. |
-| [DreamLab-AI/VisionClaw](https://github.com/DreamLab-AI/VisionClaw) | Flagship engine — ontology-grounded immersive 3D knowledge graph, OWL 2 EL + Whelk, GPU physics. |
-| [DreamLab-AI/agentbox](https://github.com/DreamLab-AI/agentbox) | Sovereign agent runtime — Nix container, did:nostr agent identities, RuVector memory, Solid-pod bridge. |
-| **[DreamLab-AI/solid-pod-rs](https://github.com/DreamLab-AI/solid-pod-rs)** | **The personal-data-sovereignty layer — this repo.** |
-| [DreamLab-AI/sidestr-rs](https://github.com/DreamLab-AI/sidestr-rs) | Rust port of Melvin Carvalho's sidestr sidechains, AGPL-3.0-only: the economic engine for did:nostr agents. A did:nostr key is a sidechain wallet. |
-| [DreamLab-AI/nostr-rust-forum](https://github.com/DreamLab-AI/nostr-rust-forum) | Nostr-native forum + relay — the human+agent communication and governance substrate. |
-| [DreamLab-AI/dreamlab-ai-website](https://github.com/DreamLab-AI/dreamlab-ai-website) | DreamLab AI company website — the commercial face. |
-| [DreamLab-AI/knowledgeGraph](https://github.com/DreamLab-AI/knowledgeGraph) | narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D; main also releases that corpus and its build pipeline as open data, 7,457 pages under ODbL-1.0. |
-
-Each sibling in its own words:
-
-<details>
-<summary><b>VisionFlow</b> — <em>ecosystem canon — ADRs, PRDs, the compatibility matrix, marketing site and vision report</em></summary>
-<br/>
-
-> **Six honest systems can still assemble one collective lie — VisionFlow is the canon that stops that.** It holds the ADRs, PRDs, compatibility matrix and honest status ledger for a nine-repo human–AI mesh built on one wager: AI collapses the cost of routing information, so the human is promoted from router to judgment broker. This repo ships words, not runtime — and it is graded on their accuracy.
-
-</details>
-
-<details>
-<summary><b>VisionClaw</b> — <em>flagship engine — ontology-grounded immersive 3D knowledge graph, OWL 2 EL + Whelk, GPU physics</em></summary>
-<br/>
-
-> **Agent swarms are invisible; VisionClaw makes them something you can stand inside and watch.** It reasons over a curated corpus with an OWL 2 EL engine (Whelk, 5,975 classes), settles the result as a 3D graph under GPU physics, and renders agents acting inside it — desktop and Quest 3 alike, every agent action drawn as a beam to the concept it touched. It observes and never signs: the engine you can watch is deliberately not the surface that can commit.
-
-</details>
-
-<details>
-<summary><b>agentbox</b> — <em>sovereign agent runtime — Nix container, did:nostr agent identities, RuVector memory, Solid-pod bridge</em></summary>
-<br/>
-
-> **An agent runtime you can't reproduce is an audit you can't run — Agentbox is a byte-for-byte reproducible Nix container driven by one TOML manifest.** Every agent is minted its own `did:nostr` key at spawn, every durable write passes a privacy filter into a cryptographic audit trail, and what agents may touch is bounded by explicit fail-closed gates. Reproduce the runtime, audit every action, control every capability.
-
-</details>
-
-<details>
-<summary><b>nostr-rust-forum</b> — <em>Nostr-native forum + relay — the human+agent communication and governance substrate</em></summary>
-<br/>
-
-> **Machine coordination is cheap; accountable decisions are not — this forum is the one place in the mesh where a decision gets signed.** Humans and agents are the same kind of participant: each holds a `did:nostr` keypair and publishes Schnorr-signed events to an immutable log, so every governance outcome carries a human signature by construction. The kit ships vanilla — one TOML file stands up a community, no forking.
-
-</details>
-
-<details>
-<summary><b>dreamlab-ai-website</b> — <em>DreamLab AI company website — the commercial face</em></summary>
-<br/>
-
-> **The commercial face of the mesh, running on the mesh's own rails.** A React marketing site and a Rust/Leptos WASM community forum share one Cloudflare-edge origin, end-to-end encrypted where it matters. It is deliberately a thin consumer of the nostr-rust-forum kit — branding and zone config live here, the protocol lives upstream — living proof the kit stands up a real community without a fork.
-
-</details>
-
-<details>
-<summary><b>knowledgeGraph</b> — <em>narrativegoldmine.com — the published public knowledge graph, the corpus VisionClaw renders in 3D</em></summary>
-<br/>
-
-> **8,100+ ordinary Logseq markdown pages that compile losslessly into a formal OWL 2 ontology — pure TBox, every page a class, zero individuals by design.** Corpus, pipeline, viewer and method ship as one open release (ODbL-1.0 data, AGPL-3.0 pipeline) published at narrativegoldmine.com; siblings reason over it (VisionClaw) and serve it as measured LLM grounding (Loom, ~0.94 grounded recall), and third-party extractors such as OntoCast stage RDF into it as governed, reviewable candidates. Rigorous curation is amortised once and reused per query — this repo is the once.
-
-</details>
-
-<details>
-<summary><b>Loom</b> — <em>measured LLM grounding over the curated corpus</em></summary>
-<br/>
-
-> **Your LLM doesn't know your data — Loom makes any LLM answer from it, verifiably.** Point any OpenAI-compatible client at one URL and every answer is grounded in your curated, reasoner-checked private corpus: recall on in-domain questions rises from as low as 0.15 to ~0.94, faster than the bare model, with every claim traceable to a corpus generation. The model is just a URL behind the door — swap it for the next one and nothing else changes, because the knowledge lives in the corpus you govern, not the weights you rent.
-
-</details>
-
-<details>
-<summary><b>sidestr-rs</b> — <em>economic engine for did:nostr agents — a did:nostr key is a sidechain wallet</em></summary>
-<br/>
-
-> **Rust port of Melvin Carvalho's sidestr sidechains, AGPL-3.0-only: the economic engine for `did:nostr` agents. A `did:nostr` key is a sidechain wallet.**
-
-</details>
-
-In July 2026 Block (Jack Dorsey) launched [Buzz](https://github.com/block/buzz), a self-hosted, Nostr-native team-chat + AI-agent + git platform in Rust. It independently arrives at the same substrate this ecosystem has built since 2022: Nostr events as source of truth, agents as first-class signed participants with their own keypairs, and NIP-42/98 auth — industry convergence that validates the direction. What Buzz does not carry is what differentiates this ecosystem: Solid-pod data sovereignty (this repo), OWL 2 EL / KG ontology grounding, immersive 3D embodiment, and closed learning loops (sibling repos).
-
-**Self-improvement.** Even the sovereignty layer evolves under a human signature: a nightly [dream cycle](https://github.com/DreamLab-AI/dream-engine) proposes evidence-gated changes as draft PRs — the merge is never the machine's to make.
-
----
+A shared `did:nostr` identifier can name a caller across services, but every consumer still has to enforce its own verification, ACLs, replay policy and key custody. See [ecosystem integration](crates/solid-pod-rs/docs/explanation/ecosystem-integration.md) and the [estate compatibility matrix](https://github.com/DreamLab-AI/VisionFlow/blob/main/docs/architecture/compatibility-matrix.md).
 
 ## Architecture
 
@@ -117,7 +38,7 @@ solid-pod-rs is a Cargo workspace of **8 crates**. The core library is framework
 | [`solid-pod-rs-activitypub`](https://crates.io/crates/solid-pod-rs-activitypub) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-activitypub)](https://docs.rs/solid-pod-rs-activitypub) | ActivityPub federation + HTTP Signatures |
 | [`solid-pod-rs-nostr`](https://crates.io/crates/solid-pod-rs-nostr) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-nostr)](https://docs.rs/solid-pod-rs-nostr) | did:nostr resolver + NIP-01 relay |
 | [`solid-pod-rs-git`](https://crates.io/crates/solid-pod-rs-git) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-git)](https://docs.rs/solid-pod-rs-git) | Git HTTP smart-protocol backend (git-marks) |
-| [`solid-pod-rs-forge`](https://crates.io/crates/solid-pod-rs-forge) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-forge)](https://docs.rs/solid-pod-rs-forge) | Pod-native git forge — hosting, browse, issues (Phases 0–3) |
+| [`solid-pod-rs-forge`](https://crates.io/crates/solid-pod-rs-forge) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-forge)](https://docs.rs/solid-pod-rs-forge) | Pod-native git forge — hosting, browse, issues, pull requests, merges, editing and optional discovery/mirroring |
 | [`solid-pod-rs-didkey`](https://crates.io/crates/solid-pod-rs-didkey) | [![docs](https://img.shields.io/docsrs/solid-pod-rs-didkey)](https://docs.rs/solid-pod-rs-didkey) | did:key + self-signed JWT verifier |
 
 ```mermaid
@@ -165,25 +86,25 @@ cargo install solid-pod-rs-server
 cat > config.json <<'EOF'
 {
   "server": { "host": "127.0.0.1", "port": 3000 },
-  "storage": { "kind": "fs", "root": "./pod-root" },
-  "auth":    { "nip98": { "enabled": true } }
+  "storage": { "type": "fs", "root": "./pod-root" },
+  "auth":    { "nip98_enabled": true }
 }
 EOF
 
 solid-pod-rs-server --config config.json
 ```
 
-```bash
-# Round-trip a resource.
-curl -i -X PUT http://127.0.0.1:3000/notes/hello.ttl \
-     -H 'Content-Type: text/turtle' \
-     --data-binary '<#> <http://example.org/says> "Hello, Solid".'
+This starts the process, not an anonymous writable pod. With WAC enforced, an unsigned `curl PUT` is not a successful first write. Set up a caller and ACL using [Adding access control](crates/solid-pod-rs/docs/tutorials/03-adding-access-control.md), then use [request-bound NIP-98 authentication](crates/solid-pod-rs/docs/how-to/configure-nip98-auth.md) or [Solid-OIDC](crates/solid-pod-rs/docs/how-to/enable-solid-oidc.md).
 
-curl -i http://127.0.0.1:3000/notes/hello.ttl
-# 200 OK
-# ETag: "sha256-..."
-# Link: <.acl>; rel="acl", <http://www.w3.org/ns/ldp#Resource>; rel="type"
+For an authorised caller, the resource workflow is **PUT a Turtle document → GET it back → inspect ETag, content type and provenance receipt**. A write response and a confirmed external anchor establish different things. Behind a TLS-terminating proxy, configure the public origin or the documented proxy policy so the signed request URL matches the server's canonical URL.
+
+The default server feature set excludes native git and forge. To build the full forge service explicitly:
+
+```bash
+cargo install solid-pod-rs-server --version 0.5.0-alpha.17 --features forge-full
 ```
+
+Relay publication, mirror follow lists, anchoring and private/open-edit behaviour still require their own configuration. Consult [the release changes](CHANGELOG.md) before enabling them.
 
 ### As a library
 
@@ -200,19 +121,22 @@ let storage = FsBackend::new(PathBuf::from("./pod-root"));
 // Wire your HTTP framework of choice; see examples/embed_in_actix.rs.
 ```
 
-All configuration keys accept either a JSON/TOML file entry or a `JSS_*` environment variable — names identical to JSS, so existing deployment scripts work unchanged. See [`env-vars.md`](crates/solid-pod-rs/docs/reference/env-vars.md) for the full list.
+Configuration layers combine defaults, a configuration file, environment variables and CLI overrides. The supported JSS-compatible names and Rust-specific options are enumerated rather than assumed interchangeable. See [`env-vars.md`](crates/solid-pod-rs/docs/reference/env-vars.md) for the full list.
 
 ---
 
 ## What it does
 
-Each subsystem below is a one-paragraph summary; the linked docs carry the row-level detail.
+The core is framework-independent. The native server composes these capabilities; embedded and Worker consumers select a narrower feature set.
+
+<details>
+<summary><strong>Storage, identity, provenance and federation capabilities</strong></summary>
 
 **LDP — Linked Data Platform.** Every URL is a resource (a file with RDF metadata) or a container (a directory that lists its children), addressed with standard HTTP verbs plus `COPY` and glob `GET`. Content negotiation over Turtle / JSON-LD / N-Triples, N3-Patch and SPARQL-Update PATCH, strong SHA-256 ETags, `Prefer` and `Range` headers, and `.meta` sidecars. Modules: `ldp`, `storage::*`.
 
 **WAC — Web Access Control.** Deny by default: no ACL means no access. `.acl` sidecars specify who (by WebID, agent class, or group) may Read / Write / Append / Control, inheriting down the container tree via `acl:default`. Parser bounds cap Turtle at 1 MiB and JSON-LD depth at 32 levels (CWE-400). See [`wac-modes.md`](crates/solid-pod-rs/docs/reference/wac-modes.md) and [`debug-acl-denials.md`](crates/solid-pod-rs/docs/how-to/debug-acl-denials.md).
 
-**Provenance & trust ledger.** A pod records who changed what, when, and on whose authority. **git-marks** (cheap, always-on) turn every write into a git commit persisted as a PROV-O sidecar. **block-trails** (opt-in) anchor a hash-chained state trail to Bitcoin taproot, batched under an epoch Merkle root so one transaction notarises an epoch of writes. Default network is `testnet4`; mainnet is an explicit operator choice. See [ADR-059](crates/solid-pod-rs/docs/adr/ADR-059-provenance-primitives-block-trails-git-marks.md) and the [provenance upgrade master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md).
+**Provenance & trust ledger.** With the native server’s `git` feature enabled, eligible writes attempt a local git-mark. A default server build records no git marks. The typed receipt distinguishes a skipped write, stored bytes without a successful mark, a local committed mark, an anchor submitted and an anchor confirmed. A successful resource write does not guarantee successful provenance, and a local commit is rewritable by its operator. **block-trails** add an optional Bitcoin anchoring tier; confirmation must be observed separately. Default network is `testnet4`; mainnet is an explicit operator choice. See [ADR-2004](crates/solid-pod-rs/docs/adr/ADR-2004-provenance-off-by-default.md) and the [provenance upgrade master plan](crates/solid-pod-rs/docs/design/provenance-upgrade-master-plan.md).
 
 **Payments & web ledger.** solid-pod-rs inherits JSS's HTTP-402 economy: a `PaymentCondition` in a WAC ACL gates a resource behind a price, the client pays, the read succeeds. Settlement is sovereign and Bitcoin-native (sats, no EVM), sharing one verified taproot core with block-trail anchors — deposits, withdrawals, a routed order book and constant-product AMM, all through `PaymentStore` as the sole ledger I/O path, with replay protection on every settlement proof.
 
@@ -226,7 +150,9 @@ Each subsystem below is a one-paragraph summary; the linked docs carry the row-l
 
 **Security controls.** The workspace includes `..`/null-byte path rejection, SSRF filtering with IP pinning, ACL size caps, a dotfile allowlist, a NIP-98 token-size limit, and WAC-gated git smart-HTTP. The dated audit's findings are remediated (see the changelog for `0.5.0-alpha.13`). Supported filesystems: case-sensitive POSIX filesystems (ext4, xfs, btrfs, ZFS). Case-insensitive filesystems (default macOS/APFS, Windows/NTFS) are not a supported deployment target; the dotfile and well-known guards refuse case-variant spellings of guarded names, but nothing else is tested there. See [`security-model.md`](crates/solid-pod-rs/docs/explanation/security-model.md), the [2026-08-19 audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md), and [`SECURITY.md`](crates/solid-pod-rs/SECURITY.md).
 
-**Git forge.** `solid-pod-rs-forge` is a clean-room Rust forge composed on the pod's own primitives (git smart-HTTP, provenance, NIP-98, did:nostr, WAC), behind a default-off `forge` feature. See Status below for exactly what is shipped versus scaffolded.
+**Git forge.** `solid-pod-rs-forge` composes git hosting, browse, issues, forks, pull requests, real merges, editing and preview over the pod primitives. Native git and forge are default-off server features; `forge-full` includes anchoring, announce and mirror support. Real merges require git 2.38 or later. The operator configures relays and followed repositories.
+
+</details>
 
 ---
 
@@ -236,38 +162,20 @@ Full documentation follows the [Diátaxis](https://diataxis.fr/) framework and l
 
 ---
 
-## Status & remaining work (2026-08-19)
+## Working status
 
-Honest, pre-1.0, dated. Version pins here match `Cargo.toml`
-`workspace.package.version` = **`0.5.0-alpha.17`** at time of writing.
+**Reviewed 21 October 2026 against `55bfec1`; workspace version `0.5.0-alpha.17`.** This is pre-1.0 software. The [changelog](CHANGELOG.md) records release-specific behaviour and remediation; the [parity checklist](crates/solid-pod-rs/PARITY-CHECKLIST.md) defines comparison scope.
 
-- **8 crates, not 7.** `solid-pod-rs-forge` is real and test-green: Phases 0–3 (XSS-safe content-type spine, Tier-1 git hosting + browse porcelain, Tier-2 issues over an atomic spine store, and the Tier-2.5 HMAC push-token path for podless did:nostr identities) shipped per CHANGELOG's `0.5.0-alpha.5` entry (2026-07-15). Phases 4–7 — forks/PRs, Bitcoin anchors (`forge-anchoring`), and NIP-34 discovery (`forge-announce`) — are feature-scaffolded and compiling, not implemented.
-- **99.2% strict JSS parity.** Ground truth is [`PARITY-CHECKLIST.md`](crates/solid-pod-rs/PARITY-CHECKLIST.md): 264 rows tracked through JSS `8d68ceb` (package `0.0.221`) plus the JSS `plugins` forge commits to `63a16cb` (a second comparator, bounded in §25) — no row remains classified as missing. The remaining strict-gap rows are partial implementations; architectural exclusions stay outside the denominator. The Rust port adds a single static binary, no Node.js dependency, deterministic RDF serialisation, and compile-time feature gating on top of that parity.
-- **Provenance is git-mark-first.** git-marks are always-on; Bitcoin block-trail anchors are opt-in behind the `mrc20` feature and default to `testnet4`. The Bitcoin write side (P2TR construction, BIP-341 TapSighash, BIP-340 Schnorr, bech32m) comes from rust-bitcoin and libsecp256k1 and is validated against the official BIP-340/341/350 test vectors (ADR-2008).
-- **Supply-chain gates are green; the code audit is not.** As of 2026-09-21,
-  formatting, strict Clippy, compilation, the complete all-feature workspace
-  test command, `cargo audit --deny warnings` and `cargo deny --all-features
-  check` all pass, so the CI badge above is the whole truth about those gates.
-  Both advisory gates run on every push and carry exactly two dated, justified
-  exceptions with no in-semver fix available — `RUSTSEC-2026-0258` (h2 0.3,
-  patched only on the 0.4 line, reached solely through `actix-http`, with
-  actix-web taken `default-features = false` so no HTTP/2 listener is enabled)
-  and `RUSTSEC-2023-0071` (rsa 0.9 Marvin, used for public-key verification
-  only, never private-key decryption). Rationale and review dates live in
-  [`deny.toml`](deny.toml) and [`.cargo/audit.toml`](.cargo/audit.toml).
-  **The code audit findings are fixed** (advisory
-  [GHSA-265w-77fm-mg3g](https://github.com/DreamLab-AI/solid-pod-rs/security/advisories/GHSA-265w-77fm-mg3g),
-  fixed in 0.5.0-alpha.13). The symlink root escape, anonymous
-  MCP reads and WAC sidecar bypass, forged IdP identity, non-atomic payment
-  state and non-atomic filesystem writes are all marked fixed in the
-  [dated security and quality audit](crates/solid-pod-rs/docs/reference/security-audit-2026-08-19.md)
-  remediation table, and the MCP, payment and git-push follow-ups from the
-  ER-22 review series ship in `0.5.0-alpha.13`: see the
-  [changelog](CHANGELOG.md#050-alpha13--2026-10-14) (every release from
-  `0.4.0-alpha.3` through `0.5.0-alpha.12` of `solid-pod-rs-server` is yanked).
-  Known gaps are listed under that entry.
+| Area | Current source position | Boundary |
+|---|---|---|
+| Protocol parity | Checklist reports 99.2% strict over 264 rows, with partial rows remaining | Comparator is JSS `8d68ceb` / package 0.0.221 plus the separately bounded plugins/forge comparator `63a16cb`; not a universal conformance score |
+| Forge | Alpha.17 implements the previously missing forge surface and mirror hardening | Compiled features, configured service and consumer activation remain separate |
+| Provenance | Receipt stages describe how far marking and anchoring reached | A stored resource is not necessarily committed or confirmed; see [`provenance.rs`](crates/solid-pod-rs/src/provenance.rs) |
+| Storage | Filesystem and memory implementations | Case-sensitive POSIX deployment target; no supported S3 backend |
+| Security | Release notes and dated audit document fixed findings and remaining gaps | This README refresh did not rerun a security audit or establish current dependency-advisory status |
+| Estate integration | Native server, embedded library and Worker tiers differ | A release of this workspace does not prove consumers have rebuilt or activated it |
 
----
+Alpha.17 adds forge APIs, merges, edit/preview, discovery and mirror service wiring, invite redemption and public-origin controls. It also records fixes for cross-owner access, bounded git operations, resolver address pinning and invite handling. See [the release entry](CHANGELOG.md#050-alpha17--2026-10-20), [`deny.toml`](deny.toml), [advisory policy](.cargo/audit.toml) and [security reporting](crates/solid-pod-rs/SECURITY.md) for their respective scopes. Historical green checks are not a claim that today's whole workspace or deployment has passed those checks.
 
 ## Lineage & licence
 
