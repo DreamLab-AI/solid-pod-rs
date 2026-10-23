@@ -56,3 +56,26 @@ fn create_list_revoke_persist_between_processes() {
     let after = run(dir.path(), &["list"]);
     assert!(String::from_utf8_lossy(&after.stdout).contains("No invite codes found"));
 }
+
+/// Tokens are base64url, so roughly one in 64 starts with `-`. Revoking such a
+/// token must work (clap once rejected it as an unknown flag, which made the
+/// test above fail about 1 run in 20).
+#[tokio::test]
+async fn revoke_accepts_a_token_beginning_with_a_hyphen() {
+    use solid_pod_rs_idp::{Invite, InviteStore};
+    use solid_pod_rs_server::cli::FileInviteStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    FileInviteStore::new(dir.path())
+        .insert(Invite {
+            token: "-hyphen-led-token".into(),
+            max_uses: Some(1),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+
+    let revoked = run(dir.path(), &["revoke", "-hyphen-led-token"]);
+    assert!(revoked.status.success(), "{revoked:?}");
+    assert!(String::from_utf8_lossy(&revoked.stdout).contains("Revoked invite code"));
+}

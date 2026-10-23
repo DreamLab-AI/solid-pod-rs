@@ -138,7 +138,9 @@ pub enum InviteCommand {
 /// Arguments for `invite revoke`.
 #[derive(Debug, Args, Clone)]
 pub struct InviteRevokeArgs {
-    /// The invite token to revoke (case-sensitive).
+    /// The invite token to revoke (case-sensitive). Tokens are base64url, so
+    /// about one in 64 begins with `-`; that must not be read as a flag.
+    #[arg(allow_hyphen_values = true)]
     pub token: String,
 }
 
