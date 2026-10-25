@@ -131,8 +131,7 @@ pub fn resolve(env: &dyn Fn(&str) -> Option<String>) -> Result<JevConfig, Fallba
         if get("SOLID_POD_JEV_LOCAL").as_deref() != Some("1") {
             return Err(Fallback::NoEndpoint);
         }
-        let bearer = get("SOLID_POD_JEV_KEY_ENV")
-            .and_then(|name| get(&name));
+        let bearer = get("SOLID_POD_JEV_KEY_ENV").and_then(|name| get(&name));
         return Ok(JevConfig {
             endpoint,
             model: get("SOLID_POD_JEV_MODEL").unwrap_or_else(|| "jev-latest".into()),
@@ -286,8 +285,8 @@ fn choice(
     let conf = match unit(a.get("confidence")) {
         Some(c) => c,
         None => {
-            let p = unit(a.get("probabilities").and_then(|m| m.get(key)))
-                .ok_or(Fallback::Malformed)?;
+            let p =
+                unit(a.get("probabilities").and_then(|m| m.get(key))).ok_or(Fallback::Malformed)?;
             let n = allowed.len() as f64;
             if n < 2.0 {
                 return Err(Fallback::Malformed);
@@ -395,9 +394,17 @@ pub fn rank_apply(
     let mut order: Vec<usize> = (0..n).collect();
     if no_suitable < 0.5 {
         // Stable: ties keep their original relative order.
-        order.sort_by(|a, b| scores[*b].partial_cmp(&scores[*a]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| {
+            scores[*b]
+                .partial_cmp(&scores[*a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
-    Ok(RankOutcome { order, scores, no_suitable })
+    Ok(RankOutcome {
+        order,
+        scores,
+        no_suitable,
+    })
 }
 
 /// Run a rerank end to end. `Err` means "return the pre-change result".
@@ -419,7 +426,10 @@ pub async fn rank(
         rank_apply(&answers, cands.len(), cfg.rank_min_confidence)
     }
     .await;
-    log_outcome(QUESTION_SET_RANK, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+    log_outcome(
+        QUESTION_SET_RANK,
+        &res.as_ref().map(|_| ()).map_err(Clone::clone),
+    );
     res
 }
 
@@ -488,11 +498,17 @@ pub struct Proposal {
 impl Proposal {
     /// The deterministic pre-Jev answer: ask the user to clarify.
     pub fn baseline() -> Self {
-        Self { operation: "clarify".into(), target: None, confidence: None, source: "baseline" }
+        Self {
+            operation: "clarify".into(),
+            target: None,
+            confidence: None,
+            source: "baseline",
+        }
     }
     /// JSON form returned by the MCP tool.
     pub fn to_json(&self) -> Value {
-        let mut o = json!({ "operation": self.operation, "target": self.target, "source": self.source });
+        let mut o =
+            json!({ "operation": self.operation, "target": self.target, "source": self.source });
         if let Some(c) = self.confidence {
             o["confidence"] = json!(c);
         }
@@ -551,7 +567,9 @@ pub fn op_request(
         );
         target_criteria.insert(
             format!("c{i}"),
-            Value::String(format!("The request is about the resource `candidates.c{i}`.")),
+            Value::String(format!(
+                "The request is about the resource `candidates.c{i}`."
+            )),
         );
     }
     target_criteria.insert(
@@ -605,10 +623,18 @@ pub fn op_apply(
     let grounded: Option<String> = match (op.as_str(), idx) {
         ("clarify", _) => None,
         ("create", _) => Some(container_path.to_string()),
-        ("read", Some(i)) if cands[i].can_read && !cands[i].is_container => Some(cands[i].path.clone()),
-        ("append", Some(i)) if cands[i].can_append && !cands[i].is_container => Some(cands[i].path.clone()),
-        ("patch_preview", Some(i)) if cands[i].can_write && !cands[i].is_container => Some(cands[i].path.clone()),
-        ("copy", Some(i)) if cands[i].can_read && !cands[i].is_container => Some(cands[i].path.clone()),
+        ("read", Some(i)) if cands[i].can_read && !cands[i].is_container => {
+            Some(cands[i].path.clone())
+        }
+        ("append", Some(i)) if cands[i].can_append && !cands[i].is_container => {
+            Some(cands[i].path.clone())
+        }
+        ("patch_preview", Some(i)) if cands[i].can_write && !cands[i].is_container => {
+            Some(cands[i].path.clone())
+        }
+        ("copy", Some(i)) if cands[i].can_read && !cands[i].is_container => {
+            Some(cands[i].path.clone())
+        }
         _ => return Err(Fallback::Malformed),
     };
 
@@ -619,7 +645,12 @@ pub fn op_apply(
     if op_conf < threshold || (needs_target && tgt_conf < threshold) || unambiguous < 0.5 {
         return Err(Fallback::LowConfidence);
     }
-    Ok(Proposal { operation: op, target: grounded, confidence: Some(op_conf), source: "jev" })
+    Ok(Proposal {
+        operation: op,
+        target: grounded,
+        confidence: Some(op_conf),
+        source: "jev",
+    })
 }
 
 /// Propose an operation. `Err` means "use [`Proposal::baseline`]".
@@ -644,7 +675,10 @@ pub async fn propose(
         op_apply(&answers, container_path, cands, &ops, cfg.op_min_confidence)
     }
     .await;
-    log_outcome(QUESTION_SET_OP, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+    log_outcome(
+        QUESTION_SET_OP,
+        &res.as_ref().map(|_| ()).map_err(Clone::clone),
+    );
     res
 }
 
@@ -655,8 +689,10 @@ mod tests {
     use std::sync::Mutex;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let m: HashMap<String, String> =
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let m: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         move |k| m.get(k).cloned()
     }
 
@@ -664,12 +700,20 @@ mod tests {
     fn resolve_flag_off_and_local_only_rules() {
         assert_eq!(resolve(&env(&[])).unwrap_err(), Fallback::FlagOff);
         assert_eq!(
-            resolve(&env(&[("SOLID_POD_JEV", "0"), ("SOLID_POD_JEV_ENDPOINT", "http://x")])).unwrap_err(),
+            resolve(&env(&[
+                ("SOLID_POD_JEV", "0"),
+                ("SOLID_POD_JEV_ENDPOINT", "http://x")
+            ]))
+            .unwrap_err(),
             Fallback::FlagOff
         );
         // Explicit endpoint without `local = true` is refused.
         assert_eq!(
-            resolve(&env(&[("SOLID_POD_JEV", "1"), ("SOLID_POD_JEV_ENDPOINT", "http://x")])).unwrap_err(),
+            resolve(&env(&[
+                ("SOLID_POD_JEV", "1"),
+                ("SOLID_POD_JEV_ENDPOINT", "http://x")
+            ]))
+            .unwrap_err(),
             Fallback::NoEndpoint
         );
         // Proxy without BACKEND_LOCAL is refused.
@@ -679,7 +723,8 @@ mod tests {
                 ("AGENTBOX_SYSTEM_ONE_PROXY", "1"),
                 ("AGENTBOX_SYSTEM_ONE_ENDPOINT", "http://p"),
                 ("AGENTBOX_SYSTEM_ONE_MODEL", "m"),
-            ])).unwrap_err(),
+            ]))
+            .unwrap_err(),
             Fallback::NoEndpoint
         );
         // The public vendor endpoint is never used by a local-only consumer.
@@ -693,18 +738,26 @@ mod tests {
             ("AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL", "1"),
             ("AGENTBOX_SYSTEM_ONE_ENDPOINT", "http://p"),
             ("AGENTBOX_SYSTEM_ONE_MODEL", "m"),
-        ])).unwrap();
-        assert_eq!((c.endpoint.as_str(), c.model.as_str(), c.bearer.is_none()), ("http://p", "m", true));
+        ]))
+        .unwrap();
+        assert_eq!(
+            (c.endpoint.as_str(), c.model.as_str(), c.bearer.is_none()),
+            ("http://p", "m", true)
+        );
         let c = resolve(&env(&[
             ("SOLID_POD_JEV", "1"),
             ("SOLID_POD_JEV_ENDPOINT", "http://e"),
             ("SOLID_POD_JEV_LOCAL", "1"),
             ("SOLID_POD_JEV_KEY_ENV", "MY_KEY"),
             ("MY_KEY", "secret"),
-        ])).unwrap();
+        ]))
+        .unwrap();
         assert_eq!(c.bearer.as_deref(), Some("secret"));
         assert_eq!(c.timeout, DEADLINE);
-        assert!(c.op_min_confidence.is_none(), "default accepts nothing for operations");
+        assert!(
+            c.op_min_confidence.is_none(),
+            "default accepts nothing for operations"
+        );
     }
 
     fn cfg(op_min: Option<f64>) -> JevConfig {
@@ -724,13 +777,22 @@ mod tests {
     }
     impl Mock {
         fn ok(v: Value) -> Arc<Self> {
-            Arc::new(Self { reply: Ok((200, serde_json::to_vec(&v).unwrap())), seen: Mutex::new(vec![]) })
+            Arc::new(Self {
+                reply: Ok((200, serde_json::to_vec(&v).unwrap())),
+                seen: Mutex::new(vec![]),
+            })
         }
         fn raw(status: u16, b: &[u8]) -> Arc<Self> {
-            Arc::new(Self { reply: Ok((status, b.to_vec())), seen: Mutex::new(vec![]) })
+            Arc::new(Self {
+                reply: Ok((status, b.to_vec())),
+                seen: Mutex::new(vec![]),
+            })
         }
         fn err(f: Fallback) -> Arc<Self> {
-            Arc::new(Self { reply: Err(f), seen: Mutex::new(vec![]) })
+            Arc::new(Self {
+                reply: Err(f),
+                seen: Mutex::new(vec![]),
+            })
         }
     }
     #[async_trait]
@@ -741,20 +803,30 @@ mod tests {
         }
     }
     fn rt(c: Result<JevConfig, Fallback>, m: &Arc<Mock>) -> JevRuntime {
-        JevRuntime { config: c, transport: m.clone() }
+        JevRuntime {
+            config: c,
+            transport: m.clone(),
+        }
     }
 
     fn rcands() -> Vec<RankCandidate> {
         ["a.ttl", "b.ttl", "c.ttl"]
             .iter()
-            .map(|n| RankCandidate { name: n.to_string(), path: format!("/p/{n}"), is_container: false })
+            .map(|n| RankCandidate {
+                name: n.to_string(),
+                path: format!("/p/{n}"),
+                is_container: false,
+            })
             .collect()
     }
 
     fn rank_reply(scores: [f64; 3], conf: f64, none: f64) -> Value {
         let mut a = Map::new();
         for (i, s) in scores.iter().enumerate() {
-            a.insert(format!("rel_c{i}"), json!({"type":"score","score":s,"confidence":conf,"legend":{}}));
+            a.insert(
+                format!("rel_c{i}"),
+                json!({"type":"score","score":s,"confidence":conf,"legend":{}}),
+            );
         }
         a.insert("no_suitable".into(), json!({"type":"noul","noul":none}));
         json!({"model":"jev-latest","answers":a,"usage":{"input_tokens":1,"output_tokens":1}})
@@ -768,8 +840,14 @@ mod tests {
         let q = r["questions"].as_object().unwrap();
         assert_eq!(q.len(), 4);
         assert_eq!(q["rel_c0"]["type"], "score");
-        assert!(q["rel_c0"]["criteria"].is_array(), "Score criteria is an ordered list");
-        assert!(q["rel_c0"]["instructions"].as_str().unwrap().contains("candidates.c0"));
+        assert!(
+            q["rel_c0"]["criteria"].is_array(),
+            "Score criteria is an ordered list"
+        );
+        assert!(q["rel_c0"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("candidates.c0"));
         assert_eq!(q["no_suitable"]["type"], "noul");
     }
 
@@ -781,7 +859,10 @@ mod tests {
         // items: [r0, hidden, r1, r2]; readable slots 0,2,3.
         let mut items = vec![json!("r0"), json!("hidden"), json!("r1"), json!("r2")];
         let note = apply_rank(&mut items, &[true, false, true, true], &out);
-        assert_eq!(items, vec![json!("r1"), json!("hidden"), json!("r2"), json!("r0")]);
+        assert_eq!(
+            items,
+            vec![json!("r1"), json!("hidden"), json!("r2"), json!("r0")]
+        );
         assert_eq!(note["questionSet"], QUESTION_SET_RANK);
         assert_eq!(note["reranked"], true);
     }
@@ -797,16 +878,52 @@ mod tests {
     async fn rank_every_fallback_trigger() {
         let good = rank_reply([0.2, 1.9, 1.0], 0.9, 0.1);
         let cases: Vec<(JevRuntime, Fallback)> = vec![
-            (rt(Err(Fallback::FlagOff), &Mock::ok(good.clone())), Fallback::FlagOff),
-            (rt(Err(Fallback::NoEndpoint), &Mock::ok(good.clone())), Fallback::NoEndpoint),
-            (rt(Ok(cfg(None)), &Mock::err(Fallback::Timeout)), Fallback::Timeout),
-            (rt(Ok(cfg(None)), &Mock::raw(429, b"{}")), Fallback::Http(429)),
-            (rt(Ok(cfg(None)), &Mock::raw(529, b"{}")), Fallback::Http(529)),
-            (rt(Ok(cfg(None)), &Mock::raw(500, b"{}")), Fallback::Http(500)),
-            (rt(Ok(cfg(None)), &Mock::raw(200, b"not json")), Fallback::Malformed),
-            (rt(Ok(cfg(None)), &Mock::ok(json!({"answers":{}}))), Fallback::Malformed),
-            (rt(Ok(cfg(None)), &Mock::ok(rank_reply([0.2, 1.9, 5.0], 0.9, 0.1))), Fallback::Malformed),
-            (rt(Ok(cfg(None)), &Mock::ok(rank_reply([0.2, 1.9, 1.0], 0.05, 0.1))), Fallback::LowConfidence),
+            (
+                rt(Err(Fallback::FlagOff), &Mock::ok(good.clone())),
+                Fallback::FlagOff,
+            ),
+            (
+                rt(Err(Fallback::NoEndpoint), &Mock::ok(good.clone())),
+                Fallback::NoEndpoint,
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::err(Fallback::Timeout)),
+                Fallback::Timeout,
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::raw(429, b"{}")),
+                Fallback::Http(429),
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::raw(529, b"{}")),
+                Fallback::Http(529),
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::raw(500, b"{}")),
+                Fallback::Http(500),
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::raw(200, b"not json")),
+                Fallback::Malformed,
+            ),
+            (
+                rt(Ok(cfg(None)), &Mock::ok(json!({"answers":{}}))),
+                Fallback::Malformed,
+            ),
+            (
+                rt(
+                    Ok(cfg(None)),
+                    &Mock::ok(rank_reply([0.2, 1.9, 5.0], 0.9, 0.1)),
+                ),
+                Fallback::Malformed,
+            ),
+            (
+                rt(
+                    Ok(cfg(None)),
+                    &Mock::ok(rank_reply([0.2, 1.9, 1.0], 0.05, 0.1)),
+                ),
+                Fallback::LowConfidence,
+            ),
         ];
         for (r, want) in cases {
             assert_eq!(rank(&r, "q", &rcands()).await.unwrap_err(), want);
@@ -815,32 +932,60 @@ mod tests {
         let mut missing = rank_reply([0.2, 1.9, 1.0], 0.9, 0.1);
         missing["answers"].as_object_mut().unwrap().remove("rel_c1");
         assert_eq!(
-            rank(&rt(Ok(cfg(None)), &Mock::ok(missing)), "q", &rcands()).await.unwrap_err(),
+            rank(&rt(Ok(cfg(None)), &Mock::ok(missing)), "q", &rcands())
+                .await
+                .unwrap_err(),
             Fallback::Malformed
         );
         // Wrong answer type.
         let mut wrong = rank_reply([0.2, 1.9, 1.0], 0.9, 0.1);
         wrong["answers"]["no_suitable"] = json!({"type":"score","score":1.0,"confidence":1.0});
         assert_eq!(
-            rank(&rt(Ok(cfg(None)), &Mock::ok(wrong)), "q", &rcands()).await.unwrap_err(),
+            rank(&rt(Ok(cfg(None)), &Mock::ok(wrong)), "q", &rcands())
+                .await
+                .unwrap_err(),
             Fallback::Malformed
         );
         // Over the candidate cap: no request is made.
         let many: Vec<RankCandidate> = (0..MAX_CANDIDATES + 1)
-            .map(|i| RankCandidate { name: format!("{i}"), path: format!("/{i}"), is_container: false })
+            .map(|i| RankCandidate {
+                name: format!("{i}"),
+                path: format!("/{i}"),
+                is_container: false,
+            })
             .collect();
         let m = Mock::ok(rank_reply([0.0; 3], 1.0, 0.0));
-        assert_eq!(rank(&rt(Ok(cfg(None)), &m), "q", &many).await.unwrap_err(), Fallback::OverCap);
+        assert_eq!(
+            rank(&rt(Ok(cfg(None)), &m), "q", &many).await.unwrap_err(),
+            Fallback::OverCap
+        );
         assert!(m.seen.lock().unwrap().is_empty());
     }
 
     fn ocands() -> Vec<OpCandidate> {
         vec![
-            OpCandidate { path: "/p/a.ttl".into(), name: "a.ttl".into(), is_container: false, can_read: true, can_write: true, can_append: true },
-            OpCandidate { path: "/p/b.ttl".into(), name: "b.ttl".into(), is_container: false, can_read: true, can_write: false, can_append: false },
+            OpCandidate {
+                path: "/p/a.ttl".into(),
+                name: "a.ttl".into(),
+                is_container: false,
+                can_read: true,
+                can_write: true,
+                can_append: true,
+            },
+            OpCandidate {
+                path: "/p/b.ttl".into(),
+                name: "b.ttl".into(),
+                is_container: false,
+                can_read: true,
+                can_write: false,
+                can_append: false,
+            },
         ]
     }
-    const PERMS: ContainerPerms = ContainerPerms { can_write: false, can_append: true };
+    const PERMS: ContainerPerms = ContainerPerms {
+        can_write: false,
+        can_append: true,
+    };
 
     fn op_reply(op: &str, tgt: &str, conf: f64, unamb: f64) -> Value {
         json!({"model":"m","answers":{
@@ -852,9 +997,18 @@ mod tests {
 
     #[test]
     fn allowed_ops_follow_wac() {
-        assert_eq!(allowed_operations(&ocands(), PERMS), vec!["read", "create", "append", "patch_preview", "clarify"]);
         assert_eq!(
-            allowed_operations(&[], ContainerPerms { can_write: false, can_append: false }),
+            allowed_operations(&ocands(), PERMS),
+            vec!["read", "create", "append", "patch_preview", "clarify"]
+        );
+        assert_eq!(
+            allowed_operations(
+                &[],
+                ContainerPerms {
+                    can_write: false,
+                    can_append: false
+                }
+            ),
             vec!["clarify"]
         );
     }
@@ -865,9 +1019,15 @@ mod tests {
         let r = op_request("jev-latest", "open b", "/p/", &ocands(), &ops);
         let q = r["questions"].as_object().unwrap();
         assert!(q["operation"]["criteria"].is_object());
-        assert!(q["operation"]["criteria"].get("copy").is_none(), "copy not permitted here");
+        assert!(
+            q["operation"]["criteria"].get("copy").is_none(),
+            "copy not permitted here"
+        );
         assert!(q["operation"]["criteria"].get("clarify").is_some());
-        assert!(q["target"]["criteria"].as_object().unwrap().contains_key("none"));
+        assert!(q["target"]["criteria"]
+            .as_object()
+            .unwrap()
+            .contains_key("none"));
         assert_eq!(q["unambiguous"]["type"], "noul");
         // Only metadata, and only opaque ids in the target criteria.
         assert!(!r.to_string().contains("body"));
@@ -876,20 +1036,41 @@ mod tests {
     #[actix_web::test]
     async fn op_default_threshold_accepts_nothing() {
         let m = Mock::ok(op_reply("read", "c1", 0.99, 0.99));
-        let e = propose(&rt(Ok(cfg(None)), &m), "open b", "/p/", &ocands(), PERMS).await.unwrap_err();
+        let e = propose(&rt(Ok(cfg(None)), &m), "open b", "/p/", &ocands(), PERMS)
+            .await
+            .unwrap_err();
         assert_eq!(e, Fallback::LowConfidence);
     }
 
     #[actix_web::test]
     async fn op_accept_path_grounds_target() {
         let m = Mock::ok(op_reply("read", "c1", 0.9, 0.9));
-        let p = propose(&rt(Ok(cfg(Some(0.5))), &m), "open b", "/p/", &ocands(), PERMS).await.unwrap();
+        let p = propose(
+            &rt(Ok(cfg(Some(0.5))), &m),
+            "open b",
+            "/p/",
+            &ocands(),
+            PERMS,
+        )
+        .await
+        .unwrap();
         assert_eq!(p.operation, "read");
         assert_eq!(p.target.as_deref(), Some("/p/b.ttl"));
         assert_eq!(p.source, "jev");
         let m = Mock::ok(op_reply("create", "none", 0.9, 0.9));
-        let p = propose(&rt(Ok(cfg(Some(0.5))), &m), "make one", "/p/", &ocands(), PERMS).await.unwrap();
-        assert_eq!((p.operation.as_str(), p.target.as_deref()), ("create", Some("/p/")));
+        let p = propose(
+            &rt(Ok(cfg(Some(0.5))), &m),
+            "make one",
+            "/p/",
+            &ocands(),
+            PERMS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (p.operation.as_str(), p.target.as_deref()),
+            ("create", Some("/p/"))
+        );
     }
 
     #[actix_web::test]
@@ -897,19 +1078,25 @@ mod tests {
         // Choice key outside the offered set (copy is not permitted).
         let m = Mock::ok(op_reply("copy", "c0", 0.9, 0.9));
         assert_eq!(
-            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS).await.unwrap_err(),
+            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS)
+                .await
+                .unwrap_err(),
             Fallback::Malformed
         );
         // patch_preview on c1, which has no write grant.
         let m = Mock::ok(op_reply("patch_preview", "c1", 0.9, 0.9));
         assert_eq!(
-            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS).await.unwrap_err(),
+            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS)
+                .await
+                .unwrap_err(),
             Fallback::Malformed
         );
         // Target id outside the offered ids.
         let m = Mock::ok(op_reply("read", "c9", 0.9, 0.9));
         assert_eq!(
-            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS).await.unwrap_err(),
+            propose(&rt(Ok(cfg(Some(0.1))), &m), "r", "/p/", &ocands(), PERMS)
+                .await
+                .unwrap_err(),
             Fallback::Malformed
         );
     }
@@ -917,21 +1104,63 @@ mod tests {
     #[actix_web::test]
     async fn op_every_fallback_trigger_and_low_confidence() {
         let go = |m: Arc<Mock>, c: Result<JevConfig, Fallback>| async move {
-            propose(&rt(c, &m), "r", "/p/", &ocands(), PERMS).await.unwrap_err()
+            propose(&rt(c, &m), "r", "/p/", &ocands(), PERMS)
+                .await
+                .unwrap_err()
         };
-        assert_eq!(go(Mock::ok(op_reply("read", "c1", 0.9, 0.9)), Err(Fallback::FlagOff)).await, Fallback::FlagOff);
-        assert_eq!(go(Mock::ok(op_reply("read", "c1", 0.9, 0.9)), Err(Fallback::NoEndpoint)).await, Fallback::NoEndpoint);
-        assert_eq!(go(Mock::err(Fallback::Timeout), Ok(cfg(Some(0.5)))).await, Fallback::Timeout);
-        assert_eq!(go(Mock::raw(503, b"x"), Ok(cfg(Some(0.5)))).await, Fallback::Http(503));
-        assert_eq!(go(Mock::raw(200, b"<html>"), Ok(cfg(Some(0.5)))).await, Fallback::Malformed);
-        assert_eq!(go(Mock::ok(op_reply("read", "c1", 0.2, 0.9)), Ok(cfg(Some(0.5)))).await, Fallback::LowConfidence);
-        assert_eq!(go(Mock::ok(op_reply("read", "c1", 0.9, 0.4)), Ok(cfg(Some(0.5)))).await, Fallback::LowConfidence);
+        assert_eq!(
+            go(
+                Mock::ok(op_reply("read", "c1", 0.9, 0.9)),
+                Err(Fallback::FlagOff)
+            )
+            .await,
+            Fallback::FlagOff
+        );
+        assert_eq!(
+            go(
+                Mock::ok(op_reply("read", "c1", 0.9, 0.9)),
+                Err(Fallback::NoEndpoint)
+            )
+            .await,
+            Fallback::NoEndpoint
+        );
+        assert_eq!(
+            go(Mock::err(Fallback::Timeout), Ok(cfg(Some(0.5)))).await,
+            Fallback::Timeout
+        );
+        assert_eq!(
+            go(Mock::raw(503, b"x"), Ok(cfg(Some(0.5)))).await,
+            Fallback::Http(503)
+        );
+        assert_eq!(
+            go(Mock::raw(200, b"<html>"), Ok(cfg(Some(0.5)))).await,
+            Fallback::Malformed
+        );
+        assert_eq!(
+            go(
+                Mock::ok(op_reply("read", "c1", 0.2, 0.9)),
+                Ok(cfg(Some(0.5)))
+            )
+            .await,
+            Fallback::LowConfidence
+        );
+        assert_eq!(
+            go(
+                Mock::ok(op_reply("read", "c1", 0.9, 0.4)),
+                Ok(cfg(Some(0.5)))
+            )
+            .await,
+            Fallback::LowConfidence
+        );
     }
 
     #[test]
     fn choice_confidence_derived_from_probabilities_when_absent() {
         let mut a = Map::new();
-        a.insert("q".into(), json!({"type":"choice","choice":"x","probabilities":{"x":0.6,"y":0.2,"z":0.2}}));
+        a.insert(
+            "q".into(),
+            json!({"type":"choice","choice":"x","probabilities":{"x":0.6,"y":0.2,"z":0.2}}),
+        );
         let (_, c) = choice(&a, "q", &["x".into(), "y".into(), "z".into()]).unwrap();
         assert!((c - 0.4).abs() < 1e-9);
     }
@@ -952,13 +1181,20 @@ mod tests {
         WMock::given(method("POST"))
             .and(header("content-type", "application/json"))
             .and(header("authorization", "Bearer sekrit"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(rank_reply([0.0, 2.0, 1.0], 0.9, 0.1)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rank_reply(
+                [0.0, 2.0, 1.0],
+                0.9,
+                0.1,
+            )))
             .mount(&server)
             .await;
         let mut c = cfg(None);
         c.endpoint = format!("{}/v1/systemone", server.uri());
         c.bearer = Some("sekrit".into());
-        let r = JevRuntime { config: Ok(c), transport: Arc::new(ReqwestTransport) };
+        let r = JevRuntime {
+            config: Ok(c),
+            transport: Arc::new(ReqwestTransport),
+        };
         let out = rank(&r, "q", &rcands()).await.unwrap();
         assert_eq!(out.order, vec![1, 2, 0]);
         let seen = server.received_requests().await.unwrap();
@@ -978,7 +1214,13 @@ mod tests {
         let mut c = cfg(None);
         c.endpoint = server.uri();
         c.timeout = Duration::from_millis(100);
-        let r = JevRuntime { config: Ok(c), transport: Arc::new(ReqwestTransport) };
-        assert_eq!(rank(&r, "q", &rcands()).await.unwrap_err(), Fallback::Timeout);
+        let r = JevRuntime {
+            config: Ok(c),
+            transport: Arc::new(ReqwestTransport),
+        };
+        assert_eq!(
+            rank(&r, "q", &rcands()).await.unwrap_err(),
+            Fallback::Timeout
+        );
     }
 }

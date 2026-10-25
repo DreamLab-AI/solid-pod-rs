@@ -275,6 +275,9 @@ async fn jev_rerank(
             is_container: it["isContainer"].as_bool().unwrap_or(false),
         })
         .collect();
+    if cands.is_empty() {
+        return None; // nothing to rank: not a Jev failure, so no log line
+    }
     let outcome = crate::jev::rank(rt, query, &cands).await.ok()?;
     Some(crate::jev::apply_rank(items, readable, &outcome))
 }
@@ -283,7 +286,13 @@ async fn jev_rerank(
 /// request, grounded in what WAC lets the caller do in `container`.
 #[cfg(feature = "jev")]
 async fn propose_operation(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
-    propose_operation_with(args, state, ctx, &crate::jev::JevRuntime::from_process_env()).await
+    propose_operation_with(
+        args,
+        state,
+        ctx,
+        &crate::jev::JevRuntime::from_process_env(),
+    )
+    .await
 }
 
 #[cfg(feature = "jev")]
@@ -293,7 +302,11 @@ async fn propose_operation_with(
     ctx: &McpCtx,
     rt: &crate::jev::JevRuntime,
 ) -> Value {
-    let request = args.get("request").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let request = args
+        .get("request")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
     if request.is_empty() {
         return tool_error("request required");
     }
@@ -1125,6 +1138,10 @@ pub fn list_tools_for_rpc() -> Value {
     #[cfg(feature = "jev")]
     if crate::jev::enabled_in_process_env() {
         if let Some(arr) = tools.as_array_mut() {
+            // SP-08: advertise the optional rerank query on list_resources.
+            if let Some(lr) = arr.iter_mut().find(|t| t["name"] == "list_resources") {
+                lr["inputSchema"]["properties"]["query"] = json!({ "type": "string", "description": "Optional free-text query; when given, readable entries are semantically reranked (experimental, off unless enabled)." });
+            }
             arr.push(json!({ "name": "propose_operation",
               "description": "Propose (never execute) the LDP operation a free-text request most likely means, within a container. Returns {proposal:{operation,target}, executed:false}; you must still make the real call. Experimental, off by default.",
               "inputSchema": { "type": "object", "properties": { "request": { "type": "string" }, "container": { "type": "string", "description": "Container path, must end in /" } }, "required": ["request", "container"] } }));
@@ -1367,11 +1384,27 @@ mod jev_tests {
     async fn fixture() -> (AppState, McpCtx) {
         let s = Arc::new(MemoryBackend::new());
         s.create_container("/pub/").await.unwrap();
-        s.put("/pub/.acl", Bytes::from(PUBLIC_ACL), "text/turtle").await.unwrap();
-        s.put("/pub.acl", Bytes::from(PUBLIC_ACL), "text/turtle").await.unwrap();
-        s.put("/pub/secret-plans.ttl.acl", Bytes::from(SECRET_ACL), "text/turtle").await.unwrap();
+        s.put("/pub/.acl", Bytes::from(PUBLIC_ACL), "text/turtle")
+            .await
+            .unwrap();
+        s.put("/pub.acl", Bytes::from(PUBLIC_ACL), "text/turtle")
+            .await
+            .unwrap();
+        s.put(
+            "/pub/secret-plans.ttl.acl",
+            Bytes::from(SECRET_ACL),
+            "text/turtle",
+        )
+        .await
+        .unwrap();
         for n in ["alpha.ttl", "secret-plans.ttl", "zeta.ttl"] {
-            s.put(&format!("/pub/{n}"), Bytes::from("BODY-MUST-NOT-LEAK"), "text/turtle").await.unwrap();
+            s.put(
+                &format!("/pub/{n}"),
+                Bytes::from("BODY-MUST-NOT-LEAK"),
+                "text/turtle",
+            )
+            .await
+            .unwrap();
         }
         let mut st = AppState::new(s);
         st.mcp_enabled = true;
@@ -1391,7 +1424,10 @@ mod jev_tests {
     #[async_trait]
     impl JevTransport for Spy {
         async fn post(&self, _c: &JevConfig, body: Vec<u8>) -> Result<(u16, Vec<u8>), Fallback> {
-            self.seen.lock().unwrap().push(String::from_utf8(body).unwrap());
+            self.seen
+                .lock()
+                .unwrap()
+                .push(String::from_utf8(body).unwrap());
             self.reply.clone()
         }
     }
@@ -1406,17 +1442,32 @@ mod jev_tests {
         }
     }
     fn rt(reply: Result<(u16, Vec<u8>), Fallback>, op_min: Option<f64>) -> (JevRuntime, Arc<Spy>) {
-        let spy = Arc::new(Spy { reply, seen: Mutex::new(vec![]) });
-        (JevRuntime { config: Ok(cfg(op_min)), transport: spy.clone() }, spy)
+        let spy = Arc::new(Spy {
+            reply,
+            seen: Mutex::new(vec![]),
+        });
+        (
+            JevRuntime {
+                config: Ok(cfg(op_min)),
+                transport: spy.clone(),
+            },
+            spy,
+        )
     }
     fn json_reply(v: Value) -> Result<(u16, Vec<u8>), Fallback> {
         Ok((200, serde_json::to_vec(&v).unwrap()))
     }
     fn body_of(v: &Value) -> Value {
-        serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap_or_else(|_| panic!("not json: {v}"))
+        serde_json::from_str(v["content"][0]["text"].as_str().unwrap())
+            .unwrap_or_else(|_| panic!("not json: {v}"))
     }
     fn names(v: &Value) -> Vec<String> {
-        v["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap().to_string()).collect()
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect()
     }
 
     /// Two readable candidates (alpha, zeta); zeta is the better match.
@@ -1436,18 +1487,41 @@ mod jev_tests {
         // The option itself is off in this process: query is ignored.
         assert_eq!(list_resources(&with_q, &st, &ctx).await, baseline);
         let triggers: Vec<(JevRuntime, &str)> = vec![
-            (JevRuntime { config: Err(Fallback::FlagOff), transport: rt(Err(Fallback::Timeout), None).0.transport }, "off"),
-            (JevRuntime { config: Err(Fallback::NoEndpoint), transport: rt(Err(Fallback::Timeout), None).0.transport }, "no-endpoint"),
+            (
+                JevRuntime {
+                    config: Err(Fallback::FlagOff),
+                    transport: rt(Err(Fallback::Timeout), None).0.transport,
+                },
+                "off",
+            ),
+            (
+                JevRuntime {
+                    config: Err(Fallback::NoEndpoint),
+                    transport: rt(Err(Fallback::Timeout), None).0.transport,
+                },
+                "no-endpoint",
+            ),
             (rt(Err(Fallback::Timeout), None).0, "timeout"),
             (rt(Ok((500, b"{}".to_vec())), None).0, "http"),
             (rt(Ok((200, b"nope".to_vec())), None).0, "malformed"),
-            (rt(json_reply(json!({"answers":{
+            (
+                rt(
+                    json_reply(json!({"answers":{
                 "rel_c0":{"type":"score","score":0.4,"confidence":0.01},
                 "rel_c1":{"type":"score","score":1.9,"confidence":0.01},
-                "no_suitable":{"type":"noul","noul":0.05}}})), None).0, "low-confidence"),
+                "no_suitable":{"type":"noul","noul":0.05}}})),
+                    None,
+                )
+                .0,
+                "low-confidence",
+            ),
         ];
         for (r, label) in triggers {
-            assert_eq!(list_resources_with(&with_q, &st, &ctx, &r).await, baseline, "{label}");
+            assert_eq!(
+                list_resources_with(&with_q, &st, &ctx, &r).await,
+                baseline,
+                "{label}"
+            );
         }
     }
 
@@ -1455,18 +1529,40 @@ mod jev_tests {
     async fn rerank_accept_path_reorders_and_never_leaks_unreadable_children() {
         let (st, ctx) = fixture().await;
         let (r, spy) = rt(json_reply(rank_reply()), None);
-        let out = list_resources_with(&json!({"path":"/pub/","query":"zeta notes"}), &st, &ctx, &r).await;
+        let out =
+            list_resources_with(&json!({"path":"/pub/","query":"zeta notes"}), &st, &ctx, &r).await;
         let v = body_of(&out);
         // The two readable slots swap; every unreadable entry stays put.
         // (the listing also holds ACL sidecars, unreadable to anonymous).
-        assert_eq!(names(&v), vec![".acl", "zeta.ttl", "secret-plans.ttl", "secret-plans.ttl.acl", "alpha.ttl"]);
+        assert_eq!(
+            names(&v),
+            vec![
+                ".acl",
+                "zeta.ttl",
+                "secret-plans.ttl",
+                "secret-plans.ttl.acl",
+                "alpha.ttl"
+            ]
+        );
         assert_eq!(v["jev"]["questionSet"], crate::jev::QUESTION_SET_RANK);
         let seen = spy.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
-        assert!(!seen[0].contains("secret-plans"), "WAC-denied child leaked to Jev: {}", seen[0]);
-        assert!(!seen[0].contains("BODY-MUST-NOT-LEAK"), "resource body sent to Jev");
+        assert!(
+            !seen[0].contains("secret-plans"),
+            "WAC-denied child leaked to Jev: {}",
+            seen[0]
+        );
+        assert!(
+            !seen[0].contains("BODY-MUST-NOT-LEAK"),
+            "resource body sent to Jev"
+        );
         // Access metadata for the hidden child stays withheld, as before.
-        let secret = v["items"].as_array().unwrap().iter().find(|i| i["name"] == "secret-plans.ttl").unwrap();
+        let secret = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "secret-plans.ttl")
+            .unwrap();
         assert!(secret["size"].is_null());
     }
 
@@ -1475,9 +1571,22 @@ mod jev_tests {
         let (st, ctx) = fixture().await;
         assert!(!crate::jev::enabled_in_process_env());
         let listed = list_tools_for_rpc();
-        assert!(listed.as_array().unwrap().iter().all(|t| t["name"] != "propose_operation"));
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["name"] != "propose_operation"));
         assert_eq!(listed, base_tools());
-        let out = call_tool("propose_operation", &json!({"request":"x","container":"/pub/"}), &st, &ctx).await;
+        assert!(base_tools()[0]["inputSchema"]["properties"]
+            .get("query")
+            .is_none());
+        let out = call_tool(
+            "propose_operation",
+            &json!({"request":"x","container":"/pub/"}),
+            &st,
+            &ctx,
+        )
+        .await;
         assert_eq!(out, tool_error("unknown tool: propose_operation"));
     }
 
@@ -1500,7 +1609,10 @@ mod jev_tests {
         let (confident_default, _) = rt(json_reply(op_reply("read", "c1", 0.99)), None);
         let runtimes = vec![
             confident_default,
-            JevRuntime { config: Err(Fallback::FlagOff), transport: rt(Err(Fallback::Timeout), None).0.transport },
+            JevRuntime {
+                config: Err(Fallback::FlagOff),
+                transport: rt(Err(Fallback::Timeout), None).0.transport,
+            },
             rt(Err(Fallback::Timeout), Some(0.5)).0,
             rt(Ok((429, b"{}".to_vec())), Some(0.5)).0,
             rt(Ok((200, b"junk".to_vec())), Some(0.5)).0,
@@ -1518,7 +1630,13 @@ mod jev_tests {
         let (st, ctx) = fixture().await;
         let (r, spy) = rt(json_reply(op_reply("read", "c1", 0.9)), Some(0.5));
         let before = st.storage.list("/pub/").await.unwrap();
-        let out = propose_operation_with(&json!({"request":"open zeta","container":"/pub/"}), &st, &ctx, &r).await;
+        let out = propose_operation_with(
+            &json!({"request":"open zeta","container":"/pub/"}),
+            &st,
+            &ctx,
+            &r,
+        )
+        .await;
         let v = body_of(&out);
         assert_eq!(v["proposal"]["operation"], "read");
         assert_eq!(v["proposal"]["target"], "/pub/zeta.ttl");
@@ -1529,9 +1647,15 @@ mod jev_tests {
         assert!(!sent.contains("secret-plans") && !sent.contains("BODY-MUST-NOT-LEAK"));
         let req: Value = serde_json::from_str(&sent).unwrap();
         // Anonymous has Read only: create/append/patch/copy are not offered.
-        let ops = req["questions"]["operation"]["criteria"].as_object().unwrap();
-        assert_eq!(ops.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
-            ["clarify", "read"].iter().map(|s| s.to_string()).collect());
+        let ops = req["questions"]["operation"]["criteria"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            ops.keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["clarify", "read"].iter().map(|s| s.to_string()).collect()
+        );
         assert_eq!(st.storage.list("/pub/").await.unwrap(), before);
     }
 
@@ -1539,7 +1663,13 @@ mod jev_tests {
     async fn propose_requires_a_read_grant_on_the_container() {
         let (st, ctx) = fixture().await;
         let (r, spy) = rt(json_reply(op_reply("read", "none", 0.9)), Some(0.5));
-        let out = propose_operation_with(&json!({"request":"x","container":"/nowhere/"}), &st, &ctx, &r).await;
+        let out = propose_operation_with(
+            &json!({"request":"x","container":"/nowhere/"}),
+            &st,
+            &ctx,
+            &r,
+        )
+        .await;
         assert_eq!(out["isError"], true);
         assert!(spy.seen.lock().unwrap().is_empty());
     }
