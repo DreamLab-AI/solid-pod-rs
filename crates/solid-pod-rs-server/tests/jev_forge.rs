@@ -246,3 +246,57 @@ async fn issues_listing_is_reranked_from_the_forge_response_only() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn full_page_reranks_head_of_twenty_and_leaves_the_tail() {
+    let issues: Vec<Value> = (1..=25)
+        .map(|n| json!({"number": n, "title": format!("issue {n}"), "state": "open"}))
+        .collect();
+    let body = serde_json::to_vec(&json!({"issues": issues, "openCount": 25})).unwrap();
+    // Reverse the head: later candidates score higher.
+    let mut answers = serde_json::Map::new();
+    for i in 0..20 {
+        answers.insert(
+            format!("rel_c{i}"),
+            json!({"type":"score","score": i as f64 / 10.0,"confidence":0.9}),
+        );
+    }
+    answers.insert("no_suitable".into(), json!({"type":"noul","noul":0.05}));
+    let (r, spy) = rt(ok(json!({ "answers": answers })));
+    let path = "/forge/api/repos/alice/notes/issues";
+    let new = rerank_forge_listing(&r, "GET", path, "jev_query=x", 200, &body)
+        .await
+        .expect("accepted");
+    let doc: Value = serde_json::from_slice(&new).unwrap();
+    let nums: Vec<u64> = doc["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect();
+    let mut head: Vec<u64> = (1..=20).rev().collect();
+    assert_eq!(&nums[..20], head.as_slice(), "head reranked");
+    assert_eq!(
+        &nums[20..],
+        &[21, 22, 23, 24, 25],
+        "tail untouched, in order"
+    );
+    head.sort_unstable();
+    assert_eq!(
+        head,
+        (1..=20).collect::<Vec<u64>>(),
+        "permutation of the head"
+    );
+    let seen = spy.seen.lock().unwrap().join("\n");
+    assert!(
+        seen.contains("issue 20") && !seen.contains("issue 21"),
+        "tail never sent"
+    );
+    // Fallback on the same page serves the forge's bytes.
+    let (bad, _) = rt(Err(Fallback::Timeout));
+    assert!(
+        rerank_forge_listing(&bad, "GET", path, "jev_query=x", 200, &body)
+            .await
+            .is_none()
+    );
+}

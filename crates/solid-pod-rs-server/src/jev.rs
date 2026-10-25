@@ -525,7 +525,10 @@ pub async fn rerank_forge_listing(
     let user_query = query_param(query, FORGE_QUERY_PARAM)?;
     let mut doc: Value = serde_json::from_slice(body).ok()?;
     let items = doc.get_mut(key)?.as_array_mut()?;
-    let cands: Vec<RankCandidate> = items
+    // Only the head (first MAX_CANDIDATES) is reranked; the tail keeps the
+    // forge's order after it.
+    let head = items.len().min(MAX_CANDIDATES);
+    let cands: Vec<RankCandidate> = items[..head]
         .iter()
         .map(|it| {
             if key == "repos" {
@@ -563,8 +566,18 @@ pub async fn rerank_forge_listing(
     let outcome = rank_for(rt, &user_query, &cands, noun, judged_by)
         .await
         .ok()?;
-    let readable = vec![true; items.len()];
-    let note = apply_rank(items, &readable, &outcome);
+    // The new head must be a permutation of the old head.
+    let mut seen = vec![false; head];
+    if outcome.order.len() != head
+        || outcome
+            .order
+            .iter()
+            .any(|&i| i >= head || std::mem::replace(&mut seen[i], true))
+    {
+        return None;
+    }
+    let readable = vec![true; head];
+    let note = apply_rank(&mut items[..head], &readable, &outcome);
     doc.as_object_mut()?.insert("jev".into(), note);
     serde_json::to_vec(&doc).ok()
 }
