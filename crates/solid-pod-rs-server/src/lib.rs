@@ -125,6 +125,8 @@ mod handlers;
 /// MCP (Model Context Protocol) server subsystem — `POST /mcp`, mounted
 /// only when [`AppState::mcp_enabled`] (`--mcp` / `JSS_MCP`, JSS #490).
 mod mcp;
+#[cfg(feature = "jev")]
+pub mod jev;
 
 /// Native mempool.space REST client (provenance-upgrade Phase 3). Concrete
 /// [`solid_pod_rs::mrc20::MempoolLookup`] + the verify-side

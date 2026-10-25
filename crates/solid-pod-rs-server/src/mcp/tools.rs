@@ -175,7 +175,24 @@ fn ids_of(val: &Option<IdOrIds>) -> Vec<String> {
 // CRUD tools
 // ---------------------------------------------------------------------------
 
+/// Jev runtime handle threaded into `list_resources`; `()` when the `jev`
+/// feature is compiled out.
+#[cfg(feature = "jev")]
+type JevRt = crate::jev::JevRuntime;
+#[cfg(not(feature = "jev"))]
+type JevRt = ();
+
 async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
+    #[cfg(feature = "jev")]
+    let rt = crate::jev::JevRuntime::from_process_env();
+    #[cfg(not(feature = "jev"))]
+    let rt = ();
+    list_resources_with(args, state, ctx, &rt).await
+}
+
+async fn list_resources_with(args: &Value, state: &AppState, ctx: &McpCtx, rt: &JevRt) -> Value {
+    #[cfg(not(feature = "jev"))]
+    let _ = rt;
     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
     if path.is_empty() || !path.ends_with('/') {
         return tool_error("path must be a container (ending in /)");
@@ -195,11 +212,18 @@ async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         Err(e) => return tool_error(format!("list failed: {e}")),
     };
     let mut items: Vec<Value> = Vec::new();
+    // Parallel to `items`: whether WAC lets the caller read that child. Used
+    // only by the Jev rerank, which must never see an unreadable child.
+    #[cfg(feature = "jev")]
+    let mut readable: Vec<bool> = Vec::new();
     for entry in entries {
         let is_container = entry.ends_with('/');
         let name = entry.trim_end_matches('/').to_string();
         let child = format!("{path}{entry}");
-        let meta = if can_read_child(state, ctx, &child).await {
+        let can_read = can_read_child(state, ctx, &child).await;
+        #[cfg(feature = "jev")]
+        readable.push(can_read);
+        let meta = if can_read {
             state.storage.head(&child).await.ok()
         } else {
             None
@@ -212,7 +236,118 @@ async fn list_resources(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
             "modified": meta.as_ref().map(|m| m.modified.to_rfc3339()).map(Value::from).unwrap_or(Value::Null),
         }));
     }
+    #[cfg(feature = "jev")]
+    {
+        // SP-08-S1-01: optional semantic rerank of the already-authorised
+        // children for a free-text `query`. Any fallback leaves `items`
+        // untouched and adds no key, so the output is the pre-change output.
+        if let Some(q) = args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            if let Some(note) = jev_rerank(rt, q, &mut items, &readable).await {
+                return tool_json(json!({ "container": path, "items": items, "jev": note }));
+            }
+        }
+    }
     tool_json(json!({ "container": path, "items": items }))
+}
+
+/// Rerank the readable `items` for `query`. Only children for which
+/// `readable[i]` is true are ever described to Jev (access filtering happens
+/// first). Returns the `jev` annotation on acceptance, `None` on any fallback.
+#[cfg(feature = "jev")]
+async fn jev_rerank(
+    rt: &crate::jev::JevRuntime,
+    query: &str,
+    items: &mut [Value],
+    readable: &[bool],
+) -> Option<Value> {
+    let cands: Vec<crate::jev::RankCandidate> = items
+        .iter()
+        .zip(readable)
+        .filter(|(_, r)| **r)
+        .map(|(it, _)| crate::jev::RankCandidate {
+            name: it["name"].as_str().unwrap_or_default().to_string(),
+            path: it["path"].as_str().unwrap_or_default().to_string(),
+            is_container: it["isContainer"].as_bool().unwrap_or(false),
+        })
+        .collect();
+    let outcome = crate::jev::rank(rt, query, &cands).await.ok()?;
+    Some(crate::jev::apply_rank(items, readable, &outcome))
+}
+
+/// SP-03-S1-01: propose (never execute) an LDP operation for a free-text
+/// request, grounded in what WAC lets the caller do in `container`.
+#[cfg(feature = "jev")]
+async fn propose_operation(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
+    propose_operation_with(args, state, ctx, &crate::jev::JevRuntime::from_process_env()).await
+}
+
+#[cfg(feature = "jev")]
+async fn propose_operation_with(
+    args: &Value,
+    state: &AppState,
+    ctx: &McpCtx,
+    rt: &crate::jev::JevRuntime,
+) -> Value {
+    let request = args.get("request").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    if request.is_empty() {
+        return tool_error("request required");
+    }
+    let raw = args.get("container").and_then(Value::as_str).unwrap_or("");
+    if raw.is_empty() || !raw.ends_with('/') {
+        return tool_error("container must be a container path (ending in /)");
+    }
+    let container = &match clean_path(state, raw) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if !wac_check(state, ctx, container, AccessMode::Read).await {
+        return tool_error(format!("access denied: read {container}"));
+    }
+    let entries = match state.storage.list(container).await {
+        Ok(e) => e,
+        Err(_) => return tool_error(format!("not found: {container}")),
+    };
+    let mut cands = Vec::new();
+    for entry in entries {
+        let child = format!("{container}{entry}");
+        // Unreadable children are dropped here, before any Jev call.
+        if !can_read_child(state, ctx, &child).await {
+            continue;
+        }
+        let can_write = wac_check(state, ctx, &child, AccessMode::Write).await;
+        let can_append = can_write || wac_check(state, ctx, &child, AccessMode::Append).await;
+        cands.push(crate::jev::OpCandidate {
+            name: entry.trim_end_matches('/').to_string(),
+            path: child,
+            is_container: entry.ends_with('/'),
+            can_read: true,
+            can_write,
+            can_append,
+        });
+        if cands.len() > crate::jev::MAX_CANDIDATES {
+            break;
+        }
+    }
+    let c_write = wac_check(state, ctx, container, AccessMode::Write).await;
+    let perms = crate::jev::ContainerPerms {
+        can_write: c_write,
+        can_append: c_write || wac_check(state, ctx, container, AccessMode::Append).await,
+    };
+    let proposal = crate::jev::propose(rt, request, container, &cands, perms)
+        .await
+        .unwrap_or_else(|_| crate::jev::Proposal::baseline());
+    // Nothing is written here or anywhere below this point: the proposal is
+    // advice, and the caller must still make the real (WAC-checked) call.
+    tool_json(json!({
+        "proposal": proposal.to_json(),
+        "executed": false,
+        "requiresConfirmation": true,
+    }))
 }
 
 async fn read_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
@@ -970,6 +1105,10 @@ pub async fn call_tool(name: &str, args: &Value, state: &AppState, ctx: &McpCtx)
         "read_acl" => read_acl(args, state, ctx).await,
         "write_acl" => write_acl(args, state, ctx).await,
         "call_remote_pod" => call_remote_pod(args, state, ctx).await,
+        #[cfg(feature = "jev")]
+        "propose_operation" if crate::jev::enabled_in_process_env() => {
+            propose_operation(args, state, ctx).await
+        }
         "subscribe" => {
             tool_error("subscribe is a streaming tool; the server handles it over SSE directly")
         }
@@ -977,8 +1116,24 @@ pub async fn call_tool(name: &str, args: &Value, state: &AppState, ctx: &McpCtx)
     }
 }
 
-/// Tool metadata in MCP `tools/list` shape.
+/// Tool metadata in MCP `tools/list` shape. With the `jev` feature and
+/// `SOLID_POD_JEV=1`, `propose_operation` is listed too; otherwise the list is
+/// exactly the pre-change list.
 pub fn list_tools_for_rpc() -> Value {
+    #[allow(unused_mut)]
+    let mut tools = base_tools();
+    #[cfg(feature = "jev")]
+    if crate::jev::enabled_in_process_env() {
+        if let Some(arr) = tools.as_array_mut() {
+            arr.push(json!({ "name": "propose_operation",
+              "description": "Propose (never execute) the LDP operation a free-text request most likely means, within a container. Returns {proposal:{operation,target}, executed:false}; you must still make the real call. Experimental, off by default.",
+              "inputSchema": { "type": "object", "properties": { "request": { "type": "string" }, "container": { "type": "string", "description": "Container path, must end in /" } }, "required": ["request", "container"] } }));
+        }
+    }
+    tools
+}
+
+fn base_tools() -> Value {
     json!([
         { "name": "list_resources",
           "description": "List contents of an LDP container. Returns child resources and sub-containers.",
@@ -1189,5 +1344,203 @@ mod tests {
                 "{bad} must not be forwardable"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "jev"))]
+mod jev_tests {
+    use super::*;
+    use crate::jev::{Fallback, JevConfig, JevRuntime, JevTransport};
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use solid_pod_rs::storage::{memory::MemoryBackend, Storage};
+    use std::sync::{Arc, Mutex};
+
+    const PUBLIC_ACL: &str = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+        @prefix foaf: <http://xmlns.com/foaf/0.1/> .\n\
+        <#r> a acl:Authorization ; acl:agentClass foaf:Agent ;\n\
+        acl:accessTo </pub/> ; acl:default </pub/> ; acl:mode acl:Read .\n";
+    const SECRET_ACL: &str = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+        <#o> a acl:Authorization ; acl:agent <https://owner.example/#me> ;\n\
+        acl:accessTo </pub/secret-plans.ttl> ; acl:mode acl:Read, acl:Write, acl:Control .\n";
+
+    async fn fixture() -> (AppState, McpCtx) {
+        let s = Arc::new(MemoryBackend::new());
+        s.create_container("/pub/").await.unwrap();
+        s.put("/pub/.acl", Bytes::from(PUBLIC_ACL), "text/turtle").await.unwrap();
+        s.put("/pub.acl", Bytes::from(PUBLIC_ACL), "text/turtle").await.unwrap();
+        s.put("/pub/secret-plans.ttl.acl", Bytes::from(SECRET_ACL), "text/turtle").await.unwrap();
+        for n in ["alpha.ttl", "secret-plans.ttl", "zeta.ttl"] {
+            s.put(&format!("/pub/{n}"), Bytes::from("BODY-MUST-NOT-LEAK"), "text/turtle").await.unwrap();
+        }
+        let mut st = AppState::new(s);
+        st.mcp_enabled = true;
+        let ctx = McpCtx {
+            web_id: None,
+            origin: "http://localhost:8080".into(),
+            federation_depth: 0,
+            request_origin: None,
+        };
+        (st, ctx)
+    }
+
+    struct Spy {
+        reply: Result<(u16, Vec<u8>), Fallback>,
+        seen: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl JevTransport for Spy {
+        async fn post(&self, _c: &JevConfig, body: Vec<u8>) -> Result<(u16, Vec<u8>), Fallback> {
+            self.seen.lock().unwrap().push(String::from_utf8(body).unwrap());
+            self.reply.clone()
+        }
+    }
+    fn cfg(op_min: Option<f64>) -> JevConfig {
+        JevConfig {
+            endpoint: "http://mock".into(),
+            model: "jev-latest".into(),
+            bearer: None,
+            timeout: crate::jev::DEADLINE,
+            rank_min_confidence: 0.25,
+            op_min_confidence: op_min,
+        }
+    }
+    fn rt(reply: Result<(u16, Vec<u8>), Fallback>, op_min: Option<f64>) -> (JevRuntime, Arc<Spy>) {
+        let spy = Arc::new(Spy { reply, seen: Mutex::new(vec![]) });
+        (JevRuntime { config: Ok(cfg(op_min)), transport: spy.clone() }, spy)
+    }
+    fn json_reply(v: Value) -> Result<(u16, Vec<u8>), Fallback> {
+        Ok((200, serde_json::to_vec(&v).unwrap()))
+    }
+    fn body_of(v: &Value) -> Value {
+        serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap_or_else(|_| panic!("not json: {v}"))
+    }
+    fn names(v: &Value) -> Vec<String> {
+        v["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// Two readable candidates (alpha, zeta); zeta is the better match.
+    fn rank_reply() -> Value {
+        json!({"answers":{
+            "rel_c0":{"type":"score","score":0.4,"confidence":0.9},
+            "rel_c1":{"type":"score","score":1.9,"confidence":0.9},
+            "no_suitable":{"type":"noul","noul":0.05}}})
+    }
+
+    #[actix_web::test]
+    async fn rerank_fallback_equals_pre_change_output_for_every_trigger() {
+        let (st, ctx) = fixture().await;
+        let args = json!({"path":"/pub/"});
+        let baseline = list_resources(&args, &st, &ctx).await; // env: flag unset
+        let with_q = json!({"path":"/pub/","query":"zeta"});
+        // The option itself is off in this process: query is ignored.
+        assert_eq!(list_resources(&with_q, &st, &ctx).await, baseline);
+        let triggers: Vec<(JevRuntime, &str)> = vec![
+            (JevRuntime { config: Err(Fallback::FlagOff), transport: rt(Err(Fallback::Timeout), None).0.transport }, "off"),
+            (JevRuntime { config: Err(Fallback::NoEndpoint), transport: rt(Err(Fallback::Timeout), None).0.transport }, "no-endpoint"),
+            (rt(Err(Fallback::Timeout), None).0, "timeout"),
+            (rt(Ok((500, b"{}".to_vec())), None).0, "http"),
+            (rt(Ok((200, b"nope".to_vec())), None).0, "malformed"),
+            (rt(json_reply(json!({"answers":{
+                "rel_c0":{"type":"score","score":0.4,"confidence":0.01},
+                "rel_c1":{"type":"score","score":1.9,"confidence":0.01},
+                "no_suitable":{"type":"noul","noul":0.05}}})), None).0, "low-confidence"),
+        ];
+        for (r, label) in triggers {
+            assert_eq!(list_resources_with(&with_q, &st, &ctx, &r).await, baseline, "{label}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn rerank_accept_path_reorders_and_never_leaks_unreadable_children() {
+        let (st, ctx) = fixture().await;
+        let (r, spy) = rt(json_reply(rank_reply()), None);
+        let out = list_resources_with(&json!({"path":"/pub/","query":"zeta notes"}), &st, &ctx, &r).await;
+        let v = body_of(&out);
+        // The two readable slots swap; every unreadable entry stays put.
+        // (the listing also holds ACL sidecars, unreadable to anonymous).
+        assert_eq!(names(&v), vec![".acl", "zeta.ttl", "secret-plans.ttl", "secret-plans.ttl.acl", "alpha.ttl"]);
+        assert_eq!(v["jev"]["questionSet"], crate::jev::QUESTION_SET_RANK);
+        let seen = spy.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(!seen[0].contains("secret-plans"), "WAC-denied child leaked to Jev: {}", seen[0]);
+        assert!(!seen[0].contains("BODY-MUST-NOT-LEAK"), "resource body sent to Jev");
+        // Access metadata for the hidden child stays withheld, as before.
+        let secret = v["items"].as_array().unwrap().iter().find(|i| i["name"] == "secret-plans.ttl").unwrap();
+        assert!(secret["size"].is_null());
+    }
+
+    #[actix_web::test]
+    async fn propose_flag_off_tool_is_absent_and_unknown() {
+        let (st, ctx) = fixture().await;
+        assert!(!crate::jev::enabled_in_process_env());
+        let listed = list_tools_for_rpc();
+        assert!(listed.as_array().unwrap().iter().all(|t| t["name"] != "propose_operation"));
+        assert_eq!(listed, base_tools());
+        let out = call_tool("propose_operation", &json!({"request":"x","container":"/pub/"}), &st, &ctx).await;
+        assert_eq!(out, tool_error("unknown tool: propose_operation"));
+    }
+
+    fn op_reply(op: &str, tgt: &str, conf: f64) -> Value {
+        json!({"answers":{
+            "operation":{"type":"choice","choice":op,"confidence":conf},
+            "target":{"type":"choice","choice":tgt,"confidence":conf},
+            "unambiguous":{"type":"noul","noul":0.95}}})
+    }
+
+    #[actix_web::test]
+    async fn propose_fallback_equals_baseline_and_never_writes() {
+        let (st, ctx) = fixture().await;
+        let args = json!({"request":"open zeta","container":"/pub/"});
+        let baseline = tool_json(json!({
+            "proposal": crate::jev::Proposal::baseline().to_json(),
+            "executed": false, "requiresConfirmation": true }));
+        let before = st.storage.list("/pub/").await.unwrap();
+        // Default threshold accepts nothing, even a confident answer.
+        let (confident_default, _) = rt(json_reply(op_reply("read", "c1", 0.99)), None);
+        let runtimes = vec![
+            confident_default,
+            JevRuntime { config: Err(Fallback::FlagOff), transport: rt(Err(Fallback::Timeout), None).0.transport },
+            rt(Err(Fallback::Timeout), Some(0.5)).0,
+            rt(Ok((429, b"{}".to_vec())), Some(0.5)).0,
+            rt(Ok((200, b"junk".to_vec())), Some(0.5)).0,
+            rt(json_reply(op_reply("read", "c1", 0.1)), Some(0.5)).0,
+            rt(json_reply(op_reply("write_acl", "c1", 0.99)), Some(0.5)).0,
+        ];
+        for r in runtimes {
+            assert_eq!(propose_operation_with(&args, &st, &ctx, &r).await, baseline);
+        }
+        assert_eq!(st.storage.list("/pub/").await.unwrap(), before);
+    }
+
+    #[actix_web::test]
+    async fn propose_accept_path_is_advice_only_and_excludes_denied_children() {
+        let (st, ctx) = fixture().await;
+        let (r, spy) = rt(json_reply(op_reply("read", "c1", 0.9)), Some(0.5));
+        let before = st.storage.list("/pub/").await.unwrap();
+        let out = propose_operation_with(&json!({"request":"open zeta","container":"/pub/"}), &st, &ctx, &r).await;
+        let v = body_of(&out);
+        assert_eq!(v["proposal"]["operation"], "read");
+        assert_eq!(v["proposal"]["target"], "/pub/zeta.ttl");
+        assert_eq!(v["proposal"]["source"], "jev");
+        assert_eq!(v["executed"], false);
+        assert_eq!(v["requiresConfirmation"], true);
+        let sent = spy.seen.lock().unwrap()[0].clone();
+        assert!(!sent.contains("secret-plans") && !sent.contains("BODY-MUST-NOT-LEAK"));
+        let req: Value = serde_json::from_str(&sent).unwrap();
+        // Anonymous has Read only: create/append/patch/copy are not offered.
+        let ops = req["questions"]["operation"]["criteria"].as_object().unwrap();
+        assert_eq!(ops.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+            ["clarify", "read"].iter().map(|s| s.to_string()).collect());
+        assert_eq!(st.storage.list("/pub/").await.unwrap(), before);
+    }
+
+    #[actix_web::test]
+    async fn propose_requires_a_read_grant_on_the_container() {
+        let (st, ctx) = fixture().await;
+        let (r, spy) = rt(json_reply(op_reply("read", "none", 0.9)), Some(0.5));
+        let out = propose_operation_with(&json!({"request":"x","container":"/nowhere/"}), &st, &ctx, &r).await;
+        assert_eq!(out["isError"], true);
+        assert!(spy.seen.lock().unwrap().is_empty());
     }
 }

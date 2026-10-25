@@ -177,6 +177,12 @@ forge-full = ["forge", "forge-anchoring", "forge-announce", "forge-mirror"]
 # (bearer) auth works and `--nostr-privkey` returns an actionable error.
 install = ["solid-pod-rs/nip98-schnorr"]
 
+# Jev option (opt-in typed decisions via TypeSafe System One): SP-03-S1-01
+# `propose_operation` and SP-08-S1-01 `list_resources` rerank. Default-off at
+# compile time AND at run time (`SOLID_POD_JEV=1`). Adds no dependencies; uses
+# the `reqwest` already above. See README "Jev option".
+jev = []
+
 [dev-dependencies]
 actix-http = "3"
 tokio = { version = "1", features = ["full"] }

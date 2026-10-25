@@ -340,3 +340,24 @@ network service triggers AGPL §13 source-disclosure obligations.
 - [`solid-pod-rs-idp`](../solid-pod-rs-idp/) — Solid-OIDC identity provider (6,160 LOC)
 - [`solid-pod-rs-nostr`](../solid-pod-rs-nostr/) — did:nostr + embedded Nostr relay (2,177 LOC)
 - [`solid-pod-rs-didkey`](../solid-pod-rs-didkey/) — did:key (Ed25519/P-256/secp256k1) + JWT (1,167 LOC)
+
+## Jev option (experimental, off by default)
+
+An opt-in layer of typed decisions (TypeSafe System One: Choice / Score / Noul) beside two existing MCP surfaces. Compiled only with the `jev` cargo feature and active only with `SOLID_POD_JEV=1`. With either missing, no request is built, nothing leaves the process, and every response is byte-identical to the pre-change response. **No measured uplift:** these are proposed research candidates (SP-03-S1-01, SP-08-S1-01); wiring and fallback tests do not show benefit, and the confidence thresholds are unfitted.
+
+| | |
+|---|---|
+| **What leaves** | Metadata only: the user's free-text query/request, and for each candidate its name, path and container flag, as opaque ids `c0..cN`. Never resource bodies, ACLs, tokens or identities. Candidates are WAC-filtered **before** the call. |
+| **Destination** | An endpoint you declare (below). The consumer is **local-only**: the public `api.typesafe.ai` endpoint is never used. |
+| **Flag** | `SOLID_POD_JEV=1` at run time, plus `--features jev` at build time. |
+| **Default** | Off at both levels. |
+
+**Endpoint resolution** (first match wins; otherwise Jev is unavailable and behaviour is unchanged): (1) `SOLID_POD_JEV_ENDPOINT` with `SOLID_POD_JEV_LOCAL=1`, optional `SOLID_POD_JEV_MODEL` (default `jev-latest`) and `SOLID_POD_JEV_KEY_ENV` (the *name* of the variable holding a bearer token); (2) the agentbox loopback proxy: `AGENTBOX_SYSTEM_ONE_PROXY=1`, `AGENTBOX_SYSTEM_ONE_ENDPOINT`, `AGENTBOX_SYSTEM_ONE_MODEL` and `AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL=1` (no Authorization header is sent).
+
+**SP-08-S1-01, `list_resources` rerank.** Pass an optional `query` argument. The already-readable children are scored for relevance (one Score per candidate, one Noul "nothing suitable"); readable entries are reordered among their own slots and unreadable entries keep their positions. The response gains a `jev` key. If the Noul says nothing suits the query the order is left alone. `SOLID_POD_JEV_RANK_MIN_CONFIDENCE` (default 0.25) is the mean-confidence floor. Forge issue discovery is **not wired**: the forge crate has no search/list seam that is separate from its own access rules, so the ranking function (`jev::rank`) is generic but only the MCP listing calls it.
+
+**SP-03-S1-01, `propose_operation` tool.** Listed and callable only when the option is on (otherwise `tools/list` and `tools/call` behave exactly as before, including `unknown tool: propose_operation`). Arguments `request`, `container`. Jev chooses among the operations WAC allows the caller on that container (`read`, `create`, `append`, `patch_preview`, `copy`, plus `clarify`) and a grounded target. It **never executes anything**: the reply is `{proposal, executed:false, requiresConfirmation:true}` and the caller must still make the real, WAC-checked call. Because it changes an outcome, the default accepts nothing; set `SOLID_POD_JEV_OP_MIN_CONFIDENCE` (0 to 1, exclusive of 0) to accept. When Jev is unavailable the "pre-change" answer for this new tool is the deterministic baseline `{"operation":"clarify","target":null,"source":"baseline"}`.
+
+**Fallback triggers** (all return the pre-change result, log one line `target: "jev"` with the reason and question-set version, never request content): `flag-off`, `no-endpoint`, `timeout` (hard 4 s deadline, no retries), `http-<code>` (including 429/529), `malformed` (bad body, missing/ill-typed answers, a key outside the offered set, a selection WAC does not permit), `low-confidence`, `over-cap` (more than 20 candidates).
+
+Question sets: `sp08-rank-v1`, `sp03-op-v1`. Tests: `cargo test -p solid-pod-rs-server --features jev`.
