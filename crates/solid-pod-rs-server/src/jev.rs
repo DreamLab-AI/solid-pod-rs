@@ -331,6 +331,8 @@ pub struct RankCandidate {
     pub path: String,
     /// Container flag.
     pub is_container: bool,
+    /// Optional short description (forge repositories); omitted from the wire when `None`.
+    pub detail: Option<String>,
 }
 
 /// Accepted rerank.
@@ -346,19 +348,34 @@ pub struct RankOutcome {
 
 /// Build the System One request for a rerank (criteria: ordered list).
 pub fn rank_request(model: &str, query: &str, cands: &[RankCandidate]) -> Value {
+    rank_request_for(model, query, cands, "pod resource", "name and path")
+}
+
+/// [`rank_request`] with the candidate noun and the judged fields named, so
+/// the same question set serves pod resources, forge repositories and issues.
+pub fn rank_request_for(
+    model: &str,
+    query: &str,
+    cands: &[RankCandidate],
+    noun: &str,
+    judged_by: &str,
+) -> Value {
     let mut state_c = Map::new();
     let mut questions = Map::new();
     for (i, c) in cands.iter().enumerate() {
         state_c.insert(
             format!("c{i}"),
-            json!({ "name": c.name, "path": c.path, "is_container": c.is_container }),
+            match &c.detail {
+                Some(d) => json!({ "name": c.name, "path": c.path, "is_container": c.is_container, "detail": d }),
+                None => json!({ "name": c.name, "path": c.path, "is_container": c.is_container }),
+            },
         );
         questions.insert(
             format!("rel_c{i}"),
             json!({
                 "type": "score",
                 "instructions": format!(
-                    "Rate how directly the pod resource `candidates.c{i}` (judge by its name and path only) is what the user's `query` is looking for."
+                    "Rate how directly the {noun} `candidates.c{i}` (judge by its {judged_by} only) is what the user's `query` is looking for."
                 ),
                 "criteria": RANK_LEVELS,
             }),
@@ -413,6 +430,17 @@ pub async fn rank(
     query: &str,
     cands: &[RankCandidate],
 ) -> Result<RankOutcome, Fallback> {
+    rank_for(rt, query, cands, "pod resource", "name and path").await
+}
+
+/// [`rank`] for a named candidate kind.
+pub async fn rank_for(
+    rt: &JevRuntime,
+    query: &str,
+    cands: &[RankCandidate],
+    noun: &str,
+    judged_by: &str,
+) -> Result<RankOutcome, Fallback> {
     let res = async {
         let cfg = rt.config.as_ref().map_err(Clone::clone)?;
         if cands.is_empty() {
@@ -421,7 +449,7 @@ pub async fn rank(
         if cands.len() > MAX_CANDIDATES {
             return Err(Fallback::OverCap);
         }
-        let req = rank_request(&cfg.model, query, cands);
+        let req = rank_request_for(&cfg.model, query, cands, noun, judged_by);
         let answers = call(cfg, rt.transport.as_ref(), &req).await?;
         rank_apply(&answers, cands.len(), cfg.rank_min_confidence)
     }
@@ -450,6 +478,104 @@ pub fn apply_rank(items: &mut [Value], readable: &[bool], outcome: &RankOutcome)
         "noSuitable": outcome.no_suitable,
         "reranked": outcome.no_suitable < 0.5,
     })
+}
+
+// ---------------------------------------------------------------------------
+// SP-08-S1-01 (forge half): rerank the forge's own, already-authorised JSON
+// ---------------------------------------------------------------------------
+
+/// Query parameter that asks for a forge rerank. The forge ignores unknown
+/// parameters, so its own handling of the request is unchanged.
+pub const FORGE_QUERY_PARAM: &str = "jev_query";
+
+/// Largest description forwarded per repository.
+const FORGE_DETAIL_CHARS: usize = 300;
+
+/// Which forge listing a request path addresses, if any: `/<prefix>/api/repos`
+/// and `/<prefix>/api/repos/<owner>` (repositories), or
+/// `/<prefix>/api/repos/<owner>/<repo>/issues` (issues).
+fn forge_listing_key(path: &str) -> Option<&'static str> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // segs[0] is the mount prefix (`forge`).
+    match segs.as_slice() {
+        [_, "api", "repos"] | [_, "api", "repos", _] => Some("repos"),
+        [_, "api", "repos", _, _, "issues"] => Some("issues"),
+        _ => None,
+    }
+}
+
+/// Rerank the body of a forge listing response **after** the forge has applied
+/// its own authorisation (`private_repos`, namespace ownership): what the forge
+/// returned to this caller is the authorised set, and nothing else is ever
+/// sent to Jev. Returns the replacement body, or `None` for "serve the forge's
+/// original bytes unchanged" (every fallback, and every request that did not
+/// ask for a rerank).
+pub async fn rerank_forge_listing(
+    rt: &JevRuntime,
+    method: &str,
+    path: &str,
+    query: &str,
+    status: u16,
+    body: &[u8],
+) -> Option<Vec<u8>> {
+    if !method.eq_ignore_ascii_case("GET") || status != 200 {
+        return None;
+    }
+    let key = forge_listing_key(path)?;
+    let user_query = query_param(query, FORGE_QUERY_PARAM)?;
+    let mut doc: Value = serde_json::from_slice(body).ok()?;
+    let items = doc.get_mut(key)?.as_array_mut()?;
+    let cands: Vec<RankCandidate> = items
+        .iter()
+        .map(|it| {
+            if key == "repos" {
+                let owner = it["owner"].as_str().unwrap_or("");
+                let name = it["name"].as_str().unwrap_or("");
+                RankCandidate {
+                    name: format!("{owner}/{name}"),
+                    path: format!("{owner}/{name}"),
+                    is_container: false,
+                    detail: it["description"]
+                        .as_str()
+                        .filter(|d| !d.is_empty())
+                        .map(|d| d.chars().take(FORGE_DETAIL_CHARS).collect()),
+                }
+            } else {
+                RankCandidate {
+                    name: it["title"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(200)
+                        .collect(),
+                    path: format!("#{}", it["number"]),
+                    is_container: false,
+                    detail: None,
+                }
+            }
+        })
+        .collect();
+    let (noun, judged_by) = if key == "repos" {
+        ("forge repository", "name and description")
+    } else {
+        ("forge issue", "title")
+    };
+    let outcome = rank_for(rt, &user_query, &cands, noun, judged_by)
+        .await
+        .ok()?;
+    let readable = vec![true; items.len()];
+    let note = apply_rank(items, &readable, &outcome);
+    doc.as_object_mut()?.insert("jev".into(), note);
+    serde_json::to_vec(&doc).ok()
+}
+
+/// Percent-decoded value of `name` in a raw query string.
+fn query_param(query: &str, name: &str) -> Option<String> {
+    let q: actix_web::web::Query<std::collections::HashMap<String, String>> =
+        actix_web::web::Query::from_query(query).ok()?;
+    q.get(name)
+        .map(|v| v.trim().chars().take(256).collect::<String>())
+        .filter(|v| !v.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +942,7 @@ mod tests {
                 name: n.to_string(),
                 path: format!("/p/{n}"),
                 is_container: false,
+                detail: None,
             })
             .collect()
     }
@@ -952,6 +1079,7 @@ mod tests {
                 name: format!("{i}"),
                 path: format!("/{i}"),
                 is_container: false,
+                detail: None,
             })
             .collect();
         let m = Mock::ok(rank_reply([0.0; 3], 1.0, 0.0));

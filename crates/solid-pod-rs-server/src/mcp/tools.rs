@@ -273,6 +273,7 @@ async fn jev_rerank(
             name: it["name"].as_str().unwrap_or_default().to_string(),
             path: it["path"].as_str().unwrap_or_default().to_string(),
             is_container: it["isContainer"].as_bool().unwrap_or(false),
+            detail: None,
         })
         .collect();
     if cands.is_empty() {

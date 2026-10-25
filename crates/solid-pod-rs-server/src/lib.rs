@@ -5102,13 +5102,45 @@ async fn handle_forge(
     // session, when present, would be injected as a `Pod` agent instead.)
     let agent = service.resolve_agent(&forge_req).await;
 
+    // Kept for the optional Jev rerank (SP-08-S1-01); unused otherwise.
+    #[cfg(feature = "jev")]
+    let jev_ctx = (
+        forge_req.method.clone(),
+        forge_req.path.clone(),
+        forge_req.query.clone(),
+    );
+
     match service.handle(forge_req, agent).await {
         Ok(resp) => {
             let mut builder = HttpResponse::build(
                 StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             );
             for (k, v) in &resp.headers {
+                // A reranked body has a different length; drop the stale one.
+                #[cfg(feature = "jev")]
+                if k.eq_ignore_ascii_case("content-length") {
+                    continue;
+                }
                 builder.insert_header((k.as_str(), v.as_str()));
+            }
+            // SP-08-S1-01 (forge): the forge has already applied its own
+            // authorisation to `resp`; only that output is ever reranked, and
+            // any fallback serves the forge's bytes untouched.
+            #[cfg(feature = "jev")]
+            if jev::enabled_in_process_env() {
+                let rt = jev::JevRuntime::from_process_env();
+                if let Some(body) = jev::rerank_forge_listing(
+                    &rt,
+                    &jev_ctx.0,
+                    &jev_ctx.1,
+                    &jev_ctx.2,
+                    resp.status,
+                    &resp.body,
+                )
+                .await
+                {
+                    return builder.body(body);
+                }
             }
             builder.body(resp.body)
         }
