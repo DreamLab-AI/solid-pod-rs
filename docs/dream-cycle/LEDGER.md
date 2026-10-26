@@ -7,3 +7,4 @@
 | 2026-08-16 | storage-backend | Given a Solid Pod resource stored as Turtle in the storage backend, when a GET i | NONE | NONE | yes | INCONCLUSIVE |  | e817f4c74074 |  |
 | 2026-10-24 | performance-hardening | SubdomainResolver::resolve drops 3 per-request allocs; outputs identical | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/7 | yes | ACCEPT |  | 13246d3c542c |  |  |  |
 | 2026-10-25 | wac-evaluator | No WAC/ACL source supplied; ancestor-ACL-walk deny-termination untestable | NONE | NONE | yes | INCONCLUSIVE |  | f3b688ccbe22 |  |  |  |
+| 2026-10-26 | storage-backend | Slug "." slipped resolve_slug; bare-dot POST now 400, dotted names unaffected | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/8 | yes | ACCEPT |  | cfaac782b751 |  |  |  |
