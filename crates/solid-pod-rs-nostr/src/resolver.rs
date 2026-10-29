@@ -365,6 +365,11 @@ fn parse_did_nostr(s: &str) -> Option<NostrPubkey> {
 fn scan_text_for_did_nostr(body: &str) -> Option<NostrPubkey> {
     // Minimal tokenisation — find `did:nostr:<64-hex>` anywhere in the
     // body; sufficient for Turtle which serialises the IRI verbatim.
+    // The 64 hex chars must end at a token boundary: `did:nostr:`
+    // followed by 65+ hex chars is a different (invalid) identifier,
+    // and the JSON path (`parse_did_nostr` → `NostrPubkey::from_hex`)
+    // enforces exactly 64 chars — the text path must not bind a
+    // 64-char prefix of a longer run.
     let bytes = body.as_bytes();
     let needle = b"did:nostr:";
     let mut i = 0usize;
@@ -372,10 +377,15 @@ fn scan_text_for_did_nostr(body: &str) -> Option<NostrPubkey> {
         if &bytes[i..i + needle.len()] == needle {
             let hex_start = i + needle.len();
             let hex_end = hex_start + 64;
-            if let Ok(candidate) = std::str::from_utf8(&bytes[hex_start..hex_end]) {
-                if candidate.chars().all(|c| c.is_ascii_hexdigit()) {
-                    if let Ok(pk) = NostrPubkey::from_hex(&candidate.to_lowercase()) {
-                        return Some(pk);
+            // A hex run longer than 64 chars is a different (invalid)
+            // identifier — do not bind its 64-char prefix.
+            let run_ends = bytes.get(hex_end).is_none_or(|b| !b.is_ascii_hexdigit());
+            if run_ends {
+                if let Ok(candidate) = std::str::from_utf8(&bytes[hex_start..hex_end]) {
+                    if candidate.chars().all(|c| c.is_ascii_hexdigit()) {
+                        if let Ok(pk) = NostrPubkey::from_hex(&candidate.to_lowercase()) {
+                            return Some(pk);
+                        }
                     }
                 }
             }
@@ -464,6 +474,20 @@ mod tests {
     fn scan_text_requires_full_64_hex() {
         let body = "did:nostr:deadbeef";
         assert!(scan_text_for_did_nostr(body).is_none());
+    }
+
+    #[test]
+    fn scan_text_rejects_hex_run_longer_than_64() {
+        // `did:nostr:` + 65 hex chars is a malformed identifier; the
+        // text scanner must not bind its 64-char prefix (parity with
+        // the JSON path `parse_did_nostr`, which enforces exactly 64).
+        let too_long = format!("did:nostr:{PK}0");
+        assert_eq!(too_long.len(), "did:nostr:".len() + 65);
+        assert!(scan_text_for_did_nostr(&too_long).is_none());
+        // A well-formed IRI in a body that also carries an unrelated
+        // longer hex run still resolves (no over-tightening).
+        let ok = format!("<did:nostr:{PK}> <https://x.example/{PK}ff> .");
+        assert_eq!(scan_text_for_did_nostr(&ok).unwrap().to_hex(), PK);
     }
 
     #[test]
