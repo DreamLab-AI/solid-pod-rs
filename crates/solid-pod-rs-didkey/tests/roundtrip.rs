@@ -3,7 +3,7 @@
 use solid_pod_rs_didkey::{decode_did_key, encode_did_key, DidKeyError, DidKeyPubkey};
 
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
-use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+use p256::elliptic_curve::sec1::ToSec1Point as _;
 use p256::SecretKey as P256SecretKey;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -29,8 +29,8 @@ fn did_key_ed25519_encoding_roundtrip() {
 fn did_key_p256_encoding_roundtrip() {
     // Derive a SEC1-compressed public key from a fresh P-256 secret.
     let mut rng = StdRng::seed_from_u64(7);
-    let sk = P256SecretKey::random(&mut rng);
-    let sec1 = sk.public_key().to_encoded_point(true).as_bytes().to_vec();
+    let sk = P256SecretKey::from_slice(&rng.gen::<[u8; 32]>()).unwrap();
+    let sec1 = sk.public_key().to_sec1_point(true).as_bytes().to_vec();
     assert_eq!(sec1.len(), 33, "SEC1 compressed = 33 bytes");
     let pk = DidKeyPubkey::P256(sec1);
     let did = encode_did_key(&pk);
@@ -41,8 +41,8 @@ fn did_key_p256_encoding_roundtrip() {
 #[test]
 fn did_key_secp256k1_encoding_roundtrip() {
     let mut rng = StdRng::seed_from_u64(13);
-    let sk = k256::SecretKey::random(&mut rng);
-    let sec1 = sk.public_key().to_encoded_point(true).as_bytes().to_vec();
+    let sk = k256::SecretKey::from_slice(&rng.gen::<[u8; 32]>()).unwrap();
+    let sec1 = sk.public_key().to_sec1_point(true).as_bytes().to_vec();
     assert_eq!(sec1.len(), 33);
     let pk = DidKeyPubkey::Secp256k1(sec1);
     let did = encode_did_key(&pk);

@@ -20,7 +20,7 @@ use solid_pod_rs_idp::schnorr::{Nip07SchnorrSso, SchnorrError, SchnorrSso};
 /// BIP-340 signing key (secp256k1 acceptance is ~99.9%).
 fn test_key() -> (SigningKey, String) {
     let seed = [0x42u8; 32];
-    let sk = SigningKey::from_bytes(&seed).expect("valid Schnorr key");
+    let sk = SigningKey::from_slice(&seed).expect("valid Schnorr key");
     let pk_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pk_hex)
 }

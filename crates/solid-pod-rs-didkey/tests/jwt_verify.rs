@@ -6,6 +6,7 @@ use base64::Engine;
 use solid_pod_rs_didkey::{encode_did_key, verify_self_signed_jwt, DidKeyError, DidKeyPubkey};
 
 use ed25519_dalek::{Signer as _, SigningKey as Ed25519SigningKey};
+use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature as P256Signature, SigningKey as P256SigningKey};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -55,11 +56,11 @@ fn build_ed25519_jwt(htu: &str, htm: &str, iat: u64, tamper_sig: bool) -> Jwt {
 
 fn build_p256_jwt(htu: &str, htm: &str, iat: u64) -> Jwt {
     let mut rng = StdRng::seed_from_u64(2);
-    let sk = P256SigningKey::random(&mut rng);
+    let sk = P256SigningKey::from_slice(&rng.gen::<[u8; 32]>()).unwrap();
     let vk = *sk.verifying_key();
     // `to_sec1_bytes()` defaults to uncompressed (65 bytes). We need
     // the compressed form for did:key (33 bytes, 0x02/0x03 prefix).
-    let sec1 = vk.to_encoded_point(true).as_bytes().to_vec();
+    let sec1 = vk.to_sec1_point(true).as_bytes().to_vec();
     let pk = DidKeyPubkey::P256(sec1);
     let did = encode_did_key(&pk);
 

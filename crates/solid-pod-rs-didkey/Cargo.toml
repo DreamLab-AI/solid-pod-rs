@@ -19,14 +19,14 @@ path = "src/lib.rs"
 
 [dependencies]
 # Reuse the core SelfSignedVerifier trait + error types.
-solid-pod-rs = { version = "0.5.0-alpha.17", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "security-primitives"] }
+solid-pod-rs = { version = "0.5.0-alpha.18", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime", "security-primitives"] }
 
 async-trait = "0.1"
 
 # did:key algorithms
 ed25519-dalek = "2"
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
-k256 = { version = "0.13", features = ["ecdsa", "schnorr"] }
+p256 = { version = "0.14", features = ["ecdsa", "pkcs8"] }
+k256 = { version = "0.14", features = ["ecdsa", "schnorr"] }
 
 # Multibase + multicodec varint encoding for did:key
 multibase = "0.9"

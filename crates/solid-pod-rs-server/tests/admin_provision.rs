@@ -35,7 +35,7 @@ const STRANGER_SK: &str = "22222222222222222222222222222222222222222222222222222
 
 /// x-only (64-hex) pubkey for a secret key — the NIP-98 identity and pod name.
 fn xonly(sk_hex: &str) -> String {
-    let sk = k256::schnorr::SigningKey::from_bytes(&hex::decode(sk_hex).unwrap()).unwrap();
+    let sk = k256::schnorr::SigningKey::from_slice(&hex::decode(sk_hex).unwrap()).unwrap();
     hex::encode(sk.verifying_key().to_bytes())
 }
 

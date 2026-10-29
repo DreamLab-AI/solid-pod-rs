@@ -106,7 +106,7 @@ async fn cid_verifier_accepts_nip98_proof() {
     use sha2::{Digest, Sha256};
 
     let seed = [0x42u8; 32];
-    let sk = k256::schnorr::SigningKey::from_bytes(&seed).expect("valid schnorr seed");
+    let sk = k256::schnorr::SigningKey::from_slice(&seed).expect("valid schnorr seed");
     let pubkey = hex::encode(sk.verifying_key().to_bytes());
 
     let ts = 1_700_000_000u64;

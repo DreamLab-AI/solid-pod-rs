@@ -29,7 +29,7 @@ use solid_pod_rs::auth::nip98::{authorization_header, compute_event_id, verify_a
 #[cfg(feature = "nip98-schnorr")]
 fn bench_keypair() -> (k256::schnorr::SigningKey, String) {
     let seed = [0x42u8; 32];
-    let sk = k256::schnorr::SigningKey::from_bytes(&seed)
+    let sk = k256::schnorr::SigningKey::from_slice(&seed)
         .expect("seed produces valid Schnorr signing key");
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pubkey_hex)

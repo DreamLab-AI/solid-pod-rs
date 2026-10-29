@@ -78,7 +78,7 @@ impl Event {
             hex::decode(&self.sig).map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
         let id_bytes =
             hex::decode(&computed).map_err(|e| RelayError::InvalidEvent(e.to_string()))?;
-        let vk = VerifyingKey::from_bytes(&pk_bytes)
+        let vk = VerifyingKey::from_slice(&pk_bytes)
             .map_err(|e| RelayError::BadSignature(e.to_string()))?;
         let sig = Signature::try_from(sig_bytes.as_slice())
             .map_err(|e| RelayError::BadSignature(e.to_string()))?;
@@ -496,7 +496,7 @@ mod tests {
 
     /// Deterministic signing key (seed = 0x42*32).
     fn test_sk() -> SigningKey {
-        SigningKey::from_bytes(&[0x42u8; 32]).expect("valid schnorr key")
+        SigningKey::from_slice(&[0x42u8; 32]).expect("valid schnorr key")
     }
 
     fn make_event(kind: u64, created_at: u64, tags: Vec<Vec<String>>, content: &str) -> Event {

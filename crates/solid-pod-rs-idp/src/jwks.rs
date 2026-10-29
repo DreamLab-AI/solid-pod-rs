@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
 use p256::ecdsa::SigningKey as EcdsaSigningKey;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::pkcs8::{EncodePrivateKey, LineEnding};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -87,11 +87,9 @@ pub struct PublicJwk {
 impl SigningKey {
     /// Generate a fresh ES256 signing key.
     pub fn generate_es256() -> Result<Self, JwksError> {
-        use rand::rngs::OsRng;
-
-        let sk = EcdsaSigningKey::random(&mut OsRng);
+        let sk = <EcdsaSigningKey as p256::elliptic_curve::Generate>::generate();
         let pk = p256::PublicKey::from(sk.verifying_key());
-        let point = pk.to_encoded_point(false); // uncompressed
+        let point = pk.to_sec1_point(false); // uncompressed
         let x = point
             .x()
             .ok_or_else(|| JwksError::KeyGen("EC point missing x coordinate".into()))?;
@@ -142,7 +140,7 @@ impl SigningKey {
         let sk = EcdsaSigningKey::from_pkcs8_pem(pem)
             .map_err(|e| JwksError::KeyGen(format!("PKCS8 PEM decode: {e}")))?;
         let pk = p256::PublicKey::from(sk.verifying_key());
-        let point = pk.to_encoded_point(false);
+        let point = pk.to_sec1_point(false);
         let x = point
             .x()
             .ok_or_else(|| JwksError::KeyGen("EC point missing x coordinate".into()))?;

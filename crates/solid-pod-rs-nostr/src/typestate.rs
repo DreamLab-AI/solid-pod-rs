@@ -395,7 +395,7 @@ mod tests {
     use k256::schnorr::SigningKey;
 
     fn test_sk() -> SigningKey {
-        SigningKey::from_bytes(&[0x42u8; 32]).expect("valid schnorr key")
+        SigningKey::from_slice(&[0x42u8; 32]).expect("valid schnorr key")
     }
 
     fn make_signed_event(kind: u64, content: &str, tags: Vec<Vec<String>>) -> Event {

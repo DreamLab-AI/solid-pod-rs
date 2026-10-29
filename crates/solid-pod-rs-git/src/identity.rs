@@ -188,12 +188,12 @@ mod tests {
 
     /// First secret `[b; 32]` whose public key has the given SEC1 tag.
     fn secret_hex_with_parity(tag: u8) -> String {
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        use k256::elliptic_curve::sec1::ToSec1Point;
         (1u8..=255)
             .map(|b| hex::encode([b; 32]))
             .find(|h| {
                 let pk = controller_public_key(h).unwrap();
-                pk.to_encoded_point(true).as_bytes()[0] == tag
+                pk.to_sec1_point(true).as_bytes()[0] == tag
             })
             .unwrap()
     }

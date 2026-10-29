@@ -80,7 +80,7 @@ fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String)
     let url = format!("http://localhost:8080{path}");
     let token = nip98::mint_with_payload(&url, method, body, SK_HEX, now).expect("nip98 mint");
     let sk = hex::decode(SK_HEX).unwrap();
-    let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
+    let signing = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
     let pubkey = hex::encode(signing.verifying_key().to_bytes());
     (format!("Nostr {token}"), format!("did:nostr:{pubkey}"))
 }

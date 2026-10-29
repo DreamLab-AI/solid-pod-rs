@@ -45,15 +45,22 @@ ignore = [
     # (public-key ops); the attack targets private-key decryption timing, which
     # this codebase never performs. Revisit when openidconnect drops `rsa`.
     "RUSTSEC-2023-0071",
-    # `h2` 0.3 is pulled unconditionally by `actix-http` 3.13.3. The advisory is
+    # `h2` 0.3 is pulled unconditionally by `actix-http` 3.19.0. The advisory is
     # patched only at `>= 0.4.16`, a different major line, so there is no
     # in-semver fix to take: the sole resolution is an upstream Actix migration.
-    # Re-verified 2026-09-21 (`cargo tree -e features -i h2@0.3.27`: the single
+    # Re-verified 2026-10-29 (`cargo tree -e features -i h2@0.3.27`: the single
     # path is actix-http). `actix-web` is taken with `default-features = false`
     # so the HTTP/2 listener is never enabled, all request bodies are capped,
     # and deployments terminate HTTP/2 at the reverse proxy. Revisit by
     # 2026-12-20 or when Actix migrates this integration to h2 >= 0.4.16.
     "RUSTSEC-2026-0258",
+    # 2026-10-29: `crypto-bigint` 0.5.5 (constant-time flaws, patched in >=0.7.6)
+    # remains ONLY via `openidconnect` 4.0.1 (latest on crates.io) -> p256/p384
+    # 0.13 -> elliptic-curve 0.13 -> crypto-bigint 0.5.5 (oidc feature). All
+    # direct k256/p256/ecdsa use in this workspace is on the RustCrypto 0.14
+    # line. Exposure via the openidconnect path is unassessed. Remove this
+    # ignore when openidconnect moves to the 0.14 line.
+    "RUSTSEC-2026-0387",
 ]
 
 # -----------------------------------------------------------------------------

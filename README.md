@@ -101,7 +101,7 @@ For an authorised caller, the resource workflow is **PUT a Turtle document → G
 The default server feature set excludes native git and forge. To build the full forge service explicitly:
 
 ```bash
-cargo install solid-pod-rs-server --version 0.5.0-alpha.17 --features forge-full
+cargo install solid-pod-rs-server --version 0.5.0-alpha.18 --features forge-full
 ```
 
 Relay publication, mirror follow lists, anchoring and private/open-edit behaviour still require their own configuration. Consult [the release changes](CHANGELOG.md) before enabling them.
@@ -110,7 +110,7 @@ Relay publication, mirror follow lists, anchoring and private/open-edit behaviou
 
 ```toml
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.17", features = ["fs-backend", "oidc"] }
+solid-pod-rs = { version = "0.5.0-alpha.18", features = ["fs-backend", "oidc"] }
 ```
 
 ```rust,no_run

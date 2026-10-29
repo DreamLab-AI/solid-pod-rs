@@ -34,7 +34,7 @@ const TIMESTAMP_TOLERANCE: u64 = 60;
 
 fn test_signing_key() -> (k256::schnorr::SigningKey, String) {
     let seed = [0x42u8; 32];
-    let sk = k256::schnorr::SigningKey::from_bytes(&seed)
+    let sk = k256::schnorr::SigningKey::from_slice(&seed)
         .expect("deterministic seed produces valid Schnorr signing key");
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pubkey_hex)

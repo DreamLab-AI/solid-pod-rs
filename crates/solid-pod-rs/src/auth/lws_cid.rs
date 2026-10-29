@@ -650,7 +650,7 @@ mod tests {
     }
 
     fn vk_to_jwk(vk: &k256::ecdsa::VerifyingKey) -> serde_json::Value {
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let x = B64URL.encode(point.x().unwrap());
         let y = B64URL.encode(point.y().unwrap());
         serde_json::json!({

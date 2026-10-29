@@ -120,7 +120,7 @@ const DESCRIPTION_FILE_CAP: u64 = 64 * 1024;
 /// use k256::schnorr::SigningKey;
 /// use solid_pod_rs_forge::nip34::sign_event;
 ///
-/// let sk = SigningKey::from_bytes(&[7u8; 32]).unwrap();
+/// let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
 /// let ev = sign_event(&sk, 30617, vec![vec!["d".into(), "a/b".into()]], "hi", 42).unwrap();
 /// assert_eq!(ev.pubkey, hex::encode(sk.verifying_key().to_bytes()));
 /// assert!(ev.verify().is_ok());
@@ -189,13 +189,13 @@ impl AnnounceSigner {
     #[must_use]
     pub fn from_secret_hex(secret_hex: &str) -> Option<Self> {
         let bytes = hex::decode(secret_hex.trim()).ok()?;
-        SigningKey::from_bytes(&bytes).ok().map(Self::from_key)
+        SigningKey::from_slice(&bytes).ok().map(Self::from_key)
     }
 
     /// A fresh key from the operating system's random number generator.
     #[must_use]
     pub fn generate() -> Self {
-        Self::from_key(SigningKey::random(&mut OsRng))
+        Self::from_key(<SigningKey as k256::elliptic_curve::Generate>::generate())
     }
 
     /// Resolve the forge's announce identity (JSS key initialisation).
@@ -1140,7 +1140,7 @@ mod tests {
 
     #[test]
     fn sign_roundtrip_verifies_and_a_tampered_event_does_not() {
-        let sk = SigningKey::from_bytes(&[9u8; 32]).unwrap();
+        let sk = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let ev = sign_event(
             &sk,
             30618,
@@ -1161,7 +1161,7 @@ mod tests {
     #[cfg(feature = "mirror")]
     #[test]
     fn signed_events_pass_the_mirror_reader_verifier() {
-        let sk = SigningKey::from_bytes(&[3u8; 32]).unwrap();
+        let sk = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let ev = sign_event(
             &sk,
             KIND_STATE,
@@ -1178,7 +1178,7 @@ mod tests {
 
     #[test]
     fn signatures_are_randomised_but_ids_are_deterministic() {
-        let sk = SigningKey::from_bytes(&[5u8; 32]).unwrap();
+        let sk = SigningKey::from_slice(&[5u8; 32]).unwrap();
         let a = sign_event(&sk, 1, vec![], "same", 7).unwrap();
         let b = sign_event(&sk, 1, vec![], "same", 7).unwrap();
         assert_eq!(a.id, b.id);

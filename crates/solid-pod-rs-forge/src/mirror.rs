@@ -2223,7 +2223,7 @@ mod tests {
     // --- helpers -----------------------------------------------------------
 
     fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32]).unwrap()
+        SigningKey::from_slice(&[seed; 32]).unwrap()
     }
 
     fn pubhex(sk: &SigningKey) -> String {

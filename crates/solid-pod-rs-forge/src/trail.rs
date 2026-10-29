@@ -68,7 +68,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use bech32::Hrp;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solid_pod_rs::mrc20::{bt_trail_outputs, sha256_hex};
@@ -386,8 +386,8 @@ fn derive_head(
 /// A fresh trail key from the operating system's RNG: the secret (hex, kept)
 /// and its compressed public point (hex).
 fn new_key() -> (TrailKey, String) {
-    let secret = k256::SecretKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
-    let public = secret.public_key().to_encoded_point(true);
+    let secret = <k256::SecretKey as k256::elliptic_curve::Generate>::generate();
+    let public = secret.public_key().to_sec1_point(true);
     (
         TrailKey(hex::encode(secret.to_bytes())),
         hex::encode(public.as_bytes()),
@@ -1374,7 +1374,7 @@ mod tests {
         // the key matches the base pubkey (it is the key the addresses derive from)
         let sk = k256::SecretKey::from_slice(&hex::decode(&key).unwrap()).unwrap();
         assert_eq!(
-            hex::encode(sk.public_key().to_encoded_point(true).as_bytes()),
+            hex::encode(sk.public_key().to_sec1_point(true).as_bytes()),
             t1.pubkey_base
         );
         #[cfg(unix)]

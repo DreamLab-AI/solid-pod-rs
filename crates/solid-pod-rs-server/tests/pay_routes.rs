@@ -62,7 +62,7 @@ fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String)
         .expect("nip98-schnorr is enabled in the workspace test build");
     // Derive the did the server will compute from the same key.
     let sk = hex::decode(SK_HEX).unwrap();
-    let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
+    let signing = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
     let pubkey = hex::encode(signing.verifying_key().to_bytes());
     (format!("Nostr {token}"), format!("did:nostr:{pubkey}"))
 }
