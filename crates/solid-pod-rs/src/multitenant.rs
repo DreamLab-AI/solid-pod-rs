@@ -74,11 +74,12 @@ pub struct SubdomainResolver {
 impl PodResolver for SubdomainResolver {
     fn resolve(&self, host: &str, url_path: &str) -> ResolvedPath {
         let host_no_port = strip_port(host);
-        let base = self.base_domain.trim().to_ascii_lowercase();
-        let host_lc = host_no_port.to_ascii_lowercase();
+        let base = self.base_domain.trim();
 
-        // Bare base domain → root pod.
-        if host_lc == base {
+        // Bare base domain → root pod. `eq_ignore_ascii_case` on the
+        // borrowed slices keeps the previous case-insensitive match
+        // without a per-request `to_ascii_lowercase` allocation.
+        if host_no_port.eq_ignore_ascii_case(base) {
             return ResolvedPath {
                 pod: None,
                 storage_path: url_path.to_string(),
@@ -87,8 +88,18 @@ impl PodResolver for SubdomainResolver {
 
         // `<pod>.<base_domain>` — peel the suffix. Require the
         // separator dot so `fooexample.org` doesn't match `example.org`.
-        let suffix = format!(".{base}");
-        if let Some(stripped) = host_lc.strip_suffix(&suffix) {
+        // The tail comparison is byte-wise and ASCII-case-insensitive,
+        // so the per-request host-wide `to_ascii_lowercase` and the
+        // `format!`ed suffix string are gone; the label alone is
+        // lowercased below, and only on the matched-suffix path.
+        let host_b = host_no_port.as_bytes();
+        let base_b = base.as_bytes();
+        if host_b.len() > base_b.len()
+            && host_b[host_b.len() - base_b.len()..].eq_ignore_ascii_case(base_b)
+            && host_b[host_b.len() - base_b.len() - 1] == b'.'
+        {
+            let label = &host_no_port[..host_no_port.len() - base_b.len() - 1];
+
             // Sprint 11 (row 125/162, JSS PR #307 commit 6d43e66):
             // "subdomain mode: don't rewrite file-like paths as pod
             // subdomains". If the leftmost label looks like a filename
@@ -96,7 +107,9 @@ impl PodResolver for SubdomainResolver {
             // to the base apex instead of treating it as a pod name.
             // This prevents `favicon.ico.pods.example.com` requests
             // being rerouted to a non-existent pod named `favicon.ico`.
-            if is_file_like_label(stripped) {
+            // `is_file_like_label` lowercases internally, so passing
+            // the original-case label is equivalent.
+            if is_file_like_label(label) {
                 return ResolvedPath {
                     pod: None,
                     storage_path: url_path.to_string(),
@@ -105,8 +118,10 @@ impl PodResolver for SubdomainResolver {
 
             // Scrub `..` *first* (JSS double-pass) so that a label
             // like `al..ice` normalises to `alice` before we decide
-            // whether it is a multi-label subdomain.
-            let safe = scrub_dotdot(stripped);
+            // whether it is a multi-label subdomain. The label is
+            // lowercased here — pod names come out exactly as when the
+            // whole host was lowercased up front.
+            let safe = scrub_dotdot(&label.to_ascii_lowercase());
             // Only accept single-label subdomains after scrubbing;
             // multi-level subdomains (`a.b.example.org`) fall back to
             // path mode so we don't accidentally promote DNS labels to
@@ -182,6 +197,13 @@ fn strip_port(host: &str) -> &str {
 /// and 70-74). Repeats until the string stops shrinking, defeating the
 /// `....//` bypass.
 fn scrub_dotdot(s: &str) -> String {
+    // Fast path: a label with no `..` needs no replace pass — return
+    // the single owned copy directly, skipping the scan-and-rebuild
+    // allocation `String::replace` performs even when nothing matches.
+    // Most requests carry clean labels, so this is the common case.
+    if !s.contains("..") {
+        return s.to_string();
+    }
     let mut cur = s.to_string();
     loop {
         let next = cur.replace("..", "");
@@ -265,6 +287,31 @@ mod tests {
         let got = r.resolve("alice.pods.example.com", "/index.html");
         assert_eq!(got.pod.as_deref(), Some("alice"));
         assert_eq!(got.storage_path, "/index.html");
+    }
+
+    /// Performance hardening (2026-10-24): the allocation-lean rewrite
+    /// of `resolve` must keep pod matching ASCII-case-insensitive on
+    /// both sides — mixed-case hosts still yield lowercase pod names
+    /// and a mixed-case configured base still matches — while the
+    /// separator dot stays mandatory (`evilpods.example.com` must not
+    /// match base `pods.example.com`).
+    #[test]
+    fn subdomain_matching_is_ascii_case_insensitive() {
+        let r = SubdomainResolver {
+            base_domain: "PODS.example.com".into(),
+        };
+        let got = r.resolve("ALICE.PODS.example.com", "/index.html");
+        assert_eq!(got.pod.as_deref(), Some("alice"));
+        assert_eq!(got.storage_path, "/index.html");
+
+        // Bare base domain in mixed case → root pod, not a fallback.
+        let got = r.resolve("pods.EXAMPLE.com", "/hello");
+        assert_eq!(got.pod, None);
+        assert_eq!(got.storage_path, "/hello");
+
+        // Separator dot still required: no dot, no pod.
+        let got = r.resolve("evilpods.example.com", "/x");
+        assert_eq!(got.pod, None);
     }
 
     #[test]
