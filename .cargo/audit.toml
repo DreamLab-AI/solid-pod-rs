@@ -1,5 +1,5 @@
 [advisories]
-# Re-verified 2026-09-21: actix-http 3.13.3 pulls h2 0.3 unconditionally, and
+# Re-verified 2026-10-29: actix-http 3.19.0 pulls h2 0.3 unconditionally, and
 # RUSTSEC-2026-0258 is patched only at >=0.4.16 -- a different major line, so
 # there is no in-semver fix available to take. actix-web is taken with
 # default-features = false, so the HTTP/2 listener is never enabled; all request
@@ -13,4 +13,11 @@ ignore = [
     # key RSA decryption, so the Marvin oracle is not reachable. Review when
     # openidconnect changes its RSA dependency, no later than 2026-11-20.
     "RUSTSEC-2023-0071",
+    # 2026-10-29: crypto-bigint 0.5.5 (constant-time flaws, patched in >=0.7.6)
+    # remains ONLY via openidconnect 4.0.1 (latest on crates.io) -> p256/p384
+    # 0.13 -> elliptic-curve 0.13 (oidc feature). Direct k256/p256/ecdsa use in
+    # this workspace is on the RustCrypto 0.14 line. Exposure via the
+    # openidconnect path is unassessed. Remove this ignore when openidconnect
+    # moves to the 0.14 line.
+    "RUSTSEC-2026-0387",
 ]

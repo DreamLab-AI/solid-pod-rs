@@ -51,7 +51,7 @@ fn issuer_xonly_hex() -> String {
 
 fn user_pubkey() -> String {
     let sk = hex::decode(USER_SK).unwrap();
-    let sk = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
+    let sk = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
     // NIP-98 uses the x-only pubkey as the did:nostr identity.
     hex::encode(sk.verifying_key().to_bytes())
 }

@@ -49,7 +49,7 @@ fn issuer_pubkey() -> String {
 /// X-only (64-hex) owner pubkey — the NIP-98 identity AND the pod-name segment
 /// (pod paths must be 64-hex for `pod_repo_path`).
 fn owner_xonly() -> String {
-    let sk = k256::schnorr::SigningKey::from_bytes(&hex::decode(OWNER_SK).unwrap()).unwrap();
+    let sk = k256::schnorr::SigningKey::from_slice(&hex::decode(OWNER_SK).unwrap()).unwrap();
     hex::encode(sk.verifying_key().to_bytes())
 }
 

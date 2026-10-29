@@ -285,7 +285,7 @@ pub fn mint_with_payload(
             sk_bytes.len()
         )));
     }
-    let sk = SigningKey::from_bytes(&sk_bytes)
+    let sk = SigningKey::from_slice(&sk_bytes)
         .map_err(|e| PodError::Nip98(format!("privkey parse: {e}")))?;
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
 
@@ -362,7 +362,7 @@ pub fn verify_schnorr_signature(event: &Nip98Event) -> Result<(), PodError> {
     let id_bytes =
         hex::decode(&computed_id).map_err(|e| PodError::Nip98(format!("id hex decode: {e}")))?;
 
-    let vk = VerifyingKey::from_bytes(&pub_bytes)
+    let vk = VerifyingKey::from_slice(&pub_bytes)
         .map_err(|e| PodError::Nip98(format!("pubkey parse: {e}")))?;
     let sig = Signature::try_from(sig_bytes.as_slice())
         .map_err(|e| PodError::Nip98(format!("sig parse: {e}")))?;
@@ -650,7 +650,7 @@ mod tests {
         // Deterministic 32-byte seed — not all seeds produce a valid
         // Schnorr key, but this one does (secp256k1 is ~99.9% acceptance).
         let seed = [0x42u8; 32];
-        let sk = k256::schnorr::SigningKey::from_bytes(&seed)
+        let sk = k256::schnorr::SigningKey::from_slice(&seed)
             .expect("seed produces valid Schnorr signing key");
         let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
         (sk, pubkey_hex)

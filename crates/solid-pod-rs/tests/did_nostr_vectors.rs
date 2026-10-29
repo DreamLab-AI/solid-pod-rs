@@ -8,7 +8,7 @@
 
 #![cfg(feature = "did-nostr-types")]
 
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use k256::SecretKey;
 use serde_json::Value;
 use solid_pod_rs::did_nostr_types::{
@@ -38,7 +38,7 @@ fn vector(group: &str, name: &str) -> Value {
 fn secret_with_parity(tag: u8) -> SecretKey {
     (1u8..=255)
         .map(|b| SecretKey::from_slice(&[b; 32]).expect("valid scalar"))
-        .find(|sk| sk.public_key().to_encoded_point(true).as_bytes()[0] == tag)
+        .find(|sk| sk.public_key().to_sec1_point(true).as_bytes()[0] == tag)
         .expect("both parities occur within 255 keys")
 }
 
@@ -60,7 +60,7 @@ fn decode_even_and_odd_parity_vectors() {
         // Full-point decoder keeps the carried parity.
         let point = parse_multibase_sec1(input).unwrap();
         assert_eq!(
-            point.to_encoded_point(true).as_bytes()[0],
+            point.to_sec1_point(true).as_bytes()[0],
             parity,
             "{}",
             v["name"]
@@ -172,7 +172,7 @@ fn published_document_carries_0x03_for_odd_y_key() {
     assert_eq!(mb, format!("fe70103{}", id.to_hex()));
     assert_eq!(mb.len(), MULTIKEY_LEN);
 
-    let sec1 = pk.to_encoded_point(true);
+    let sec1 = pk.to_sec1_point(true);
     assert_eq!(format_multibase_sec1(sec1.as_bytes()).unwrap(), mb);
 
     let doc = render_did_document_published(&pk);
@@ -215,11 +215,11 @@ fn offline_resolution_of_odd_key_still_emits_0x02() {
 #[test]
 fn sec1_encoder_rejects_malformed_points() {
     let pk = secret_with_parity(0x02).public_key();
-    let uncompressed = pk.to_encoded_point(false);
+    let uncompressed = pk.to_sec1_point(false);
     assert!(format_multibase_sec1(uncompressed.as_bytes()).is_err());
     let mut bad_tag = [0u8; 33];
     bad_tag[0] = 0x04;
-    bad_tag[1..].copy_from_slice(&pk.to_encoded_point(true).as_bytes()[1..]);
+    bad_tag[1..].copy_from_slice(&pk.to_sec1_point(true).as_bytes()[1..]);
     assert!(format_multibase_sec1(&bad_tag).is_err());
 }
 
@@ -263,7 +263,7 @@ fn full_point_encoding_matches_keys_mjs_multikey() {
     for c in &KEYS_CASES {
         let sk = SecretKey::from_slice(&hex::decode(c.secret).unwrap()).unwrap();
         let pk = sk.public_key();
-        assert_eq!(hex::encode(pk.to_encoded_point(true).as_bytes()), c.point);
+        assert_eq!(hex::encode(pk.to_sec1_point(true).as_bytes()), c.point);
         // multikey(P) = 'fe701' + compressed hex.
         assert_eq!(format_multibase_public_key(&pk), c.multikey);
         assert_eq!(
@@ -281,15 +281,12 @@ fn decoding_matches_keys_mjs_base_point() {
     for c in &KEYS_CASES {
         // A Multikey keeps its own parity.
         let from_mk = parse_multibase_sec1(c.multikey).unwrap();
-        assert_eq!(
-            hex::encode(from_mk.to_encoded_point(true).as_bytes()),
-            c.point
-        );
+        assert_eq!(hex::encode(from_mk.to_sec1_point(true).as_bytes()), c.point);
         // did:nostr:<x> is read as the 02 point.
         let id = NostrPubkey::from_hex(c.did.strip_prefix("did:nostr:").unwrap()).unwrap();
         let even = id.to_even_public_key().unwrap();
         assert_eq!(
-            hex::encode(even.to_encoded_point(true).as_bytes()),
+            hex::encode(even.to_sec1_point(true).as_bytes()),
             c.normalized_point
         );
         // And the x-only identifier is the same either way.

@@ -57,7 +57,7 @@ fn ec_keypair() -> (SigningKey, JwtJwk, String) {
     ];
     let sk = SigningKey::from_bytes(&seed.into()).unwrap();
     let vk = sk.verifying_key();
-    let pt = vk.to_encoded_point(false);
+    let pt = vk.to_sec1_point(false);
     let raw = pt.as_bytes();
     let x = BASE64_URL.encode(&raw[1..33]);
     let y = BASE64_URL.encode(&raw[33..65]);

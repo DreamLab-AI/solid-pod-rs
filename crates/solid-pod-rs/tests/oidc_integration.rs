@@ -230,7 +230,7 @@ fn nip98_to_wac_bridge() {
     use solid_pod_rs::auth::nip98::{compute_event_id, verify_at, Nip98Event};
 
     // Deterministic Schnorr keypair — same seed as the in-module tests.
-    let sk = k256::schnorr::SigningKey::from_bytes(&[0x42u8; 32]).unwrap();
+    let sk = k256::schnorr::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
     let pubkey = hex::encode(sk.verifying_key().to_bytes());
 
     // Build and sign a NIP-98 event.

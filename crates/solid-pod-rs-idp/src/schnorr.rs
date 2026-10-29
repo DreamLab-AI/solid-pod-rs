@@ -261,7 +261,7 @@ impl Nip07SchnorrSso {
         let pub_bytes =
             hex::decode(pubkey_hex).map_err(|e| SchnorrError::Parse(format!("pubkey: {e}")))?;
         if pub_bytes.len() == 32 {
-            if let Ok(vk) = VerifyingKey::from_bytes(&pub_bytes) {
+            if let Ok(vk) = VerifyingKey::from_slice(&pub_bytes) {
                 let digest = Self::canonical_digest(&challenge.token, user_id, pubkey_hex);
                 if vk.verify(&digest, &sig).is_ok() {
                     let verified_at = SystemTime::now()
@@ -309,7 +309,7 @@ impl Nip07SchnorrSso {
                 profile_pub_bytes.len()
             )));
         }
-        let profile_vk = VerifyingKey::from_bytes(&profile_pub_bytes)
+        let profile_vk = VerifyingKey::from_slice(&profile_pub_bytes)
             .map_err(|e| SchnorrError::Parse(format!("profile pubkey parse: {e}")))?;
 
         // The digest uses the *profile* pubkey, not the caller-supplied one,
@@ -401,7 +401,7 @@ impl SchnorrSso for Nip07SchnorrSso {
         //    cryptography is identical to what that helper enforces
         //    and is exercised by the core crate's tests under the
         //    `nip98-schnorr` feature.
-        let vk = VerifyingKey::from_bytes(&pub_bytes)
+        let vk = VerifyingKey::from_slice(&pub_bytes)
             .map_err(|e| SchnorrError::Parse(format!("pubkey parse: {e}")))?;
         let sig = Signature::try_from(sig_bytes.as_slice())
             .map_err(|e| SchnorrError::Parse(format!("signature parse: {e}")))?;
@@ -453,7 +453,7 @@ mod tests {
         }
 
         fn make_signing_key() -> SigningKey {
-            SigningKey::from_bytes(&[0x42; 32]).unwrap()
+            SigningKey::from_slice(&[0x42; 32]).unwrap()
         }
 
         fn pubkey_hex(sk: &SigningKey) -> String {

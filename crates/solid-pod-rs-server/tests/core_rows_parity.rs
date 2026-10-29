@@ -21,7 +21,7 @@ const WEBID: &str = "https://alice.example/profile/card#me";
 
 fn pubkey() -> String {
     let sk = hex::decode(SK_HEX).unwrap();
-    let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
+    let signing = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
     hex::encode(signing.verifying_key().to_bytes())
 }
 

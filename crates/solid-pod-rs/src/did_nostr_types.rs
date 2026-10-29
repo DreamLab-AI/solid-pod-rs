@@ -139,8 +139,8 @@ impl NostrPubkey {
 
 /// 33-byte SEC1-compressed encoding (`0x02`/`0x03` ‖ X) of a public key.
 fn compressed_sec1(pk: &k256::PublicKey) -> [u8; 33] {
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
-    let ep = pk.to_encoded_point(true);
+    use k256::elliptic_curve::sec1::ToSec1Point;
+    let ep = pk.to_sec1_point(true);
     let mut out = [0u8; 33];
     out.copy_from_slice(ep.as_bytes());
     out

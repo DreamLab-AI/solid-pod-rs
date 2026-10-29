@@ -42,7 +42,7 @@ fn ec_p256_jwk_keypair() -> (SigningKey, Jwk) {
     ];
     let signing_key = SigningKey::from_bytes(&seed.into()).expect("valid scalar");
     let verifying = signing_key.verifying_key();
-    let point = verifying.to_encoded_point(false);
+    let point = verifying.to_sec1_point(false);
     // Uncompressed: 0x04 || x(32) || y(32). Skip the 0x04 tag.
     let bytes = point.as_bytes();
     assert_eq!(bytes[0], 0x04);
@@ -393,7 +393,7 @@ async fn oidc_dpop_ath_binding_enforced() {
 // pulls these symbols in during a cross-feature build.
 #[allow(dead_code)]
 fn _force_link_pkcs8() -> Option<()> {
-    let sk = SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let sk = <SigningKey as p256::elliptic_curve::Generate>::generate();
     let _pem = sk.to_pkcs8_pem(pkcs8::LineEnding::LF).ok()?.to_string();
     Some(())
 }

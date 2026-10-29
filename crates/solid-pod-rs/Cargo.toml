@@ -70,7 +70,7 @@ jsonwebtoken = { version = "9", optional = true }
 
 # NIP-98 Schnorr verification (Phase 3 close)
 # `ecdsa` added for LWS-CID ES256K verification.
-k256 = { version = "0.13", features = ["schnorr", "ecdsa"], optional = true }
+k256 = { version = "0.14", features = ["schnorr", "ecdsa"], optional = true }
 
 # ADR-2008 D1: Bitcoin transaction construction, the BIP-341 sighash and
 # tweak, BIP-340 signing and bech32m come from rust-bitcoin and the
@@ -81,7 +81,7 @@ k256 = { version = "0.13", features = ["schnorr", "ecdsa"], optional = true }
 bitcoin = { version = "0.32.102", default-features = false, features = ["std", "rand-std"], optional = true }
 
 # LWS-CID optional algorithms (ES256, EdDSA).
-p256 = { version = "0.13", features = ["ecdsa"], optional = true }
+p256 = { version = "0.14", features = ["ecdsa"], optional = true }
 
 # F5 (Sprint 4): DPoP jti replay cache — Solid-OIDC §5.2 / RFC 9449.
 # Gated behind `dpop-replay-cache` (which implies `oidc`).
@@ -282,9 +282,12 @@ git-auto-init = ["tokio-runtime"]
 #   and tungstenite) requires the "js" feature on wasm*-unknown-unknown.
 # - `uuid` v1 with `v4` needs a randomness source on wasm32; the "js"
 #   feature satisfies this via `crypto.getRandomValues()`.
+# - `getrandom` 0.4 (via crypto-bigint 0.7 / elliptic-curve 0.14 under k256)
+#   refuses to build on wasm*-unknown-unknown unless "wasm_js" is enabled.
 # ---------------------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 uuid = { version = "1", features = ["js"] }
 
 [dev-dependencies]
@@ -313,7 +316,7 @@ solid-pod-rs = { path = ".", features = ["dpop-symmetric-test"] }
 
 # Sprint 5 P0: real ES256 keypairs for DPoP / access-token JWT tests.
 # Not pulled into the main library — tests only.
-p256 = { version = "0.13", features = ["pem", "ecdsa", "pkcs8"] }
+p256 = { version = "0.14", features = ["pem", "ecdsa", "pkcs8"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 # HMAC-SHA256 for DPoP replay test fixtures (post-Sprint-5 the
 # signature is now verified so fixtures must produce real MACs).
@@ -321,7 +324,7 @@ hmac = "0.12"
 # Sprint 11 row 152: real BIP-340 Schnorr signer for CID verifier
 # integration tests, which run with `nip98-schnorr` enabled via the
 # workspace's default feature cascade.
-k256 = { version = "0.13", features = ["schnorr"] }
+k256 = { version = "0.14", features = ["schnorr"] }
 
 # ---------------------------------------------------------------------------
 # Examples — runnable via `cargo run --example <name>`.

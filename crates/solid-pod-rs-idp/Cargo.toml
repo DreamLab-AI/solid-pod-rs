@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # jsonwebtoken + openidconnect already. `rate-limit` gives us the
 # reference LruRateLimiter. `security-primitives` is implied by
 # `rate-limit`.
-solid-pod-rs = { version = "0.5.0-alpha.17", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
+solid-pod-rs = { version = "0.5.0-alpha.18", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -42,11 +42,11 @@ sha2 = "0.10"
 base64 = "0.22"
 parking_lot = "0.12"
 bytes = "1"
-p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+p256 = { version = "0.14", features = ["ecdsa", "pem", "pkcs8"] }
 # Optional: k256 Schnorr for `schnorr-sso`. Core `solid-pod-rs` also
 # pulls k256 when `nip98-schnorr` is enabled; declaring it here gives
 # this crate a direct, explicit import path.
-k256 = { version = "0.13", features = ["schnorr"], optional = true }
+k256 = { version = "0.14", features = ["schnorr"], optional = true }
 pkcs8 = { version = "0.10", features = ["pem"] }
 hex = "0.4"
 
@@ -96,5 +96,5 @@ provision-keys = [
 tokio = { version = "1", features = ["full"] }
 wiremock = "0.6"
 serde_urlencoded = "0.7"
-k256 = { version = "0.13", features = ["schnorr"] }
+k256 = { version = "0.14", features = ["schnorr"] }
 sha2 = "0.10"

@@ -21,7 +21,7 @@ const SK_HEX: &str = "2222222222222222222222222222222222222222222222222222222222
 
 fn did_for_key() -> String {
     let sk = hex::decode(SK_HEX).unwrap();
-    let signing = k256::schnorr::SigningKey::from_bytes(&sk).unwrap();
+    let signing = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
     format!(
         "did:nostr:{}",
         hex::encode(signing.verifying_key().to_bytes())

@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.18] — 2026-10-29
+
+Security maintenance: clears the RUSTSEC-2026-0386, -0387, -0391 and -0395 to
+-0403 advisories that were failing `cargo-audit` and `cargo-deny` on `main`.
+
+### Changed (breaking)
+
+- **RustCrypto 0.14 line.** `k256` 0.13 → 0.14, `p256` 0.13 → 0.14 (with
+  `elliptic-curve` 0.14, `ecdsa` 0.17, `signature` 3, `crypto-bigint` 0.7).
+  `k256::PublicKey` appears in the public API of `did_nostr_types`, so
+  downstream crates that name `k256` types must move to 0.14 as well.
+  Signing and verification keys are now built with `from_slice`; SEC1 points use
+  `ToSec1Point::to_sec1_point`; random keys use `elliptic_curve::Generate`.
+  Wire formats are unchanged: the did:key and DID:nostr fixtures pass byte for
+  byte.
+- `tokio` 1.54.1, `actix-http` 3.19 (pulls `zstd` 0.14.3 / `zstd-safe` 8.2).
+
+### Added
+
+- `tests/bip340_vectors.rs`: all 19 published BIP-340 vectors (8 signing,
+  19 verification) run against `k256::schnorr`.
+
+### Security
+
+- `RUSTSEC-2026-0387` (`crypto-bigint` 0.5.5) is ignored in `deny.toml` and
+  `.cargo/audit.toml` for the single remaining path, `openidconnect` 4.0.1 →
+  `p256`/`p384` 0.13 (feature `oidc`). Exposure there is **unassessed**. Remove
+  the ignore when `openidconnect` moves to the 0.14 line.
+
 ## [0.5.0-alpha.17] — 2026-10-20
 
 The rest of the JSS `plugins/forge` feature set, the mirror hardening that lets

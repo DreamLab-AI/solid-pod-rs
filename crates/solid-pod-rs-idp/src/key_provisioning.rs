@@ -24,7 +24,6 @@
 
 use bytes::Bytes;
 use chrono::Utc;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -326,9 +325,9 @@ pub async fn provision_pod_keys(
 ) -> Result<KeyProvisioningOutcome, PodError> {
     // 1. Generate / re-derive the Schnorr keypair.
     let signing_key = match plan.deterministic_entropy {
-        Some(seed) => SigningKey::from_bytes(&seed)
+        Some(seed) => SigningKey::from_slice(&seed)
             .map_err(|e| PodError::Backend(format!("schnorr key from seed: {e}")))?,
-        None => SigningKey::random(&mut OsRng),
+        None => <SigningKey as k256::elliptic_curve::Generate>::generate(),
     };
     let verifying_key = signing_key.verifying_key();
     let pubkey_bytes: [u8; 32] = verifying_key.to_bytes().into();
@@ -419,8 +418,8 @@ mod tests {
     #[test]
     fn deterministic_seed_yields_stable_pubkey() {
         let seed = [0x42u8; 32];
-        let a = SigningKey::from_bytes(&seed).unwrap();
-        let b = SigningKey::from_bytes(&seed).unwrap();
+        let a = SigningKey::from_slice(&seed).unwrap();
+        let b = SigningKey::from_slice(&seed).unwrap();
         assert_eq!(
             hex::encode(a.verifying_key().to_bytes()),
             hex::encode(b.verifying_key().to_bytes())
