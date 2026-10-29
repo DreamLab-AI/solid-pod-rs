@@ -171,6 +171,7 @@ pub const MAX_SLUG_BYTES: usize = 255;
 /// Validation rules (JSS parity):
 /// * `Slug` absent or empty → UUID-v4 fallback.
 /// * Non-empty `Slug` must be ≤ 255 bytes, must not contain `/`, `..`,
+///   must not be a bare `.` (which would name the container itself),
 ///   or `\0`, and every character must match `[A-Za-z0-9._-]`.
 ///
 /// Invalid slugs return `Err(PodError::BadRequest)` so the client sees a
@@ -190,7 +191,7 @@ pub fn resolve_slug(container: &str, slug: Option<&str>) -> Result<String, PodEr
                     "slug exceeds {MAX_SLUG_BYTES} bytes"
                 )));
             }
-            if s.contains('/') || s.contains("..") || s.contains('\0') {
+            if s.contains('/') || s.contains("..") || s == "." || s.contains('\0') {
                 return Err(PodError::BadRequest(format!("invalid slug: {s:?}")));
             }
             if !s
@@ -2777,5 +2778,20 @@ mod tests {
             patch_dialect_from_mime("application/json-patch+json"),
             Some(PatchDialect::JsonPatch)
         );
+    }
+
+    #[test]
+    fn slug_rejects_bare_dot() {
+        // `Slug: .` joins to `<container>/.`, which names the container
+        // itself on POSIX-flavoured backends; reject it at the LDP edge
+        // instead of deferring the failure to storage.
+        let err = resolve_slug("/box/", Some("."));
+        assert!(matches!(err, Err(PodError::BadRequest(_))));
+    }
+
+    #[test]
+    fn slug_accepts_dotted_names_without_traversal() {
+        let p = resolve_slug("/box/", Some("v1.2.config.yaml")).unwrap();
+        assert_eq!(p, "/box/v1.2.config.yaml");
     }
 }
