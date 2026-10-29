@@ -58,12 +58,31 @@ pub enum RateLimitSubject<'a> {
 
 #[cfg(feature = "rate-limit")]
 impl RateLimitSubject<'_> {
-    /// Canonical string representation, used as the bucket key.
-    fn canonical(&self) -> String {
+    /// Append the canonical subject representation (`ip:…`, `webid:…`,
+    /// `custom:…`) to `out`, without allocating.
+    ///
+    /// This used to return an owned `String` that
+    /// `RateLimitKey::canonical` immediately embedded in a second
+    /// `format!` — one extra heap allocation on every
+    /// `RateLimiter::check`. The bucket key is rebuilt on every check,
+    /// so the hot path now appends in place instead.
+    fn write_canonical(&self, out: &mut String) {
         match self {
-            RateLimitSubject::Ip(ip) => format!("ip:{ip}"),
-            RateLimitSubject::WebId(w) => format!("webid:{w}"),
-            RateLimitSubject::Custom(c) => format!("custom:{c}"),
+            RateLimitSubject::Ip(ip) => {
+                out.push_str("ip:");
+                // `IpAddr`'s `Display` writes digit groups straight into
+                // `out`; routing it through `format_args!` avoids the
+                // intermediate `ip.to_string()` allocation.
+                let _ = std::fmt::Write::write_fmt(out, format_args!("{ip}"));
+            }
+            RateLimitSubject::WebId(w) => {
+                out.push_str("webid:");
+                out.push_str(w);
+            }
+            RateLimitSubject::Custom(c) => {
+                out.push_str("custom:");
+                out.push_str(c);
+            }
         }
     }
 }
@@ -81,7 +100,19 @@ pub struct RateLimitKey<'a> {
 #[cfg(feature = "rate-limit")]
 impl RateLimitKey<'_> {
     fn canonical(&self) -> String {
-        format!("{}|{}", self.route, self.subject.canonical())
+        // Exactly one allocation per check: size the key up front
+        // (`1` = the `|` separator; `45` = widest `IpAddr` text form,
+        // a full IPv6 literal), then append in place.
+        let subject_cap = match &self.subject {
+            RateLimitSubject::Ip(_) => "ip:".len() + 45,
+            RateLimitSubject::WebId(w) => "webid:".len() + w.len(),
+            RateLimitSubject::Custom(c) => "custom:".len() + c.len(),
+        };
+        let mut key = String::with_capacity(self.route.len() + 1 + subject_cap);
+        key.push_str(self.route);
+        key.push('|');
+        self.subject.write_canonical(&mut key);
+        key
     }
 }
 
@@ -390,6 +421,41 @@ mod lru_impl {
                 subject: ip(),
             };
             assert_ne!(a.canonical(), b.canonical());
+        }
+
+        #[test]
+        fn canonical_key_format_is_exact() {
+            // Regression witness for the single-allocation key builder:
+            // the key feeds the LRU, so a silent format drift would
+            // orphan every live bucket (quota reset) instead of failing
+            // loudly. Byte format pinned for all three subject kinds,
+            // both IP families included.
+            let webid = RateLimitKey {
+                route: "write",
+                subject: RateLimitSubject::WebId("https://alice.example/webid#me"),
+            };
+            assert_eq!(
+                webid.canonical(),
+                "write|webid:https://alice.example/webid#me"
+            );
+
+            let ip_v4 = RateLimitKey {
+                route: "read",
+                subject: RateLimitSubject::Ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7))),
+            };
+            assert_eq!(ip_v4.canonical(), "read|ip:192.0.2.7");
+
+            let ip_v6 = RateLimitKey {
+                route: "read",
+                subject: RateLimitSubject::Ip(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
+            };
+            assert_eq!(ip_v6.canonical(), "read|ip:::1");
+
+            let custom = RateLimitKey {
+                route: "idp_credentials",
+                subject: RateLimitSubject::Custom("keyfp:9f2a"),
+            };
+            assert_eq!(custom.canonical(), "idp_credentials|custom:keyfp:9f2a");
         }
     }
 }
