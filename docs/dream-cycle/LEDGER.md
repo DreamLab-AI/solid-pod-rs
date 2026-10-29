@@ -9,3 +9,4 @@
 | 2026-10-25 | wac-evaluator | No WAC/ACL source supplied; ancestor-ACL-walk deny-termination untestable | NONE | NONE | yes | INCONCLUSIVE |  | f3b688ccbe22 |  |  |  |
 | 2026-10-26 | storage-backend | Slug "." slipped resolve_slug; bare-dot POST now 400, dotted names unaffected | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/8 | yes | ACCEPT |  | cfaac782b751 |  |  |  |
 | 2026-10-28 | did-nostr-resolver | did:nostr text scan bound 64-hex prefix of 65+ runs; boundary check added | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/9 | yes | ACCEPT |  | 3e336486be88 |  |  |  |
+| 2026-10-29 | performance-hardening | rate-limit key canonical 2→1 allocs/check; byte format pinned by test | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/10 | yes | ACCEPT |  | cd2a990fd145 |  |  |  |
