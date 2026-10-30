@@ -23,10 +23,14 @@
 //!
 //! # Local-only
 //!
-//! Both consumers send metadata about private pod content, so they are
-//! **local-only**: an explicit endpoint needs `SOLID_POD_JEV_LOCAL=1`, the
-//! agentbox loopback proxy needs `AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL=1`, and
-//! the public vendor endpoint is never used by this consumer.
+//! Both consumers send metadata about private pod content. By default they
+//! are **local-only**: an explicit endpoint needs `SOLID_POD_JEV_LOCAL=1`, the
+//! agentbox proxy needs `AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL=1`, and the public
+//! vendor endpoint is never used.
+//!
+//! Setting `SOLID_POD_JEV_ALLOW_CLOUD=1` lifts that: the proxy is then used
+//! whatever its backend, and the TypeSafe endpoint is admitted when
+//! `TYPESAFE_API_KEY` is set. Absent or any other value keeps local-only.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -98,17 +102,22 @@ pub struct JevConfig {
     pub op_min_confidence: Option<f64>,
 }
 
+/// Public TypeSafe System One endpoint, admitted only by `SOLID_POD_JEV_ALLOW_CLOUD=1`.
+pub const TYPESAFE_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+
 /// Whether `SOLID_POD_JEV=1` in `env`.
 pub fn flag_on(env: &dyn Fn(&str) -> Option<String>) -> bool {
     env("SOLID_POD_JEV").as_deref() == Some("1")
 }
 
-/// Resolve the endpoint (contract §2) for a **local-only** consumer.
+/// Resolve the endpoint (contract §2).
 ///
 /// Order: flag → explicit config (needs `SOLID_POD_JEV_LOCAL=1`) → agentbox
-/// proxy (needs `AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL=1`, sends no auth header) →
-/// otherwise unavailable. The public vendor endpoint is deliberately never a
-/// candidate here.
+/// proxy (needs `AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL=1` or
+/// `SOLID_POD_JEV_ALLOW_CLOUD=1`; sends no auth header) → TypeSafe endpoint
+/// (needs `SOLID_POD_JEV_ALLOW_CLOUD=1` and `TYPESAFE_API_KEY`) → otherwise
+/// unavailable. Without `SOLID_POD_JEV_ALLOW_CLOUD=1` the consumer is
+/// local-only and the cloud is never a candidate.
 pub fn resolve(env: &dyn Fn(&str) -> Option<String>) -> Result<JevConfig, Fallback> {
     if !flag_on(env) {
         return Err(Fallback::FlagOff);
@@ -141,8 +150,9 @@ pub fn resolve(env: &dyn Fn(&str) -> Option<String>) -> Result<JevConfig, Fallba
             op_min_confidence: op_min,
         });
     }
+    let allow_cloud = get("SOLID_POD_JEV_ALLOW_CLOUD").as_deref() == Some("1");
     if get("AGENTBOX_SYSTEM_ONE_PROXY").as_deref() == Some("1")
-        && get("AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL").as_deref() == Some("1")
+        && (allow_cloud || get("AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL").as_deref() == Some("1"))
     {
         if let (Some(endpoint), Some(model)) = (
             get("AGENTBOX_SYSTEM_ONE_ENDPOINT"),
@@ -152,6 +162,18 @@ pub fn resolve(env: &dyn Fn(&str) -> Option<String>) -> Result<JevConfig, Fallba
                 endpoint,
                 model,
                 bearer: None,
+                timeout,
+                rank_min_confidence: rank_min,
+                op_min_confidence: op_min,
+            });
+        }
+    }
+    if allow_cloud {
+        if let Some(key) = get("TYPESAFE_API_KEY") {
+            return Ok(JevConfig {
+                endpoint: TYPESAFE_ENDPOINT.into(),
+                model: get("SOLID_POD_JEV_MODEL").unwrap_or_else(|| "jev-latest".into()),
+                bearer: Some(key),
                 timeout,
                 rank_min_confidence: rank_min,
                 op_min_confidence: op_min,
@@ -866,7 +888,8 @@ mod tests {
             .unwrap_err(),
             Fallback::NoEndpoint
         );
-        // The public vendor endpoint is never used by a local-only consumer.
+        // The public vendor endpoint is never used by a local-only consumer
+        // (SOLID_POD_JEV_ALLOW_CLOUD absent).
         assert_eq!(
             resolve(&env(&[("SOLID_POD_JEV", "1"), ("TYPESAFE_API_KEY", "k")])).unwrap_err(),
             Fallback::NoEndpoint
@@ -896,6 +919,63 @@ mod tests {
         assert!(
             c.op_min_confidence.is_none(),
             "default accepts nothing for operations"
+        );
+    }
+
+    #[test]
+    fn resolve_allow_cloud_admits_proxy_and_typesafe() {
+        let proxy = [
+            ("SOLID_POD_JEV", "1"),
+            ("AGENTBOX_SYSTEM_ONE_PROXY", "1"),
+            ("AGENTBOX_SYSTEM_ONE_BACKEND_LOCAL", "0"),
+            ("AGENTBOX_SYSTEM_ONE_ENDPOINT", "http://p"),
+            ("AGENTBOX_SYSTEM_ONE_MODEL", "jev-latest"),
+        ];
+        // Local-only (absent or 0): a cloud-backed proxy is refused.
+        assert_eq!(resolve(&env(&proxy)).unwrap_err(), Fallback::NoEndpoint);
+        let mut zero = proxy.to_vec();
+        zero.push(("SOLID_POD_JEV_ALLOW_CLOUD", "0"));
+        assert_eq!(resolve(&env(&zero)).unwrap_err(), Fallback::NoEndpoint);
+        // Not local-only: the proxy is used and no Authorization is sent.
+        let mut on = proxy.to_vec();
+        on.push(("SOLID_POD_JEV_ALLOW_CLOUD", "1"));
+        let c = resolve(&env(&on)).unwrap();
+        assert_eq!(
+            (c.endpoint.as_str(), c.bearer.is_none()),
+            ("http://p", true)
+        );
+
+        // TypeSafe step: refused unless allowed, then needs the key.
+        let ts = [("SOLID_POD_JEV", "1"), ("TYPESAFE_API_KEY", "k")];
+        assert_eq!(resolve(&env(&ts)).unwrap_err(), Fallback::NoEndpoint);
+        let c = resolve(&env(&[
+            ("SOLID_POD_JEV", "1"),
+            ("SOLID_POD_JEV_ALLOW_CLOUD", "1"),
+            ("TYPESAFE_API_KEY", "k"),
+        ]))
+        .unwrap();
+        assert_eq!(c.endpoint, TYPESAFE_ENDPOINT);
+        assert_eq!(
+            (c.model.as_str(), c.bearer.as_deref()),
+            ("jev-latest", Some("k"))
+        );
+        assert_eq!(
+            resolve(&env(&[
+                ("SOLID_POD_JEV", "1"),
+                ("SOLID_POD_JEV_ALLOW_CLOUD", "1"),
+            ]))
+            .unwrap_err(),
+            Fallback::NoEndpoint
+        );
+        // Explicit endpoint still needs SOLID_POD_JEV_LOCAL=1.
+        assert_eq!(
+            resolve(&env(&[
+                ("SOLID_POD_JEV", "1"),
+                ("SOLID_POD_JEV_ALLOW_CLOUD", "1"),
+                ("SOLID_POD_JEV_ENDPOINT", "http://x"),
+            ]))
+            .unwrap_err(),
+            Fallback::NoEndpoint
         );
     }
 
