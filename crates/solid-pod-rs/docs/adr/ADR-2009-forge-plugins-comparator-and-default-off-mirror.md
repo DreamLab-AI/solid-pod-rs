@@ -3,11 +3,12 @@ id: ADR-2009
 title: Track the JSS plugins forge as a bounded second parity comparator, read repo-held git-mark trails, and ship the kind-30618 mirror default-off
 date: 2026-10-19
 decision_status: accepted
-implementation_status: partial
-activation_status: inactive
+implementation_status: complete
+activation_status: staged
 supersedes: []
 superseded_by: []
-verified_commit: 4e97893
+verified_commit: 76ab7aa
+verified_paths: [crates/solid-pod-rs/PARITY-CHECKLIST.md, crates/solid-pod-rs-forge/src/gitmark.rs, crates/solid-pod-rs-forge/src/nip34.rs, crates/solid-pod-rs-forge/src/marks_ui.rs, crates/solid-pod-rs-forge/src/trail.rs, crates/solid-pod-rs-forge/src/mirror.rs, crates/solid-pod-rs-server/src/lib.rs, crates/solid-pod-rs-server/src/main.rs]
 owner: jjohare
 review_trigger: the first release that carries the `gitmark` module or the `mirror` feature; a consumer enabling `forge` or `mirror`; the JSS plugins repository changing its forge contract; the Rust forge gaining a NIP-34 event builder
 repo: solid-pod-rs
@@ -52,3 +53,17 @@ Status is partial and inactive. Verified at `4e97893` (base `f382039`). Evidence
 - An independent security review of `mirror.rs` (read-only) found no argv, path, `ext::` or `file:` injection hole. It found three issues, fixed here with tests: no key binding of the trail, rollback by replaying an older signed state, and a malformed mark silently disabling the trail check. Its remaining findings are the residual risks above; a later answer showed the `refs/mirror/*` exposure was a real bypass of the gate, now fixed and tested.
 - Address and program vectors in `gitmark.rs` tests were produced by `forge/lib/blocktrails.js` at `plugins@63a16cb` with base key `0x11 * 32`.
 - Partial because the NIP-34 event builder, the Anchors tab and the forge-held trail are not ported, and the mirror engine is not started by the server.
+
+## Close-out 2026-10-30
+
+`accepted / partial / inactive` → `accepted / complete / staged`, verified at `origin/main` `76ab7aa`. The Verification section named four gaps, and all four are closed:
+
+- NIP-34 event builder and anchor tags: `PARITY-CHECKLIST.md` row 239 is `present` (`crates/solid-pod-rs-forge/src/nip34.rs` `gather_facts`, `gitmark.rs` `anchor_tags`).
+- Anchors tab: row 240 is `present` (`marks_ui.rs`, `trail.rs` `decorate_repo_page`).
+- Forge-held trail: row 260 is `present` (`trail.rs`).
+- Mirror started by the server: `crates/solid-pod-rs-server/src/lib.rs:5044` `start_forge` is called at boot from `main.rs:460`, and the mirror is built when `FORGE_MIRROR_RELAYS` and a valid `FORGE_MIRROR_FOLLOW` entry are present (`lib.rs:4964-4985`).
+- `bash scripts/parity-check.sh` → `Strict: 245/247 = 99.2%`, `PASS`.
+
+The default-off clauses of this record are superseded by ADR-2010, which states this in its Consequences. `superseded_by` is left empty because the rest of this record stands.
+
+Activation is `staged`, not `live`. `cargo search solid-pod-rs-forge` → `0.5.0-alpha.18`, and the crates.io features for `solid-pod-rs-forge` 0.5.0-alpha.17 include `anchoring`, `announce` and `mirror`. The agentbox `solid-pod` service runs `solid-pod-rs-server-0.5.0-alpha.18` built with `forge-full` (agentbox `flake.nix:1547`), and `GET http://127.0.0.1:8484/forge/api/repos` → `200 {"repos":[]}`. However, no relay session from that process was observed: `ss -tnp` shows the only established `:7777` connection belongs to `nostr-pod-bridge` and `node`, not `solid-pod-rs-server`. The cause is configuration, not a start defect: the running process's `FORGE_MIRROR_FOLLOW` holds no entries (0 matching `^[0-9a-f]{64}/`), and `mirror_config` (`crates/solid-pod-rs-server/src/lib.rs:4964-4985`) keeps the mirror off unless at least one relay and one valid follow entry are present. Nothing is being mirrored, and the public `https://pods-native.dreamlab-ai.com/forge` did not answer (curl status 000).

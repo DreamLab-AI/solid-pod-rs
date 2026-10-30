@@ -3,13 +3,14 @@ id: ADR-2010
 title: The forge and the kind-30618 mirror are on in shipped builds; anchoring, open edit and the mainnet stay opt-in
 date: 2026-10-20
 decision_status: accepted
-implementation_status: partial
-activation_status: inactive
+implementation_status: complete
+activation_status: staged
 supersedes: []
 superseded_by: []
-verified_commit: 3a899e1
+verified_commit: 76ab7aa
+verified_paths: [crates/solid-pod-rs-server/Cargo.toml, crates/solid-pod-rs-server/src/lib.rs, crates/solid-pod-rs-server/src/main.rs, crates/solid-pod-rs-forge/src/mirror.rs]
 owner: jjohare
-review_trigger: the first release that carries these crates; a consumer build that sets `forge-full`; any change to `open_edit`, `allow_mainnet` or the mirror follow list defaults; JSS `plugins/forge` moving its contract
+review_trigger: activation event — a solid-pod-rs-server process observed holding a mirror relay session for a configured follow entry; the first release that carries these crates (fired at 0.5.0-alpha.17, 2026-10-20); a consumer build that sets `forge-full`; any change to `open_edit`, `allow_mainnet` or the mirror follow list defaults; JSS `plugins/forge` moving its contract
 repo: solid-pod-rs
 domain: BASELINE-solid-pod-rs.md
 lineage: "Amends ADR-2009 (default-off mirror, accepted risks) and baseline invariant 8 (mirror opt-in). Implements the solid-pod-rs half of VisionFlow ADR-2019. Builds on ADR-2004 (provenance opt-in) and ADR-2008."
@@ -46,3 +47,14 @@ lineage: "Amends ADR-2009 (default-off mirror, accepted risks) and baseline inva
 ## Verification
 
 Status is partial and inactive: the code is merged but unreleased, and no consumer builds it. Verified at `8dd5dc1`: `cargo test --workspace` and `--all-features`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc -Dwarnings` and `scripts/parity-check.sh` (the full gate output is recorded in the release commit). The mirror hardening and review fixes each have a failing-then-passing test named in the commit messages.
+
+## Close-out 2026-10-30
+
+`accepted / partial / inactive` → `accepted / complete / staged`, verified at `origin/main` `76ab7aa`. The Verification section gave two reasons for `partial / inactive`: the code was unreleased and no consumer built it. Both are now resolved:
+
+- Released: the crates.io API lists `solid-pod-rs-forge` 0.5.0-alpha.17 (2026-10-20) and 0.5.0-alpha.18 (2026-10-29). `cargo search solid-pod-rs-server` → `0.5.0-alpha.18`. The published `solid-pod-rs-server` 0.5.0-alpha.18 features include `forge-full = [forge, forge-anchoring, forge-announce, forge-mirror]` (also in `crates/solid-pod-rs-server/Cargo.toml:170-172`).
+- Built by a consumer: agentbox `flake.nix:1547` adds `forge-full` unless the forge is disabled. The running `solid-pod` service (supervisor, pid 450) executes `/nix/store/3ykjqn74…-solid-pod-rs-server-0.5.0-alpha.18`. Its binary contains the mirror-gated strings `is a mirror and read-only` and `refs/mirror`, and it runs with `FORGE_OPEN_EDIT=0`, `FORGE_ALLOW_MAINNET=0` and `FORGE_CHAIN=txbt4`, which are the opt-in defaults this record requires.
+- Started at boot: `start_forge` (`crates/solid-pod-rs-server/src/lib.rs:5044`, called from `main.rs:460`). `GET http://127.0.0.1:8484/forge/api/repos` → `200 {"repos":[]}`.
+- Dependency audit: the RustCrypto 0.14 migration `84bf9f5` cleared RUSTSEC-2026-0386/0387/0391/0395–0403. `cargo audit` was not re-run for this note.
+
+Activation stays `staged`. No mirror relay session from `solid-pod-rs-server` was observed: the only established `127.0.0.1:7777` connection is between `nostr-pod-bridge` and `node`. The cause is configuration, not a start defect: the running process's `FORGE_MIRROR_FOLLOW` holds no entries (0 matching `^[0-9a-f]{64}/`), and `mirror_config` (`crates/solid-pod-rs-server/src/lib.rs:4964-4985`) keeps the mirror off unless at least one relay and one valid follow entry are present. The public `https://pods-native.dreamlab-ai.com/forge` did not answer (curl status 000). `review_trigger` now names the observable event that would move this record to `live`.
