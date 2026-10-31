@@ -7,6 +7,7 @@
 //! path it was registered with.
 
 use std::collections::HashMap;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -56,14 +57,35 @@ impl MemoryBackend {
         hex::encode(Sha256::digest(body))
     }
 
-    fn normalize(path: &str) -> String {
-        if path.is_empty() {
-            "/".into()
+    /// Normalise and validate a storage path.
+    ///
+    /// Mirrors `FsBackend::normalize` so both shipped backends reject
+    /// the same malformed paths (NUL bytes and `..` / root / prefix
+    /// path segments) with `PodError::InvalidPath`. Previously this
+    /// backend stored such paths as literal keys while the filesystem
+    /// backend rejected them, so the same request succeeded or failed
+    /// depending on which backend a pod used.
+    fn normalize(path: &str) -> Result<String, PodError> {
+        let p = if path.is_empty() {
+            "/".to_string()
         } else if path.starts_with('/') {
             path.to_string()
         } else {
             format!("/{path}")
+        };
+        if p.contains('\0') {
+            return Err(PodError::InvalidPath(p));
         }
+        let rel = p.trim_start_matches('/');
+        if Path::new(rel).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(PodError::InvalidPath(p));
+        }
+        Ok(p)
     }
 
     fn is_under(child: &str, container: &str) -> bool {
@@ -78,7 +100,7 @@ impl MemoryBackend {
 #[async_trait]
 impl Storage for MemoryBackend {
     async fn get(&self, path: &str) -> Result<(Bytes, ResourceMeta), PodError> {
-        let path = Self::normalize(path);
+        let path = Self::normalize(path)?;
         let guard = self.inner.data.read().await;
         guard
             .get(&path)
@@ -92,7 +114,7 @@ impl Storage for MemoryBackend {
         body: Bytes,
         content_type: &str,
     ) -> Result<ResourceMeta, PodError> {
-        let path = Self::normalize(path);
+        let path = Self::normalize(path)?;
         let etag = Self::compute_etag(&body);
         let meta = ResourceMeta {
             etag,
@@ -121,7 +143,7 @@ impl Storage for MemoryBackend {
     }
 
     async fn delete(&self, path: &str) -> Result<(), PodError> {
-        let path = Self::normalize(path);
+        let path = Self::normalize(path)?;
         let mut guard = self.inner.data.write().await;
         match guard.remove(&path) {
             Some(_) => {
@@ -134,7 +156,7 @@ impl Storage for MemoryBackend {
     }
 
     async fn list(&self, container: &str) -> Result<Vec<String>, PodError> {
-        let container = Self::normalize(container);
+        let container = Self::normalize(container)?;
         let container = if container.ends_with('/') {
             container
         } else {
@@ -160,7 +182,7 @@ impl Storage for MemoryBackend {
     }
 
     async fn head(&self, path: &str) -> Result<ResourceMeta, PodError> {
-        let path = Self::normalize(path);
+        let path = Self::normalize(path)?;
         let guard = self.inner.data.read().await;
         guard
             .get(&path)
@@ -169,13 +191,13 @@ impl Storage for MemoryBackend {
     }
 
     async fn exists(&self, path: &str) -> Result<bool, PodError> {
-        let path = Self::normalize(path);
+        let path = Self::normalize(path)?;
         let guard = self.inner.data.read().await;
         Ok(guard.contains_key(&path))
     }
 
     async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
-        let container = Self::normalize(path);
+        let container = Self::normalize(path)?;
         let container = if container.ends_with('/') {
             container
         } else {
@@ -196,7 +218,7 @@ impl Storage for MemoryBackend {
     }
 
     async fn watch(&self, path: &str) -> Result<mpsc::Receiver<StorageEvent>, PodError> {
-        let filter_path = Self::normalize(path);
+        let filter_path = Self::normalize(path)?;
         let mut rx = self.inner.events.subscribe();
         let (tx, out_rx) = mpsc::channel(64);
         tokio::spawn(async move {
@@ -243,6 +265,30 @@ mod tests {
         let mut items = m.list("/a").await.unwrap();
         items.sort();
         assert_eq!(items, vec!["b".to_string(), "c/".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rejects_traversal_and_nul_paths_like_fs_backend() {
+        // Parity with FsBackend::normalize (see rejects_path_traversal
+        // in fs.rs): the in-memory backend must refuse the same
+        // malformed paths instead of storing them as literal keys.
+        let m = MemoryBackend::new();
+        for bad in ["/../escape", "/a/../b", "/a\0b"] {
+            let err = m
+                .put(bad, Bytes::from_static(b""), "text/plain")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, PodError::InvalidPath(_)), "put({bad:?})");
+            assert!(
+                matches!(m.get(bad).await, Err(PodError::InvalidPath(_))),
+                "get({bad:?})"
+            );
+        }
+        // Clean paths, including one without a leading slash, still work.
+        m.put("ok.txt", Bytes::from_static(b"x"), "text/plain")
+            .await
+            .unwrap();
+        assert_eq!(&m.get("/ok.txt").await.unwrap().0[..], b"x");
     }
 
     #[tokio::test]
