@@ -2,18 +2,22 @@
 
 > Comparison against JavaScriptSolidServer (JSS). The row-per-feature table
 > lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
-> Re-synchronised 2026-10-19 against upstream JSS `8d68ceb`, package
-> `0.0.221`, and the JSS `plugins` repository at `63a16cb` (forge only). The
-> tracker now contains 264 rows and reports **99.2% strict
-> classified in-scope parity** (245/247 rows) and ~100% of the
-> spec-normative surface. Section 22 records the complete `0.0.204 → 0.0.220`
-> progression; section 23 the one-commit `e7e0525` delta (#619); section 24 the
-> `0.0.220 → 0.0.221` core delta; section 25 the plugins-repository forge delta
-> (repo-held git-mark trails, `did:nostr` display, kind-30618 mirror), which is
-> a bounded second comparator and not a claim of full forge parity. No row remains classified as missing: live reload, development
-> bearer tokens, the external CTH runner, and busy-port shifting now ship. The runtime-plugin
-> cluster is deliberately not applicable to a statically linked Cargo feature
-> architecture.
+> Re-synchronised 2026-11-01 against upstream JSS `7c9b0de`, package `0.0.224`,
+> and the JSS `plugins` repository at `63a16cb`. The tracker contains 300 rows and
+> reports **at most 86.4% strict classified in-scope parity** (242/280 rows). The
+> earlier 99.2% counted library presence. The 2026-11-01 audit checked server-reached
+> behaviour for the rows in its scope, reproducing the PATCH and WAC findings against
+> the built server; the other `present` rows are not yet re-audited, so the figure is
+> an upper bound. **21 rows are now missing.** Two P0s: pods created through
+> `POST /.pods` get no ACL of their own (row 287), and every N3 PATCH corrupts
+> non-ASCII literals in the stored document (§27 defects). Section 26 records the
+> `0.0.221 → 0.0.224` delta (WAC #631/#632, PATCH #633, NIP-11 #635), section 27
+> the pre-existing core gaps (notifications, relay, ActivityPub inbox/outbox,
+> conditional writes, ACL IRI resolution, webrtc, remoteStorage), and section 28
+> the plugin system and the non-forge plugins directories. The runtime-plugin
+> loader remains deliberately not applicable to a statically linked Cargo-feature
+> architecture, now recorded as ADR-2011. Method and evidence:
+> [`docs/reference/jss-parity-audit-2026-11-01.md`](docs/reference/jss-parity-audit-2026-11-01.md).
 >
 > **Verification method.** The `*_jss.rs` parity tests are self-contained
 > Rust assertions that transcribe JSS's observed behaviour; they are
@@ -929,9 +933,11 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **99.2% strict parity** (245/247 classified in-scope rows,
-derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) and **~100%
-spec-normative parity** as of the 2026-10-19 JSS `8d68ceb` / plugins `63a16cb` sync. Six net-new features push us **ahead** of
+solid-pod-rs has **at most 86.4% strict parity** (242/280 classified in-scope rows,
+derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) as of the 2026-11-01
+JSS `7c9b0de` (`0.0.224`) / plugins `63a16cb` audit. The spec-normative surface is
+not complete: N3 Patch parsing, `where` binding, conditional writes and ACL IRI
+resolution are open (checklist §26–§27). Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL

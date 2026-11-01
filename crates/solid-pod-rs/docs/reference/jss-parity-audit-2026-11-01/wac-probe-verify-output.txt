@@ -1,0 +1,33 @@
+369:test v1_absolute_put_lockout_turtle ... V1 PUT turtle abs accessTo: PUT=201 "" -> owner GET=403 repair PUT=403
+371:test v1_absolute_vs_relative_seeded ... V1 seeded accessTo </me/public/doc.ttl>: owner GET res=200 acl=200
+372:V1 seeded accessTo <http://localhost:8080/me/public/doc.ttl>: owner GET res=403 acl=403
+373:V1 seeded accessTo <http://127.0.0.1:8080/me/public/doc.ttl>: owner GET res=403 acl=403
+374:V1 seeded accessTo <https://pod.example/me/public/doc.ttl>: owner GET res=403 acl=403
+375:V1 seeded accessTo <./doc.ttl>: owner GET res=403 acl=403
+376:V1 seeded accessTo <doc.ttl>: owner GET res=403 acl=403
+377:V1 seeded accessTo <>: owner GET res=403 acl=403
+378:V1 root .acl accessTo+default </>: owner GET /me/public/doc.ttl=200 GET /=200
+379:V1 root .acl accessTo+default <./>: owner GET /me/public/doc.ttl=200 GET /=200
+380:V1 root .acl accessTo+default <http://localhost:8080/>: owner GET /me/public/doc.ttl=403 GET /=403
+381:V1 root .acl accessTo+default <>: owner GET /me/public/doc.ttl=200 GET /=200
+383:test v1_provisioned_type_index ... V1 provision webid=http://localhost:8080/pods/abc123/profile/card#me pod_root=http://localhost:8080/pods/abc123/
+399:V1 provisioned publicTypeIndex: anon GET=401 owner GET=403
+401:test v1_unparseable_lockout ... V1 unparseable application/ld+json "{not json": PUT=201 "" -> owner GET res=403 acl=403 repair=403
+402:V1 unparseable application/ld+json "[]": PUT=201 "" -> owner GET res=403 acl=403 repair=403
+403:V1 unparseable text/plain "hello": PUT=201 "" -> owner GET res=403 acl=403 repair=403
+404:V1 unparseable text/turtle "this is @@ not turtle <<": PUT=409 "refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" -> owner GET res=200 acl=200 repair=201
+407:test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+--- second run: v1_named_pod_create ---
+V1 named-pod POST /.pods: 201 {"name":"alice","podUri":"http://localhost:8080/alice/","webId":"http://localhost:8080/alice/profile/card#me"}
+V1 named-pod storage root list: ["alice.meta", "alice/"]
+V1 named-pod PUT /alice/public/x.ttl as owner: 403
+V1 named-pod GET /alice/ as owner: 403
+V1 named-pod GET /alice/profile/card as anon: 401
+V1 named-pod PUT /alice/public/y.ttl as anon: 401
+--- third run: v1_m4_container_acl_location ---
+V1 M4 GET /c/ owner: 200 Link: <http://www.w3.org/ns/ldp#BasicContainer>; rel="type", <http://www.w3.org/ns/ldp#Container>; rel="type", <http://www.w3.org/ns/ldp#Resource>; rel="type", </c/.acl>; rel="acl", </c/.meta>; rel="describedby"
+V1 M4 GET /nope/ (404) owner: 200 Link: <http://www.w3.org/ns/ldp#BasicContainer>; rel="type", <http://www.w3.org/ns/ldp#Container>; rel="type", <http://www.w3.org/ns/ldp#Resource>; rel="type", </nope/.acl>; rel="acl", </nope/.meta>; rel="describedby"
+V1 M4 baseline anon GET /c/x.ttl: 200
+V1 M4 after PUT /c/.acl (owner-only) = 201: anon GET /c/x.ttl=200 anon GET /c/=200 owner GET /c/x.ttl=200
+V1 M4 stored: GET /c/.acl=200 GET /c.acl=404
+V1 M4 after PUT /c.acl (owner-only) = 201: anon GET /c/x.ttl=401 anon GET /c/=401 owner GET /c/x.ttl=200

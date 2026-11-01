@@ -1,0 +1,36 @@
+HTTP control canonical-@graph/path: PUT=201 body="" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 899 expanded-array/abs: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP control canonical-@graph/abs: PUT=201 body="" | after: owner GET res=403 owner GET acl=403 anon GET res=401 | repair PUT=403
+HTTP 928 no-authorizations: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 941 agent-no-mode: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 957 mode-no-agent: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 941g agent-no-mode @graph: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 957g mode-no-agent @graph: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 973setup single-expanded-node: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 1004 invalid-json: PUT=201 body="" | after: owner GET res=403 owner GET acl=403 anon GET res=403 | repair PUT=403
+HTTP empty-array []: PUT=201 body="" | after: owner GET res=403 owner GET acl=403 anon GET res=403 | repair PUT=403
+HTTP text/plain garbage: PUT=201 body="" | after: owner GET res=403 owner GET acl=403 anon GET res=403 | repair PUT=403
+HTTP graph-with-string-mode: PUT=201 body="" | after: owner GET res=403 owner GET acl=403 anon GET res=403 | repair PUT=403
+HTTP turtle zero-auth: PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP turtle wac-prefix owner: PUT=201 body="" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP public-read-only (grants something, drops owner Control): PUT=409 body="refused: the proposed ACL would not grant Control to the caller (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)" | after: owner GET res=200 owner GET acl=200 anon GET res=401 | repair PUT=201
+HTTP 973 PATCH delete-only-agent: PATCH=409 body="existing resource is not N-Triples RDF and cannot be non-destructively patched; PUT an N-Triples representation or use a JSON Patch" | after owner GET res=200
+HTTP PATCH delete-write-keep-control: PATCH=409 body="existing resource is not N-Triples RDF and cannot be non-destructively patched; PUT an N-Triples representation or use a JSON Patch"
+LIB 816 altprefix/abs: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB 830 ctxarray/abs: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB 844 vocab/abs: Ok graph=None owner R=false W=false C=false anonR=false agentClass=None
+LIB 861 turtle-wac/abs: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB control canonical-@graph/abs: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB single-node acl:/abs: Ok graph=None owner R=false W=false C=false anonR=false agentClass=None
+LIB type-array/abs: Err(ACL parse error: JSON-LD ACL parse: invalid type: sequence, expected a string at line 1 column 87)
+LIB 805 expanded/path: Err(ACL parse error: JSON-LD ACL parse: invalid length 1, expected struct AclDocument with 2 elements at line 1 column 422)
+LIB 816 altprefix/path: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB 830 ctxarray/path: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB 844 vocab/path: Ok graph=None owner R=false W=false C=false anonR=false agentClass=None
+LIB 861 turtle-wac/path: Ok graph=Some(1) owner R=true W=true C=true anonR=false agentClass=Some("None")
+LIB control canonical-@graph/path: Ok graph=Some(1) owner R=true W=true C=true anonR=false agentClass=Some("None")
+LIB single-node acl:/path: Ok graph=None owner R=false W=false C=false anonR=false agentClass=None
+LIB type-array/path: Err(ACL parse error: JSON-LD ACL parse: invalid type: sequence, expected a string at line 1 column 87)
+LIB 870 agentclass-people: Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("None")
+LIB 870b agentclass-people (acl: keys): Ok graph=Some(1) owner R=false W=false C=false anonR=false agentClass=Some("Some(Single(IdRef { id: \"people:Agent\" }))")
+LIB json-through-turtle: Ok graph=None owner R=false W=false C=false anonR=false agentClass=None
