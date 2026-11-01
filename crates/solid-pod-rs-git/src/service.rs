@@ -264,9 +264,9 @@ impl GitHttpService {
         self
     }
 
-    /// Plug in an authoriser. Without one, write requests still
-    /// succeed — the service becomes an anonymous-push setup, which
-    /// is the behaviour JSS uses when no `handleAuth` pre-hook fires.
+    /// Plug in an authoriser. Without one, writes and reads configured
+    /// to require authentication fail closed with an unauthorised error.
+    /// The caller remains responsible for whole-repository read authority.
     #[must_use]
     pub fn with_auth<A: GitAuth + 'static>(mut self, auth: A) -> Self {
         self.auth = Some(Arc::new(auth));
