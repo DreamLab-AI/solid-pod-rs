@@ -1,7 +1,7 @@
 # solid-pod-rs-git
 
-**Status: 0.5.0-alpha.12 — functional Git HTTP backend.** Integrators may
-depend on this crate today; see the workspace audit for current quality gates.
+**Workspace version: 0.5.0-alpha.18.** See the workspace changelog for unreleased
+repairs and the estate review for validation and remaining export boundaries.
 
 ## Target scope
 
@@ -12,14 +12,25 @@ depend on this crate today; see the workspace audit for current quality gates.
   single-checkout pods.
 - `Basic nostr:<token>` client support bridging NIP-98 to git
   clients that speak HTTP Basic only.
-- WAC integration so repo `.git/` trees honour the enclosing pod's
-  ACL.
+- Framework-independent transport; callers own repository read authority.
 
-Target LOC: ~450 + 12 integration tests at first landing.
+## Export authority
+
+The caller must authorise access to the whole repository before handing a read
+to `GitHttpService`. The CGI does not evaluate per-resource WAC or historical
+permissions. The pod server's root-only gate does not fulfil that contract for
+private children; see the workspace estate review before exposing that route.
+
+The service refuses direct requests for unadvertised object hashes, overriding
+repository-local `uploadpack.allowTipSHA1InWant`,
+`uploadpack.allowReachableSHA1InWant` and `uploadpack.allowAnySHA1InWant` settings.
+Ordinary advertised-tip fetches remain supported. Hidden refs still do not
+provide general object isolation: content that must be withheld belongs in a
+separate object store until approved for publication.
 
 ## Parity rows
 
-Rows that will close when this crate lands (see
+Implemented transport rows (see
 [`../solid-pod-rs/PARITY-CHECKLIST.md`](../solid-pod-rs/PARITY-CHECKLIST.md)):
 
 - **69** — `Basic nostr:<token>` HTTP Basic bridge to NIP-98.

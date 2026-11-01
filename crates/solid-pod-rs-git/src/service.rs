@@ -3,15 +3,16 @@
 //! the HTTP layer.
 //!
 //! Mirrors JSS `src/handlers/git.js` lines 95-268 (`handleGit`) end
-//! to end. The key design choices, all pulled straight from JSS:
+//! to end, with the export restrictions noted below. The key design choices:
 //!
 //! * `GIT_PROJECT_ROOT = repo_root`, `PATH_INFO = request path`. The
 //!   CGI walks `GIT_PROJECT_ROOT + PATH_INFO` internally.
 //! * `GIT_HTTP_EXPORT_ALL` set (empty value, just defined) so all
 //!   repos under the root are read-exportable.
 //! * `GIT_HTTP_RECEIVE_PACK=true` so push is enabled (JSS line 157).
-//! * `GIT_CONFIG_PARAMETERS` injects `uploadpack.allowTipSHA1InWant`
-//!   to match JSS line 158.
+//! * Unlike JSS line 158, `GIT_CONFIG_PARAMETERS` refuses unadvertised
+//!   object requests, so hidden mirror refs cannot be fetched by tip hash.
+//!   This is not a general read-isolation boundary within an object store.
 //! * For non-bare repos we set `GIT_DIR` to the `.git` child (JSS
 //!   lines 168-170).
 //! * We parse CGI headers from stdout, separate them from body on
@@ -416,9 +417,19 @@ async fn spawn_cgi(
     // undo it): a pushed mode-120000 tree entry is checked out into the pod
     // working tree as a plain file, never a symlink the storage layer could
     // follow to a path the WAC guard does not name.
+    // Mirror and forge adapters hide internal refs. Do not let either this
+    // service or repository-local config enable direct fetches of their
+    // objects by hash. A shared object store still requires whole-repository
+    // read authority; these flags do not make it a quarantine boundary.
     env.insert(
         "GIT_CONFIG_PARAMETERS".into(),
-        "'uploadpack.allowTipSHA1InWant=true' 'core.symlinks=false'".into(),
+        concat!(
+            "'uploadpack.allowTipSHA1InWant=false' ",
+            "'uploadpack.allowReachableSHA1InWant=false' ",
+            "'uploadpack.allowAnySHA1InWant=false' ",
+            "'core.symlinks=false'"
+        )
+        .into(),
     );
     env.insert("PATH_INFO".into(), req.path.clone());
     env.insert("REQUEST_METHOD".into(), req.method.to_uppercase());

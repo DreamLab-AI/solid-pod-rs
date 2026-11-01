@@ -64,8 +64,9 @@ Activation stays `staged`. No mirror relay session from `solid-pod-rs-server` wa
 The decision's hidden-ref assurance needs the qualification now recorded in
 [ADR-2009](ADR-2009-forge-plugins-comparator-and-default-off-mirror.md#review-qualification-2026-11-01).
 At `b644e55`, the export service explicitly permits fetching a hidden tip by
-hash, despite the mirror's ref-hiding configuration. A local Git probe confirms
-that interaction; Rust HTTP and deployed mirror acceptance are not established
-by that probe. The historical consumer observations above are not fresh
+hash, despite the mirror's ref-hiding configuration. Local Git and Rust HTTP
+regressions confirm that interaction; the latter pass after the service forces
+the unadvertised-object request options false. Complete object withholding and
+deployed mirror acceptance remain open. The historical consumer observations above are not fresh
 deployment evidence, and compilation with `forge-full` does not prove that
 held objects cannot be served.

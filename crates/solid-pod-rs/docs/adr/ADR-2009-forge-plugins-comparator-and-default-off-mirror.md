@@ -75,12 +75,15 @@ The hidden-ref close-out above is too broad for the composed export path at
 the shared Git HTTP service forces `uploadpack.allowTipSHA1InWant=true`.
 A local subprocess fixture confirms that a known held tip remains fetchable:
 discovery omits it, yet the returned pack decodes to the held synthetic bytes.
-The same request with that option false is refused. This is configuration-level
-evidence; the Rust service regression is pending, and no deployed mirror was
-tested. The historical release and activation observations above remain dated.
+The same request with that option false is refused. Two Rust HTTP-service
+regressions also reproduced hidden-tip pack delivery before the repair. They
+now pass with all three unadvertised-object request options forced false,
+including against permissive repository configuration; advertised public-tip
+packs still decode correctly. No deployed mirror was tested. The historical
+release and activation observations above remain dated.
 
 Branch promotion and object publication need separate acceptance checks.
-Suppressing this option closes that direct request path but does not establish
+Suppressing these options closes that direct request path but does not establish
 general isolation for objects in one repository. See the
 [Git configuration contract](https://git-scm.com/docs/git-config#Documentation/git-config.txt-uploadpackallowTipSHA1InWant)
 and VisionFlow's `docs/estate-review/2026-11-01-solid-git-export-and-baseline.md`

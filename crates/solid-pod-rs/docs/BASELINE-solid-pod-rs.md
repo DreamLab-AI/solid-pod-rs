@@ -48,8 +48,10 @@ both a pod-specific filesystem root and the original pod-prefixed request path
 to `GitHttpService`. The service joins the pod slug again. Normal pod storage
 and the selected export repository therefore differ; a routing correction must
 also establish authority over exported children and history. A root resource
-grant alone does not establish that authority. This is a source finding,
-separate from the forge's repository-authorisation adapter.
+grant alone does not establish that authority. A native production-route probe
+confirms normal-layout Git discovery 404 and nested-repository anonymous Git
+200 with decoded private bytes, while the same file's LDP read returns 401.
+This remains separate from the forge's repository-authorisation adapter.
 
 See the [estate assessment](../../../../VisionFlow/docs/estate-review/2026-11-01-solid-git-export-and-baseline.md)
 for the source, transport observations and remaining acceptance conditions.

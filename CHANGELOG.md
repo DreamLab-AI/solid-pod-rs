@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Git HTTP no longer permits direct requests for hidden or unadvertised
+  object hashes, including when repository-local configuration enables them.
+  Advertised-tip fetches remain supported. This closes a direct fetch path
+  around mirror ref hiding; it does not isolate held objects in a shared
+  repository or repair the pod adapter's root-only history authorisation.
 - ACL mutation checks now evaluate effective Control on the destination using
   the shared parser, condition evaluator and linked identities. Unreadable or
   misdirected policies are refused before PUT, POST, PATCH or COPY stores them;
