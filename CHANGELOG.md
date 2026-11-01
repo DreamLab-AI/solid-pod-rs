@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- ACL mutation checks now evaluate effective Control on the destination using
+  the shared parser, condition evaluator and linked identities. Unreadable or
+  misdirected policies are refused before PUT, POST, PATCH or COPY stores them;
+  JSON PATCH no longer bypasses this check. COPY also validates Turtle syntax
+  and skips an accompanying ACL that would remove destination Control.
+  Ordinary metadata remains Control-protected without requiring an ACL body.
+  This does not repair parser information loss.
+- ACL discovery now uses the resolver's canonical sidecar helper for ordinary
+  and not-found responses: `/folder/` advertises `/folder.acl`, and the root
+  advertises `/.acl`. Existing inner ACL copies are not moved or given new
+  precedence; the migration guide describes the required policy review.
 - OIDC discovery and JWKS fetching now refuse HTTP redirects. Previously a
   checked endpoint could redirect to a destination that the supplied SSRF
   policy denied. Discovery and JWKS endpoints must return their documents

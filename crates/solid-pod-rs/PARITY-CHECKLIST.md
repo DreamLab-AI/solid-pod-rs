@@ -682,6 +682,29 @@ reaches the behaviour, not just whether the library has it.
 
 ---
 
+### Local repair progress — candidate ACL admission, 2026-11-01
+
+Rows 266–268 now have a scoped, unreleased server repair. Candidate policies
+must parse and grant effective Control on the destination through the same
+shared evaluator and linked identities as request admission. PUT, POST,
+JSON PATCH, RDF PATCH call sites and COPY use this guard; COPY's accompanying
+ACL is retained only when it preserves destination Control. Ordinary `.meta`
+bodies still require Control but are not parsed as ACLs. Nine route regression
+tests cover malformed bodies, wrong targets, unsatisfied conditions, linked
+identity preservation, JSON PATCH, COPY and metadata. RDF PATCH's existing
+parse/serialisation limitations remain open, so its call-site inclusion is not
+an interoperability claim. The rows above retain the audited baseline and
+upstream comparator; this note does not promote every row to parity. Publication,
+consumer adoption and deployment remain separate.
+
+The guard uses the existing bounded policy reader and RDF syntax parser. It
+does not fix policy information lost by the legacy Turtle reader, JSON-LD IRI
+expansion, absolute target resolution (288), provisioning (287), or the
+stored container ACL copies (290). Discovery for new interactions now uses
+the resolver's canonical sibling location; the ninth regression follows that
+HTTP link and verifies the resulting child-access change. Existing inner ACLs
+need the explicit review in [the migration guide](docs/how-to/migrate-from-jss.md).
+
 ## 27. Pre-existing core gaps surfaced by the 2026-11-01 audit
 
 These are not part of the `0.0.224` delta: JSS core already had them at the prior

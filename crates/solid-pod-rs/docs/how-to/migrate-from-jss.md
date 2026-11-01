@@ -19,7 +19,7 @@ licence-wise, nothing changes.
 
 1. Freeze writes to the JSS pod.
 2. Copy `$JSS_ROOT/` (default `./data/`) to your new pod's storage root.
-3. Rewrite `.acl` paths if the layout differs (it usually doesn't).
+3. Translate container ACL locations and verify their targets and owner grants in staging.
 4. Stand up solid-pod-rs pointing at the same directory.
 5. Cut the DNS / load balancer over.
 6. Keep JSS running read-only for 24 h as rollback.
@@ -29,7 +29,7 @@ licence-wise, nothing changes.
 | Concern | JSS default | solid-pod-rs |
 |---|---|---|
 | WAC default | multiuser signup scaffolds `/.acl`; `public: true` disables WAC entirely | **deny-by-default**; no ACL = no access, no runtime switch |
-| Authentication | Solid-OIDC via built-in IdP (`oidc-provider`); optional WebID-TLS | NIP-98 is first-class; Solid-OIDC behind the `oidc` feature |
+| Authentication | Solid-OIDC via built-in IdP (`oidc-provider`); optional WebID-TLS | Main resource routes consume NIP-98; enabling the OIDC library does not wire resource admission |
 | Storage layout | `$JSS_ROOT/<pod-or-user>/...` | `<root>/<path>` mirroring the pod URI directly |
 | Quota | `defaultQuota` config (50 MB default) | `QuotaTracker` (explicit, per-pod) |
 | Provisioning endpoint | IdP signup flow (`multiuser: true`) | `provision_pod` plus `POST /.pods`; secure account-policy integration remains operator work |
@@ -155,8 +155,9 @@ stripper accordingly. JSS `0.0.220` stores bodies verbatim by default.
 ### ACL translation
 
 JSS stores ACL as Turtle (`.acl` files); solid-pod-rs accepts both
-Turtle and JSON-LD ACLs. Both are semantically equivalent. Minimum
-worked example — JSS Turtle ACL:
+a subset of Turtle and JSON-LD ACLs. Representation support is not full RDF
+semantic equivalence: JSON-LD context expansion and ACL target IRI resolution
+have known gaps. For the root ACL `/.acl`, use explicit server-root targets:
 
 ```turtle
 @prefix acl: <http://www.w3.org/ns/auth/acl#> .
@@ -165,13 +166,14 @@ worked example — JSS Turtle ACL:
 <#owner>
   a acl:Authorization ;
   acl:agent <https://me.example/profile/card#me> ;
-  acl:accessTo <./> ;
-  acl:default <./> ;
+  acl:accessTo </> ;
+  acl:default </> ;
   acl:mode acl:Read, acl:Write, acl:Control .
 ```
 
-...is accepted as-is by solid-pod-rs (Turtle ACLs are parsed via
-`wac::parse_turtle_acl`). If you prefer JSON-LD:
+This root policy uses the path convention the evaluator currently consumes.
+For a nested container, use its actual server-root path, such as `/profile/`,
+in both target predicates. A corresponding compact JSON-LD root policy is:
 
 ```json
 {
@@ -180,8 +182,8 @@ worked example — JSS Turtle ACL:
     "@id": "#owner",
     "@type": "acl:Authorization",
     "acl:agent":    { "@id": "https://me.example/profile/card#me" },
-    "acl:accessTo": { "@id": "./" },
-    "acl:default":  { "@id": "./" },
+    "acl:accessTo": { "@id": "/" },
+    "acl:default":  { "@id": "/" },
     "acl:mode":     [
       { "@id": "acl:Read" },
       { "@id": "acl:Write" },
@@ -191,11 +193,39 @@ worked example — JSS Turtle ACL:
 }
 ```
 
-Store at the same filename the JSS server used (e.g. `/profile/.acl`).
+### Container ACL locations
+
+The native resolver associates `/profile/` with `/profile.acl`, not
+`/profile/.acl`. The root still uses `/.acl`; a document such as
+`/profile/card` uses `/profile/card.acl`. Discovery now calls the shared
+resolver helper, so a current server advertises that same association. Clients
+must follow the `Link: ...; rel="acl"` target rather than construct a filename.
+See [WAC ACL discovery](https://solidproject.org/TR/wac#acl-resource-discovery).
+
+Earlier server responses advertised inner container ACLs that the resolver
+ignored. A restrictive policy stored there could leave a broader inherited
+grant in effect. Updating the server does not move those stored files or make
+them authoritative. Some admin-provisioned pods contain both forms; automatic
+precedence changes or overwriting one with the other can change permissions.
+
+On a staging copy, enumerate both locations for every container and review the
+intended owner, public grants, target paths and inheritance. Preserve both
+originals in the rollback backup. Install the intended policy at the resolver's
+canonical location; use the authenticated ACL URL when the owner retains
+Control, or the operator's offline storage procedure if already locked out.
+Do not blindly concatenate policies or replace relative IRIs as strings.
+Verify an owner read and write, a refused unrelated identity, anonymous access
+according to intent, and a nested child. Resolve every conflicting pair before
+cutover. Retire an obsolete inner copy only after verifying its consumers.
+
+The new candidate-write guard refuses unreadable policies and policies that do
+not retain the caller's effective Control. It does not repair older files,
+fully expand JSON-LD, or make absolute ACL targets work. Those limitations
+remain migration acceptance work.
 
 ## 4. Standing up solid-pod-rs
 
-Minimal production wire-up:
+Storage construction example (this alone starts no HTTP server):
 
 ```rust
 use std::sync::Arc;
@@ -215,8 +245,9 @@ Do not forget:
 
 - Install `/.acl` before flipping traffic (deny-by-default).
 - Register a NIP-98 verifier if your JSS was OIDC-only — see
-  [how-to/configure-nip98-auth.md](configure-nip98-auth.md). Or turn
-  on the `oidc` feature to continue accepting Solid-OIDC tokens.
+  [how-to/configure-nip98-auth.md](configure-nip98-auth.md). Keeping OIDC clients
+  requires a separately implemented and tested resource-admission integration;
+  the library feature alone is insufficient.
 - Expose `.well-known/openid-configuration` if you are keeping OIDC
   clients.
 
@@ -243,8 +274,9 @@ anything breaks:
    re-applied to JSS (rsync in reverse, with the sidecar-strip logic
    inverted).
 
-Because both servers address the same filesystem layout format once
-translated, forward and backward migration are symmetric.
+Retain the original ACL paths and representations in the rollback backup.
+The translation is not automatically symmetric, and post-cutover permission
+changes need an explicit reverse mapping before replaying them to JSS.
 
 ## 7. What you lose
 

@@ -100,3 +100,18 @@ fn format_headers(h: &[(&'static str, String)]) -> String {
     }
     s
 }
+
+#[test]
+fn discovery_uses_the_same_container_sidecar_on_success_and_not_found() {
+    for (path, target) in [
+        ("/", "/.acl"),
+        ("/folder/", "/folder.acl"),
+        ("/folder/item", "/folder/item.acl"),
+    ] {
+        let expected = format!("<{target}>; rel=\"acl\"");
+        assert!(solid_pod_rs::ldp::link_headers(path).contains(&expected));
+        assert!(not_found_headers(path, true)
+            .iter()
+            .any(|(name, value)| *name == "Link" && value == &expected));
+    }
+}

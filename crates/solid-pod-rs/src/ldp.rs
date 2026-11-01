@@ -136,7 +136,7 @@ pub fn meta_sidecar_for(path: &str) -> String {
 /// Emits:
 /// - `<ldp:Resource>; rel="type"` always.
 /// - `<ldp:Container>; rel="type"` + `<ldp:BasicContainer>; rel="type"` for containers.
-/// - `<path.acl>; rel="acl"` for every resource except the ACL itself.
+/// - The shared resolver's ACL sidecar link, except on the ACL itself.
 /// - `<path.meta>; rel="describedby"` for every non-meta resource.
 /// - `</>; rel="http://www.w3.org/ns/pim/space#storage"` for the pod root.
 pub fn link_headers(path: &str) -> Vec<String> {
@@ -149,7 +149,7 @@ pub fn link_headers(path: &str) -> Vec<String> {
         out.push(format!("<{}>; rel=\"type\"", iri::LDP_RESOURCE));
     }
     if !is_acl_path(path) {
-        let acl_target = format!("{path}.acl");
+        let acl_target = crate::wac::acl_sidecar_key(path);
         out.push(format!("<{acl_target}>; rel=\"acl\""));
     }
     if !is_meta_path(path) && !is_acl_path(path) {
@@ -1856,7 +1856,7 @@ pub fn not_found_headers(path: &str, conneg_enabled: bool) -> Vec<(&'static str,
     h.push(("Accept-Patch", ACCEPT_PATCH.into()));
     h.push((
         "Link",
-        format!("<{}.acl>; rel=\"acl\"", path.trim_end_matches('/')),
+        format!("<{}>; rel=\"acl\"", crate::wac::acl_sidecar_key(path)),
     ));
     h.push(("Vary", vary_header(conneg_enabled).into()));
     // When conneg is enabled, the 404 advertises an RDF-shaped future

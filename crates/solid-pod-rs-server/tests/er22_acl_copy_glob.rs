@@ -362,15 +362,15 @@ async fn copy_does_not_install_acl_without_control() {
     );
 }
 
-/// The Control holder keeps JSS-style ACL propagation.
+/// ACL propagation preserves the caller's effective Control at the destination.
 #[actix_web::test]
-async fn copy_installs_acl_for_control_holder() {
+async fn copy_installs_acl_when_destination_control_is_preserved() {
     let s = copy_storage().await;
     put(s.as_ref(), "/drop/src", "hello", "text/plain").await;
     put(
         s.as_ref(),
         "/drop/src.acl",
-        &acl("/drop/src", &[]),
+        &format!("{}{}", acl("/drop/src", &[]), acl("/drop/dst", &[])),
         "text/turtle",
     )
     .await;
@@ -384,6 +384,8 @@ async fn copy_installs_acl_for_control_holder() {
     .await;
     assert_eq!(st, 201);
     assert!(s.get("/drop/dst.acl").await.is_ok());
+    let (read, _) = status_and_body(s.clone(), "GET", "/drop/dst", Some(OWNER), None).await;
+    assert_eq!(read, 200, "propagated policy must remain usable");
 }
 
 // ---------------------------------------------------------------------------

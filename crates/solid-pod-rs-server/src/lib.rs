@@ -173,7 +173,7 @@ use solid_pod_rs::{
     storage::Storage,
     wac::{
         self, conditions::RequestContext, effective_acl_target, parse_jsonld_acl,
-        parser::parse_turtle_acl, protected_resource_for_acl, AccessMode,
+        protected_resource_for_acl, AccessMode,
     },
     PodError,
 };
@@ -869,86 +869,62 @@ pub(crate) fn canonical_pod_path(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// P0-2 lockout guard (mirrors `mcp/tools.rs:511-552`). Parse a proposed
-/// `.acl` document body and confirm at least one authorization still
-/// grants `acl:Control` to `caller` (by exact WebID, `foaf:Agent`, or —
-/// for an authenticated caller — `acl:AuthenticatedAgent`). Returns
-/// `true` when the proposed ACL is unparseable (the storage layer will
-/// reject malformed bodies; the guard only fires on a parseable ACL that
-/// would strip the caller's Control) or when Control is preserved.
-fn proposed_acl_keeps_caller_control(
+/// Validate a candidate ACL with the shared bounded parser and evaluate
+/// effective Control on its protected resource before committing the bytes.
+/// Metadata remains Control-protected by admission, but is not an ACL body.
+async fn proposed_acl_keeps_caller_control(
+    state: &AppState,
+    req: &HttpRequest,
+    path: &str,
     body: &[u8],
     content_type: &str,
     caller: Option<&str>,
 ) -> bool {
-    let doc = match parse_jsonld_acl(body) {
-        Ok(d) => Some(d),
-        Err(_) => {
-            let ct = content_type.to_ascii_lowercase();
-            let text = std::str::from_utf8(body).unwrap_or("");
-            let looks_turtle = ct.starts_with("text/turtle")
-                || ct.starts_with("application/turtle")
-                || ct.starts_with("application/x-turtle")
-                || ct.starts_with("application/n-triples")
-                || text.contains("@prefix")
-                || text.contains("acl:Authorization")
-                // N-Triples ACL bodies (e.g. the post-PATCH write-back form)
-                // carry no `@prefix`/`acl:` shorthand — they use the full
-                // ACL IRI. Recognise that so the lockout guard can parse them.
-                || text.contains("auth/acl#Authorization");
-            if looks_turtle {
-                parse_turtle_acl(text).ok()
-            } else {
-                None
-            }
-        }
-    };
-    let Some(doc) = doc else {
-        // Unparseable as an ACL — not our concern; let storage reject it.
+    if !ldp::is_acl_path(path) {
         return true;
-    };
-    let Some(graph) = doc.graph.as_ref() else {
+    }
+    let Some(resource) = protected_resource_for_acl(path) else {
         return false;
     };
-    graph.iter().any(|auth| {
-        let grants_control = ids_of_acl_field(&auth.mode)
-            .iter()
-            .any(|m| *m == "acl:Control" || *m == "http://www.w3.org/ns/auth/acl#Control");
-        if !grants_control {
+    let wac::PolicyStep::Settled(wac::PolicyOutcome::Found(doc)) =
+        wac::classify_policy_read(path, wac::PolicyRead::Present { body, content_type }, false)
+    else {
+        return false;
+    };
+    if wac::validate_acl_document(&doc).is_err() {
+        return false;
+    }
+    // The historical Turtle policy reader is lenient. Check its syntax with
+    // the existing RDF parser as well, including COPY (which has no generic
+    // request-body validation). The parsed graph is not used as a new policy
+    // interpretation; enforcement still consumes the shared ACL document.
+    if parse_jsonld_acl(body).is_err() {
+        use solid_pod_rs::rdf_input::{parse_rdf_body, RdfInputSyntax};
+        let syntax =
+            RdfInputSyntax::from_content_type(content_type).unwrap_or(RdfInputSyntax::Turtle);
+        let base = format!("{}{}", scheme::request_origin(req), path);
+        if parse_rdf_body(syntax, body, &base).is_err() {
             return false;
         }
-        let agents = ids_of_acl_field(&auth.agent);
-        if let Some(web_id) = caller {
-            if agents.contains(&web_id) {
-                return true;
-            }
-        }
-        let classes = ids_of_acl_field(&auth.agent_class);
-        if classes
-            .iter()
-            .any(|c| *c == "http://xmlns.com/foaf/0.1/Agent" || *c == "foaf:Agent")
-        {
-            return true;
-        }
-        if caller.is_some()
-            && classes.iter().any(|c| {
-                *c == "http://www.w3.org/ns/auth/acl#AuthenticatedAgent"
-                    || *c == "acl:AuthenticatedAgent"
-            })
-        {
-            return true;
-        }
-        false
-    })
-}
-
-/// Flatten an optional `IdOrIds` ACL field into a `Vec<&str>` of IRIs.
-fn ids_of_acl_field(field: &Option<wac::IdOrIds>) -> Vec<&str> {
-    match field {
-        None => Vec::new(),
-        Some(wac::IdOrIds::Single(r)) => vec![r.id.as_str()],
-        Some(wac::IdOrIds::Multiple(v)) => v.iter().map(|r| r.id.as_str()).collect(),
     }
+    let balance = resolve_balance_sats(&*state.storage, caller).await;
+    let linked = cross_identity::linked_identities(state.cross_identity.as_ref(), caller).await;
+    let registry = wac::conditions::ConditionRegistry::default_with_client_and_issuer();
+    let groups = wac::StaticGroupMembership::default();
+    // Use the same identities, conditions and balance as request admission.
+    // Control bypasses the origin restriction so the repair path stays usable.
+    grant_for_identities(
+        Some(&doc),
+        caller,
+        &linked,
+        balance,
+        &resource,
+        AccessMode::Control,
+        None,
+        &groups,
+        &registry,
+    )
+    .is_some()
 }
 
 /// Origin-unaware convenience wrapper (used where no HTTP `Origin` is
@@ -1754,7 +1730,8 @@ async fn handle_put(
     // footgun the MCP `write_acl` path blocks (mcp/tools.rs:511). Without
     // this a Control holder could lock themselves (and everyone) out.
     if protected_resource_for_acl(&path).is_some()
-        && !proposed_acl_keeps_caller_control(&body, ct, agent.as_deref())
+        && !proposed_acl_keeps_caller_control(&state, &req, &path, &body, ct, agent.as_deref())
+            .await
     {
         return Ok(HttpResponse::Conflict().body(
             "refused: the proposed ACL would not grant Control to the caller \
@@ -1863,7 +1840,9 @@ async fn handle_post(
             req_origin(&req),
         )
         .await?;
-        if !proposed_acl_keeps_caller_control(&body, ct, agent.as_deref()) {
+        if !proposed_acl_keeps_caller_control(&state, &req, &target, &body, ct, agent.as_deref())
+            .await
+        {
             return Ok(HttpResponse::Conflict().body(
                 "refused: the proposed ACL would not grant Control to the caller \
                  (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
@@ -1979,6 +1958,20 @@ async fn handle_patch(
                     let bytes = serde_json::to_vec(&json)
                         .map_err(PodError::from)
                         .map_err(to_actix)?;
+                    if !proposed_acl_keeps_caller_control(
+                        &state,
+                        &req,
+                        &path,
+                        &bytes,
+                        &meta.content_type,
+                        agent.as_deref(),
+                    )
+                    .await
+                    {
+                        return Ok(HttpResponse::Conflict().body(
+                            "refused: the patched ACL would not grant Control to the caller",
+                        ));
+                    }
                     let quota = reserve_quota_for_size(&state, &path, bytes.len() as u64).await?;
                     let write = state
                         .storage
@@ -2003,10 +1996,14 @@ async fn handle_patch(
             // same guard PUT uses, on the serialised post-patch ACL.
             if protected_resource_for_acl(&path).is_some()
                 && !proposed_acl_keeps_caller_control(
+                    &state,
+                    &req,
+                    &path,
                     serialised.as_bytes(),
                     "application/n-triples",
                     agent.as_deref(),
                 )
+                .await
             {
                 return Ok(HttpResponse::Conflict().body(
                     "refused: the patched ACL would not grant Control to the caller \
@@ -2037,10 +2034,14 @@ async fn handle_patch(
             // F7: same lockout guard on the create-via-PATCH `.acl` path.
             if protected_resource_for_acl(&path).is_some()
                 && !proposed_acl_keeps_caller_control(
+                    &state,
+                    &req,
+                    &path,
                     serialised.as_bytes(),
                     "application/n-triples",
                     agent.as_deref(),
                 )
+                .await
             {
                 return Ok(HttpResponse::Conflict().body(
                     "refused: the patched ACL would not grant Control to the caller \
@@ -2959,7 +2960,15 @@ async fn handle_copy(
 
     // Same lockout guard as `handle_put` when the destination is a sidecar.
     if protected_resource_for_acl(&dest).is_some()
-        && !proposed_acl_keeps_caller_control(&body, &meta.content_type, agent.as_deref())
+        && !proposed_acl_keeps_caller_control(
+            &state,
+            &req,
+            &dest,
+            &body,
+            &meta.content_type,
+            agent.as_deref(),
+        )
+        .await
     {
         return Ok(HttpResponse::Conflict().body(
             "refused: the proposed ACL would not grant Control to the caller \
@@ -2993,10 +3002,14 @@ async fn handle_copy(
             .await
             .is_ok()
             && proposed_acl_keeps_caller_control(
+                &state,
+                &req,
+                &dst_acl,
                 &acl_body,
                 &acl_meta.content_type,
                 agent.as_deref(),
-            );
+            )
+            .await;
         if permitted {
             let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
             let write = state
