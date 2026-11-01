@@ -1,7 +1,7 @@
 ---
 title: solid-pod-rs Architecture Baseline
 doc_id: SPR-BASELINE
-version: 0.3.0
+version: 0.3.1
 status: active-normative
 verified_commit: 0ccad60
 sources:
@@ -33,6 +33,28 @@ surfaces — and where the shipped code diverges from the legacy ADR corpus
 prose**. Every load-bearing claim carries a `file:line` citation into the tree
 at `verified_commit`. Legacy ADRs are cited as evidence ("legacy ADR-059"),
 never as authority.
+
+### Evidence scope — reviewed 2026-11-01
+
+The top-level `verified_commit` identifies the original code baseline. Later
+dated amendments have their own evidence boundaries; the historical version,
+line numbers and consumer pins below are not a fresh description of every
+current build. At source revision `b644e55`, the workspace is
+`0.5.0-alpha.18`. A structural ADR-index pass does not resolve revision stamps,
+check implementation behaviour or establish consumer deployment.
+
+In that revision, the pod Git adapter checks Read at the pod root, then passes
+both a pod-specific filesystem root and the original pod-prefixed request path
+to `GitHttpService`. The service joins the pod slug again. Normal pod storage
+and the selected export repository therefore differ; a routing correction must
+also establish authority over exported children and history. A root resource
+grant alone does not establish that authority. This is a source finding,
+separate from the forge's repository-authorisation adapter.
+
+See the [estate assessment](../../../../VisionFlow/docs/estate-review/2026-11-01-solid-git-export-and-baseline.md)
+for the source, transport observations and remaining acceptance conditions.
+The normative invariants below remain in force; this scoped clarification does
+not re-certify the entire implementation or a running deployment.
 
 ## Current State
 

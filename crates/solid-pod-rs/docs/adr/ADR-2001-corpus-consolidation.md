@@ -69,3 +69,19 @@ The consolidated pack is a documentation boundary. Structural index validity and
 **Acceptance condition:** Bind source, resolved consumer dependency, feature configuration and deployed artefact identities. Preserve the five frozen records as history and give each unresolved claim an explicit disposition. Keep scoped component completion distinct from complete-system acceptance.
 
 Dependencies: CP-01 release identity and CP-04 effective authority. Reopen when the governed implementation, adapter, dependency, feature or deployment profile changes. See the [storage review](../../../../../VisionFlow/docs/estate-review/storage-and-authority.md) and [source revalidation](../../../../../VisionFlow/docs/estate-review/evidence/pod-closeout-snapshot.json). Scoped implementation status does not close these cross-service requirements.
+
+## Review qualification — 2026-11-01
+
+The archive cut is `e093e88`, later than the source baseline `0ccad60` named
+above. All five archived records match their bytes immediately before and at
+that cut and remain unchanged at `b644e55`. The current index check accepts
+eleven ADRs, but checks the presence of `verified_commit`, not its resolution
+or the behaviour of cited code. A temporary record carrying a nonexistent
+revision still passes that structural check.
+
+The baseline now makes this evidence scope explicit. Its historical source
+summary, dated amendments, producer repairs and deployed acceptance must be
+read separately. The Git adapter's root/path mismatch and root-only permission
+check are a current example of why a component and a valid index do not prove
+a working, correctly authorised consumer journey. See the [section assessment](../../../../../VisionFlow/docs/estate-review/2026-11-01-solid-git-export-and-baseline.md).
+The historical status axes are unchanged; cross-service acceptance remains open.
