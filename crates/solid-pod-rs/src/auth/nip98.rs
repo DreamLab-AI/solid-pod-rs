@@ -94,6 +94,10 @@ pub enum MatchPolicy {
 }
 
 /// `verify` with an explicit timestamp (for deterministic testing).
+///
+/// `Some(body)` requires a matching payload tag, including for empty bytes.
+/// `None` explicitly skips body verification; use it only when the caller
+/// does not require a signed body commitment.
 pub fn verify_at(
     header: &str,
     expected_url: &str,
@@ -184,7 +188,7 @@ pub fn verify_at_with_policy(
 
     let payload_tag = get_tag(&event, "payload");
     let verified_payload_hash = match body {
-        Some(b) if !b.is_empty() => {
+        Some(b) => {
             let expected = payload_tag
                 .as_ref()
                 .ok_or_else(|| PodError::Nip98("body provided but no payload tag".into()))?;
@@ -267,6 +271,9 @@ pub fn mint(url: &str, method: &str, privkey_hex: &str, now: u64) -> Result<Stri
 
 /// [`mint`] with an optional request body whose SHA-256 is recorded in a
 /// `payload` tag (NIP-98 body binding).
+///
+/// `Some(body)` hashes the supplied bytes even when empty. `None` omits the
+/// payload tag for callers that do not bind a request body.
 #[cfg(feature = "nip98-schnorr")]
 pub fn mint_with_payload(
     url: &str,
@@ -294,9 +301,7 @@ pub fn mint_with_payload(
         vec!["method".to_string(), method.to_uppercase()],
     ];
     if let Some(b) = body {
-        if !b.is_empty() {
-            tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
-        }
+        tags.push(vec!["payload".to_string(), hex::encode(Sha256::digest(b))]);
     }
 
     let mut event = Nip98Event {
@@ -791,6 +796,43 @@ mod tests {
         let hdr = authorization_header(&encode_event(&ev));
         let err = verify_at(&hdr, "https://a/b", "POST", Some(b"sneaky"), ts).unwrap_err();
         assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[test]
+    fn rejects_payload_removal_to_empty_body() {
+        let ts = 1_700_000_000;
+        let ev = valid_event("https://a/b", "PUT", ts, Some(b"original"));
+        let hdr = authorization_header(&encode_event(&ev));
+        let err = verify_at(&hdr, "https://a/b", "PUT", Some(b""), ts).unwrap_err();
+        assert!(matches!(err, PodError::Nip98(message) if message == "payload hash mismatch"));
+    }
+
+    #[test]
+    fn requires_payload_tag_for_supplied_empty_body() {
+        let ts = 1_700_000_000;
+        let ev = valid_event("https://a/b", "PUT", ts, None);
+        let hdr = authorization_header(&encode_event(&ev));
+        let err = verify_at(&hdr, "https://a/b", "PUT", Some(b""), ts).unwrap_err();
+        assert!(
+            matches!(err, PodError::Nip98(message) if message == "body provided but no payload tag")
+        );
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn mint_with_payload_binds_empty_body() {
+        let ts = 1_700_000_000;
+        let secret = hex::encode([0x42; 32]);
+        let token = mint_with_payload("https://a/b", "PUT", Some(b""), &secret, ts).unwrap();
+        let hdr = authorization_header(&token);
+        let verified = verify_at(&hdr, "https://a/b", "PUT", Some(b""), ts).unwrap();
+        assert_eq!(
+            verified.payload_hash.as_deref(),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+        assert!(verify_at(&hdr, "https://a/b", "PUT", Some(b"changed"), ts).is_err());
+        // None still explicitly opts out of body verification for non-body callers.
+        assert!(verify_at(&hdr, "https://a/b", "PUT", None, ts).is_ok());
     }
 
     #[test]

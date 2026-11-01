@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- NIP-98 now checks the payload hash for every supplied body, including empty
+  bytes. A token signed for nonempty content can no longer authorise an empty
+  PUT that replaces the resource. `mint_with_payload(..., Some(b""), ...)`
+  now includes SHA-256 of the empty body. Callers supplying an empty body to
+  the verifier must include that payload tag; `None` remains an explicit
+  opt-out from body verification. Publication and consumer upgrades are pending.
+
 ## [0.5.0-alpha.18] — 2026-10-29
 
 Security maintenance: clears the RUSTSEC-2026-0386, -0387, -0391 and -0395 to
