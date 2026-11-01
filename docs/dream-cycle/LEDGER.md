@@ -12,3 +12,4 @@
 | 2026-10-29 | performance-hardening | rate-limit key canonical 2→1 allocs/check; byte format pinned by test | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/10 | yes | ACCEPT |  | cd2a990fd145 |  |  |  |
 | 2026-10-30 | wac-evaluator | lib.rs locates WAC evaluator at root src/wac mod; wac.rs/mod.rs not supplied | NONE | NONE | yes | INCONCLUSIVE |  | 8bcc9de5bc02 |  |  |  |
 | 2026-10-31 | storage-backend | In-memory backend accepted ../ and NUL paths; normalize now rejects like FS | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/12 | yes | ACCEPT |  | 86db8980e19d |  |  |  |
+| 2026-11-01 | storage-backend | VETOED: Criterion bench added for SubdomainResolver::resolve per 2026-10-24… | NONE | NONE | yes | REJECT |  | beeb15c1a6ad |  |  |  |
