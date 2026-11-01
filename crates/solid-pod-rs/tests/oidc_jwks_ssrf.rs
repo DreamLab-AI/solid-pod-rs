@@ -36,6 +36,103 @@ use solid_pod_rs::oidc::jwks::{
 };
 use solid_pod_rs::security::ssrf::SsrfPolicy;
 
+#[tokio::test]
+async fn oidc_jwks_accepts_direct_approved_endpoints() {
+    let issuer = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": issuer.uri(),
+            "jwks_uri": format!("{}/jwks", issuer.uri()),
+            "authorization_endpoint": format!("{}/authorize", issuer.uri()),
+            "token_endpoint": format!("{}/token", issuer.uri())
+        })))
+        .mount(&issuer)
+        .await;
+    Mock::given(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys": []})))
+        .mount(&issuer)
+        .await;
+    let policy = SsrfPolicy::new().with_allowlist(vec!["127.0.0.1".into()]);
+    let result = fetch_jwks(&Url::parse(&issuer.uri()).unwrap(), &policy, &Client::new()).await;
+    assert!(result.unwrap().keys.is_empty());
+    assert_eq!(issuer.received_requests().await.unwrap().len(), 2);
+}
+
+/// A redirect is a new network destination, not covered by the first
+/// SSRF approval. Both servers are disposable loopback fixtures.
+#[tokio::test]
+async fn oidc_discovery_refuses_redirect_to_denied_host() {
+    let issuer = MockServer::start().await;
+    let target = MockServer::start().await;
+    let target_url = target.uri().replace("127.0.0.1", "localhost");
+    let policy = SsrfPolicy::new()
+        .with_allowlist(vec!["127.0.0.1".into()])
+        .with_denylist(vec!["localhost".into()]);
+    assert!(policy
+        .resolve_and_check(&Url::parse(&target_url).unwrap())
+        .await
+        .is_err());
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": issuer.uri(),
+            "jwks_uri": format!("{}/jwks", issuer.uri()),
+            "authorization_endpoint": format!("{}/authorize", issuer.uri()),
+            "token_endpoint": format!("{}/token", issuer.uri())
+        })))
+        .mount(&target)
+        .await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", target_url))
+        .mount(&issuer)
+        .await;
+    let result =
+        fetch_oidc_config(&Url::parse(&issuer.uri()).unwrap(), &policy, &Client::new()).await;
+    let hits = target.received_requests().await.unwrap().len();
+    assert_eq!(
+        hits, 0,
+        "denied redirect target received a request; result={result:?}"
+    );
+    assert!(result.is_err(), "redirected discovery must not be accepted");
+}
+
+#[tokio::test]
+async fn oidc_jwks_refuses_redirect_to_denied_host() {
+    let issuer = MockServer::start().await;
+    let target = MockServer::start().await;
+    let target_url = target.uri().replace("127.0.0.1", "localhost");
+    let policy = SsrfPolicy::new()
+        .with_allowlist(vec!["127.0.0.1".into()])
+        .with_denylist(vec!["localhost".into()]);
+    assert!(policy
+        .resolve_and_check(&Url::parse(&target_url).unwrap())
+        .await
+        .is_err());
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": issuer.uri(),
+            "jwks_uri": format!("{}/jwks", issuer.uri()),
+            "authorization_endpoint": format!("{}/authorize", issuer.uri()),
+            "token_endpoint": format!("{}/token", issuer.uri())
+        })))
+        .mount(&issuer)
+        .await;
+    Mock::given(path("/jwks"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", target_url))
+        .mount(&issuer)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys": []})))
+        .mount(&target)
+        .await;
+    let result = fetch_jwks(&Url::parse(&issuer.uri()).unwrap(), &policy, &Client::new()).await;
+    let hits = target.received_requests().await.unwrap().len();
+    assert_eq!(
+        hits, 0,
+        "denied redirect target received a request; result={result:?}"
+    );
+    assert!(result.is_err(), "redirected JWKS must not be accepted");
+}
+
 // --- test-1 --------------------------------------------------------------
 
 /// An issuer URL whose host literal is the cloud-metadata IP must be

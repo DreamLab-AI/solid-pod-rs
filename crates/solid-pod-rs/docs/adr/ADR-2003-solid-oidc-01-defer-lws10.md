@@ -156,3 +156,36 @@ checks, it does not alter the OIDC wire.
 `crates/solid-pod-rs/docs/reference/solid-oidc-compatibility-matrix.md`,
 `crates/solid-pod-rs/tests/oidc_compat_matrix.rs`. No source file under
 `crates/solid-pod-rs/src/oidc/` was modified. `verified_commit` unchanged.
+
+## Source acceptance refresh — 2026-11-01
+
+This extension supersedes current-behaviour claims in the September acceptance
+notes where they conflict with the code. It leaves the profile-deferral decision
+and deployment status unchanged.
+
+- `verify_access_token` now requires the default `solid` audience, and
+  `verify_access_token_with_policy` enforces an explicit expected audience.
+  `jwk_matches_alg` checks key family and any declared algorithm. The updated
+  compatibility matrix and existing tests reflect these changes; the old
+  arbitrary-audience finding is no longer current.
+- DPoP URL matching still folds path case and trailing slashes, retains queries,
+  and uses an opt-in cache whose capacity eviction can forget an unexpired
+  proof. Token expiry accepts equality and `nbf` is not checked. These are open
+  acceptance gaps, not guarantees supplied by a passing signature check.
+- Profile issuer binding is separate and reads a narrow HTML JSON-LD shape
+  without subject/context binding. The main resource server advertises DPoP
+  but does not call the OIDC verifier. Its Nostr path is not evidence of an
+  OIDC login-to-resource journey. The bundled IdP is a separate consumer.
+- The unreleased fetcher repair refuses discovery/JWKS redirects after local
+  fixtures reproduced requests reaching a policy-denied destination. Direct
+  approved endpoints remain supported. Publication and deployment are pending.
+
+The [15 October 2026 LWS authentication draft](https://www.w3.org/TR/2026/WD-lws10-authn-openid-20261015/)
+is still a Working Draft. The earlier `cnf.webid` ticket list must not stand in
+for a current conformance assessment. No LWS profile adoption is made here.
+
+Acceptance requires an external-issuer resource journey, subject-bound profile
+validation, correct URL/time boundaries and replay retention, followed by
+consumer release and deployment receipts. Source review, tests and the exact
+repair revision are recorded in the
+[estate OIDC assessment](../../../../../VisionFlow/docs/estate-review/2026-11-01-solid-oidc-boundaries.md).

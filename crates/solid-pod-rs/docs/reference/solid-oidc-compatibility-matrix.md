@@ -1,8 +1,8 @@
 # Solid-OIDC compatibility matrix
 
-**Version: `solid-pod-rs` 0.5.0-alpha.8** (workspace `Cargo.toml`,
+**Source version: `solid-pod-rs` 0.5.0-alpha.18 plus the unreleased redirect repair** (workspace `Cargo.toml`,
 `[workspace.package] version`). This matrix describes the OIDC surface
-of *that* crate version. It is the compatibility contract referenced by
+of the reviewed checkout on 2026-11-01, not a certification of the published package or a running deployment. It is the compatibility contract referenced by
 [ADR-2003](../adr/ADR-2003-solid-oidc-01-defer-lws10.md) — "Hold the
 OIDC wire at Solid-OIDC 0.1 and defer the LWS10 delta" — whose closeout
 asks for a *versioned* discovery/verifier/client matrix backed by
@@ -12,8 +12,10 @@ Everything below is grounded in [`src/oidc/mod.rs`](../../src/oidc/mod.rs)
 and [`src/oidc/jwks.rs`](../../src/oidc/jwks.rs) as of this version. Where
 the code's behaviour differs from what the specification (or the ADR's
 prose) would lead you to expect, this document records the **actual**
-behaviour and marks it. Everything asserted here that can be asserted
-in-process is asserted by
+behaviour and marks it. Discovery field names are mechanically compared by the following tests. Other
+rows require source review as well as suitable behavioural checks; passing tests
+do not automatically keep this prose current:
+
 [`tests/oidc_compat_matrix.rs`](../../tests/oidc_compat_matrix.rs).
 
 The whole module is behind the `oidc` cargo feature. Without it, none of
@@ -31,7 +33,7 @@ these surfaces exist.
 | **RFC 9449 (DPoP)** | Proof signature verification against the embedded header `jwk`; `typ=dpop+jwt`; `htm`/`htu`/`iat`-skew checks; `ath` binding (§4.3); asymmetric-only `alg` allowlist (§5); `jti` replay cache (opt-in) | **No DPoP nonce** (§8): no `DPoP-Nonce` issuance, no `nonce` claim check — a `nonce` claim on a proof is ignored. No `exp` on proofs. No authorization-code binding (`dpop_jkt` request parameter). ES512 unavailable (see *Verifier matrix*) | `oidc::verify_dpop_proof`, `oidc::verify_dpop_proof_with_ath`, `oidc::replay::DpopReplayCache` |
 | **RFC 7638 (JWK thumbprint)** | SHA-256 thumbprints over the exact required-member set for `EC`, `RSA`, `OKP`, `oct`, canonicalised via `BTreeMap` + `serde_json` (lexicographic, no whitespace), base64url-no-pad | No SHA-384/SHA-512 thumbprint variants; no `kty` outside the four above | `oidc::Jwk::thumbprint` |
 | **RFC 7517 (JWK)** | A minimal local `Jwk` carrying `kty`, `alg`, `kid`, `use`, `crv`, `x`, `y`, `n`, `e`, `k`; `jsonwebtoken::jwk::JwkSet` for the verification keyset | No `x5c`/`x5t`/`x5u` chain validation, no key-`use`/`key_ops` enforcement, no encryption keys | `oidc::Jwk`, `oidc::TokenVerifyKey::Asymmetric` |
-| **RFC 7519 (JWT)** | Header-`alg` dispatch with a closed allowlist; signature verification; `iss` exact match; manual `exp` check | `aud` **not** validated; `nbf` not checked; `jti`/`sub` format not constrained; `crit` header not processed; JWE (encrypted tokens) unsupported | `oidc::verify_access_token` |
+| **RFC 7519 (JWT)** | Header-`alg` dispatch with a closed allowlist; signature verification; `iss` exact match; explicit audience policy (default `solid`); manual `exp` check | `nbf` not checked; `jti`/`sub` format not constrained; `crit` header not processed; JWE (encrypted tokens) unsupported | `oidc::verify_access_token` |
 | **WebID-OIDC (predecessor of Solid-OIDC 0.1)** | Its identity model survives as the `sub`-as-WebID fallback in `extract_webid`, so pre-Solid-OIDC tokens whose `sub` is the WebID URL still resolve | No `id_token` "PoP token" flow, no `key`/`cnf` JWK-in-ID-token, no legacy WebID-TLS bridge, no legacy `iss` discovery from a WebID profile *inside this module* (WebID profile parsing lives in [`src/webid.rs`](../../src/webid.rs)) | `oidc::extract_webid`; `webid::extract_oidc_issuer`, `webid::extract_cid_openid_provider` |
 
 ## Discovery matrix
@@ -84,10 +86,11 @@ their guarantees are part of this contract:
 | Property | Behaviour |
 |---|---|
 | SSRF | `SsrfPolicy::resolve_and_check` runs twice — once for the issuer URL, again for the `jwks_uri` it returns. Approving the issuer does not approve the JWKS URL |
-| DNS rebinding | The connect-time resolver is pinned to the approved IP via `reqwest::ClientBuilder::resolve` |
+| Redirects | Refused by the unreleased repair: discovery and JWKS endpoints must respond directly. Automatic redirects previously bypassed approval of the new destination |
+| DNS rebinding | Direct connections use the approved IP via `reqwest::ClientBuilder::resolve`; inherited HTTP proxy routing needs a separate policy assessment |
 | Issuer fixation | The fetched document's `issuer` must equal the URL it was fetched from, modulo trailing slash (OIDC Core §3, RFC 8414 §3.3) |
 | Timeout | 10 s per request, hard |
-| Cache | 900 s TTL (`DEFAULT_CACHE_TTL`); `SHORT_CACHE_TTL` = 300 s |
+| Cache | 900 s freshness TTL (`DEFAULT_CACHE_TTL`); `SHORT_CACHE_TTL` = 300 s. Maps have no capacity limit or stale-entry removal; a JWKS miss bypasses the config cache |
 | Unknown fields | Preserved via `serde(flatten)` into `OidcDiscoveryDoc::extra` — an OP publishing extensions is never rejected |
 
 ## Verifier matrix
@@ -97,14 +100,14 @@ their guarantees are part of this contract:
 | Aspect | Supported | Rejected |
 |---|---|---|
 | `alg` (asymmetric, `TokenVerifyKey::Asymmetric`) | `RS256`, `ES256`, `EdDSA` | Everything else, including `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES384` — `PodError::Nip98("… not permitted …")`. Narrower than the DPoP allowlist |
-| `alg` (symmetric, `TokenVerifyKey::Symmetric`) | `HS256` **test/dev only** | Any asymmetric `alg` against a symmetric keyset — `"… but only a symmetric keyset is configured"` |
+| `alg` (symmetric, `TokenVerifyKey::Symmetric`) | `HS256` when the caller explicitly configures a symmetric key; intended for test/dev use, not compile-time gated on this access-token path | Any asymmetric `alg` against a symmetric keyset — `"… but only a symmetric keyset is configured"` |
 | `alg=none` | — | Always. `jsonwebtoken::Algorithm` has no `None` variant, so `decode_header` fails: `"access token header decode failed: …"` |
 | Alg confusion | — | `HS256` against an asymmetric keyset — `"HS256 not permitted for external OIDC — asymmetric keyset required"` |
 | Key types | Whatever `jsonwebtoken::jwk::JwkSet` + `DecodingKey::from_jwk` accept for the three algs above (EC P-256, RSA, Ed25519) | A `kid` absent from the configured keyset; an alg with no matching JWK when the token carries no `kid` |
-| Key selection | Exact `kid` match first; otherwise the first JWK whose `key_algorithm` parses to the token's `alg` | — |
+| Key selection | Exact `kid` match first, checked against key family/curve and any declared algorithm; otherwise the first compatible key. A missing JWK `alg` is allowed when its family matches | An incompatible key family/curve or conflicting declared algorithm is refused |
 | Signature | Verified by `jsonwebtoken::decode` before any claim is trusted | Any tampered segment — `"access token decode failed: …"` |
 | **Issuer** | `Validation::set_issuer(&[expected_issuer])` — **exact string equality** | Any difference at all: trailing slash, host/scheme case, `https://op.example.evil`, a prefix, an empty expectation. There is no URL normalisation on this path — unlike `discovery_for`, which trims trailing slashes. Normalise once through `discovery_for(...).issuer` and use that string on both sides |
-| **Audience** | **Not validated.** `validation.validate_aud = false` ("Solid-OIDC allows arbitrary aud") and the function takes no expected-audience argument, so *any* `aud` value verifies — including another pod's URL, an empty array, a number or `null` | Only *absence*: `SolidOidcClaims::aud` has no `#[serde(default)]`, so a token omitting `aud` fails to deserialise (`"access token decode failed"`). **This is a gap, not a feature.** A deployment that needs audience restriction must enforce it above this API |
+| **Audience** | The default requires a string equal to `solid` or an array containing it. `verify_access_token_with_policy` accepts an explicit `AccessTokenPolicy::new(expected)`; the JWT library's audience check is disabled because this check runs afterwards | Missing `aud`, a nonmatching string/array, a number or null is refused. This supersedes the alpha.8 matrix's arbitrary-audience finding |
 | Expiry | Checked manually as `claims.exp < now` → `"access token expired"`. `exp == now` is still valid. Checked *before* `cnf` and before WebID extraction | — |
 | `nbf` | Not checked | — |
 | `cnf` / `jkt` binding | `claims.cnf.jkt` must equal the caller-supplied `dpop_jkt` byte-for-byte | Absent `cnf` — `"access token missing cnf"`. Mismatch — `"cnf.jkt does not match DPoP thumbprint"`. Note the comparison here is a plain `!=`, not constant-time (unlike the `ath` check) |
@@ -131,12 +134,12 @@ without it, they are synchronous and take no cache argument.
 | Signature | Verified against the embedded `jwk` — the proof is authenticated, not merely well-formed | `"DPoP proof signature verification failed: …"` |
 | `jkt` derivation | RFC 7638 over the header `jwk`, surfaced as `DpopVerified::jkt`; this is the value fed to `verify_access_token`'s `dpop_jkt` | — |
 | `htm` | Compared case-insensitively (`to_uppercase` on both sides) | `"DPoP htm mismatch: … vs …"` |
-| `htu` | Compared after `trim_end_matches('/')` + `to_ascii_lowercase()`. **Note:** this lower-cases the whole URL including the path, so `/Foo` and `/foo` compare equal — looser than RFC 3986 | `"DPoP htu mismatch: … vs …"`. No query/fragment stripping is performed |
+| `htu` | Compared after `trim_end_matches('/')` + `to_ascii_lowercase()`. **Note:** this lower-cases the whole URL including the path, so `/Foo` and `/foo` compare equal — looser than RFC 3986 | `"DPoP htu mismatch: … vs …"`. No query/fragment stripping is performed; callers passing a full request URL with a query must account for this gap |
 | `iat` | Must be within `±skew` of `now` (bidirectional; a historic `&&` made this gate a no-op and is fixed) | `"DPoP iat outside tolerance"` |
 | `exp` | Not present and not checked — freshness is `iat` + replay cache | — |
-| `nonce` | **Not implemented.** No `DPoP-Nonce` challenge is issued and the claim is not read | — |
+| `nonce` | **Not implemented (optional RFC 9449 capability).** No `DPoP-Nonce` challenge is issued and the claim is not read | — |
 | `ath` (RFC 9449 §4.3) | Enforced when the caller passes `expected_ath`: the claim must be present and equal, compared in constant time | Missing — `"DPoP proof missing ath but access token present"`. Mismatched — `"DPoP ath does not match access-token hash"`. With `expected_ath = None` the binding is **off** |
-| `jti` replay | Opt-in via `Some(&DpopReplayCache)` (feature `dpop-replay-cache`), checked *after* signature and claim validation. Default TTL 60 s, capacity 10 000, overridable via `SOLID_POD_DPOP_REPLAY_TTL_SECS` / `SOLID_POD_DPOP_REPLAY_MAX_SIZE` | `"DPoP jti replay detected: …"`, incrementing `DPOP_REPLAY_REJECTED_TOTAL`. With `None`, replays are **accepted** — detection is strictly opt-in |
+| `jti` replay | Opt-in via `Some(&DpopReplayCache)` (feature `dpop-replay-cache`), checked *after* signature and claim validation. Default TTL 60 s, capacity 10 000, overridable via `SOLID_POD_DPOP_REPLAY_TTL_SECS` / `SOLID_POD_DPOP_REPLAY_MAX_SIZE` | `"DPoP jti replay detected: …"`, incrementing `DPOP_REPLAY_REJECTED_TOTAL`. With `None`, replays are **accepted** — detection is strictly opt-in. Capacity pressure evicts an unexpired LRU entry, permitting its proof again; retention must also cover the full remaining freshness window |
 | Error type | `PodError::Nip98` for every claim/signature failure; `PodError::Unsupported` for thumbprint/key-type failures | — |
 
 ## Unsupported identity shapes
@@ -166,13 +169,30 @@ It prefers `webid`, then falls back to `sub`.
 | `aud` member absent | Rejected — but for a *deserialisation* reason, not an audience policy | `Nip98("access token decode failed: …")` |
 | Unregistered JWK `kty` in a DPoP header | Rejected | `Unsupported("unsupported JWK kty: …")` |
 
+## Consumer and profile-binding boundary
+
+`verify_webid_issuer_binding` is a separate caller-invoked step. Its parser reads
+a literal `solid:oidcIssuer` or full-IRI property from an HTML JSON-LD island;
+it does not bind the node identifier to the token WebID, expand JSON-LD contexts,
+or read equivalent Turtle. Successful JWT verification alone establishes no
+WebID-profile authority. The cached verifier does not invoke this step.
+
+The main pod resource routes call NIP-98 extraction, not the OIDC verifier.
+Their challenge advertises DPoP despite that missing integration. The bundled
+IdP calls the DPoP verifier during code exchange and the access-token verifier
+for its own userinfo method; neither establishes external-issuer admission on
+the pod resource routes. A crate feature being enabled does not wire a route.
+
 ## Deferred: LWS-10
 
 ADR-2003 holds the published OIDC wire at **Solid-OIDC 0.1** and defers
 the W3C LWS 1.0 delta. The deferral is a decision, not an oversight: LWS
 1.0 was at First Public Working Draft (2026-04-23) when the ADR was
 taken, and chasing an FPWD whose fields may change before Recommendation
-costs more than the parity gap. Concretely deferred:
+costs more than the parity gap. The list below records the older proposal, not a current LWS conformance checklist.
+The [15 October 2026 Working Draft](https://www.w3.org/TR/2026/WD-lws10-authn-openid-20261015/)
+uses subject-controlled-identifier and issuer-service binding; an adoption review
+must compare that dated specification afresh. Historically deferred:
 
 - **`lws_supported`** is not advertised in discovery.
 - **EdDSA in `dpop_signing_alg_values_supported`** is not advertised —
@@ -199,9 +219,8 @@ version does.
 
 ## Verification
 
-Every row above that is assertable in-process is asserted by
-[`tests/oidc_compat_matrix.rs`](../../tests/oidc_compat_matrix.rs), whose
-sections mirror this document: **A** discovery (field set, issuer
+The discovery-field names are compared mechanically by
+[`tests/oidc_compat_matrix.rs`](../../tests/oidc_compat_matrix.rs), while its other sections exercise selected behaviours: **A** discovery (field set, issuer
 normalisation, endpoint shape, advertised algorithm lists and the absent
 LWS-10 fields), **B** issuer validation including near-misses, **C** the
 audience behaviour exactly as described above, **D** every unsupported

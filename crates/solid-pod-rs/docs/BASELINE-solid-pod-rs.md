@@ -208,12 +208,14 @@ the pod lane still refuses push (ER-28).
    precisely so that tier can adopt them, but that needs a published version to
    pin. Until then the edge tier still treats failed or invalid reads as misses,
    and the same caveat applies to the private-cache policy (ADR-2002/2005).
-5c. **Access-token `aud` is not validated.** `verify_access_token` sets
-   `validate_aud = false`; only the claim's *presence* is enforced (no
-   `#[serde(default)]` on `SolidOidcClaims::aud`). A token minted for another
-   audience verifies. Pinned by `tests/oidc_compat_matrix.rs::c1`/`c2` and
-   documented in the compatibility matrix. A deployment needing audience
-   restriction must enforce it above this API (ADR-2003).
+5c. **Access-token audience policy is enforced in current source.** The default
+   verifier requires `aud` to equal or contain `solid`; the explicit policy
+   API accepts a named deployment audience. The JWT library's
+   `validate_aud = false` delegates to that later check. The earlier alpha.8
+   finding is historical. WebID profile authority remains a separate helper,
+   and the main pod resource routes still do not consume the OIDC verifier.
+   See the refreshed compatibility matrix and ADR-2003's 2026-11-01 extension.
+
 6. **LAN Bitcoin node cutover unverified (legacy ADR-061).** `192.168.2.27` was
    unreachable at design time (2026-08-25); the shipped default stays public
    `mempool.space/testnet4`. The LAN URL is deployment config, gated on the
@@ -310,7 +312,7 @@ and no ADR's `activation_status` or `verified_commit` changed.
 | ADR | In-repo status after this change |
 |---|---|
 | [ADR-2002](adr/ADR-2002-wac-access-model.md) | Private-cache policy implemented at the server layer and tested; the **forum edge** finding stays open (sibling repo). |
-| [ADR-2003](adr/ADR-2003-solid-oidc-01-defer-lws10.md) | Versioned compatibility matrix + 28 executable checks replace source observations. Three divergences (audience not validated, malformed `webid` silently ignored, issuer normalisation asymmetry) are now documented and pinned — **not fixed**. |
+| [ADR-2003](adr/ADR-2003-solid-oidc-01-defer-lws10.md) | Versioned compatibility matrix + 28 executable checks replace source observations. The 2026-11-01 refresh corrects the historical audience finding. Malformed WebID fallback, issuer normalisation, replay and resource-route integration remain open; see its scoped acceptance extension. |
 | [ADR-2004](adr/ADR-2004-provenance-off-by-default.md) | Content, mark and anchor outcomes are separately observable and typed; a failed mark reaches the caller. Write-then-mark **ordering is unchanged** — the three steps are still not atomic; the receipt makes the window observable, not closed. |
 | [ADR-2005](adr/ADR-2005-fail-closed-untrusted-parsing.md) | Typed missing/invalid/unavailable outcomes carried through the native and object-safe resolvers, which are now one implementation. Edge resolver is out of repo. |
 | [ADR-2006](adr/ADR-2006-nip98-replaystore-seam.md) | The reference bounded LRU now retains every event through its nominal window: at capacity it refuses rather than evicting an unexpired entry. The seam remains `standalone` — one implementor. |

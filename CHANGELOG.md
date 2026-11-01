@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- OIDC discovery and JWKS fetching now refuse HTTP redirects. Previously a
+  checked endpoint could redirect to a destination that the supplied SSRF
+  policy denied. Discovery and JWKS endpoints must return their documents
+  directly. Regression tests cover both redirect paths and direct fetching.
 - NIP-98 now checks the payload hash for every supplied body, including empty
   bytes. A token signed for nonempty content can no longer authorise an empty
   PUT that replaces the resource. `mint_with_payload(..., Some(b""), ...)`

@@ -9,9 +9,8 @@
 //! the unsupported identity shapes, and issuer/audience/token binding.
 //!
 //! This file is the executable half of that pair. Its prose half is
-//! [`docs/reference/solid-oidc-compatibility-matrix.md`]; every row of
-//! that matrix that can be asserted in-process is asserted here, so
-//! the document cannot silently drift away from the code.
+//! [`docs/reference/solid-oidc-compatibility-matrix.md`]; the discovery field names are compared directly, while other rows
+//! require source review as well as the behavioural tests below.
 //!
 //! Sections mirror the matrix document:
 //!
@@ -461,7 +460,7 @@ fn c1_audience_must_name_solid() {
 fn c2_audience_member_is_structurally_required() {
     // The flip side of C1: `SolidOidcClaims::aud` carries no
     // `#[serde(default)]`, so a token that OMITS `aud` entirely fails
-    // to deserialise. Absence is rejected; content is unchecked.
+    // to deserialise. Absence is rejected; C1 separately checks the audience policy.
     let mut claims = base_claims("JKT-C2", NOW + 3600);
     claims
         .as_object_mut()

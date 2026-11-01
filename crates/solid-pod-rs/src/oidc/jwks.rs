@@ -24,6 +24,9 @@
 //! 5. **Cache with TTL** — successful discovery documents and JWKS
 //!    are memoised for 900s (JSS parity), amortising the cost of the
 //!    SSRF resolve+connect handshake across many verifications.
+//! 6. **No redirects** — discovery and JWKS endpoints must respond
+//!    directly. A redirect destination has not passed the policy check
+//!    or address pinning, so automatic redirect following is disabled.
 //!
 //! This module is feature-gated behind `oidc`. The aggregate entry
 //! point for callers is [`CachedFetcher`]; the bare [`fetch_oidc_config`]
@@ -208,6 +211,7 @@ fn pinned_client(
     let _ = base; // reserved for future shared config
     reqwest::Client::builder()
         .resolve(host, SocketAddr::new(ip, port))
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(FETCH_TIMEOUT)
         .build()
 }
