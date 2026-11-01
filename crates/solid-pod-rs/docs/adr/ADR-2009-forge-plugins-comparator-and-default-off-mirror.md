@@ -67,3 +67,21 @@ Status is partial and inactive. Verified at `4e97893` (base `f382039`). Evidence
 The default-off clauses of this record are superseded by ADR-2010, which states this in its Consequences. `superseded_by` is left empty because the rest of this record stands.
 
 Activation is `staged`, not `live`. `cargo search solid-pod-rs-forge` → `0.5.0-alpha.18`, and the crates.io features for `solid-pod-rs-forge` 0.5.0-alpha.17 include `anchoring`, `announce` and `mirror`. The agentbox `solid-pod` service runs `solid-pod-rs-server-0.5.0-alpha.18` built with `forge-full` (agentbox `flake.nix:1547`), and `GET http://127.0.0.1:8484/forge/api/repos` → `200 {"repos":[]}`. However, no relay session from that process was observed: `ss -tnp` shows the only established `:7777` connection belongs to `nostr-pod-bridge` and `node`, not `solid-pod-rs-server`. The cause is configuration, not a start defect: the running process's `FORGE_MIRROR_FOLLOW` holds no entries (0 matching `^[0-9a-f]{64}/`), and `mirror_config` (`crates/solid-pod-rs-server/src/lib.rs:4964-4985`) keeps the mirror off unless at least one relay and one valid follow entry are present. Nothing is being mirrored, and the public `https://pods-native.dreamlab-ai.com/forge` did not answer (curl status 000).
+
+## Review qualification, 2026-11-01
+
+The hidden-ref close-out above is too broad for the composed export path at
+`b644e55`. The mirror sets `uploadpack.hideRefs` and `transfer.hideRefs`, but
+the shared Git HTTP service forces `uploadpack.allowTipSHA1InWant=true`.
+A local subprocess fixture confirms that a known held tip remains fetchable:
+discovery omits it, yet the returned pack decodes to the held synthetic bytes.
+The same request with that option false is refused. This is configuration-level
+evidence; the Rust service regression is pending, and no deployed mirror was
+tested. The historical release and activation observations above remain dated.
+
+Branch promotion and object publication need separate acceptance checks.
+Suppressing this option closes that direct request path but does not establish
+general isolation for objects in one repository. See the
+[Git configuration contract](https://git-scm.com/docs/git-config#Documentation/git-config.txt-uploadpackallowTipSHA1InWant)
+and VisionFlow's `docs/estate-review/2026-11-01-solid-git-export-and-baseline.md`
+for the source trace, raw evidence and remaining acceptance boundary.

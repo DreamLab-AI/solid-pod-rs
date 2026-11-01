@@ -58,3 +58,14 @@ Status is partial and inactive: the code is merged but unreleased, and no consum
 - Dependency audit: the RustCrypto 0.14 migration `84bf9f5` cleared RUSTSEC-2026-0386/0387/0391/0395–0403. `cargo audit` was not re-run for this note.
 
 Activation stays `staged`. No mirror relay session from `solid-pod-rs-server` was observed: the only established `127.0.0.1:7777` connection is between `nostr-pod-bridge` and `node`. The cause is configuration, not a start defect: the running process's `FORGE_MIRROR_FOLLOW` holds no entries (0 matching `^[0-9a-f]{64}/`), and `mirror_config` (`crates/solid-pod-rs-server/src/lib.rs:4964-4985`) keeps the mirror off unless at least one relay and one valid follow entry are present. The public `https://pods-native.dreamlab-ai.com/forge` did not answer (curl status 000). `review_trigger` now names the observable event that would move this record to `live`.
+
+## Review qualification, 2026-11-01
+
+The decision's hidden-ref assurance needs the qualification now recorded in
+[ADR-2009](ADR-2009-forge-plugins-comparator-and-default-off-mirror.md#review-qualification-2026-11-01).
+At `b644e55`, the export service explicitly permits fetching a hidden tip by
+hash, despite the mirror's ref-hiding configuration. A local Git probe confirms
+that interaction; Rust HTTP and deployed mirror acceptance are not established
+by that probe. The historical consumer observations above are not fresh
+deployment evidence, and compilation with `forge-full` does not prove that
+held objects cannot be served.
