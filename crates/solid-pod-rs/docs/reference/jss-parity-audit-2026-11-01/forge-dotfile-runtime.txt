@@ -1,0 +1,17 @@
+== GET /forge/alice/demo/raw/HEAD/lib.rs
+HTTP/1.1 200 OK
+pub fn f() {}
+
+== GET /forge/alice/demo/raw/HEAD/.gitignore
+HTTP/1.1 403 Forbidden
+dotfile path denied by allowlist
+== GET /forge/alice/demo/raw/main/.gitignore
+HTTP/1.1 403 Forbidden
+dotfile path denied by allowlist
+== GET /forge/alice/demo/blob/main/.gitignore
+HTTP/1.1 403 Forbidden
+dotfile path denied by allowlist
+== GET /forge/alice/demo/tree/main
+HTTP/1.1 200 OK
+<!doctype html><html lang="en">
+404

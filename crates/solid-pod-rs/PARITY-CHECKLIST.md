@@ -30,56 +30,57 @@ and our status against it.
 
 ---
 
-## Current state (2026-10-19, alpha.16 — JSS `8d68ceb`, package 0.0.221; plugins `63a16cb`)
+## Current state (2026-11-01 — JSS `7c9b0de`, package 0.0.224; plugins `63a16cb`)
 
-**264 rows tracked** across 25 functional sections. §25 audits the JSS `plugins`
-repository's forge commits for repo-held git-mark trails, `did:nostr` display and
-the kind-30618 mirror (a second comparator, bounded as that section says). §24
-records the `0.0.220` → `0.0.221` core delta (CORS expose list, git lane deferring
-to plugin prefixes, root WebSocket registration). §23 records the one-commit
-`0.0.220` → `e7e0525` delta (#619), both rows present. §21 records the JSS
-v0.0.197 → v0.0.204 delta. §22 audits every portable behaviour in the
-v0.0.204 → v0.0.220 delta, including the runtime-plugin cluster, body-limit
-and port behaviour, NIP-98 raw-byte hashing, sidecar Control enforcement,
-and the DID Core-first context update.
+**300 rows tracked** across 28 functional sections. §26 records the `0.0.221` →
+`0.0.224` core delta: ACLs read by expanded JSON-LD IRI and refusal of ACLs that
+grant nothing (#631/#632), PATCH applied as quads with Append for insert-only and
+per-resource serialisation (#633), and NIP-11 at the relay URL (#635). §27 records
+pre-existing core gaps the 2026-11-01 audit surfaced by checking the server's route
+table and runtime behaviour, not library presence; it includes a P0 (row 287:
+pods created by `POST /.pods` get no ACL of their own) and runtime-reproduced P1s in
+PATCH, conditional requests and ACL validation. A second P0 is listed under §27's
+defects: every N3 PATCH corrupts non-ASCII literals in the stored document. §28 maps the JSS plugin system and the
+non-forge `plugins` directories (ADR-2011). Rows 31, 39, 40, 41, 91, 92, 93, 95, 101, 103
+and 104 were reclassified in place. Method and evidence:
+[`docs/reference/jss-parity-audit-2026-11-01.md`](docs/reference/jss-parity-audit-2026-11-01.md).
 
 ### Parity percentages
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **99.2%** raw checklist gate — 245/247 classified in-scope rows |
-| Half-credit (partial-parity counted 0.5) | **99.6%** raw checklist gate |
-| Spec-normative surface | **~100%** — every portable row present or net-new |
-| Protocol-visible surface | **~100%** |
-| JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **functional** — 5 sibling crates shipped |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 86.4%** — 242/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 89.5%** |
+| Spec-normative surface | **partial** — N3 Patch parsing (row 269), `where` binding (270), conditional writes (286) and ACL IRI resolution (288) are open |
+| Protocol-visible surface | **partial** — `/.notifications` advertised but not served (279) |
+| JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — relay and AP inbox/outbox are not mounted by the server (278, 281) |
 
-> **Authoritative figure.** The **99.2% strict** value is the current gate
-> over all 264 tracked rows: 245 passing rows ÷ 247 classified in-scope rows.
-> The denominator excludes explicitly deferred, wontfix-in-crate,
-> and not-applicable/present-by-absence rows. It supersedes the
-> Sprint 12–14 headline figures (~98–99%), which were computed against the
-> smaller 132–137-row denominators before §19–§21 added rows and the
-> counts were reconciled — the strict percentage *dropped* only because the
-> denominator grew, not because parity regressed. The same holds for the move
-> from 97.7% (232 rows) to 97.3% (244 rows): §25 adds one new partial-parity row
-> (239, NIP-34 anchor tags with no event publisher yet) and its in-scope rows
-> raise the denominator by 11. `README.md` and `GAP-ANALYSIS.md` are aligned to
-> this 99.2% figure. Rows 245 to 264 (the rest of the forge, ported in the 0.5.0-alpha.17 cycle) lift it from 97.3%.
+> **Authoritative figure.** **86.4% strict** over 300 rows, and an **upper
+> bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
+> not a regression in the code: the earlier figure counted library presence as
+> parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
+> in its scope (§26–§28 and the eleven rows it reclassified). The remaining
+> `present` rows have not been re-audited for server wiring, and some may be
+> library-only in the same way. The `0.0.224` delta adds 14 rows (§26); §27
+> records 12 older gaps.
 
 ### By status
 
-| Status | Count | Delta vs Sprint 13 |
-|---|---|---|
-| present | 220 | Includes present-by-absence classifications; +2 at §23, +10 at §24–§25, +26 at §26 (rows 245–264 and reclassifications) |
-| partial-parity | 2 | Rows 135 (account persistence) and 247 (issue delete/edit server side) |
-| semantic-difference | 5 | — |
-| missing | 0 | -4 |
-| net-new (ours; not in JSS) | 19 | S3 dependency-only scaffold removed and reclassified as absent on both sides |
-| explicitly-deferred | 3 | Rows 36, 119, 151: JSS lacks them too |
-| wontfix-in-crate | 3 | — |
-| not-applicable / present-by-absence | 14 | +14 (Node/Fastify/browser/tunnel/runtime-plugin constructs; row 70 WebID-TLS is deployment-inert) |
-| other/unclassified | 10 | Architectural and test-meta rows excluded from the denominator |
-| **Total** | **264** | Core comparator: upstream `JavaScriptSolidServer` at `8d68ceb`, package `0.0.221`, 2026-10-19; forge comparator: `plugins` at `63a16cb`, 2026-10-19 |
+| Status | Count |
+|---|---|
+| present (includes present-by-absence) | 216 |
+| net-new (ours; not in JSS) | 19 |
+| semantic-difference | 7 |
+| partial-parity | 17 |
+| missing | 21 |
+| explicitly-deferred | 5 |
+| wontfix-in-crate | 3 |
+| other/unclassified (not applicable, architectural, test-meta) | 12 |
+| **Total** | **300** |
+
+Counts are the output of `scripts/parity-check.sh` at the 2026-11-01 audit. Core
+comparator: upstream `JavaScriptSolidServer` `gh-pages` at `7c9b0de`, package
+`0.0.224`, 2026-10-22. Plugins comparator: `plugins` at `63a16cb`, 2026-10-19.
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -168,7 +169,7 @@ so this tracker does not freeze a number that immediately becomes stale.
 | 28 | CORS: `Access-Control-Allow-Origin` echoed/`*` | `src/ldp/headers.js:96` | `solid-pod-rs-server::CorsHeaders` echoes request Origin or emits `*` | present | `crates/solid-pod-rs-server/src/lib.rs::CorsHeaders`; `crates/solid-pod-rs-server/tests/middleware_guards.rs` | Mirrors JSS global CORS envelope. |
 | 29 | CORS `Access-Control-Expose-Headers` (full list) | `src/ldp/headers.js:99` | `solid-pod-rs-server::CorsHeaders` emits JSS expose list including `Updates-Via`, `WAC-Allow`, payment headers | present | `crates/solid-pod-rs-server/src/lib.rs::add_cors_headers`; `crates/solid-pod-rs-server/tests/middleware_guards.rs` | |
 | 30 | ETag header on read/write | `src/storage/filesystem.js:32` = md5(mtime+size) | `ResourceMeta::etag` = hex SHA-256 | semantic-difference | `src/storage/mod.rs:45` | Both spec-legal. See GAP §D.6. |
-| 31 | If-Match / If-None-Match (conditional) | `src/utils/conditional.js` + `src/handlers/resource.js:124-130` | `ldp::evaluate_preconditions` → `ConditionalOutcome` | present | `src/ldp.rs:1143` | 304/412 outcomes. |
+| 31 | If-Match / If-None-Match (conditional) | `src/utils/conditional.js` + `src/handlers/resource.js:124-130` | `ldp::evaluate_preconditions` → `ConditionalOutcome` | partial-parity | `src/ldp.rs:1143` | 304/412 outcomes. 2026-11-01: library-only; the server never calls `evaluate_preconditions` on PUT or PATCH (row 286, runtime). |
 | 32 | Range requests (start-end, start-, -suffix) | `src/handlers/resource.js:56-106` | `ldp::parse_range_header`, `slice_range`, `ByteRange::content_range` | present | `src/ldp.rs:1240,1308,1226` | Multi-range rejected on both sides (correct). |
 | 33 | OPTIONS method | `src/server.js:452` | `ldp::options_for` → `OptionsResponse` | present | `src/ldp.rs:1336` | |
 | 34 | Content-type negotiation (JSON-LD native, Turtle+N3 under `--conneg`) | `src/rdf/conneg.js:33-61` | `ldp::negotiate_format` + `RdfFormat` enum | present | `src/ldp.rs:218,252` | We natively support both always; no flag needed. |
@@ -181,9 +182,9 @@ so this tracker does not freeze a number that immediately becomes stale.
 
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 39 | N3 Patch (Solid Protocol §8.2) with `solid:inserts` / `solid:deletes` / simplified `where` | `src/patch/n3-patch.js:22-120` | `ldp::apply_n3_patch` | present | `src/ldp.rs:789` | |
-| 40 | N3 Patch `where` precondition failure | `n3-patch.js` never invokes `validatePatch`, silently drops missing deletes | `evaluate_preconditions` → 412 | net-new (Rust strictly more conformant) | `src/ldp.rs:1143` | JSS is silently non-conformant; we return 412. |
-| 41 | SPARQL-Update (INSERT DATA, DELETE DATA, DELETE+INSERT+WHERE, DELETE WHERE, standalone INSERT WHERE) | `src/patch/sparql-update.js:22-82` (regex) | `ldp::apply_sparql_patch` via `spargebra` | present (broader coverage) | `src/ldp.rs:885` | We accept full SPARQL 1.1 algebra. |
+| 39 | N3 Patch (Solid Protocol §8.2) with `solid:inserts` / `solid:deletes` / simplified `where` | `src/patch/n3-patch.js:22-120` | `ldp::apply_n3_patch` | partial-parity | `src/ldp.rs:789` | 2026-11-01: the server reads each block as line-wise N-Triples, so prefixed N3 gets 400; see row 269. Evidence moved to `src/ldp.rs:1149-1194`. |
+| 40 | N3 Patch `where` precondition failure | `n3-patch.js` never invokes `validatePatch`, silently drops missing deletes | `evaluate_preconditions` → 412 | semantic-difference | `src/ldp.rs:1143` | JSS is silently non-conformant; we return 412. 2026-11-01: reversed by JSS `a6834e8`: JSS now binds `where` and answers 409; we answer 412 and do not bind variables (row 270). |
+| 41 | SPARQL-Update (INSERT DATA, DELETE DATA, DELETE+INSERT+WHERE, DELETE WHERE, standalone INSERT WHERE) | `src/patch/sparql-update.js:22-82` (regex) | `ldp::apply_sparql_patch` via `spargebra` | partial-parity | `src/ldp.rs:885` | We accept full SPARQL 1.1 algebra. 2026-11-01: `apply_sparql_patch` is at `src/ldp.rs:1276`; patterns with variables are a 204 no-op (§27 defects), so "full algebra" is overstated. |
 | 42 | JSON Patch (RFC 6902) | **not implemented** | `ldp::apply_json_patch` (add/remove/replace/test/copy/move) | net-new | `src/ldp.rs:1363` | Non-normative Solid extension. |
 | 43 | PATCH dispatch on `Content-Type` | inline in `src/handlers/resource.js` | `ldp::patch_dialect_from_mime` → `PatchDialect::{N3,Sparql,JsonPatch}` | present | `src/ldp.rs:1552,1558` | |
 
@@ -266,11 +267,11 @@ Rows 89–90 live in `solid-pod-rs-nostr` (Sprint 10).
 
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` | `LegacyWebSocketSession` — full sub/ack/err/pub/unsub protocol, per-sub WAC Read re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container fanout | present | `src/notifications/legacy.rs` | Sprint 11. 11 integration tests. |
-| 92 | WebSocketChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebSocketChannelManager` (broadcast + 30s heartbeat) | net-new | `src/notifications/mod.rs` | |
-| 93 | WebhookChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebhookChannelManager` (AS2.0 POST, 3× retry) | net-new | `src/notifications/mod.rs` | |
+| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` | `LegacyWebSocketSession` — full sub/ack/err/pub/unsub protocol, per-sub WAC Read re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container fanout | partial-parity | `src/notifications/legacy.rs` | Sprint 11. 11 integration tests. 2026-11-01: library-only; the server has no `/.notifications` route although it advertises one (row 279). |
+| 92 | WebSocketChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebSocketChannelManager` (broadcast + 30s heartbeat) | partial-parity | `src/notifications/mod.rs` | 2026-11-01: library-only; the server mounts no notifications endpoint (row 279). |
+| 93 | WebhookChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebhookChannelManager` (AS2.0 POST, 3× retry) | partial-parity | `src/notifications/mod.rs` | 2026-11-01: library-only; the server mounts no notifications endpoint (row 279). |
 | 94 | Server-Sent Events | not implemented | not implemented | present (both absent) | — | Not in spec. |
-| 95 | Subscription discovery document (`.well-known/solid/notifications`) | status JSON only (`src/notifications/index.js:43`) | `notifications::discovery_document` (full Notifications 0.2 descriptor) | net-new (richer) | `src/notifications/mod.rs` | |
+| 95 | Subscription discovery document (`.well-known/solid/notifications`) | status JSON only (`src/notifications/index.js:43`) | `notifications::discovery_document` (full Notifications 0.2 descriptor) | partial-parity | `src/notifications/mod.rs` | 2026-11-01: library-only; the server mounts no notifications endpoint (row 279). |
 | 96 | Subscription trait + in-memory registry | inline | `notifications::InMemoryNotifications` | present | `src/notifications/mod.rs` | |
 | 97 | Retry + dead-letter on webhook failure | not implemented | `WebhookChannelManager` exponential backoff, drop-on-4xx | net-new | `src/notifications/mod.rs` | |
 | 98 | Change notification mapping (storage event → AS2.0 Create/Update/Delete) | inline | `ChangeNotification::from_storage_event` | present | `src/notifications/mod.rs` | |
@@ -284,10 +285,10 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
 | 100 | Git HTTP backend (`handleGit` CGI, path-traversal hardening, `receive.denyCurrentBranch=updateInstead`) | `src/handlers/git.js:11-268` + WAC hook `src/server.js:286-314` | `GitHttpService` spawns `git http-backend` CGI with full env plumbing, path-traversal guard, config mutator | present | `crates/solid-pod-rs-git/src/service.rs`, `guard.rs`, `config.rs` | Sprint 10. 29 unit + 8 integration tests. |
-| 101 | Nostr relay NIP-01/11/16 | `src/nostr/relay.js:95-286` | `Relay` with `EventStore` + `tokio::broadcast` dispatcher, BIP-340 Schnorr verify, NIP-11 info, NIP-16 replaceable/parameterised classifiers | present | `crates/solid-pod-rs-nostr/src/relay.rs`, `ws.rs` | Sprint 10. |
+| 101 | Nostr relay NIP-01/11/16 | `src/nostr/relay.js:95-286` | `Relay` with `EventStore` + `tokio::broadcast` dispatcher, BIP-340 Schnorr verify, NIP-11 info, NIP-16 replaceable/parameterised classifiers | partial-parity | `crates/solid-pod-rs-nostr/src/relay.rs`, `ws.rs` | Sprint 10. 2026-11-01: library-only; `solid-pod-rs-server` mounts no relay and serves no NIP-11 (rows 278, 280). |
 | 102 | ActivityPub Actor on `/profile/card` (Accept-negotiated) | `src/server.js:238-259` | `Actor` + `render_actor` with RSA-2048 publicKey, Mastodon-ordered JSON-LD | present | `crates/solid-pod-rs-activitypub/src/actor.rs` | Sprint 10. |
-| 103 | ActivityPub inbox with HTTP Signature verification | `src/ap/routes/inbox.js:57-248` | `handle_inbox` dispatcher + draft-cavage v12 `verify_request_signature` (Mastodon + RFC 9530 digest forms) | present | `crates/solid-pod-rs-activitypub/src/inbox.rs`, `http_sig.rs` | Sprint 10. |
-| 104 | ActivityPub outbox + delivery | `src/ap/routes/outbox.js:17-147` | `handle_outbox` + `DeliveryWorker` exp-backoff retry (30s→24h, 6 attempts; drops on 4xx) | present | `crates/solid-pod-rs-activitypub/src/outbox.rs`, `delivery.rs` | Sprint 10. |
+| 103 | ActivityPub inbox with HTTP Signature verification | `src/ap/routes/inbox.js:57-248` | `handle_inbox` dispatcher + draft-cavage v12 `verify_request_signature` (Mastodon + RFC 9530 digest forms) | partial-parity | `crates/solid-pod-rs-activitypub/src/inbox.rs`, `http_sig.rs` | Sprint 10. 2026-11-01: library-only; the server routes only the actor document (row 281). |
+| 104 | ActivityPub outbox + delivery | `src/ap/routes/outbox.js:17-147` | `handle_outbox` + `DeliveryWorker` exp-backoff retry (30s→24h, 6 attempts; drops on 4xx) | partial-parity | `crates/solid-pod-rs-activitypub/src/outbox.rs`, `delivery.rs` | Sprint 10. 2026-11-01: library-only; no outbox route (row 281). |
 | 105 | WebFinger (`/.well-known/webfinger`) | `src/ap/index.js:80` | `interop::webfinger_response` (core) + re-export in `activitypub::discovery` | present | `src/interop.rs:81`, `crates/solid-pod-rs-activitypub/src/discovery.rs` | |
 | 106 | NodeInfo 2.1 (`/.well-known/nodeinfo[/2.1]`) | `src/ap/index.js:116,130` | `nodeinfo_2_1` + `nodeinfo_wellknown` | present | `crates/solid-pod-rs-activitypub/src/discovery.rs` | Sprint 10. |
 | 107 | Follower/Following stored in SQLite (`sql.js`) | `src/ap/store.js` | `Store` via `sqlx::SqlitePool` (followers, following, inbox, outbox, delivery_queue, actors cache) | present | `crates/solid-pod-rs-activitypub/src/store.rs` | Sprint 10. Schema mirrors JSS line-for-line. |
@@ -646,6 +647,122 @@ the remainder stays scaffolded, so this section must not be read as full forge p
 | 262 | Mirror hardening beyond JSS: trail bound to the followed key, marked commit reachable, replayed older states dropped, garbled marks unusable, `refs/mirror` hidden, DNS pinning, size cap, bounded queue, backoff, pushes refused | `lib/mirror.js` (none of these) | `mirror` module; upstream PR JavaScriptSolidServer/plugins#15 carries the first five | net-new | `crates/solid-pod-rs-forge/src/mirror.rs` | Server starts it at boot from `FORGE_MIRROR_RELAYS` and `FORGE_MIRROR_FOLLOW` (feature `forge-mirror`). |
 | 263 | Web-edit: commit one file from the browser by git plumbing with compare-and-swap; 1 MiB cap; path rules; owner-only; `openEdit` demo mode | `apiRepoEdit` 4151, `cleanEditPath` 4082, `withCors` 3495 | `web_edit` module; `POST api/repos/<o>/<n>/edit` | present | `crates/solid-pod-rs-forge/src/web_edit.rs`; `crates/solid-pod-rs-forge/tests/web_edit.rs` | Stricter than JSS: case-insensitive `.git`, all-dot segments, `check-ref-format` branches, symlink leaf/parent refused (409). `open_edit` reproduces JSS exactly (any caller may edit any repo) and is off by default; no shipped default turns it on. |
 | 264 | Ephemeral preview: signed kind-21617 event, no commit | `apiRepoPreview` 4102, `EPHEMERAL_PREVIEW_KIND` 123 | `preview` module; `POST api/repos/<o>/<n>/preview` (feature `announce`) | present | `crates/solid-pod-rs-forge/src/preview.rs` |  |
+
+---
+
+## 26. JSS `0.0.221` → `0.0.224` delta (core, audited 2026-11-01)
+
+Comparator: upstream `JavaScriptSolidServer/JavaScriptSolidServer` `gh-pages` at
+`7c9b0de` (package `0.0.224`, 2026-10-22), ten commits after `8d68ceb`. Three
+portable behaviours: ACLs read by expanded JSON-LD IRI and ACL writes that grant
+nothing refused (#631, PR #632: `c189682`, `ae3be87`); PATCH applied as quads with
+Append for insert-only, per-resource serialisation and a cross-process lock (PR #633:
+`a6834e8`, `2fd3454`); NIP-11 at the relay URL (PR #635: `c42cc13`). The rest is three
+version bumps and two merges with no hunks of their own. Audited by an Opus mesh with an
+adversarial verifier per lane; rows marked *runtime* were reproduced against the built
+`solid-pod-rs-server`, the rest are code-read. Every row states whether the server
+reaches the behaviour, not just whether the library has it.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 265 | JSON-LD ACLs read by expanded IRI: `@context` (object or array), any prefix, `@vocab`, expanded form, a single node with no `@graph`, `@type` as an array; agent classes normalised to full IRIs | `c189682`, #631/#632 (`src/wac/parser.js`: `parseAcl`, `expandNode`, `aclProp`) | `parse_jsonld_acl` is serde over literal `acl:*` keys and ignores `@context`; a `@graph` object is required | missing | `src/wac/document.rs:45-84`; `src/wac/mod.rs:96-109`; `src/wac/evaluator.rs:128-133` | P2. Reads fail closed, so there is no escalation, but JSON-LD ACLs JSS writes in these forms lock their owners out after migration, and our PUT refuses them with 409 where JSS stores them (201). The Turtle reader already expands prefixes (`src/wac/parser.rs:181`). |
+| 266 | A `.acl` body that does not parse is refused | `c189682` (`src/handlers/resource.js:986-991`): `{not json` 400, `[]` 400, `text/plain` 415 | The lockout guard returns `true` on input it cannot parse, and JSON-LD bodies are never validated: the body is stored (201) and resolves as invalid, so everyone, including the owner's repair PUT, then gets 403 | missing | `crates/solid-pod-rs-server/src/lib.rs:906-909`; `src/rdf_input.rs:84-88`; `src/wac/resolver.rs:283-315` | **P1, runtime.** Self-inflicted lockout of a whole subtree; a bad `/.acl` bricks the pod over HTTP, repairable only on the storage backend. Fix: fail closed in the guard, as MCP `write_acl` already does (`mcp/tools.rs:853-856`), and answer 400. The same gap exists through POST to a sidecar and COPY. |
+| 267 | A `.acl` write that grants no mode to anyone is refused (PUT 400, PATCH 409, JSON `{error,message}`) | `c189682` + `ae3be87` (`grantsAccess`) | The guard's rule is a superset (the writer must keep Control) and refuses with 409 and a plain-text body | semantic-difference | `crates/solid-pod-rs-server/src/lib.rs:879-944`, `:1756-1763`, `:2005-2017` | P3. The superset rule is deliberate (July P0-2) and also refuses some ACLs JSS stores, such as a public-read-only ACL. Ahead of JSS: our guard also runs on POST to a sidecar and on COPY. The library has no guard, so non-server consumers are unprotected. |
+| 268 | Tests: the #631 fixtures (6 parser, 6 integration) | `test/wac.test.js:792-1011` | No HTTP test asserts any guard refusal; `tests/git_marks.rs:202` tolerates either outcome | missing | none | P2. The audit's runtime probes (`docs/reference/jss-parity-audit-2026-11-01/wac-probe-*.rs`, run as an integration test of `solid-pod-rs-server` with `--features dev-bearer`) are the starting point. |
+| 269 | N3 Patch parsed as full N3: `@prefix`, prefixed names, `a`, `;` and `,`, long and typed literals, relative IRIs resolved against the resource | `a6834e8`, PR #633 (`src/patch/quads.js:38-62`) | `apply_n3_patch` reads each block as line-wise N-Triples; prefixed names give 400 | partial-parity | `src/ldp.rs:1149-1194`, `:817-862`; `crates/solid-pod-rs-server/src/lib.rs:1961-1963` | **P0, runtime.** JSS's own test bodies get 400. Real Solid clients send prefixed N3. Fix with the `oxttl` parser `rdf_input::parse_rdf_body` already wraps (`src/rdf_input.rs:40`), base set to the resource URL. Supersedes the "present" on row 39. |
+| 270 | `solid:where` variables bound against the document; must bind exactly once, else 409 | `a6834e8` (`quads.js:105-153`) | Ground containment only; a miss gives 412; a `?var` gives 400 | missing | `src/ldp.rs:1170-1180` | P1, runtime (412 vs 409). Row 40's "strictly more conformant" is now the wrong way round. |
+| 271 | Deleting an absent triple gives 409 (N3 and SPARQL `DELETE DATA`) | `a6834e8` (`quads.js:158-162`) | Silently ignored, 204 | missing | `src/ldp.rs:1186`, `:1432-1438` | P2, runtime. |
+| 272 | Blank nodes in a patch minted fresh | `a6834e8` (`quads.js:133-137`) | Labels kept verbatim, can merge with the document's own | missing | `src/ldp.rs:849-853` | P2, code-read. |
+| 273 | Insert-only PATCH (no deletes, no `where`) authorised as `acl:Append` | `a6834e8` (`src/server.js:808-823`, `quads.js:91`) | Every PATCH needs `acl:Write`, checked before the body is parsed | partial-parity | `crates/solid-pod-rs-server/src/lib.rs:1921-1928` | P1 usability, runtime (Append-only caller: 401). Never weaker than JSS for any patch shape, so not a security gap; `.meta` is stricter here than in JSS. Fix: parse first, ask for Append when deletes and `where` are empty, Write when the body will not parse. Write implies Append (`src/wac/mod.rs:171-173`). |
+| 274 | PATCH serialised per resource in-process: no lost updates under concurrent inserts | `a6834e8` (`src/handlers/resource.js:1191-1215`) | None: read at `:1948`, write at `:2019`, last writer wins | missing | `crates/solid-pod-rs-server/src/lib.rs:1948`, `:2019` | **P1, runtime: 20 parallel inserts all returned 204, 3–4 survived** (four rounds). Temp-file-and-rename stops torn files (ahead of JSS) but not lost updates. PUT and MCP `write` race the same way. |
+| 275 | Cross-process `.<name>.lock` (O_EXCL, stale after 15 s, 30 s wait then 503 with `Retry-After`) | `2fd3454` (`src/storage/filesystem.js:135-179`) | None | missing | `src/storage/fs.rs:111-145` | P2. Matters only for several processes on one data root. If added, hide the lock file in listings (`fs.rs:306`). |
+| 276 | PATCH reads JSON-LD (`@graph`), HTML data islands and Turtle, and writes back in the stored form | `a6834e8` (`resource.js:1274-1378`) | Only an N-Triples-stored body is patchable; anything else gives 409 | missing | `crates/solid-pod-rs-server/src/lib.rs:2182-2197` | P1, runtime: PATCH after a prefixed-Turtle or JSON-LD PUT gives 409. |
+| 277 | `jsonLdToQuads` reads every node of `@graph` (GET-as-Turtle of a `@graph` document no longer empty) | `a6834e8` (`src/rdf/turtle.js`) | Conneg transcodes only N-Triples-stored bodies; stored JSON-LD is served as JSON-LD even to `Accept: text/turtle`; JSON-LD output is a bare array, not `@graph` | partial-parity | `crates/solid-pod-rs-server/src/lib.rs:2139-2172`; `src/ldp.rs:813` | P2. Same root cause as row 276: no general JSON-LD input parser (`src/rdf_input.rs:60-65`). |
+| 278 | NIP-11 relay information at the relay URL when `Accept` contains `application/nostr+json`: 200, `application/nostr+json`, `Access-Control-Allow-Origin: *`; a plain GET stays 404 | `c42cc13`, PR #635 (`src/nostr/relay.js:251-265`) | `RelayInfo::jss_compatible` builds the same seven fields and `supported_nips` `[1,11,16]`; no HTTP handler, and the server mounts no relay | missing | `crates/solid-pod-rs-nostr/src/relay.rs:308-329`; `crates/solid-pod-rs-server/Cargo.toml` (no direct `solid-pod-rs-nostr` dependency) | P2: JSS ships the relay default-off (`config.js:64`). The nostr crate is already linked transitively under `forge-announce`, as a client only. WebSocket and NIP-11 share one route in JSS, so an actix mount needs one handler that upgrades or serves the document. Mount request: row 280. |
+
+---
+
+## 27. Pre-existing core gaps surfaced by the 2026-11-01 audit
+
+These are not part of the `0.0.224` delta: JSS core already had them at the prior
+comparator `8d68ceb`. They are recorded because the audit checked server routes rather
+than library presence, the gap the July closeout named. Rows 91, 101, 103 and 104 are
+reclassified in place to match.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 279 | `/.notifications` served whenever it is advertised; `Updates-Via` sent only when notifications are on | `src/server.js:537-540`; `src/notifications/index.js:36` | The `solid-0.1` session is library-only. No `/.notifications` route, no WebSocket dependency in the server, yet `Updates-Via` is sent unconditionally on 7 GET/HEAD/OPTIONS paths, `/.well-known/solid` names it as the notification gateway, and the live-reload script dials it | missing | `crates/solid-pod-rs-server/src/lib.rs:1517`, `:2328`, `:428`; `src/interop.rs:65`; `src/handlers/legacy_notifications.rs:99` | **P1.** Clients are pointed at an endpoint that does not exist. Fix: mount the session on an actix WebSocket, or stop advertising it. Rows 91, 92, 93 and 95 are library-only for the same reason. |
+| 280 | Relay mount knobs `--nostr`, `--nostr-path` (default `/relay`), `--nostr-max-events`, `JSS_NOSTR*`; `<relay>/info` alias | `bin/jss.js:117-120`; `config.js:63-66`; `relay.js:292-298` | None | missing | none | P2, with row 278. Any WAC exemption for the relay path must match on a segment boundary (exact path, `path/` or `path?`), never a bare prefix. |
+| 281 | ActivityPub inbox and outbox routed, with signed delivery | `src/ap/routes/inbox.js`, `outbox.js` | `handle_inbox`, `handle_outbox`, `DeliveryWorker` exist; only the actor document is served | missing | `crates/solid-pod-rs-activitypub/src/inbox.rs:50`, `outbox.rs:33`; `crates/solid-pod-rs-server/src/lib.rs:1456` | P1. July closeout P0-1 remains half-open. Acceptance: the plugins repo `federation-demo/` two-server flow. |
+| 282 | WebRTC signalling (`--webrtc`) | `src/webrtc/index.js` (March 2026) | Not provided | missing | none | P2. If ported, use the plugins repo's attach order (`webrtc/plugin.js`), which fixes an auth race core has. Pairs with the plugins `turn/` credentials. |
+| 283 | remoteStorage draft-22 at `/storage/:user/*`, on by default | `src/remotestorage.js`; `src/server.js:500` | Not provided | missing | none | P2. `docs/reference/jss-feature-inventory.md` wrongly says JSS lacks it. |
+| 284 | Browser terminal over WebSocket (`--terminal`) | `src/terminal/index.js` | Not provided | explicitly-deferred | none | A remote shell. If ever ported, take the plugins repo's model: mandatory access control, curated environment, confined working directory. |
+| 285 | `/.tunnel` reverse HTTP tunnel over WebSocket (`--tunnel`) | `src/tunnel/index.js` | Not provided | explicitly-deferred | none | Distinct from row 214 (Cloudflare credential passthrough). |
+| 286 | `If-Match` / `If-None-Match` honoured on PUT and PATCH | `src/handlers/resource.js:1246-1255` | `evaluate_preconditions` is library-only; the server never calls it | missing | `src/ldp.rs:1545`; no call in `crates/solid-pod-rs-server/src` | **P1, runtime:** a stale `If-Match` is ignored (PATCH 204, PUT 201) and `If-None-Match: *` overwrites. With row 274 open, clients have no optimistic-concurrency fallback. |
+| 287 | Pod created by self-service registration is usable by its owner | `src/server.js:1296-1303` (owner ACL written with the pod, `relativizeOwnerWebId`) | `POST /.pods` (`provision_named_pod`) writes containers and the profile card but no ACL: the owner gets 403 on `GET /alice/` and on PUT into their own pod, and anonymous gets 401 on the profile card | missing | `crates/solid-pod-rs-server/src/lib.rs:2806-2855` | **P0, runtime.** The server seeds no root ACL, so a new pod inherits whatever root ACL the operator configured: with none, the owner is refused (the probe); with a root ACL that has `acl:default`, the pod gets the root's grants, not an owner grant, and anything that root grants publicly applies to the new pod too. `tests/registration_security.rs` covers only the gate. A fix must write path targets at the sidecar our resolver reads (`/alice.acl`). |
+| 288 | `acl:accessTo` / `acl:default` given as absolute or relative IRIs match the resource | `src/wac/parser.js:224-227` | The evaluator compares raw server-root paths; absolute IRIs fail even on the server's own origin, and so do `./doc.ttl` and `doc.ttl`; only `</path>` matches. PUT accepts such an ACL (201), then the owner is locked out | missing | `src/wac/evaluator.rs:63-106`, `:286-299`; `crates/solid-pod-rs-server/src/lib.rs:996` | **P1, runtime.** Fails closed. Server provisioning writes paths, so the server's own pods are unaffected, but the library `provision_pod` writes an absolute public-type-index ACL (`src/provision.rs:285-298`): anonymous 401, owner 403. Its test (`src/provision.rs:611-631`) masks this. Fix: resolve targets against the ACL's URL, then compare. |
+| 289 | Relative `acl:agent` WebIDs resolved against the ACL | `src/server.js:1296-1303`; `src/wac/parser.js:228` | Agent strings compared raw | missing | `src/wac/evaluator.rs` (`agent_matches_with_groups`) | P2, code-read. A migrated JSS pod's owner rules never match. Fails closed. |
+| 290 | Container ACL at `<container>/.acl` | JSS layout `/c/.acl` | Resolver reads `/c.acl`; a JSS-layout `/c/.acl` is ignored and the parent's grant applies | missing | `src/wac/resolver.rs` | **P1**, runtime. Widens access after a migration: the parent's broader grant applies in place of the narrower container ACL. `migrate-from-jss.md` must state the move. |
+
+### Defects found in passing (not parity rows)
+
+These are bugs in our PATCH path, reproduced at runtime, with no JSS counterpart to track.
+They are listed for the fix queue, not counted in the parity figures.
+
+- **P0, non-ASCII corruption on every PATCH.** Literals are decoded byte by byte
+  (`src/ldp.rs:889-890`), so `é` is stored as `c3 83 c2 a9`; stored non-ASCII text is
+  re-mangled by any later PATCH to the resource, even one that does not touch it, and
+  `"é"` becomes `"u00e9"`.
+- **P1, silent triple loss.** A second triple on one stored line is dropped by the next
+  PATCH (`src/ldp.rs:832-840`); Turtle using `;` passes the 409 guard, the PATCH returns
+  204, and the triple after the `;` is lost.
+- **P1, SPARQL Update with variables is a no-op that returns 204** (`src/ldp.rs:1441-1460`).
+  Row 41's "full SPARQL 1.1 algebra" is overstated.
+
+The first two disappear if row 269 moves to a real parser.
+
+---
+
+## 28. JSS plugin system and the `plugins` repository (non-forge, audited 2026-11-01)
+
+Comparators: the JSS core plugin loader (`src/plugins.js`, #206, `createServer({ plugins })`,
+`activate(api)`) at `7c9b0de`, unchanged since `8d68ceb`; and `JavaScriptSolidServer/plugins`
+at `63a16cb`, unchanged since §25. Rows 221 to 229, 234 and 235 already cover the loader,
+`--plugin`, `mountApp`, `serverInfo`, `reservePath`, `getAgent`, the git-lane deferral and the
+root WebSocket; they are cross-referenced, not restated. The plugin api itself is not a
+parity target (ADR-2011): parity means matching what plugins *achieve*, the core-side
+exemptions JSS grants app prefixes, and per-plugin bounded comparators as ADR-2009 set up for
+the forge.
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 291 | Dotfile guard defers to app-plugin prefixes | `0976f3e` (#206); `src/server.js:598-604` | `DotfileGuard` runs before routing and carves out only `/.well-known/`, `/.pods`, `/pay/`; a dot segment under `/forge` gets 403 | partial-parity | `crates/solid-pod-rs-server/src/lib.rs:3844-3846`, `:5198` | Low, runtime. Upstream's forge refuses dot segments itself (`plugins/forge/lib/helpers.js:11`), so JSS answers 404 and ours 403; the residue is the status and no carve-out for a dot-prefixed mount. `0976f3e` predates `8d68ceb`, so this was untracked, not drift. |
+| 292 | `deactivate()` on server close | `c516bb6`; `src/plugins.js:452-460` | No shutdown hook: the forge and mirror sit in a process-static `OnceLock`; `MirrorHandle::stop()` exists and nothing calls it | missing | `crates/solid-pod-rs-server/src/lib.rs:4999-5000`; `crates/solid-pod-rs-forge/src/mirror.rs:2206` | P2. ADR-2010 ships forge and mirror on, so this hits shipped builds: relay sessions are cut mid-await at runtime drop instead of closed. |
+| 293 | Fail-loud boot on a bad plugin | `c516bb6`; `src/plugins.js:223-254`, `:42-44` | Composition errors are compile errors; a forge construction error at boot is only logged, and every `/forge` request then returns 500 | partial-parity | `crates/solid-pod-rs-server/src/lib.rs:5044-5051`; `crates/solid-pod-rs-server/src/main.rs:459-460` | P3. Make `start_forge` failure fatal when `forge` is compiled in. |
+| 294 | `api.storage.pluginDir()`: a private, never-served data directory | `c516bb6`; `src/plugins.js:263-270` | `<data_root>/.forge`, kept off HTTP by `DotfileGuard` | present | `crates/solid-pod-rs-server/src/lib.rs:4833-4840` | Per extension, not generic. |
+| 295 | `api.config` and `api.log` | `c516bb6`; `src/plugins.js:58-64`, `:260-261` | Typed `ForgeConfig` from `FORGE_CONFIG` and env; `tracing` | present | `crates/solid-pod-rs-server/src/lib.rs:4919-4957` | |
+| 296 | `api.ws.route`: plugin WebSocket endpoints on the host's upgrade stack | `c516bb6` (#588/#589); `src/plugins.js:418-443` | No compiled extension serves a WebSocket | not applicable | — | Becomes applicable with row 279 or 278. |
+| 297 | A WAC-exempt prefix must not let unrouted verbs reach the LDP write handlers | `9dadbc9` (#602) guards reservations only; `src/server.js:802`, `:975` | `/forge` is routed for every method ahead of the catch-all | net-new | `crates/solid-pod-rs-server/src/lib.rs:5306-5307`; runtime: PUT under `/forge` returns 404, nothing written | Invariant for every future compiled extension: route all methods under its prefix, or none. Upstream's own comment (`src/plugins.js:324-330`) names the trap. |
+| 298 | `api.events.onResourceChange` | #603 (open upstream) | `Storage::watch` → `StorageEvent` | net-new | `src/storage/mod.rs:58-65` | Forge git writes do not emit pod events. |
+| 299 | `api.authorize(request, path, mode)` | #604 (open upstream) | Public WAC evaluator | net-new | `src/wac/evaluator.rs:159-234` | Library-level; the forge uses namespace ownership instead. |
+| 300 | Plugin-to-plugin hook isolation | `plugins/NOTES.md:213-225` | Single compiled extension; no shared hook registry | present-by-absence | none | Upstream measures zero isolation. |
+
+**Plugins-only directories at `63a16cb` (candidates, not tracked).** ADR-2009 bounds the
+plugins comparator to the forge, so none of these is counted. Port-ready candidates, in
+order: `didweb/` (`did:web` documents beside did:nostr and did:key), `metrics/` (`/healthz`
+and Prometheus over the existing `SecurityMetrics`, `src/metrics.rs:26`), `sparql/` (SELECT
+over pod data, WAC-filtered; `spargebra` is already a dependency), `backup/` (`.tar.gz`
+beside the JSON-LD export, `src/export.rs:179`), `turn/` (with row 282) and `capability/`
+(after upstream #506 settles, and on an established token format rather than a bespoke one;
+note the forge's macaroon-lite push token, `crates/solid-pod-rs-forge/src/token.rs`, is
+already a bespoke construction scoped to the forge). `pay/` documents that 402 cannot be a
+plugin, which matches keeping pay in the core server. Out of scope: admin, bluesky, caldav,
+carddav, dashboard, gallery, gitscratch (conflicts with ER-28), globs, jmap, markets,
+mastodon, matrix, micropub, oembed, otp, recordweb, ripple, rss, s3, search, shortlink,
+webdav. Of the eleven core-feature ports, nip05 (rows 128, 197), webfinger (105), corsproxy
+and pay are already tracked elsewhere; relay, notifications, activitypub, webrtc,
+remotestorage, terminal and tunnel are rows 278 to 285. The forge is §25. Full classification of all 41
+directories: `docs/reference/jss-parity-audit-2026-11-01.md`.
 
 ---
 

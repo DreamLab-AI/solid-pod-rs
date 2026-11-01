@@ -1,0 +1,65 @@
+== C1-put-nt :: curl -X PUT -H Content-Type: text/turtle --data-binary <http://ex/s> <http://ex/p> "v0" . http://127.0.0.1:38731/t.ttl => 201 :: 
+== C2-n3-abs :: curl -X PATCH -H Content-Type: text/n3 --data-binary @prefix solid: <http://www.w3.org/ns/solid/terms#>.
+_:p a solid:InsertDeletePatch; solid:inserts { <http://ex/s> <http://ex/p> "v1" . }. http://127.0.0.1:38731/t.ttl =>  :: 
+== C2-get :: curl -H Accept: application/n-triples http://127.0.0.1:38731/t.ttl => 200 :: <http://ex/s> <http://ex/p> "v0" . 
+== C3-post-chat :: curl -X POST -H Content-Type: text/plain --data-binary hi http://127.0.0.1:38731/chat/ => 201 :: 
+== C4-put-chat :: curl -X PUT -H Content-Type: text/plain --data-binary hi http://127.0.0.1:38731/chat/x.txt => 201 :: 
+== C4b-put-chat-overwrite :: curl -X PUT -H Content-Type: text/plain --data-binary again http://127.0.0.1:38731/chat/x.txt => 201 :: 
+== C4c-delete-chat :: curl -X DELETE http://127.0.0.1:38731/chat/x.txt => 204 :: 
+== C4d-put-chat-new :: curl -X PUT -H Content-Type: text/plain --data-binary hi http://127.0.0.1:38731/chat/y.txt => 401 :: 
+== C3b-post-chat :: curl -X POST -H Content-Type: text/plain --data-binary hi http://127.0.0.1:38731/chat/ => 201 :: 
+== C4e-get-chat :: curl -H Accept: text/turtle http://127.0.0.1:38731/chat/ => 200 :: {"@context":{"contains":{"@id":"ldp:contains","@type":"@id"},"dcterms":"http://purl.org/dc/terms/","ldp":"http://www.w3.org/ns/ldp#"},"@id":"/chat/","@type":["ldp:Container","ldp:BasicContainer","ldp:Resource"],"ldp:cont
+== C2-n3-abs-insert :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/t.ttl => 204 :: 
+== C2-get :: curl http://127.0.0.1:38731/t.ttl => 200 :: <http://ex/s> <http://ex/p> "v0" . <http://ex/s> <http://ex/p> "v1" . 
+== K1a-create256-absent :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/create256.n3 http://127.0.0.1:38731/chat1.ttl => 400 :: N-Triples line 1: unexpected char: w
+== K1-seed-put :: curl -X PUT -H Content-Type: text/turtle --data-binary <http://ex/m0> <http://rdfs.org/sioc/ns#content> "first" . http://127.0.0.1:38731/chat2.ttl => 201 :: 
+== K1b-append288-existing :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/append288.n3 http://127.0.0.1:38731/chat2.ttl => 400 :: N-Triples line 1: unexpected char: s
+== K4a-where302-verbatim :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/where302.n3 http://127.0.0.1:38731/t.ttl => 400 :: N-Triples line 1: unexpected char: s
+== K4b-where-abs-ground-miss :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/where-abs.n3 http://127.0.0.1:38731/t.ttl => 412 :: precondition failed: WHERE clause triple missing: Triple { subject: Iri("http://ex/nope"), predicate: Iri("http://ex/p"), object: Literal { value: "x", datatype: None, language: None } }
+== K3a-del329-verbatim :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/del329.n3 http://127.0.0.1:38731/t.ttl => 400 :: N-Triples line 1: unexpected char: s
+== K3b-del-abs-absent :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/del-abs.n3 http://127.0.0.1:38731/t.ttl => 204 :: 
+== K2-get-seed :: curl http://127.0.0.1:38731/chat/day.ttl => 200 :: <http://ex/m0> <http://rdfs.org/sioc/ns#content> "seed" . 
+== K2a-anon-insert-abs-existing :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/append-anon-abs.n3 http://127.0.0.1:38731/chat/day.ttl => 401 :: 
+== K2b-anon-insert-verbatim-existing :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/append-anon.n3 http://127.0.0.1:38731/chat/day.ttl => 401 :: 
+== K2c-anon-insert-abs-absent :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/append-anon-abs.n3 http://127.0.0.1:38731/chat/new-day.ttl => 401 :: 
+== K2d-anon-sparql-insertdata :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary INSERT DATA { <http://ex/a3> <http://ex/p> "x" . } http://127.0.0.1:38731/chat/day.ttl => 401 :: 
+== K2e-anon-post-control :: curl -X POST -H Content-Type: text/turtle --data-binary <http://ex/a> <http://ex/p> "x" . http://127.0.0.1:38731/chat/ => 201 :: 
+== K5a-patch-utf8-absent :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/utf8.n3 http://127.0.0.1:38731/u1.ttl => 201 :: 
+== K5b-put-utf8 :: curl -X PUT -H Content-Type: text/turtle --data-binary @/dev/fd/63 http://127.0.0.1:38731/u2.ttl => 201 :: 
+== K5b-unrelated-patch :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/u2.ttl => 204 :: 
+== K5b-second-unrelated-patch :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary INSERT DATA { <http://ex/s> <http://ex/p> "v2" . } http://127.0.0.1:38731/u2.ttl => 204 :: 
+== K5c-uescape :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/uesc.n3 http://127.0.0.1:38731/u3.ttl => 201 :: 
+== K10-two-per-line-put :: curl -X PUT -H Content-Type: text/turtle --data-binary <http://ex/a> <http://ex/b> "1" . <http://ex/c> <http://ex/d> "2" . http://127.0.0.1:38731/two.ttl => 201 :: 
+== K10-unrelated-patch :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/two.ttl => 204 :: 
+== K6 round 1: 20 parallel SPARQL INSERT DATA on http://127.0.0.1:38731/conc1.ttl; statuses:      20 204 ; triples kept: 4/20
+== K6 round 2: 20 parallel SPARQL INSERT DATA on http://127.0.0.1:38731/conc2.ttl; statuses:      20 204 ; triples kept: 4/20
+== K6 round 3: 20 parallel SPARQL INSERT DATA on http://127.0.0.1:38731/conc3.ttl; statuses:      20 204 ; triples kept: 3/20
+== K6 round 4 (N3): statuses:      20 204 ; kept: 4/20
+before 808f92408071799b7da62a372f0b0a2cc539be7e066715606de9dc07c156b89a  -
+== K7a-sparql-delete-insert-where-var :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary DELETE { ?s <http://ex/p> "old" } INSERT { ?s <http://ex/p> "new" } WHERE { ?s <http://ex/p> "old" } http://127.0.0.1:38731/sp.ttl => 204 :: 
+after 6a60d67244dfb950eb91eb9dfbfe413df3ed32a3f270f1a7ce3fe70e0476c4d0  - :: <http://ex/s> <http://ex/p> "old" .
+== K7b-sparql-delete-where-var :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary DELETE WHERE { ?s <http://ex/p> ?o } http://127.0.0.1:38731/sp.ttl => 204 :: 
+after-b <http://ex/s> <http://ex/p> "old" .
+== K7c-sparql-relative-iri :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary INSERT DATA { <#m1> <http://ex/p> "x" . } http://127.0.0.1:38731/sp.ttl => 400 :: SPARQL parse error: error at 1:20: expected one of GRAPH, IRI parsing failed
+== K7d-sparql-delete-data-absent :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary DELETE DATA { <http://ex/s> <http://ex/p> "never" . } http://127.0.0.1:38731/sp.ttl => 204 :: 
+== K8a-put-prefixed-turtle :: curl -X PUT -H Content-Type: text/turtle --data-binary @prefix ex: <http://ex/>.
+ex:s ex:p "v0" . http://127.0.0.1:38731/pre.ttl =>  :: 
+== K8a-patch :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/pre.ttl => 201 :: 
+== K8a-get :: curl http://127.0.0.1:38731/pre.ttl => 200 :: <http://ex/s> <http://ex/p> "v1" . 
+== K8b-put-jsonld :: curl -X PUT -H Content-Type: application/ld+json --data-binary {"@id":"http://ex/s","http://ex/p":"v0"} http://127.0.0.1:38731/j.jsonld => 201 :: 
+== K8b-patch-n3 :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/j.jsonld => 409 :: existing resource is not N-Triples RDF and cannot be non-destructively patched; PUT an N-Triples representation or use a JSON Patch
+== K8b-patch-sparql :: curl -X PATCH -H Content-Type: application/sparql-update --data-binary INSERT DATA { <http://ex/s> <http://ex/p> "v1" . } http://127.0.0.1:38731/j.jsonld => 409 :: existing resource is not N-Triples RDF and cannot be non-destructively patched; PUT an N-Triples representation or use a JSON Patch
+== K8c-put-turtle-semicolon :: curl -X PUT -H Content-Type: text/turtle --data-binary <http://ex/s> <http://ex/p> "a"; <http://ex/q> "b" . http://127.0.0.1:38731/semi.ttl => 201 :: 
+== K8c-patch :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/semi.ttl => 204 :: 
+E0="eac600022f87a932826d6ee86f9d59f91a8bcc0035ed1c6cd40c77acb1d92680"
+E1="525d02e501c814e6d57d09ff796106b12dc13931975b3a62cbc11cf83b58ca3b" (after modify)
+== K9a-patch-stale-ifmatch :: curl -X PATCH -H If-Match: "eac600022f87a932826d6ee86f9d59f91a8bcc0035ed1c6cd40c77acb1d92680" -H Content-Type: application/sparql-update --data-binary INSERT DATA { <http://ex/s> <http://ex/p> "stale-patch" . } http://127.0.0.1:38731/etag.ttl => 204 :: 
+== K9b-put-stale-ifmatch :: curl -X PUT -H If-Match: "eac600022f87a932826d6ee86f9d59f91a8bcc0035ed1c6cd40c77acb1d92680" -H Content-Type: text/turtle --data-binary <http://ex/s> <http://ex/p> "stale-put" . http://127.0.0.1:38731/etag.ttl => 201 :: 
+== K9c-put-ifnonematch-star-existing :: curl -X PUT -H If-None-Match: * -H Content-Type: text/turtle --data-binary <http://ex/s> <http://ex/p> "inm" . http://127.0.0.1:38731/etag.ttl => 201 :: 
+== K9d-patch-ifmatch-garbage :: curl -X PATCH -H If-Match: "nope" -H Content-Type: application/sparql-update --data-binary INSERT DATA { <http://ex/s> <http://ex/p> "garbage" . } http://127.0.0.1:38731/etag.ttl => 204 :: 
+== K9e-get-ifnonematch-current :: curl -H If-None-Match: "91dda6018c1b20a19452d956b7fffdfe75a89a6ed42978cd31e7365661c47531" http://127.0.0.1:38731/etag.ttl => 200 :: <http://ex/s> <http://ex/p> "garbage" . <http://ex/s> <http://ex/p> "inm" . 
+== K9-final-get :: curl http://127.0.0.1:38731/etag.ttl => 200 :: <http://ex/s> <http://ex/p> "garbage" . <http://ex/s> <http://ex/p> "inm" . 
+== K8a2-put-prefixed-turtle :: curl -X PUT -H Content-Type: text/turtle --data-binary @<run-dir>/bodies/prefixed.ttl http://127.0.0.1:38731/pre2.ttl => 201 :: 
+== K8a2-patch-n3 :: curl -X PATCH -H Content-Type: text/n3 --data-binary @<run-dir>/bodies/ins-abs.n3 http://127.0.0.1:38731/pre2.ttl => 409 :: existing resource is not N-Triples RDF and cannot be non-destructively patched; PUT an N-Triples representation or use a JSON Patch
+== K8a2-get :: curl http://127.0.0.1:38731/pre2.ttl => 200 :: @prefix ex: <http://ex/>. ex:s ex:p "v0" . 
+== K8c-get-after :: curl http://127.0.0.1:38731/semi.ttl => 200 :: <http://ex/s> <http://ex/p> "a" . <http://ex/s> <http://ex/p> "v1" . 
