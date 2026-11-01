@@ -18,7 +18,7 @@
 //!    link is bidirectional by construction (no network);
 //! 2. with feature `did-nostr`, remote DID-document origins configured by the
 //!    operator, resolved by
-//!    [`solid_pod_rs::interop::did_nostr::DidNostrResolver`] (SSRF policy,
+//!    `solid_pod_rs::interop::did_nostr::DidNostrResolver` (SSRF policy,
 //!    bounded TTL cache with negative caching, bidirectional back-link).
 
 use std::sync::Arc;
