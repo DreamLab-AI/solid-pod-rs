@@ -17,6 +17,10 @@ lineage: "Implements agentbox ADR-2096 D3 (rust-bitcoin accepted estate-wide) an
 
 # ADR-2008 — Port bitcoin_tx.rs and mrc20.rs to rust-bitcoin, make WebLedger a derived view over the sidestr chain, remove credit/debit from the public API and delete the TXO stand-in deposit
 
+## External review reconciliation — 2026-11-02
+
+Source at `9b6143c` retains SP-07.15: `crates/solid-pod-rs-server/src/handlers/pay.rs:179-195` falls back to legacy payment components whenever the canonical storage read fails, not solely on NotFound. A backend failure can thus select stale state. Acceptance must distinguish absent canonical state from unavailable/corrupt state and retain a valid legacy-migration control. This is a source finding; no funds or live state were exercised.
+
 ## Context
 
 This crate owns 100% of the estate's Bitcoin transaction construction and hand-rolls it.

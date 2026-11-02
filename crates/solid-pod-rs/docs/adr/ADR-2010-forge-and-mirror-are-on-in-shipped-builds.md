@@ -18,6 +18,12 @@ lineage: "Amends ADR-2009 (default-off mirror, accepted risks) and baseline inva
 
 # ADR-2010 — The forge and the kind-30618 mirror are on in shipped builds; anchoring, open edit and the mainnet stay opt-in
 
+## External review reconciliation — 2026-11-02
+
+The external review mixes three separate Git boundaries. At `9b6143c`, SP-GIT-02's Forge mirror candidate isolation and legacy/fork migration have merged (A/B1/B2); consumer adoption and availability follow-ups remain separate. The ordinary pod route still sets `repo_root = data_root.join(pod_name)` and forwards its original path (`crates/solid-pod-rs-server/src/lib.rs:4740-4755`), while `solid-pod-rs-git/src/service.rs:296-301` joins the extracted slug again. The external SP-14.1 double-prefix finding therefore remains; the earlier hidden-object transport repair did not close it.
+
+The route's WAC check is pod-root only (`lib.rs:4785-4801`), which does not establish child/history export authority. Separately, Agentbox's consumer pin and its local-loopback relay policy must be checked at the consumer revision before “shipped” is read as deployed repair. This note is scoped source reconciliation, not a whole-record re-verification or activation receipt.
+
 ## Context
 
 - ADR-2009 shipped the mirror default-off and unwired, and accepted four risks on that basis: DNS rebinding, no fetch size cap, a stalling relay loop, and a push race. Baseline invariant 8 said the mirror stays opt-in.

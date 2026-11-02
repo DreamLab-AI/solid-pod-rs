@@ -17,6 +17,10 @@ lineage: Distils archived ADR-059 D1 (git-mark described as always-on, contradic
 
 # ADR-2004 — Keep git-mark provenance opt-in behind the git feature
 
+## External review reconciliation — 2026-11-02
+
+At `9b6143c`, the external SP-07.6 finding remains in source: `crates/solid-pod-rs-server/src/handlers/prov.rs:351-405` resolves a commit and reads the current resource sidecar without a resource WAC read check or a sidecar/requested-commit match. Opt-in provenance does not itself authorise disclosure. Acceptance must test anonymous and unauthorised reads of a private resource, authorised controls, and two historical commits with different sidecars. No new probe or deployment check was run for this note.
+
 ## Context
 
 The provenance composition (`ProvenanceLog::record` — git-mark always, Bitcoin

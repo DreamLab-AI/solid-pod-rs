@@ -17,6 +17,12 @@ lineage: Distils archived ADR-058 rows 169-170 (safeJsonParse size-capped ACL pa
 
 # ADR-2005 — Parse untrusted access-control input fail-closed and bounded
 
+## External review reconciliation — 2026-11-02
+
+The external review was reconciled against source at `9b6143c`. The resolver's four outcomes remain useful, but they do not prove the Turtle condition parser is complete: `src/wac/parser.rs:317` breaks on an unbalanced condition object, and `:418` returns no condition when its type is absent. A malformed restrictive clause can therefore be omitted before policy evaluation. Preserve this as an open parser defect (SP-04.10); acceptance requires malformed or missing-type conditions to deny despite a permissive ancestor, with valid-condition controls. This scoped source check adds no runtime or deployment claim and does not re-stamp the whole record.
+
+The external phrase “symlink escapes are impossible by construction” needs a narrower scope. `src/storage/fs.rs:25-28,53-57` confines FsBackend operations through a cap-std directory; that does not cover server Git/provenance subprocess paths or every other storage implementation.
+
 ## Context
 
 Two untrusted inputs reach security-critical parsers: externally-uploaded WAC
