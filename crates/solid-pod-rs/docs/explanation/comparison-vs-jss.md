@@ -15,7 +15,7 @@ feature-level status table.
 
 |                                | JSS 0.0.221 (`8d68ceb`) | solid-pod-rs 0.5.0-alpha.17 |
 |--------------------------------|-----------------------|---------------------------|
-| Language                       | JavaScript (Node 18+) | Rust 2021 / MSRV 1.88     |
+| Language                       | JavaScript (Node 18+) | Rust 2021 / MSRV 1.89     |
 | Binary distribution            | `npm install -g javascript-solid-server` → `jss` | Build from source; drop-in crate |
 | Licence                        | AGPL-3.0-only         | AGPL-3.0-only (inherited) |
 | HTTP framework                 | Fastify               | Agnostic; actix/axum/hyper|

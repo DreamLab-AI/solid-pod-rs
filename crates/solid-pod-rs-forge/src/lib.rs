@@ -95,6 +95,27 @@ pub mod xlogin;
 /// Content-Security-Policy. It never reaches the client.
 pub const WIDGET_PAGE_HEADER: &str = "x-forge-csp";
 
+/// The file a mirrored served repository carries once publication into it
+/// is allowed: the mirror's preparation found no trace of the pre-isolation
+/// layout (no `refs/mirror`, no `hideRefs` of them, no alternates) and, for
+/// a store with mirror history from before this release, no object that no
+/// branch or tag reaches. It does **not** certify that every object is
+/// reachable for a store first followed after this release: that store is
+/// the owner's, and is not scanned. A repository that has a mirror record
+/// (readable or not) but no marker has not been cleared. Until it is
+/// migrated, every reader of its refs or content refuses it (503): pages,
+/// raw, archive, the JSON API, smart and dumb HTTP, pulls, compare and merge,
+/// including a compare that names it as the head. Repository listings leave
+/// it out rather than fail as a whole.
+///
+/// Defined outside the `mirror` feature so the reader gate holds on a
+/// plugin directory that was mirrored once and is now served without it.
+///
+/// ```
+/// assert_eq!(solid_pod_rs_forge::PUBLICATION_MARKER, "mirror-publication-v1");
+/// ```
+pub const PUBLICATION_MARKER: &str = "mirror-publication-v1";
+
 #[cfg(test)]
 mod readfeat_tests;
 
@@ -121,6 +142,13 @@ pub mod prelude {
     pub use crate::ownership::ForgeAgent;
     pub use crate::request::{ForgeRequest, ForgeResponse};
     pub use crate::ForgeService;
+}
+
+/// The 503 every reader returns for an unmigrated mirror.
+fn unpublished_mirror_error(owner: &str, repo: &str) -> ForgeError {
+    ForgeError::Busy(format!(
+        "'{owner}/{repo}' is a mirror awaiting migration to publication isolation"
+    ))
 }
 
 /// Current wall-clock time in Unix seconds.
@@ -532,7 +560,9 @@ impl ForgeService {
     }
 
     /// Resolve `<owner>/<repo>` to its bare git-dir, 404ing when the repo
-    /// does not exist. Validates both segments against traversal.
+    /// does not exist and 503ing when it is an unmigrated mirror (see
+    /// [`Self::unpublished_mirror`]). Validates both segments against
+    /// traversal.
     async fn resolve_repo(&self, owner: &str, repo: &str) -> Result<PathBuf, ForgeError> {
         let dir = repo::repo_git_dir(&self.repo_root, owner, repo)?;
         if !tokio::fs::metadata(&dir)
@@ -541,6 +571,99 @@ impl ForgeService {
             .unwrap_or(false)
         {
             return Err(ForgeError::NotFound(format!("repo {owner}/{repo}")));
+        }
+        if self.unpublished_mirror(owner, repo, &dir).await {
+            return Err(unpublished_mirror_error(owner, repo));
+        }
+        Ok(dir)
+    }
+
+    /// Marker gate (defence in depth): a served repository with a mirror
+    /// record but no [`PUBLICATION_MARKER`] predates candidate isolation
+    /// and may hold commits the mirror never approved. One `stat` for a
+    /// marked mirror, two for any other repository. The record path is
+    /// `mirror::MirrorStore`'s layout, checked without the `mirror` feature
+    /// so a plugin directory that was mirrored once stays gated. `owner` and
+    /// `repo` are already validated path segments (`repo::repo_git_dir`).
+    /// A record path that cannot be checked (any error but "not found")
+    /// keeps the gate closed.
+    async fn unpublished_mirror(&self, owner: &str, repo: &str, dir: &Path) -> bool {
+        if tokio::fs::metadata(dir.join(PUBLICATION_MARKER))
+            .await
+            .is_ok()
+        {
+            return false;
+        }
+        self.has_mirror_record(owner, repo).await.unwrap_or(true)
+    }
+
+    /// Whether `<owner>/<repo>` has a mirror record, marked or not. The path
+    /// is `mirror::MirrorStore`'s layout, checked without the `mirror`
+    /// feature. `owner` and `repo` must already be validated path segments.
+    ///
+    /// Fails closed: only "not found" means no record. Any other error
+    /// (permissions, I/O, a parent that is not a directory) is returned, and
+    /// every caller treats it as "may be a mirror" (Codex round 3).
+    ///
+    /// # Errors
+    ///
+    /// The `stat` error, when it is anything but "not found".
+    pub(crate) async fn has_mirror_record(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<bool, ForgeError> {
+        let record = self
+            .plugin_dir
+            .join("mirror")
+            .join(owner)
+            .join(format!("{repo}.json"));
+        // `symlink_metadata`: a dangling symlink is an entry, so a record.
+        match tokio::fs::symlink_metadata(&record).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => {
+                tracing::warn!(owner = %owner, repo = %repo, error = %e, "forge: mirror record unreadable; treated as a mirror");
+                Err(ForgeError::Busy(format!(
+                    "'{owner}/{repo}' cannot be checked for a mirror record"
+                )))
+            }
+        }
+    }
+
+    /// Refuse (409) any forge write into a mirror's served store: a foreign
+    /// compare or pull request head fetched into it, a merge, a web edit, a
+    /// fork onto its name. Only the mirror's publication writes there, and
+    /// only approved history (Codex High 1); anything else would put objects
+    /// in served that are readable by SHA and never passed a verdict.
+    pub(crate) async fn refuse_mirror_write(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<(), ForgeError> {
+        if self.has_mirror_record(owner, repo).await? {
+            return Err(ForgeError::Conflict(format!(
+                "'{owner}/{repo}' is a mirror: only its publication writes to it"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The bare git-dir of `<owner>/<repo>` for a reader that does not enter
+    /// through [`Self::resolve_repo`] (smart-HTTP, a listing's summary, the
+    /// pull request and compare internals, the head of a cross-repository
+    /// compare): validated like it, and refused (503) when the repository
+    /// exists and is an unmigrated mirror (see [`Self::unpublished_mirror`]).
+    /// A missing repository is not an error here; the caller's git fails.
+    pub(crate) async fn gated_git_dir(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<PathBuf, ForgeError> {
+        let dir = repo::repo_git_dir(&self.repo_root, owner, repo)?;
+        let present = tokio::fs::metadata(&dir).await.is_ok_and(|m| m.is_dir());
+        if present && self.unpublished_mirror(owner, repo, &dir).await {
+            return Err(unpublished_mirror_error(owner, repo));
         }
         Ok(dir)
     }
@@ -605,13 +728,27 @@ impl ForgeService {
                     .split('/')
                     .nth(1)
                     .map_or("", |n| n.strip_suffix(".git").unwrap_or(n));
-                if mirror::MirrorStore::new(&self.plugin_dir)
-                    .read(owner, name)
-                    .is_some()
-                {
+                // A record that exists but cannot be read is still a mirror's.
+                if !matches!(
+                    mirror::MirrorStore::new(&self.plugin_dir).load(owner, name),
+                    mirror::StoredRecord::Missing
+                ) {
                     return Err(ForgeError::Forbidden(format!(
                         "'{owner}/{name}' is a mirror and read-only"
                     )));
+                }
+            }
+        }
+        // Marker gate, after the write guard above: smart-HTTP bypasses
+        // `resolve_repo`, so an unmigrated mirror is refused here too.
+        {
+            let mut parts = rel_path.trim_start_matches('/').split('/');
+            if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
+                let name = name.strip_suffix(".git").unwrap_or(name);
+                // Only the gate's refusal stops the request here; a path
+                // that is not a repository is the CGI's to answer.
+                if let Err(e @ ForgeError::Busy(_)) = self.gated_git_dir(owner, name).await {
+                    return Err(e);
                 }
             }
         }
@@ -819,12 +956,19 @@ impl ForgeService {
     /// the operator needs. Without the `mirror` feature there are no records.
     #[cfg(feature = "mirror")]
     fn h_api_mirror(&self, owner: &str, repo: &str) -> ForgeResponse {
-        match mirror::MirrorStore::new(&self.plugin_dir).read(owner, repo) {
-            Some(rec) => ForgeResponse::json(
+        match mirror::MirrorStore::new(&self.plugin_dir).load(owner, repo) {
+            mirror::StoredRecord::Valid(rec) => ForgeResponse::json(
                 200,
                 &serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null),
             ),
-            None => ForgeResponse::json(404, &serde_json::json!({"error": "not a mirror"})),
+            mirror::StoredRecord::Missing => {
+                ForgeResponse::json(404, &serde_json::json!({"error": "not a mirror"}))
+            }
+            // Still a mirror: refused like every other reader of it.
+            mirror::StoredRecord::Unreadable(_) => ForgeResponse::json(
+                503,
+                &serde_json::json!({"error": "the mirror record cannot be read"}),
+            ),
         }
     }
 
@@ -2172,6 +2316,58 @@ mod tests {
         };
         let r = svc.handle(push, nostr_agent(&hex)).await.unwrap();
         assert_eq!(r.status, 403);
+        assert!(String::from_utf8_lossy(&r.body).contains("read-only"));
+    }
+
+    /// Round 6 item 1: a namespace that cannot name a mirror record (not a
+    /// 64-hex key) has no record, so the owner's push passes the mirror
+    /// guard and the record API answers "not a mirror".
+    #[cfg(feature = "mirror")]
+    #[tokio::test]
+    async fn a_namespace_that_cannot_hold_a_record_is_not_a_mirror() {
+        let (_td, svc) = service();
+        let push = ForgeRequest {
+            method: "POST".into(),
+            path: "/forge/alice/demo.git/git-receive-pack".into(),
+            query: String::new(),
+            headers: vec![],
+            raw_body: Bytes::new(),
+            host_url: Some("https://pod.example".into()),
+        };
+        let r = svc.handle(push, pod_agent("alice")).await.unwrap();
+        assert_ne!(r.status, 403, "{}", String::from_utf8_lossy(&r.body));
+        let api = ForgeRequest {
+            method: "GET".into(),
+            path: "/forge/api/repos/alice/demo/mirror".into(),
+            query: String::new(),
+            headers: vec![],
+            raw_body: Bytes::new(),
+            host_url: Some("https://pod.example".into()),
+        };
+        let r = svc.handle(api, ForgeAgent::Anonymous).await.unwrap();
+        assert_eq!(r.status, 404, "{}", String::from_utf8_lossy(&r.body));
+    }
+
+    /// Round 6 item 1: a record that exists but does not parse still makes
+    /// the repository a mirror, so the owner's push is refused.
+    #[cfg(feature = "mirror")]
+    #[tokio::test]
+    async fn an_unreadable_mirror_record_still_refuses_the_owners_push() {
+        let (td, svc) = service();
+        let hex = hex64();
+        let dir = td.path().join("mirror").join(&hex);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("demo.json"), b"{\"pubkey\": \"trunc").unwrap();
+        let push = ForgeRequest {
+            method: "POST".into(),
+            path: format!("/forge/{hex}/demo.git/git-receive-pack"),
+            query: String::new(),
+            headers: vec![],
+            raw_body: Bytes::new(),
+            host_url: Some("https://pod.example".into()),
+        };
+        let r = svc.handle(push, nostr_agent(&hex)).await.unwrap();
+        assert_eq!(r.status, 403, "{}", String::from_utf8_lossy(&r.body));
         assert!(String::from_utf8_lossy(&r.body).contains("read-only"));
     }
 }

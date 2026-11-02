@@ -571,6 +571,7 @@ impl ForgeService {
             ForgeError::NotFound(_) | ForgeError::PathTraversal(_) => cors_err(404, "not found"),
             ForgeError::Conflict(m) => cors_err(409, m),
             ForgeError::BadRequest(m) => cors_err(400, m),
+            ForgeError::Busy(m) => cors_err(503, m),
             other => {
                 tracing::warn!("forge: {what} failed: {other}");
                 cors_err(500, "edit failed")
@@ -598,6 +599,10 @@ impl ForgeService {
             Ok(d) => d,
             Err(e) => return Self::edit_failure(&e, "web edit"),
         };
+        // An edit commits into served outside publication (Codex High 1).
+        if let Err(e) = self.refuse_mirror_write(owner, name).await {
+            return Self::edit_failure(&e, "web edit");
+        }
         let branch = match resolve_branch(&dir, ed.branch.as_ref()).await {
             Ok(b) => b,
             Err(resp) => return resp,

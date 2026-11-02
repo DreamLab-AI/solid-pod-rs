@@ -8,7 +8,7 @@
 [![crates.io](https://img.shields.io/crates/v/solid-pod-rs.svg)](https://crates.io/crates/solid-pod-rs)
 [![docs.rs](https://img.shields.io/docsrs/solid-pod-rs)](https://docs.rs/solid-pod-rs)
 [![CI](https://github.com/DreamLab-AI/solid-pod-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DreamLab-AI/solid-pod-rs/actions/workflows/ci.yml)
-[![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-lightgray.svg)](https://releases.rs/docs/1.88.0/)
+[![MSRV: 1.89](https://img.shields.io/badge/MSRV-1.89-lightgray.svg)](https://releases.rs/docs/1.89.0/)
 
 **Maintainer**: [John O'Hare](https://github.com/jjohare) · **Upstream IP**: [Melvin Carvalho](https://github.com/melvincarvalho) ([JSS](https://github.com/JavaScriptSolidServer/JavaScriptSolidServer), the AGPL-3.0 reference Solid pod server) · [MAINTAINERS.md](MAINTAINERS.md)
 

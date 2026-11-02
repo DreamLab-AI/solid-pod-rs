@@ -281,6 +281,8 @@ impl ForgeService {
             }
         }
         let dest = repo::repo_git_dir(&self.repo_root, caller, &target)?;
+        // A fork onto a followed mirror's name would become its served store.
+        self.refuse_mirror_write(caller, &target).await?;
         if tokio::fs::metadata(&dest).await.is_ok() {
             return Ok(ForgeResponse::error(
                 409,

@@ -31,7 +31,6 @@ use crate::error::ForgeError;
 use crate::html::{agent_label, crumbs, page};
 use crate::merge::{NoopTipRecorder, TipRecorder};
 use crate::prgit;
-use crate::repo;
 use crate::request::{esc, parse_form};
 use crate::spine::issues::{IssueState, ThreadPointer};
 use crate::spine::SpineStore;
@@ -539,7 +538,7 @@ impl ForgeService {
         let info = if pr.state == IssueState::Open {
             self.pull_merge_info(owner, name, pr).await?
         } else {
-            let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+            let dir = self.gated_git_dir(owner, name).await?;
             let base_sha = if valid_ref(&pr.base) {
                 prgit::rev_parse(&dir, &format!("refs/heads/{}", pr.base)).await
             } else {
@@ -599,7 +598,7 @@ impl ForgeService {
                 "base must be a branch of this repository",
             ));
         }
-        let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+        let dir = self.gated_git_dir(owner, name).await?;
         let Some(base_sha) = prgit::rev_parse(&dir, &format!("refs/heads/{base_ref}")).await else {
             return Ok(ForgeResponse::error(
                 422,
@@ -1159,7 +1158,7 @@ impl ForgeService {
         let Some(pr) = idx.pulls.get(&number) else {
             return Ok(ForgeResponse::error(404, "not found"));
         };
-        let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+        let dir = self.gated_git_dir(owner, name).await?;
         let base = format!("{}/{owner}/{name}", self.prefix());
         // Merged pulls use the shas frozen at merge time (the objects outlive
         // the branch); open and closed ones compute live (JSS `pullDiffData`).

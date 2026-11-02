@@ -8,6 +8,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Forge mirror publication isolation (part 1 of 2). The mirror now fetches
+  into a private candidate store (`plugin_dir/mirror-work/candidates/`),
+  outside the Git-served `repos/` tree, and reaches each verdict there. Only
+  approved commits are published into the served repository: one atomic
+  `git push` by SHA, leased on the served heads the plan was made against,
+  through a fixed hardened receive-pack command, so served hooks never run.
+  Held commits (those not reachable from any approved tip) are no longer
+  readable through raw, HTML, JSON, archive or smart-HTTP readers;
+  publishing an approved commit still publishes its whole history. A failed,
+  oversize or timed-out fetch now removes the candidate instead of running
+  `gc`. New served repositories carry the `mirror-publication-v1` marker,
+  and an existing clean repository is marked when it is first followed;
+  readers return 503 for a mirrored repository without it, including the
+  pull request, merge and compare internals, a compare naming it as the head,
+  and `GET /api/repos/<owner>/<repo>`. Repository listings leave such a
+  repository out. Repositories mirrored before this change are not migrated
+  yet and stay refused (503) until the migration change lands.
+  `/commits/<full sha>` now returns 404 when the commit is absent instead of
+  an empty page. Mirror git commands name each store with an explicit
+  `--git-dir`, so a damaged store is rebuilt instead of git resolving an
+  enclosing repository, and errors saved in the public mirror record no
+  longer contain plugin-directory paths.
+- Forge: nothing but the mirror's publication writes into a mirrored
+  repository. A compare or new pull request whose head is another
+  repository is refused (409) instead of fetching that head into the
+  mirror's served store, where its objects would have been readable by SHA;
+  an existing pull request's view reads only a head already held. Merging,
+  web edits and forking onto a mirror's name are refused (409) too. A
+  mirror record path that cannot be checked (any error but "not found")
+  counts as a mirror: writes are refused (503) and the reader gate stays
+  closed.
+- Forge mirror: an existing repository is marked for publication when it is
+  first followed unless it shows the old shared layout (`refs/mirror`, or
+  `hideRefs` of them) or has `objects/info/alternates` or `http-alternates`.
+  A repository whose mirror record predates this release is also scanned
+  once, streamed, for objects no branch or tag reaches (`HEAD` and other ref
+  namespaces are not roots); any such object leaves it unmarked and refused,
+  like the pre-isolation layout. An owner's repository first followed now is
+  not scanned, so commits a force push left behind do not take it offline.
+  The awaits-migration verdict is kept in the record, and only when it rests
+  on evidence (a legacy trace, an alternates file, an unreachable object): a
+  check that could not be made (a failed config or refs read, an alternates
+  check that errors, a scan that fails or times out) leaves the store
+  unmarked and is retried, not recorded. A config read that fails is never
+  taken to mean "no hideRefs". A mirror record file that exists but cannot
+  be read or parsed still makes the repository a mirror: the engine treats
+  the store as awaiting migration and leaves the file in place, the owner's
+  push is refused, and the record API answers 503. A replayed state never
+  re-examines the store. The marker now means "publication allowed; legacy
+  layout not detected": for a repository first followed after this release
+  it does not certify that every object is reachable. Publication into a marked repository that has since
+  gained alternates is refused. Only receive-pack quarantines older than the
+  publication timeout (120 s) are removed, before a publication; a failed
+  publication's own leftover waits for a later one. An owner push stalled
+  for longer than that may lose its quarantine and fail; this affects
+  availability only, and nothing is exposed.
 - Git HTTP no longer permits direct requests for hidden or unadvertised
   object hashes, including when repository-local configuration enables them.
   Advertised-tip fetches remain supported. This closes a direct fetch path
@@ -34,6 +90,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now includes SHA-256 of the empty body. Callers supplying an empty body to
   the verifier must include that payload tag; `None` remains an explicit
   opt-out from body verification. Publication and consumer upgrades are pending.
+
+### Changed
+
+- **Breaking (`solid-pod-rs-forge`, feature `mirror`):** `MirrorGit` loses
+  `update_ref` and `set_head` and gains `publish(owner, name, &[RefUpdate],
+  head)`; `RefUpdate` and `PUBLICATION_MARKER` are new public items. The
+  verdict reads (`has_commit`, `is_ancestor`, `read_trail`) now evaluate the
+  candidate store. Approved branches in one state now move together or not
+  at all. `MirrorGit` also gains a required `prepare(owner, name, scan)`, which the
+  engine calls under the repository lock before saving any record for an
+  existing served store and which returns the new `Prepared` (`Ready`, or
+  `AwaitsMigration` for a store in the pre-isolation layout). `publish`
+  returns the new `PublishError` (a path-free reason, whether a retry may
+  succeed, and whether the push timed out). `MirrorRecord` gains `isolated`,
+  `awaitsMigration` and `timeouts`; `MAX_TIMEOUTS` is new. `MirrorStore::load`
+  and `StoredRecord` (missing, unreadable, valid) are new; a record path that
+  is a symbolic link, dangling or not, or that cannot be read or parsed, makes
+  the repository a mirror (readers 503, writers refused) that awaits
+  migration, and the file is never overwritten. `Mirror::apply` and `Mirror::on_event` (both event
+  kinds) hold a cross-process file lock per repository
+  (`plugin_dir/mirror-work/locks/`). `GitCli::new` must be given
+  `plugin_dir/repos`.
+- Forge mirror: a publication that fails transiently is retried for the same
+  state after the backoff (`retryAt`), never sooner than the reconnect delay
+  (2 s, doubling to 60 s) even with `minIntervalMs: 0`, instead of waiting
+  for a newer state; a newer state arriving meanwhile is applied at once. A
+  refusal that cannot pass on a retry is not retried. The failure count is
+  reset only by a completed apply, so repeated publication failures back
+  off. The publication size cap now bounds what one push adds to the served
+  repository. A new admission threshold (`MAX_SERVED_BYTES`, 2 GiB, not
+  counting receive-pack quarantines) refuses publication into a served
+  repository already past it; an admitted publication may still add up to
+  `MAX_REPO_BYTES` (512 MiB), measured by polling, so a store can reach
+  about 2.5 GiB. Stale receive-pack quarantine directories (older than the
+  publish timeout, 120 s) are removed.
+- Forge mirror retries: only a verified event can replace a queued or
+  pending state, and a pending retry is put back over an older state when
+  its timer fires. A fetch or materialise failure that may pass (a network
+  error, a timeout, a clone host whose DNS lookup failed) is retried too; a
+  fetch past the size cap, or a clone URL or resolved address the policy
+  refuses (on either the engine's or the adapter's check), is not. A store
+  that could not be examined is retried as well. The retry delay counts from
+  the failure, not from the start of the attempt. A push killed by the
+  growth cap, and a publication into an unmarked store, are terminal for the
+  state. Timeouts of one state (fetch, publication, or examining the store)
+  and failed DNS lookups of its clone host stop being retried after
+  `MAX_TIMEOUTS` (3); another kind of failure in between does not reset the
+  count, only a newer state or a completed apply does. The count is kept in
+  the saved record, so it does not bound a repository followed for the
+  first time whose existing store cannot be examined (no record is saved
+  beside it); that case is retried at the backoff floor. Two states at
+  the same second are ordered by id for "acted on" as for "seen", so the
+  lower-id one (the NIP-01 winner) is applied even after its sibling.
+- Forge mirror: a followed repository in the pre-isolation layout is no
+  longer fetched (its state is recorded as skipped, awaiting migration).
+- Forge: a repository's `lastPush` is read from branches and tags only.
+- MSRV raised from 1.88 to 1.89 for `std::fs::File::lock`.
 
 ## [0.5.0-alpha.18] — 2026-10-29
 
