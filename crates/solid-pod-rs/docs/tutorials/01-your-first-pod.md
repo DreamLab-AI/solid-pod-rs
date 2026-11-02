@@ -12,7 +12,7 @@ first request, and read back an LDP-compliant response. ≤ 10 minutes.
 
 ## Prerequisites
 
-- Rust toolchain 1.88 or newer (`rustup default stable`).
+- Rust toolchain 1.89 or newer (`rustup default stable`).
 - `curl` (or any HTTP client).
 - The `solid-pod-rs` workspace checked out.
 

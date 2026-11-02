@@ -18,7 +18,6 @@ use crate::forks;
 use crate::html::{agent_label, crumbs, page};
 use crate::ownership::ForgeAgent;
 use crate::prgit;
-use crate::repo;
 use crate::request::{esc, percent_decode};
 use crate::{ForgeRequest, ForgeResponse, ForgeService};
 
@@ -497,7 +496,7 @@ impl ForgeService {
         if !valid_repo(name) {
             return Ok(None);
         }
-        let dir = repo::repo_git_dir(&self.repo_root, base_owner, name)?;
+        let dir = self.gated_git_dir(base_owner, name).await?;
         let make = |sha: String| HeadRef {
             owner: owner.clone(),
             repo: name.to_string(),
@@ -523,8 +522,27 @@ impl ForgeService {
         if !may_fetch {
             return Ok(None);
         }
-        let Ok(head_dir) = repo::repo_git_dir(&self.repo_root, &owner, name) else {
-            return Ok(None);
+        // Never fetch a foreign head into a mirror's served store (Codex
+        // High 1). A caller asking to compare or open a pull request is told
+        // why; an existing pull request's view reads only what is held. A
+        // record that cannot be checked refuses (503). For a mirror base,
+        // `pull_merge_info` still runs `merge-tree --write-tree` in served,
+        // but only against a head ref it already holds, so whatever that
+        // writes is derived from approved content alone (round 4 decision).
+        if self.has_mirror_record(base_owner, name).await? {
+            return match access {
+                HeadAccess::Caller(_) => Err(ForgeError::Conflict(format!(
+                    "'{base_owner}/{name}' is a mirror: a head from another repository cannot be fetched into it"
+                ))),
+                _ => Ok(prgit::rev_parse(&dir, &local).await.map(make)),
+            };
+        }
+        // The head is another repository: an unmigrated mirror there is
+        // refused like any reader of it, never fetched into the base.
+        let head_dir = match self.gated_git_dir(&owner, name).await {
+            Ok(d) => d,
+            Err(e @ ForgeError::Busy(_)) => return Err(e),
+            Err(_) => return Ok(None),
         };
         if !tokio::fs::metadata(&head_dir)
             .await
@@ -613,7 +631,16 @@ impl ForgeService {
         if shared || !valid_owner(&pr.head.owner) || !valid_ref(&pr.head.ref_name) {
             return;
         }
-        let Ok(dir) = repo::repo_git_dir(&self.repo_root, base_owner, name) else {
+        // A mirror's served store is written by its publication alone; a
+        // record that cannot be checked counts as one.
+        if self
+            .has_mirror_record(base_owner, name)
+            .await
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let Ok(dir) = self.gated_git_dir(base_owner, name).await else {
             return;
         };
         let local = format!("refs/forge/heads/{}/{}", pr.head.owner, pr.head.ref_name);
@@ -646,7 +673,7 @@ impl ForgeService {
         head_spec: &str,
         access: HeadAccess<'_>,
     ) -> Result<Option<Compare>, ForgeError> {
-        let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+        let dir = self.gated_git_dir(owner, name).await?;
         let Some(base_sha) = self.resolve_base(&dir, base_ref).await else {
             return Ok(None);
         };

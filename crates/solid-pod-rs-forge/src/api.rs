@@ -318,8 +318,11 @@ impl ForgeService {
 
     /// Summarise one repository (description + newest ref time).
     pub(crate) async fn repo_summary(&self, owner: &str, repo: &str) -> Option<RepoSummary> {
-        let dir = crate::repo::repo_git_dir(&self.repo_root, owner, repo).ok()?;
+        // An unmigrated mirror has no summary, so listings leave it out.
+        let dir = self.gated_git_dir(owner, repo).await.ok()?;
         let mut description = repo_description(&dir).await;
+        // Branches and tags only: other namespaces (an unmigrated mirror's
+        // `refs/mirror`, fetched pull request heads) are not pushes.
         let last_push = gitrun::text(
             &dir,
             &[
@@ -327,6 +330,8 @@ impl ForgeService {
                 "--sort=-committerdate",
                 "--count=1",
                 "--format=%(committerdate:unix)",
+                "refs/heads",
+                "refs/tags",
             ],
         )
         .await
@@ -413,6 +418,8 @@ impl ForgeService {
         }
         let dir = match self.resolve_repo(owner, repo).await {
             Ok(d) => d,
+            // An unmigrated mirror is refused (503), not reported missing.
+            Err(e @ ForgeError::Busy(_)) => return Err(e),
             Err(_) => return Ok(api_err(404, "not found")),
         };
         if req.method.eq_ignore_ascii_case("PATCH") {

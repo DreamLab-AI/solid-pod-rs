@@ -28,7 +28,6 @@ use crate::error::ForgeError;
 use crate::html::agent_label;
 use crate::prgit;
 use crate::pulls::{self, MergeRecord, PullEntry};
-use crate::repo;
 use crate::spine::issues::IssueState;
 use crate::{ForgeAgent, ForgeResponse, ForgeService};
 
@@ -222,7 +221,7 @@ impl ForgeService {
         name: &str,
         pr: &PullEntry,
     ) -> Result<MergeInfo, ForgeError> {
-        let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+        let dir = self.gated_git_dir(owner, name).await?;
         let mut info = MergeInfo::default();
         if !valid_ref(&pr.base) {
             return Ok(info);
@@ -293,6 +292,8 @@ impl ForgeService {
             ));
         }
         self.resolve_repo(owner, name).await?;
+        // A merge writes a commit and moves a branch in served (Codex High 1).
+        self.refuse_mirror_write(owner, name).await?;
         let _g = prgit::pull_locks().lock(&format!("{owner}/{name}")).await;
         let mut idx = pulls::load_pull_index(self.spine.as_ref(), owner, name).await?;
         let Some(pr) = idx.pulls.get(&number).cloned() else {
@@ -304,7 +305,7 @@ impl ForgeService {
                 format!("pull request is {}", pulls::state_str(pr.state)),
             ));
         }
-        let dir = repo::repo_git_dir(&self.repo_root, owner, name)?;
+        let dir = self.gated_git_dir(owner, name).await?;
         // The index is on-disk data: re-validate before anything reaches argv.
         if !valid_ref(&pr.base) || parse_head_spec(owner, &pr.head_spec()).is_none() {
             return Ok(ForgeResponse::error(422, "pull request refs are invalid"));
@@ -439,7 +440,7 @@ impl ForgeService {
         // the built-in recorder and a no-op without the feature).
         #[cfg(feature = "anchoring")]
         if let Ok(dir) = self.resolve_repo(owner, name).await {
-            let branch = repo::browse::default_branch(&dir).await;
+            let branch = crate::repo::browse::default_branch(&dir).await;
             if let Err(e) = self.record_tip(owner, name, &branch, &merged_sha).await {
                 tracing::warn!("forge: recording the anchor tip after merge failed: {e}");
             }

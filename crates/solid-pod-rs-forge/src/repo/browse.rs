@@ -97,6 +97,14 @@ async fn git_text(git_dir: &Path, args: &[&str]) -> Result<String, ForgeError> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A full SHA-1 or SHA-256 object id (lowercase hex).
+fn is_full_object_id(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64)
+        && rev
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Validate a git ref / commit-ish. Rejects flag-injection (leading `-`),
 /// range/parent traversal (`..`), whitespace, and shell/path metachars.
 /// Branch names with `/` are allowed. Empty is rejected.
@@ -284,6 +292,12 @@ pub async fn commit_log(
     .await
     {
         Ok(v) => v,
+        // An unborn branch (a new repository) lists as empty. A full object
+        // id that does not resolve is not in this store at all (for a mirror,
+        // a commit that was never published): 404, as every other reader.
+        Err(ForgeError::NotFound(why)) if is_full_object_id(rev) => {
+            return Err(ForgeError::NotFound(why))
+        }
         Err(ForgeError::NotFound(_)) => return Ok((Vec::new(), false)),
         Err(e) => return Err(e),
     };
