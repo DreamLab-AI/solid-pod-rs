@@ -368,7 +368,7 @@ pub const API_ACTIONS: &[&str] = &[
 ];
 
 /// Git smart-HTTP suffixes that identify a CGI request.
-const GIT_SUFFIXES: &[&str] = &["/info/refs", "/git-upload-pack", "/git-receive-pack"];
+pub(crate) const GIT_SUFFIXES: &[&str] = &["/info/refs", "/git-upload-pack", "/git-receive-pack"];
 
 /// Strip `prefix` from `path`. Returns the remainder with a guaranteed
 /// leading `/` (or `"/"` for an exact-prefix match). Returns `None` when

@@ -5083,8 +5083,15 @@ async fn handle_forge(
         }));
     };
 
-    let service = match forge_service(plugin_dir) {
-        Ok(s) => s,
+    // Building the service migrates legacy mirror stores, which blocks; it
+    // normally happened at boot (`start_forge`), and this path reaches it
+    // only if that failed. Run it on the blocking pool, never on a worker.
+    let service = match web::block(move || forge_service(plugin_dir)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
         Err(e) => {
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": e.to_string()}));

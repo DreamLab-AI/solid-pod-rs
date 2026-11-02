@@ -8,6 +8,129 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Forge mirror publication isolation (part 2 of 2, mirror-class stores):
+  `ForgeService::new` now migrates every served repository left in the
+  pre-release mirror layout before it returns, with or without the `mirror`
+  feature. A repository at a 64-hex owner is migrated when it is unmarked and
+  has a mirror record that is flagged, pre-release (`isolated` absent) or
+  unreadable, or has `refs/mirror/*`, `hideRefs` naming them, alternates, or
+  an earlier migration report; each signal is checked on its own. A marked
+  repository whose record is still flagged is only finished, not rebuilt,
+  when a migration report names the migration id the store carries;
+  otherwise it is rebuilt.
+- Forge: migration copies the roots only. The roots are the branches and
+  tags with names the push accepts. Every other ref, including notes,
+  stashes and `refs/misc/*`, is copied only if everything it reaches is
+  reachable from the roots; otherwise it is dropped and reported as
+  `outside-roots`. `refs/mirror/*`, pull request heads (`refs/forge/heads/*`)
+  and refs with unsafe or non-UTF-8 names are dropped and reported too, and
+  are never renamed. The held set is every object any ref reaches that the
+  roots do not; it does not depend on `refs/mirror` still being present.
+  History no ref reaches any more (for example, a held branch that upstream
+  force-pushed away) is kept out by the verification instead: nothing outside
+  the roots' closure may be in the rebuilt store. Replacement refs and a
+  legacy `info/grafts` are ignored while closures are computed and while the
+  push runs, so the closures are the store's real history. `refs/replace/*`
+  refs are never copied; they are dropped and reported as `outside-roots`.
+  The rebuilt store is pushed by SHA, through the fixed receive-pack command,
+  into a fresh store under `plugin_dir/mirror-work/staging/`, and the push is
+  killed if staging grows past `MAX_REPO_BYTES` (512 MiB) while the push
+  runs (the size is polled every 500 ms), and staging is measured once more
+  after each push completes, so a push that finishes between two polls is
+  still checked. A store whose rebuilt, roots-only copy is larger than that
+  is not migrated and stays refused (git may briefly write past the cap
+  between polls before the push is killed or the final check fails it). The
+  cap bounds the staging store when its last push completes; it is not
+  re-measured after `HEAD` is set and the store is sealed, nor when no ref is
+  copied, so the published store can exceed it by those small writes. The rebuilt store is
+  then verified at object level: no held object; nothing outside the roots'
+  closure; no alternates; no object file shared with the old store. It is
+  then marked, given a `migration-id` file naming the migration, and renamed
+  into `repos/`. The old store moves to
+  `plugin_dir/mirror-recovery/<owner>/<name>.git.<ts>`, outside the served
+  tree. Beside it go a `.migration.json` report (the migration id, refs
+  copied and dropped with reasons, and the bytes of an unreadable record) and
+  `.held` and `.dropped` object lists. A report is never overwritten. The
+  record's `awaitsMigration` flag is then removed, every other field kept,
+  and the candidate is wiped.
+  - This closes a live exposure that predates part 1: a legacy repository
+    whose mirror record had been deleted, with its `refs/mirror` still in
+    place, was served with 200, held objects included.
+  - Notes, commits orphaned by approved force moves, and pull request heads
+    of legacy mirrors are no longer served; they stay in recovery.
+  - Forks of legacy mirrors are not swept until the follow-up change (B2).
+- Forge: a migration journal (`plugin_dir/mirror-work/migrations/<owner>/<name>.json`)
+  acts as a tombstone, and the migration resumes from it at the next boot.
+  - **Readers:** while anything is at that path, in any state (`published`
+    included), whether a file that cannot be read or a symbolic link
+    (dangling or not), every reader of the repository returns 503, marked or
+    not. The reader gate in `ForgeService` gains this check. A migrated
+    repository is therefore refused for the moment between the `published`
+    write and the journal's removal.
+  - **Writers:** while any entry exists there, smart-HTTP pushes into the
+    repository and forks onto its name return 503. The mirror engine neither
+    creates nor prepares the store (a retryable error).
+  - **Journal paths:** the journal's recovery and staging paths must lie
+    inside `mirror-recovery/` and `mirror-work/staging/`, or the migration
+    fails closed.
+  - **Crash recovery:** the journal, report and object lists are `fsync`ed,
+    with their directories, before each rename that depends on them. A crash
+    after the rebuilt store is renamed into place is finished at the next
+    boot, recognised by its migration id, and never rebuilt. A journal in any
+    state, `published` included, never finishes a store that does not carry
+    its migration id, and it keeps gating that store. The migration id is
+    continuity bookkeeping, not an integrity check: anyone who can write the
+    served store's directory can already serve anything. A crash before that
+    rebuilds from the old store, read from recovery once it has moved
+    there. An attempt counts when it starts, so after 3 attempts (crashes
+    included) boot stops retrying, and the repository stays refused until an
+    operator acts.
+  - **Journal first:** once detection decides to rebuild a store, its
+    journal is written durably before anything else is checked, so a later
+    failure (an unreadable recovery directory, a path that fails its
+    containment check) leaves the store refused. If that journal cannot be
+    written, or a failure leaves no journal behind, the pass counts as
+    incomplete and every store under a 64-hex owner is refused until a boot
+    completes it.
+  - **Failed migration:** a failure (for example, an old object that
+    `receive.fsckObjects` rejects, a timeout, or the size cap) leaves a
+    `failed` journal with the reason and the attempt count. A timeout kills
+    every process group the build spawned. Before the old store is moved it
+    stays in `repos/`, refused; after, `repos/` has no store (404) and the old
+    store is in recovery.
+  - **Gate journals:** if detection cannot examine a store (a check fails,
+    including the check of the store's directory itself, and no signal is
+    positive), or the store's lock is not free within 600 s, the store is
+    gated by a `failed` journal created exclusively (an existing journal is
+    never replaced) and is not migrated that boot. A `detection-error`
+    journal is removed only at a later boot that examines every signal of
+    the unmarked store successfully and finds them all negative. A marked
+    store whose record is not flagged is not examined, so its journal stays.
+  - **Incomplete pass:** if the migration pass itself cannot complete, every
+    repository under a 64-hex owner, marked or not, returns 503 until a
+    restart completes it. This covers a runtime that cannot be built, a
+    thread that panics, a store that cannot be gated by a journal, and any
+    error listing the served repositories or the journals (a directory that
+    cannot be listed, an entry that cannot be read or whose type cannot be
+    checked). The reader gate and detection apply the same marker test: a
+    regular file at the store root.
+  - **Operator recovery:** no recourse is built in for a store that gave up
+    (for example, on an fsck rejection). Deleting the journal of a
+    record-less legacy store serves its old objects, held ones included,
+    until the next boot gates it again. Stop the server before deleting a
+    journal.
+  - **Boot time:** boot is bounded per store (600 s for the lock and 600 s for
+    the build), not in total. Stores are migrated one after another.
+- Forge: smart HTTP accepts exactly `/<owner>/<name>[.git]/<suffix>` with
+  `<owner>` and `<name>` valid single segments, and always hands the Git CGI
+  `/<owner>/<name>.git/<suffix>`, the directory the reader gate checks.
+  Anything else returns 404 before the CGI runs: deeper nesting, a dot-led or
+  encoded segment, or a crashed fork's `repos/<owner>/.fork-*.tmp`
+  directory. A suffix-less clone URL now opens `<name>.git` instead of a bare
+  `repos/<owner>/<name>` directory. Any other refusal from the reader gate
+  also stops the request; only a missing repository is still answered by the
+  CGI.
+
 - Forge mirror publication isolation (part 1 of 2). The mirror now fetches
   into a private candidate store (`plugin_dir/mirror-work/candidates/`),
   outside the Git-served `repos/` tree, and reaches each verdict there. Only
@@ -23,8 +146,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   readers return 503 for a mirrored repository without it, including the
   pull request, merge and compare internals, a compare naming it as the head,
   and `GET /api/repos/<owner>/<repo>`. Repository listings leave such a
-  repository out. Repositories mirrored before this change are not migrated
-  yet and stay refused (503) until the migration change lands.
+  repository out. Repositories mirrored before this change are migrated at
+  boot (part 2).
   `/commits/<full sha>` now returns 404 when the commit is absent instead of
   an empty page. Mirror git commands name each store with an explicit
   `--git-dir`, so a damaged store is rebuilt instead of git resolving an
@@ -92,6 +215,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opt-out from body verification. Publication and consumer upgrades are pending.
 
 ### Changed
+
+- `solid-pod-rs-forge`: new public module `migrate`, outside the `mirror`
+  feature, holding what the mirror engine and boot migration share:
+  `RECEIVE_PACK` and `SERVED_CONFIG` (moved from the private items of
+  `mirror`, values unchanged), `AWAITS_MIGRATION_KEY`, `lock_path` (the
+  engine's lock path, now also for any valid owner segment),
+  `journal_path`, `MAX_ATTEMPTS`, `MIGRATION_ID_FILE` and `MAX_REPO_BYTES`
+  (moved from `mirror`, value unchanged; `mirror::MAX_REPO_BYTES` re-exports
+  it). The mirror record types
+  (`MirrorRecord`, `MirrorStore`, `StoredRecord` and the types they contain)
+  are now defined outside the feature so migration reads records with the
+  engine's own parser; their public path is still `mirror::*`. The
+  process-group git runner moved with them, unchanged.
+- `ForgeService::new` blocks, once per legacy store, while it migrates (on its
+  own thread and current-thread runtime, so it is safe inside actix or any
+  `tokio` runtime). The server's lazy forge start in `handle_forge` now runs
+  on the blocking pool (`web::block`).
 
 - **Breaking (`solid-pod-rs-forge`, feature `mirror`):** `MirrorGit` loses
   `update_ref` and `set_head` and gains `publish(owner, name, &[RefUpdate],

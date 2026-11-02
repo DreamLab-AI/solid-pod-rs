@@ -283,6 +283,13 @@ impl ForgeService {
         let dest = repo::repo_git_dir(&self.repo_root, caller, &target)?;
         // A fork onto a followed mirror's name would become its served store.
         self.refuse_mirror_write(caller, &target).await?;
+        // Nor may it land on a name being migrated: between the migration's
+        // two renames the served store is absent (fix round 1, F6).
+        if crate::migrate::journal_exists(&self.plugin_dir, caller, &target) {
+            return Err(ForgeError::Busy(format!(
+                "'{caller}/{target}' is being migrated"
+            )));
+        }
         if tokio::fs::metadata(&dest).await.is_ok() {
             return Ok(ForgeResponse::error(
                 409,
