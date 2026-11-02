@@ -8,6 +8,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Forge: forks of pre-release mirror stores are swept at boot (SP-GIT-02
+  Commit B2). A fork made with `clone --local` hardlinks its parent's packs,
+  held objects included. After the mirror-class stores, `ForgeService::new`
+  reads every served repository's `forge.parent` and follows each fork's
+  lineage to its root, transitively and cycle-safe. Lineage is parsed with
+  the path-segment rule the readers use, so a fork of a mirror named
+  `foo.git` is followed; a `forge.parent` that is present but does not parse
+  is a fork of unknown lineage, checked against every mirror-class report,
+  refused while the pass is incomplete, and it keeps every report unstamped.
+  A fork is rebuilt when it holds any object of a migrated mirror-class
+  ancestor's dropped set (`.dropped`, every object the ancestor's migration
+  left behind, so a held branch that upstream force-pushed away still
+  counts), checked with a streamed `cat-file --batch-check`, or when it holds
+  any object that the refs a rebuild keeps do not reach (an object the
+  legacy parent's `gc` pruned before migration but a fork taken earlier
+  still holds), found by counting streamed `cat-file --batch-all-objects`
+  and `rev-list --objects --all` output, the latter excluding
+  `refs/mirror/*` and `refs/replace/*`; either walk failing gates the fork. The
+  publication marker never decides.
+  The rebuild uses the same journal, staging, verification and recovery as
+  a mirror-class store. Every ref is copied except `refs/mirror/*` and
+  `refs/replace/*`, pull request heads included. A ref that reaches an
+  object in the ancestors' held sets (`.held`) beyond the ancestors' roots is
+  dropped and listed in the fork's report as `reaches-held`; where an
+  ancestor's root itself reaches held (a followed fork's root that its own
+  fork pass later dropped), the filter cannot drop the ref, verification
+  finds held in staging, and the whole rebuild fails and stays refused. The fork keeps `forge.parent`,
+  `http.receivepack` and its `refs/forge/` hides, gets no served config, and
+  keeps the marker only if it had one. A followed fork (one with a mirror
+  record) also gets the mirror's config and marker, and its branches and
+  tags are filtered too. A mirror-class rebuild now keeps a valid
+  `forge.parent`. Forking a repository whose name the lineage parser
+  rejects (one ending in `.git`) is refused with 422, so no new fork of
+  unknown lineage is made.
+  - **Claim:** the sweep covers objects present when it runs. A fork owner
+    who later pushes held bytes they kept back into their own fork is
+    re-publishing content they hold, which is outside the claim, as risk 4
+    is.
+  - **Fail closed:** a fork whose lineage passes a store still behind a
+    journal, under any owner (a fork whose own rebuild failed included), or
+    whose ancestor's report cannot be read, is gated behind a journal; a fork
+    crash-resumed with its rebuilt store already in place is not published
+    while its lineage is gated; and a gate anywhere in a fork's lineage keeps
+    every report unstamped. A repository config that cannot be read makes the
+    pass incomplete, and an incomplete pass now refuses every fork (any
+    repository whose config names a `forge.parent` or cannot be read) as
+    well as every repository under a 64-hex owner. A fork whose lineage stops
+    at a repository that is gone is checked against every mirror-class
+    report.
+  - **Once clean:** a fork rebuilt against an ancestor's reports is not
+    rebuilt again, and once a complete pass finds every fork of a parent
+    clean, `forksCleanAt` is stamped into the parent's report and its forks
+    are no longer checked.
+  - **Partial forks:** `repos/<owner>/.fork-*.tmp` directories older than an
+    hour, left by a crashed fork build, are moved to `mirror-recovery/`.
+  - **Size cap:** a fork whose rebuilt copy exceeds `MAX_REPO_BYTES`
+    (512 MiB) is not migrated and stays refused, as a mirror-class store
+    does.
+  - **Residual (risk 4):** a fork owner's own ref that reaches an object a
+    mirror's upstream force-pushed away before migration is in the dropped
+    set but not the held set, so it is kept, and that object stays served
+    from the fork.
+  - **Residual (pruned parent, reachable):** an object a legacy parent had
+    already garbage-collected before migration is in neither set. A fork
+    holding it outside its kept refs is rebuilt, which removes it; a fork
+    whose own kept ref (a branch, tag or pull request head) reaches it keeps
+    it, as with risk 4. A ref with a name unsafe on a push command line is
+    also dropped by the rebuild but still counts as reaching.
+  - **Residual (overlapping roots):** the rebuild failure described above is
+    an availability defect, recorded and not fixed.
 - Forge mirror publication isolation (part 2 of 2, mirror-class stores):
   `ForgeService::new` now migrates every served repository left in the
   pre-release mirror layout before it returns, with or without the `mirror`

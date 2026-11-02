@@ -236,8 +236,9 @@ pub struct ForgeService {
     locks: Arc<locks::ForgeLocks>,
     /// The boot migration did not run to completion (its runtime could not
     /// be built, its thread panicked, a store could not be gated by a
-    /// journal, or the stores could not all be listed): every store under a
-    /// 64-hex owner is refused, marked or not.
+    /// journal, or the stores could not all be listed or their configs
+    /// read): every store under a 64-hex owner is refused, marked or not, and
+    /// every fork.
     migration_incomplete: bool,
 }
 
@@ -638,7 +639,8 @@ impl ForgeService {
     /// anything at its migration journal path ([`migrate::journal_path`]),
     /// in any state, `published` included, is refused first, marked or not.
     /// If the boot migration did not complete, every repository under a
-    /// 64-hex owner is refused, marked or not. Then one `lstat` for a marked
+    /// 64-hex owner is refused, marked or not, and so is every fork (any
+    /// repository whose config names a `forge.parent` or cannot be read). Then one `lstat` for a marked
     /// mirror (the marker must be a regular file) and two for any other
     /// repository. The record path is
     /// `mirror::MirrorStore`'s layout, checked without the `mirror` feature
@@ -659,6 +661,24 @@ impl ForgeService {
         // detection wanted rebuilt).
         if self.migration_incomplete && mirror_record::is_hex64(owner) {
             return true;
+        }
+        // Nor every fork (B2): forks live under any owner, and one the pass
+        // could not check may still hold a legacy mirror's held objects. A
+        // config that cannot be read may be a fork's, and a `forge.parent`
+        // that does not parse is a fork of unknown lineage.
+        if self.migration_incomplete {
+            let dir = dir.to_path_buf();
+            let fork_or_unknown = tokio::task::spawn_blocking(move || {
+                !matches!(
+                    forks::read_lineage_checked(&dir),
+                    Ok(forks::StoredLineage::None)
+                )
+            })
+            .await
+            .unwrap_or(true);
+            if fork_or_unknown {
+                return true;
+            }
         }
         // The marker is a regular file at the store root, not a symlink: the
         // same test detection applies.
