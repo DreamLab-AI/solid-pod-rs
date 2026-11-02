@@ -56,7 +56,7 @@ impl ForkParent {
 
 /// `(section, key, value)` triples of a git config file (section and key
 /// lowercased).
-fn config_entries(conf: &str) -> Vec<(String, String, String)> {
+pub(crate) fn config_entries(conf: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let mut section = String::new();
     for raw in conf.lines() {
@@ -109,6 +109,68 @@ pub fn read_fork_parent(repo_root: &Path, owner: &str, name: &str) -> Option<For
     let dir = repo::repo_git_dir(repo_root, owner, name).ok()?;
     let conf = std::fs::read_to_string(dir.join("config")).ok()?;
     parse_fork_parent(&conf)
+}
+
+/// A store's lineage as the boot migration and the incomplete-pass rule
+/// read it. Unlike [`parse_fork_parent`], both parts are checked with
+/// [`crate::ownership::valid_name_segment`], the rule the readers resolve
+/// paths with, so every lineage naming a store a reader can serve parses
+/// (a mirror named `foo.git` included); a `forge.parent` that still does not
+/// parse is a fork of unknown lineage, never "not a fork".
+#[derive(Debug, Clone)]
+pub(crate) enum StoredLineage {
+    /// No `forge.parent`: not a fork.
+    None,
+    /// `forge.parent` names `<owner>/<name>`.
+    Parent(ForkParent),
+    /// `forge.parent` is present but does not parse: its value, as read.
+    Unknown(String),
+}
+
+/// A `forge.parent` value, `<owner>/<name>`, with both parts valid path
+/// segments.
+pub(crate) fn parse_lineage_value(v: &str) -> Option<ForkParent> {
+    let mut it = v.split('/');
+    let (o, n, extra) = (it.next()?, it.next()?, it.next());
+    let segment = crate::ownership::valid_name_segment;
+    if extra.is_some() || !segment(o) || !segment(n) {
+        return None;
+    }
+    Some(ForkParent {
+        owner: o.to_string(),
+        name: n.to_string(),
+    })
+}
+
+/// The [`StoredLineage`] in a bare repository's config text.
+pub(crate) fn stored_lineage(conf: &str) -> StoredLineage {
+    match config_entries(conf)
+        .into_iter()
+        .find(|(s, k, _)| s == "forge" && k == "parent")
+    {
+        None => StoredLineage::None,
+        Some((_, _, v)) => {
+            parse_lineage_value(&v).map_or(StoredLineage::Unknown(v), StoredLineage::Parent)
+        }
+    }
+}
+
+/// The [`StoredLineage`] in the config file of the bare repository at
+/// `git_dir`. Unlike [`read_fork_parent`], a config that cannot be read (a
+/// missing file included) is an error, never "not a fork"; the config must
+/// be a regular file.
+///
+/// # Errors
+///
+/// The error checking or reading `git_dir/config`.
+pub(crate) fn read_lineage_checked(git_dir: &Path) -> std::io::Result<StoredLineage> {
+    let path = git_dir.join("config");
+    let meta = std::fs::symlink_metadata(&path)?;
+    if !meta.file_type().is_file() {
+        return Err(std::io::Error::other("the config is not a regular file"));
+    }
+    let conf = std::fs::read(&path)?;
+    Ok(stored_lineage(&String::from_utf8_lossy(&conf)))
 }
 
 /// Count repositories naming `<owner>/<name>` as `forge.parent`, scanning at
@@ -269,6 +331,15 @@ impl ForgeService {
             return Ok(ForgeResponse::error(403, "no namespace for this agent"));
         }
         let src = self.resolve_repo(owner, name).await?;
+        // The lineage written into the fork must be one `parse_fork_parent`
+        // reads back (a source named `foo.git` is not): a lineage nothing
+        // can parse hides the fork from its parent's checks.
+        if !(valid_owner(owner) && valid_repo(name)) {
+            return Ok(ForgeResponse::error(
+                422,
+                "this repository's name cannot be recorded as a fork's lineage",
+            ));
+        }
         let mut target = name.to_string();
         if !req.raw_body.is_empty() {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&req.raw_body) {
@@ -344,39 +415,52 @@ impl ForgeService {
         owner: &str,
         name: &str,
     ) -> Result<(), ForgeError> {
-        let (s, t) = (src.to_string_lossy(), tmp.to_string_lossy());
-        let c = prgit::run_at(
-            &self.repo_root,
-            None,
-            &["clone", "--local", "--bare", "--quiet", "--", &s, &t],
-            &[],
-        )
-        .await?;
-        if !c.ok() {
+        build_fork_at(&self.repo_root, src, tmp, owner, name).await
+    }
+}
+
+/// Clone `src` into `tmp` (`clone --local --bare`, run from `repo_root`) and
+/// write the fork's configuration: `http.receivepack`, `refs/forge/` hidden
+/// from upload-pack and transfer, and `forge.parent = <owner>/<name>`.
+pub(crate) async fn build_fork_at(
+    repo_root: &Path,
+    src: &Path,
+    tmp: &Path,
+    owner: &str,
+    name: &str,
+) -> Result<(), ForgeError> {
+    let (s, t) = (src.to_string_lossy(), tmp.to_string_lossy());
+    let c = prgit::run_at(
+        repo_root,
+        None,
+        &["clone", "--local", "--bare", "--quiet", "--", &s, &t],
+        &[],
+    )
+    .await?;
+    if !c.ok() {
+        return Err(ForgeError::Backend(format!(
+            "fork clone failed: {}",
+            c.stderr.trim()
+        )));
+    }
+    let lineage = format!("{owner}/{name}");
+    for args in [
+        vec!["config", "http.receivepack", "true"],
+        vec!["config", "--add", "uploadpack.hideRefs", FORGE_REFS],
+        vec!["config", "--add", "transfer.hideRefs", FORGE_REFS],
+        vec!["config", "forge.parent", lineage.as_str()],
+    ] {
+        let o = prgit::run(tmp, &args).await?;
+        if !o.ok() {
             return Err(ForgeError::Backend(format!(
-                "fork clone failed: {}",
-                c.stderr.trim()
+                "fork config failed: {}",
+                o.stderr.trim()
             )));
         }
-        let lineage = format!("{owner}/{name}");
-        for args in [
-            vec!["config", "http.receivepack", "true"],
-            vec!["config", "--add", "uploadpack.hideRefs", FORGE_REFS],
-            vec!["config", "--add", "transfer.hideRefs", FORGE_REFS],
-            vec!["config", "forge.parent", lineage.as_str()],
-        ] {
-            let o = prgit::run(tmp, &args).await?;
-            if !o.ok() {
-                return Err(ForgeError::Backend(format!(
-                    "fork config failed: {}",
-                    o.stderr.trim()
-                )));
-            }
-        }
-        // The clone's origin is an internal filesystem path: drop it.
-        let _ = prgit::run(tmp, &["remote", "remove", "origin"]).await;
-        Ok(())
     }
+    // The clone's origin is an internal filesystem path: drop it.
+    let _ = prgit::run(tmp, &["remote", "remove", "origin"]).await;
+    Ok(())
 }
 
 #[cfg(test)]

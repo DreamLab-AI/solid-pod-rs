@@ -2281,3 +2281,6 @@ async fn h2_a_fast_push_past_the_cap_is_caught_by_the_final_check() {
     );
     assert_gated(&fx, &forge).await;
 }
+
+#[path = "migrate_fork_tests.rs"]
+mod fork;
