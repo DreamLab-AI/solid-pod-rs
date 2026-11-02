@@ -66,8 +66,10 @@ pub mod markdown;
 #[cfg(feature = "anchoring")]
 pub mod marks_ui;
 pub mod merge;
+pub mod migrate;
 #[cfg(feature = "mirror")]
 pub mod mirror;
+mod mirror_record;
 #[cfg(feature = "announce")]
 pub mod nip34;
 pub mod ownership;
@@ -117,6 +119,8 @@ pub const WIDGET_PAGE_HEADER: &str = "x-forge-csp";
 pub const PUBLICATION_MARKER: &str = "mirror-publication-v1";
 
 #[cfg(test)]
+mod migrate_tests;
+#[cfg(test)]
 mod readfeat_tests;
 
 use std::path::{Path, PathBuf};
@@ -142,6 +146,22 @@ pub mod prelude {
     pub use crate::ownership::ForgeAgent;
     pub use crate::request::{ForgeRequest, ForgeResponse};
     pub use crate::ForgeService;
+}
+
+/// `(owner, name, suffix)` when `rel` is exactly
+/// `/<owner>/<name>[.git]<suffix>` for one of the router's git suffixes,
+/// with `owner` and `name` (`.git` stripped once) valid single segments
+/// ([`ownership::valid_name_segment`]: no `/`, `%`, or leading `.`).
+fn smart_http_path(rel: &str) -> Option<(&str, &str, &'static str)> {
+    let suffix = router::GIT_SUFFIXES
+        .iter()
+        .copied()
+        .find(|s| rel.ends_with(s))?;
+    let head = rel.strip_suffix(suffix)?.strip_prefix('/')?;
+    let (owner, name) = head.split_once('/')?;
+    let name = name.strip_suffix(".git").unwrap_or(name);
+    (ownership::valid_name_segment(owner) && ownership::valid_name_segment(name))
+        .then_some((owner, name, suffix))
 }
 
 /// The 503 every reader returns for an unmigrated mirror.
@@ -214,6 +234,11 @@ pub struct ForgeService {
     pr: pulls::PrExt,
     /// Per-repo serialisation locks for spine writes (JSS `serializeOn`).
     locks: Arc<locks::ForgeLocks>,
+    /// The boot migration did not run to completion (its runtime could not
+    /// be built, its thread panicked, a store could not be gated by a
+    /// journal, or the stores could not all be listed): every store under a
+    /// 64-hex owner is refused, marked or not.
+    migration_incomplete: bool,
 }
 
 impl std::fmt::Debug for ForgeService {
@@ -229,6 +254,24 @@ impl ForgeService {
     /// Build a forge rooted at `plugin_dir`. Creates the on-disk layout
     /// (`repos/`, `issues/`, `pulls/`, `hosted/`, `marks/`) if absent.
     /// The git CGI service is rooted at `plugin_dir/repos`.
+    ///
+    /// Then, before returning, it migrates every served store left in the
+    /// pre-release mirror layout (see [`migrate`]): each is rebuilt from its
+    /// approved refs in a private staging store, verified, swapped in, and
+    /// the old store kept under `plugin_dir/mirror-recovery/`. This blocks,
+    /// once per legacy store, on purpose: no reader may reach a legacy store
+    /// first. It runs on its own thread and runtime, so it is safe to call
+    /// from synchronous code and from inside any `tokio` or actix runtime.
+    /// A store that cannot be migrated, or that detection cannot examine, is
+    /// logged and stays refused (503) behind its journal; it does not fail
+    /// `new`. If the migration pass itself cannot run to completion, every
+    /// store under a 64-hex owner, marked or not, is refused for the life of this
+    /// service instead.
+    ///
+    /// # Errors
+    ///
+    /// An invalid chain configuration, or an I/O error creating the layout
+    /// or the token key.
     pub fn new(cfg: ForgeConfig, plugin_dir: impl Into<PathBuf>) -> Result<Self, ForgeError> {
         // The chain guard runs first, before any other work (JSS `activate`).
         cfg.validate_chain()?;
@@ -236,6 +279,16 @@ impl ForgeService {
         let repo_root = plugin_dir.join("repos");
         for sub in ["repos", "issues", "pulls", "hosted", "marks"] {
             std::fs::create_dir_all(plugin_dir.join(sub))?;
+        }
+        // Rebuild every served store left in the pre-release mirror layout
+        // before anything can read it (SP-GIT-02 Commit B). Synchronous, on
+        // its own thread; a store that fails stays gated and never fails
+        // `new`.
+        let migration_incomplete = !migrate::run_at_boot(&plugin_dir);
+        if migration_incomplete {
+            tracing::error!(
+                "forge: boot migration incomplete; every mirror-class repository is refused (503) until a restart migrates it"
+            );
         }
         let git = Arc::new(GitHttpService::new(repo_root.clone()));
         let spine: Arc<dyn SpineStore> = Arc::new(FsSpineStore::new(plugin_dir.clone()));
@@ -268,6 +321,7 @@ impl ForgeService {
             trails,
             pr: pulls::PrExt::default(),
             locks: Arc::new(locks::ForgeLocks::default()),
+            migration_incomplete,
         })
     }
 
@@ -580,18 +634,38 @@ impl ForgeService {
 
     /// Marker gate (defence in depth): a served repository with a mirror
     /// record but no [`PUBLICATION_MARKER`] predates candidate isolation
-    /// and may hold commits the mirror never approved. One `stat` for a
-    /// marked mirror, two for any other repository. The record path is
+    /// and may hold commits the mirror never approved. A repository with
+    /// anything at its migration journal path ([`migrate::journal_path`]),
+    /// in any state, `published` included, is refused first, marked or not.
+    /// If the boot migration did not complete, every repository under a
+    /// 64-hex owner is refused, marked or not. Then one `lstat` for a marked
+    /// mirror (the marker must be a regular file) and two for any other
+    /// repository. The record path is
     /// `mirror::MirrorStore`'s layout, checked without the `mirror` feature
     /// so a plugin directory that was mirrored once stays gated. `owner` and
     /// `repo` are already validated path segments (`repo::repo_git_dir`).
     /// A record path that cannot be checked (any error but "not found")
     /// keeps the gate closed.
     async fn unpublished_mirror(&self, owner: &str, repo: &str, dir: &Path) -> bool {
-        if tokio::fs::metadata(dir.join(PUBLICATION_MARKER))
+        // Decision 21: a migration journal in any state (`published`
+        // included, until `finish` removes it), or any entry there, gates the
+        // store, marked or not, record or not. This is what keeps a lost-record legacy store
+        // whose migration failed from being served.
+        if migrate::journal_gates(&self.plugin_dir, owner, repo).await {
+            return true;
+        }
+        // The boot migration did not complete: every store under a 64-hex
+        // owner is refused, marked or not (a marked, flagged store may be one
+        // detection wanted rebuilt).
+        if self.migration_incomplete && mirror_record::is_hex64(owner) {
+            return true;
+        }
+        // The marker is a regular file at the store root, not a symlink: the
+        // same test detection applies.
+        let marked = tokio::fs::symlink_metadata(dir.join(PUBLICATION_MARKER))
             .await
-            .is_ok()
-        {
+            .is_ok_and(|m| m.is_file());
+        if marked {
             return false;
         }
         self.has_mirror_record(owner, repo).await.unwrap_or(true)
@@ -695,9 +769,18 @@ impl ForgeService {
         agent: &ForgeAgent,
         rel_path: &str,
     ) -> Result<ForgeResponse, ForgeError> {
+        // One path shape only: `/<owner>/<name>[.git]/<suffix>`, both
+        // segments valid names. Anything else (deeper nesting, a dot-led or
+        // encoded segment) is 404 before the CGI runs, and the CGI is always
+        // handed `/<owner>/<name>.git/<suffix>`, the very directory the
+        // gates below check (it opens `repos/<owner>/<name>` for a
+        // suffix-less path otherwise).
+        let Some((owner, name, suffix)) = smart_http_path(rel_path) else {
+            return Err(ForgeError::NotFound("not a repository path".into()));
+        };
         let git_req = GitRequest {
             method: req.method.clone(),
-            path: rel_path.to_string(),
+            path: format!("/{owner}/{name}.git{suffix}"),
             query: req.query.clone(),
             headers: req.headers.clone(),
             body: req.raw_body.clone(),
@@ -708,14 +791,16 @@ impl ForgeService {
         // is `403` (JSS forge namespace guard). Reads are unaffected here;
         // the server's WAC gate governs private-repo read access.
         if git_req.is_write() {
-            let owner = rel_path
-                .trim_start_matches('/')
-                .split('/')
-                .next()
-                .unwrap_or("");
             if !agent.can_write_namespace(owner) {
                 return Err(ForgeError::Forbidden(format!(
                     "cannot push into namespace '{owner}'"
+                )));
+            }
+            // The migration tombstone: while any journal exists, in any
+            // state, nothing but the migration writes the store.
+            if migrate::journal_exists(&self.plugin_dir, owner, name) {
+                return Err(ForgeError::Busy(format!(
+                    "'{owner}/{name}' is being migrated"
                 )));
             }
             // A mirrored repository is written by the mirror alone: a push
@@ -723,11 +808,6 @@ impl ForgeService {
             // state anyway.
             #[cfg(feature = "mirror")]
             {
-                let name = rel_path
-                    .trim_start_matches('/')
-                    .split('/')
-                    .nth(1)
-                    .map_or("", |n| n.strip_suffix(".git").unwrap_or(n));
                 // A record that exists but cannot be read is still a mirror's.
                 if !matches!(
                     mirror::MirrorStore::new(&self.plugin_dir).load(owner, name),
@@ -740,17 +820,17 @@ impl ForgeService {
             }
         }
         // Marker gate, after the write guard above: smart-HTTP bypasses
-        // `resolve_repo`, so an unmigrated mirror is refused here too.
-        {
-            let mut parts = rel_path.trim_start_matches('/').split('/');
-            if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
-                let name = name.strip_suffix(".git").unwrap_or(name);
-                // Only the gate's refusal stops the request here; a path
-                // that is not a repository is the CGI's to answer.
-                if let Err(e @ ForgeError::Busy(_)) = self.gated_git_dir(owner, name).await {
-                    return Err(e);
-                }
+        // `resolve_repo`, so an unmigrated mirror is refused here too. Any
+        // refusal stops the request here. The CGI exports every bare
+        // repository under `repos/`, so a name the forge does not accept as a
+        // repository is 404, never the CGI's to serve (decision 22). A
+        // missing repository is still the CGI's.
+        match self.gated_git_dir(owner, name).await {
+            Ok(_) | Err(ForgeError::NotFound(_)) => {}
+            Err(ForgeError::PathTraversal(_)) => {
+                return Err(ForgeError::NotFound(format!("repo {owner}/{name}")));
             }
+            Err(e) => return Err(e),
         }
         // A completed push to a default branch advances an anchored trail
         // (JSS `recordTip` on receive-pack exit). The CGI response is fully
