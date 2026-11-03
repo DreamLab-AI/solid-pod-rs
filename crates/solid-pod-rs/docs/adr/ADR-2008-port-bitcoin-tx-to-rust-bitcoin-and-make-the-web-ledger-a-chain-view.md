@@ -17,6 +17,12 @@ lineage: "Implements agentbox ADR-2096 D3 (rust-bitcoin accepted estate-wide) an
 
 # ADR-2008 — Port bitcoin_tx.rs and mrc20.rs to rust-bitcoin, make WebLedger a derived view over the sidestr chain, remove credit/debit from the public API and delete the TXO stand-in deposit
 
+## External findings repair — 2026-11-03
+
+Canonical payment state, legacy ledger and replay reads now bootstrap only on NotFound; other backend errors are returned. A native HTTP regression observes 500 for an injected unavailable canonical store and 200 for a genuinely absent initial state. This closes SP-07.15's read-error fallback without changing valid legacy migration.
+
+The security review also identified adjacent existing payment defects. Token pricing now rejects checked-multiplication overflow; AMM fees at or above 10000 bps and overflowing swap arithmetic are refused before mutation. WAC balance checks consume the authoritative PaymentStore rather than the best-effort mirror. New recovery intents omit issuer private keys and restore signing material only from the matching issuer custody store. A subsequent payment-state commit scrubs legacy intent copies too; this does not erase old backups or revoke keys previously exported by a Control holder. The separate trail store remains Control-gated. Tests retain authorised recovery and stale-mirror controls. No live balances, issuer rotation or running chain were changed.
+
 ## External review reconciliation — 2026-11-02
 
 Source at `9b6143c` retains SP-07.15: `crates/solid-pod-rs-server/src/handlers/pay.rs:179-195` falls back to legacy payment components whenever the canonical storage read fails, not solely on NotFound. A backend failure can thus select stale state. Acceptance must distinguish absent canonical state from unavailable/corrupt state and retain a valid legacy-migration control. This is a source finding; no funds or live state were exercised.

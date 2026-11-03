@@ -17,6 +17,10 @@ lineage: Distils archived ADR-059 D1 (git-mark described as always-on, contradic
 
 # ADR-2004 — Keep git-mark provenance opt-in behind the git feature
 
+## External findings repair — 2026-11-03
+
+The resolve handler now authenticates through the shared verifier and enforces Read on the resolved resource before returning metadata. It applies the normal private/public cache policy. A current generated sidecar is included only when its single canonical activity identifies the requested commit; otherwise the historical response omits that sidecar. Native route regressions cover a public control, private anonymous denial and a newer sidecar requested through an older commit. Arbitrary authored Turtle is not certified as a historical mark.
+
 ## External review reconciliation — 2026-11-02
 
 At `9b6143c`, the external SP-07.6 finding remains in source: `crates/solid-pod-rs-server/src/handlers/prov.rs:351-405` resolves a commit and reads the current resource sidecar without a resource WAC read check or a sidecar/requested-commit match. Opt-in provenance does not itself authorise disclosure. Acceptance must test anonymous and unauthorised reads of a private resource, authorised controls, and two historical commits with different sidecars. No new probe or deployment check was run for this note.

@@ -17,6 +17,10 @@ lineage: Distils archived ADR-058 rows 169-170 (safeJsonParse size-capped ACL pa
 
 # ADR-2005 — Parse untrusted access-control input fail-closed and bounded
 
+## External findings repair — 2026-11-03
+
+Malformed Turtle condition objects now return a parse error rather than dropping a restrictive clause. Missing types, unbalanced brackets, empty objects and unexpected trailing condition text invalidate the document, so the shared policy classifier settles Invalid instead of inheriting. The regression retains a valid typed-condition control; the 504 core-library tests pass. This narrows the forgiving subset at an access-control boundary; no arbitrary RDF grammar completeness is claimed.
+
 ## External review reconciliation — 2026-11-02
 
 The external review was reconciled against source at `9b6143c`. The resolver's four outcomes remain useful, but they do not prove the Turtle condition parser is complete: `src/wac/parser.rs:317` breaks on an unbalanced condition object, and `:418` returns no condition when its type is absent. A malformed restrictive clause can therefore be omitted before policy evaluation. Preserve this as an open parser defect (SP-04.10); acceptance requires malformed or missing-type conditions to deny despite a permissive ancestor, with valid-condition controls. This scoped source check adds no runtime or deployment claim and does not re-stamp the whole record.

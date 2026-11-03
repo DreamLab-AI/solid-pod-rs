@@ -18,6 +18,10 @@ lineage: "Amends ADR-2009 (default-off mirror, accepted risks) and baseline inva
 
 # ADR-2010 — The forge and the kind-30618 mirror are on in shipped builds; anchoring, open edit and the mainnet stay opt-in
 
+## External findings repair — 2026-11-03
+
+Ordinary pod Git is explicitly a whole-history custody/export surface: only the authenticated Nostr principal whose public key is the pod identifier may clone/fetch, in addition to the existing current root Read check. Delegated or anonymous root Read grants do not authorise historical/private child export; those callers use resource-level LDP reads. Alias pods with no cryptographic owner binding do not acquire this privilege. Push remains refused. GitHttpService now receives data_root and extracts the pod slug once. Five native Git-route tests pass, including real owner discovery200, public-root anonymous403, private denial and push refusals. Tests use the installed git-http-backend via GIT_HTTP_BACKEND_PATH. Forge mirror A/B1/B2 and consumer adoption are separate from this pod-route policy.
+
 ## External review reconciliation — 2026-11-02
 
 The external review mixes three separate Git boundaries. At `9b6143c`, SP-GIT-02's Forge mirror candidate isolation and legacy/fork migration have merged (A/B1/B2); consumer adoption and availability follow-ups remain separate. The ordinary pod route still sets `repo_root = data_root.join(pod_name)` and forwards its original path (`crates/solid-pod-rs-server/src/lib.rs:4740-4755`), while `solid-pod-rs-git/src/service.rs:296-301` joins the extracted slug again. The external SP-14.1 double-prefix finding therefore remains; the earlier hidden-object transport repair did not close it.

@@ -55,6 +55,7 @@ use solid_pod_rs::payments::{
 };
 use solid_pod_rs::storage::Storage;
 use solid_pod_rs::trading::{AmmPool, Exchange};
+use solid_pod_rs::PodError;
 
 use crate::mempool::MempoolHttpClient;
 use crate::trail_store::{load_trail, save_trail, StoredTrail};
@@ -144,7 +145,8 @@ impl<'a> StoragePaymentStore<'a> {
             Ok((bytes, _meta)) => serde_json::from_slice::<Vec<String>>(&bytes)
                 .map_err(|e| PaymentError::Store(format!("malformed replay set: {e}"))),
             // No replay document yet → empty set.
-            Err(_) => Ok(Vec::new()),
+            Err(PodError::NotFound(_)) => Ok(Vec::new()),
+            Err(e) => Err(PaymentError::Store(e.to_string())),
         }
     }
 
@@ -162,7 +164,8 @@ impl<'a> StoragePaymentStore<'a> {
         match self.storage.get(WEBLEDGER_PATH).await {
             Ok((bytes, _meta)) => serde_json::from_slice::<WebLedger>(&bytes)
                 .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}"))),
-            Err(_) => Ok(WebLedger::new(&self.ledger_name)),
+            Err(PodError::NotFound(_)) => Ok(WebLedger::new(&self.ledger_name)),
+            Err(e) => Err(PaymentError::Store(e.to_string())),
         }
     }
 
@@ -177,9 +180,13 @@ impl<'a> StoragePaymentStore<'a> {
     }
 
     async fn read_state_unchecked(&self) -> Result<PaymentState, PaymentError> {
-        if let Ok((bytes, _)) = self.storage.get(PAYMENT_STATE_PATH).await {
-            return serde_json::from_slice(&bytes)
-                .map_err(|e| PaymentError::Store(format!("malformed payment state: {e}")));
+        match self.storage.get(PAYMENT_STATE_PATH).await {
+            Ok((bytes, _)) => {
+                return serde_json::from_slice(&bytes)
+                    .map_err(|e| PaymentError::Store(format!("malformed payment state: {e}")))
+            }
+            Err(PodError::NotFound(_)) => {}
+            Err(e) => return Err(PaymentError::Store(e.to_string())),
         }
         Ok(PaymentState {
             version: 0,
@@ -196,6 +203,13 @@ impl<'a> StoragePaymentStore<'a> {
     }
 
     async fn commit_state(&self, state: &mut PaymentState) -> Result<(), PaymentError> {
+        // Recovery snapshots carry public state only. Signing material remains
+        // in the separately Control-gated issuer trail store.
+        for intent in &mut state.intents {
+            if let Some(trail) = &mut intent.trail {
+                trail.privkey.clear();
+            }
+        }
         state.version = state.version.saturating_add(1);
         let body = serde_json::to_vec(state)
             .map_err(|e| PaymentError::Store(format!("serialise payment state: {e}")))?;
@@ -256,11 +270,19 @@ async fn recover_payment_intents(
                 if let Some(trail) = &intent.trail {
                     // Only ever move the stored trail forward: a snapshot
                     // taken before a later advance must not roll its head back.
-                    let have = load_trail(storage, &trail.ticker)
-                        .await?
-                        .map_or(0, |t| t.states.len());
+                    let current = load_trail(storage, &trail.ticker).await?.ok_or_else(|| {
+                        PaymentError::Store("recovery issuer trail is missing".into())
+                    })?;
+                    let have = current.states.len();
                     if have < trail.states.len() {
-                        save_trail(storage, trail).await?;
+                        if current.pubkey_base != trail.pubkey_base {
+                            return Err(PaymentError::Store(
+                                "recovery issuer identity changed".into(),
+                            ));
+                        }
+                        let mut restored = trail.clone();
+                        restored.privkey = current.privkey;
+                        save_trail(storage, &restored).await?;
                     }
                 }
                 changed = true;
@@ -1058,6 +1080,10 @@ async fn handle_pool_post(
         Err(e) => return Ok(payment_error_response(e)),
     };
     let fee_bps = body.fee_bps.unwrap_or(AmmPool::DEFAULT_FEE_BPS);
+    if fee_bps >= 10_000 {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error":"fee_bps must be below 10000"})));
+    }
 
     let response = match body.action.as_str() {
         "add-liquidity" => {
@@ -1433,7 +1459,11 @@ async fn handle_buy(
 
     // amount (tokens to buy) or sats (sats to spend) — JSS `pay.js:580-592`.
     let (token_amount, sat_cost) = if let Some(a) = req_body.amount {
-        (a, a * pay_rate)
+        let Some(cost) = a.checked_mul(pay_rate) else {
+            return Ok(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error":"token price overflow"})));
+        };
+        (a, cost)
     } else if let Some(s) = req_body.sats {
         (s / pay_rate, s)
     } else {
@@ -1526,7 +1556,11 @@ async fn handle_withdraw(
     } else if let Some(s) = req_body.sats {
         (s / pay_rate, s)
     } else if let Some(t) = req_body.tokens {
-        (t, t * pay_rate)
+        let Some(cost) = t.checked_mul(pay_rate) else {
+            return Ok(HttpResponse::BadRequest()
+                .json(serde_json::json!({"error":"token price overflow"})));
+        };
+        (t, cost)
     } else {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Specify tokens, sats, or all: true",
@@ -1962,6 +1996,12 @@ mod intent_recovery_tests {
         let mut state = store.read_state().await.unwrap();
         state.intents[0].trail = Some(stored_trail(3));
         store.commit_state(&mut state).await.unwrap();
+        let (raw, _) = storage.get(PAYMENT_STATE_PATH).await.unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(
+            doc["intents"][0]["trail"]["privkey"], "",
+            "payment intents must not carry issuer secrets"
+        );
         save_trail(&storage, &stored_trail(2)).await.unwrap();
         let (mempool, handle) = fixture(200).await;
         recover_payment_intents(&store, &storage, &mempool)
@@ -1969,6 +2009,11 @@ mod intent_recovery_tests {
             .unwrap();
         let kept = load_trail(&storage, "PAY").await.unwrap().unwrap();
         assert_eq!(kept.states.len(), 3);
+        assert_eq!(
+            kept.privkey,
+            stored_trail(2).privkey,
+            "recovery must retain issuer key from custody store"
+        );
         handle.stop(false).await;
     }
 

@@ -349,6 +349,7 @@ pub(crate) async fn epoch_push_and_maybe_anchor(
 /// (carrying any block-trail anchor); otherwise reconstruct a git-only mark
 /// from the commit metadata.
 async fn handle_resolve(
+    req: HttpRequest,
     path: web::Path<(String, String)>,
     state: web::Data<AppState>,
 ) -> Result<HttpResponse, ActixError> {
@@ -383,6 +384,16 @@ async fn handle_resolve(
         return Ok(prov_err("commit touched no content resource", 404));
     };
     let resource = format!("/{pod}/{resource_rel}");
+    let principal = crate::extract_pubkey(&req)
+        .await
+        .map(|p| format!("did:nostr:{p}"));
+    let audience = crate::enforce_read_ctx(
+        &state,
+        &resource,
+        principal.as_deref(),
+        crate::req_origin(&req),
+    )
+    .await?;
 
     // Try the persisted sidecar first (it carries any anchor + the exact mark).
     let sidecar = format!("{resource}.prov.ttl");
@@ -391,7 +402,12 @@ async fn handle_resolve(
         .get(&sidecar)
         .await
         .ok()
-        .map(|(b, _)| String::from_utf8_lossy(&b).into_owned());
+        .map(|(b, _)| String::from_utf8_lossy(&b).into_owned())
+        .filter(|ttl| {
+            let expected = format!("<urn:git:commit:{}> a prov:Activity ;", resolved.hash);
+            let mut activities = ttl.lines().filter(|line| line.contains("a prov:Activity"));
+            activities.next() == Some(expected.as_str()) && activities.next().is_none()
+        });
 
     // Build the JSON response. The mark is authoritative from the sidecar when
     // present; otherwise reconstruct from git metadata (git-only, no anchor).
@@ -413,9 +429,11 @@ async fn handle_resolve(
         "anchored": sidecar_ttl.as_deref().map(|t| t.contains("bt:txid")).unwrap_or(false),
     });
 
-    Ok(HttpResponse::Ok()
+    let mut response = HttpResponse::Ok()
         .content_type("application/json")
-        .json(body))
+        .json(body);
+    crate::set_cache_policy(&mut response, "application/json", audience);
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------

@@ -414,6 +414,49 @@ async fn prov_resolve_maps_commit_to_resource() {
     );
     assert!(body["prov_ttl"].as_str().unwrap().contains("git:commit"));
 
+    // A newer sidecar cannot be attributed to this historical commit.
+    let put = test::TestRequest::put()
+        .uri(&uri)
+        .insert_header(("content-type", "text/turtle"))
+        .set_payload(web::Bytes::from_static(b"<#new> <#y> <#z> ."))
+        .to_request();
+    assert_eq!(test::call_service(&app, put).await.status().as_u16(), 201);
+    let historical = test::TestRequest::get()
+        .uri(&format!("/{pod}/_prov/{sha}"))
+        .to_request();
+    let body: Value = test::read_body_json(test::call_service(&app, historical).await).await;
+    assert!(
+        body["prov_ttl"].is_null(),
+        "newer sidecar must not be served as an old mark"
+    );
+
+    // A restrictive resource ACL applies to its provenance route too.
+    let private = format!(
+        r#"{{"@graph":[{{"acl:agent":{{"@id":"did:nostr:{pod}"}},"acl:accessTo":{{"@id":"{uri}"}},"acl:mode":{{"@id":"acl:Read"}}}}]}}"#
+    );
+    std::fs::write(repo.join("r/doc.ttl.acl"), private).unwrap();
+    let denied = test::TestRequest::get()
+        .uri(&format!("/{pod}/_prov/{sha}"))
+        .to_request();
+    assert!(matches!(
+        test::call_service(&app, denied).await.status().as_u16(),
+        401 | 403
+    ));
+    let private_path = format!("/{pod}/_prov/{sha}");
+    let owner = test::TestRequest::get()
+        .uri(&private_path)
+        .insert_header(("authorization", owner_nip98("GET", &private_path, None)))
+        .to_request();
+    let owner_response = test::call_service(&app, owner).await;
+    assert_eq!(owner_response.status().as_u16(), 200);
+    assert!(owner_response
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("no-store"));
+
     // An unknown commit → 404.
     let bad = test::TestRequest::get()
         .uri(&format!("/{pod}/_prov/{}", "ab".repeat(20)))

@@ -774,21 +774,12 @@ pub(crate) const WEBLEDGER_PATH: &str = "/.well-known/webledgers/webledgers.json
 /// `/pay/.deposit` credit path writes into the ledger.
 async fn resolve_balance_sats(storage: &dyn Storage, agent_uri: Option<&str>) -> Option<u64> {
     let did = agent_uri?;
-    let balance = match storage.get(WEBLEDGER_PATH).await {
-        Ok((bytes, _meta)) => {
-            match serde_json::from_slice::<solid_pod_rs::payments::WebLedger>(&bytes) {
-                Ok(ledger) => ledger.get_balance(did),
-                // A malformed ledger document must not crash the auth
-                // path; treat it as an empty balance (fail-closed for
-                // any non-zero PaymentCondition).
-                Err(_) => 0,
-            }
-        }
-        // No ledger provisioned yet: authenticated principal with zero
-        // balance.
-        Err(_) => 0,
-    };
-    Some(balance)
+    use solid_pod_rs::payments::PaymentStore;
+    let ledger = handlers::pay::StoragePaymentStore::new(storage)
+        .read_ledger()
+        .await
+        .ok()?;
+    Some(ledger.get_balance(did))
 }
 
 /// Return `true` when the `Accept` header includes `text/html`.
@@ -4813,7 +4804,22 @@ async fn handle_git(
         return resp;
     }
 
-    let service = solid_pod_rs_git::service::GitHttpService::new(repo_root);
+    // Git exports the entire reachable history, including resources which may
+    // have had narrower ACLs in an earlier commit. A current root Read grant
+    // cannot authorise that export. Only the cryptographically bound pod owner
+    // may use this custody/recovery surface; delegated reads use LDP instead.
+    if agent.as_deref() != Some(format!("did:nostr:{pod_name}").as_str()) {
+        let mut response = HttpResponse::Forbidden();
+        for (k, v) in solid_pod_rs_git::service::GIT_CORS_HEADERS {
+            response.insert_header((k, v));
+        }
+        return response.json(serde_json::json!({
+            "error": "whole-history export requires the pod owner",
+            "reason": "history_export_owner_required"
+        }));
+    }
+    // The service extracts the pod slug from git_req.path exactly once.
+    let service = solid_pod_rs_git::service::GitHttpService::new(data_root.clone());
     match service.handle(git_req).await {
         Ok(git_resp) => {
             let mut builder = HttpResponse::build(
@@ -5522,6 +5528,23 @@ mod payment_gating_tests {
         assert_eq!(
             resolve_balance_sats(&storage, Some(PRINCIPAL)).await,
             Some(250)
+        );
+    }
+
+    #[actix_web::test]
+    async fn wac_balance_uses_authoritative_state_after_a_stale_mirror() {
+        use solid_pod_rs::payments::PaymentStore;
+        let storage = MemoryBackend::new();
+        seed_ledger(&storage, PRINCIPAL, 250).await;
+        let ledger = WebLedger::new("empty canonical balance");
+        handlers::pay::StoragePaymentStore::new(&storage)
+            .write_ledger(&ledger)
+            .await
+            .unwrap();
+        seed_ledger(&storage, PRINCIPAL, 250).await;
+        assert_eq!(
+            resolve_balance_sats(&storage, Some(PRINCIPAL)).await,
+            Some(0)
         );
     }
 

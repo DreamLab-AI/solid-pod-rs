@@ -73,6 +73,11 @@ pub enum ReplayError {
              cannot record a new credential without reopening the replay window"
     )]
     CapacityExhausted { capacity: usize, ttl: Duration },
+
+    /// The durable store could not atomically establish whether the event
+    /// was recorded. The request must be refused; uncertainty is not absence.
+    #[error("replay store unavailable: {detail}")]
+    Unavailable { detail: String },
 }
 
 /// Single-use nonce store for one-shot credentials.

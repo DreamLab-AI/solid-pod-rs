@@ -80,6 +80,53 @@ async fn balance_requires_auth() {
 }
 
 #[actix_web::test]
+async fn excessive_fees_and_overflowing_token_prices_are_rejected() {
+    let mut st = state();
+    st.pay_config.token = Some(solid_pod_rs::payments::TokenConfig {
+        ticker: "TEST".into(),
+        rate: 5,
+        supply: 1,
+        issuer: "02".to_owned() + &"11".repeat(32),
+        accepted_issuers: vec![],
+    });
+    let app = test::init_service(build_app(st)).await;
+    for (path, body, expected) in [
+        (
+            "/pay/.buy",
+            serde_json::json!({"amount":u64::MAX}),
+            "token price overflow",
+        ),
+        (
+            "/pay/.withdraw",
+            serde_json::json!({"tokens":u64::MAX}),
+            "token price overflow",
+        ),
+        (
+            "/pay/.pool",
+            serde_json::json!({"action":"add-liquidity","currency_a":"a","currency_b":"b","amount_a":1,"amount_b":1,"fee_bps":10_001}),
+            "fee_bps must be below 10000",
+        ),
+    ] {
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (auth, _) = nip98_auth("POST", path, Some(&bytes));
+        let req = test::TestRequest::post()
+            .uri(path)
+            .insert_header((header::AUTHORIZATION, auth))
+            .insert_header((header::CONTENT_TYPE, "application/json"))
+            .set_payload(bytes)
+            .to_request();
+        let rsp = test::call_service(&app, req).await;
+        assert_eq!(rsp.status().as_u16(), 400);
+        let body = test::read_body(rsp).await;
+        assert!(
+            String::from_utf8_lossy(&body).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+}
+
+#[actix_web::test]
 async fn balance_for_authed_did_zero_then_credited() {
     let st = state();
     let storage = st.storage.clone();

@@ -366,6 +366,11 @@ impl AmmPool {
         amount_b: u64,
         ledger: &mut WebLedger,
     ) -> Result<u64, PaymentError> {
+        if self.fee_bps >= 10_000 {
+            return Err(PaymentError::InvalidTxo(
+                "pool fee must be below 10000 bps".into(),
+            ));
+        }
         if amount_a == 0 || amount_b == 0 {
             return Err(PaymentError::InvalidTxo(
                 "liquidity amounts must be non-zero".into(),
@@ -488,8 +493,14 @@ impl AmmPool {
         }
 
         // Constant-product with fee, using u128 intermediates.
-        let fee_factor = 10_000u128 - (self.fee_bps as u128);
-        let numerator = (reserve_out as u128) * (amount_in as u128) * fee_factor;
+        let fee_factor = 10_000u128
+            .checked_sub(self.fee_bps as u128)
+            .filter(|factor| *factor > 0)
+            .ok_or_else(|| PaymentError::InvalidTxo("pool fee must be below 10000 bps".into()))?;
+        let numerator = (reserve_out as u128)
+            .checked_mul(amount_in as u128)
+            .and_then(|product| product.checked_mul(fee_factor))
+            .ok_or_else(|| PaymentError::InvalidTxo("swap arithmetic overflow".into()))?;
         let denominator = (reserve_in as u128) * 10_000u128 + (amount_in as u128) * fee_factor;
 
         let amount_out = (numerator / denominator) as u64;
@@ -1008,6 +1019,29 @@ mod tests {
         assert_eq!(info["fee_bps"], 30);
         assert_eq!(info["invariant_k"], 2_000_000u64);
         assert_eq!(info["providers"], 1);
+    }
+
+    #[test]
+    fn untrusted_pool_fees_and_large_arithmetic_fail_without_mutation() {
+        let mut ledger = setup_ledger();
+        for fee in [10_000, 10_001, u64::MAX] {
+            let mut pool = AmmPool::new("tbtc4", "tbtc3", fee);
+            assert!(pool
+                .add_liquidity("did:nostr:alice", 1, 1, &mut ledger)
+                .is_err());
+            pool.reserve_a = 100;
+            pool.reserve_b = 100;
+            assert!(pool
+                .swap("did:nostr:alice", "tbtc4", 1, &mut ledger)
+                .is_err());
+            assert_eq!((pool.reserve_a, pool.reserve_b), (100, 100));
+        }
+        let mut pool = AmmPool::new("tbtc4", "tbtc3", 0);
+        pool.reserve_a = u64::MAX;
+        pool.reserve_b = u64::MAX;
+        assert!(pool
+            .swap("did:nostr:alice", "tbtc4", u64::MAX, &mut ledger)
+            .is_err());
     }
 
     // -- isqrt helper ------------------------------------------------------

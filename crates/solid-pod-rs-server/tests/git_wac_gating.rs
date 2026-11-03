@@ -187,7 +187,7 @@ async fn push_is_refused_even_where_wac_would_allow_it() {
 }
 
 #[actix_web::test]
-async fn anonymous_read_of_public_pod_passes_gate() {
+async fn public_root_read_does_not_authorise_whole_history_export() {
     // Public pod, but no git repo initialised: the WAC gate must ALLOW the
     // anonymous read (public foaf:Agent Read), after which the git service
     // reports 404 NotARepository. A 404 (not 401/403) proves the gate opened.
@@ -200,12 +200,54 @@ async fn anonymous_read_of_public_pod_passes_gate() {
     let rsp = actix_web::test::call_service(&app, req).await;
 
     let status = rsp.status().as_u16();
-    assert!(
-        status != 401 && status != 403,
-        "anonymous read of a public pod must PASS the WAC gate \
-         (expected non-401/403, e.g. 404 no-repo; got {status})"
+    assert_eq!(
+        status, 403,
+        "public root Read cannot authorise private historical resources"
     );
     // The gate-passed error path (404 NotARepository from the git service)
     // must carry the git CORS headers too (#548).
     assert_git_cors(&rsp, "no-repo 404 after gate pass (#548)");
+}
+
+#[actix_web::test]
+async fn owner_can_export_a_single_pod_path() {
+    let secret = "0000000000000000000000000000000000000000000000000000000000000019";
+    let key = k256::schnorr::SigningKey::from_slice(&hex::decode(secret).unwrap()).unwrap();
+    let pod = hex::encode(key.verifying_key().to_bytes());
+    let path = format!("/{pod}/info/refs?service=git-upload-pack");
+    let (state, tmp) = fs_state_with_pods(&[(&pod, public_read_acl(&format!("/{pod}/")))]).await;
+    let repo = tmp.path().join(&pod);
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet", "--bare", "."])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let app = actix_web::test::init_service(build_app(state)).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = solid_pod_rs::auth::nip98::mint_with_payload(
+        &format!("http://localhost:8080{path}"),
+        "GET",
+        None,
+        secret,
+        now,
+    )
+    .unwrap();
+    let request = actix_web::test::TestRequest::get()
+        .uri(&path)
+        .insert_header(("authorization", format!("Nostr {token}")))
+        .to_request();
+    let response = actix_web::test::call_service(&app, request).await;
+    assert_git_cors(&response, "owner export");
+    let status = response.status().as_u16();
+    let body = actix_web::test::read_body(response).await;
+    assert_eq!(
+        status,
+        200,
+        "owner export failed: {}",
+        String::from_utf8_lossy(&body)
+    );
 }

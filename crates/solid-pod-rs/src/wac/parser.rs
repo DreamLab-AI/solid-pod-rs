@@ -79,7 +79,7 @@ pub fn parse_turtle_acl_with_limit(input: &str, max_bytes: usize) -> Result<AclD
         if stmt.trim().is_empty() {
             continue;
         }
-        if let Some(auth) = parse_turtle_authorization(&stmt, &prefixes) {
+        if let Some(auth) = parse_turtle_authorization(&stmt, &prefixes)? {
             graph.push(auth);
         }
     }
@@ -150,12 +150,14 @@ fn split_turtle_statements(input: &str) -> Vec<String> {
 fn parse_turtle_authorization(
     stmt: &str,
     prefixes: &HashMap<String, String>,
-) -> Option<AclAuthorization> {
+) -> Result<Option<AclAuthorization>, PodError> {
     let trimmed = stmt.trim();
     if trimmed.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let (_subject, body) = turtle_pop_term(trimmed)?;
+    let Some((_subject, body)) = turtle_pop_term(trimmed) else {
+        return Ok(None);
+    };
     let mut auth = AclAuthorization {
         id: None,
         r#type: None,
@@ -177,7 +179,8 @@ fn parse_turtle_authorization(
         if pair.is_empty() {
             continue;
         }
-        let (pred, rest) = turtle_pop_term(pair)?;
+        let (pred, rest) = turtle_pop_term(pair)
+            .ok_or_else(|| PodError::AclParse("malformed ACL predicate".into()))?;
         let pred_expanded = expand_curie_or_iri(&pred, prefixes);
         let objects = parse_object_list(rest.trim(), prefixes);
 
@@ -214,10 +217,9 @@ fn parse_turtle_authorization(
                 // Conditions are usually authored as a blank-node
                 // body `[ a acl:ClientCondition; acl:client <...> ]`.
                 // The object side of the predicate contains one or
-                // more such bodies. Parse each; on failure we
-                // *preserve* the condition as `Unknown` so the
-                // authorisation fails closed at evaluation time.
-                let parsed = parse_turtle_condition_objects(rest.trim(), prefixes);
+                // more such bodies. A malformed object invalidates the
+                // document; it must never disappear from a restrictive rule.
+                let parsed = parse_turtle_condition_objects(rest.trim(), prefixes)?;
                 let bucket = auth.condition.get_or_insert_with(Vec::new);
                 bucket.extend(parsed);
             }
@@ -225,9 +227,9 @@ fn parse_turtle_authorization(
         }
     }
     if any_authz {
-        Some(auth)
+        Ok(Some(auth))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -287,7 +289,7 @@ fn split_predicate_list(input: &str) -> Vec<String> {
 fn parse_turtle_condition_objects(
     input: &str,
     prefixes: &HashMap<String, String>,
-) -> Vec<Condition> {
+) -> Result<Vec<Condition>, PodError> {
     let mut out = Vec::new();
     let mut remaining = input.trim().to_string();
     loop {
@@ -315,14 +317,14 @@ fn parse_turtle_condition_objects(
                 }
             }
             if depth != 0 {
-                // Unbalanced — bail out on this object.
-                break;
+                return Err(PodError::AclParse("unbalanced ACL condition".into()));
             }
             let body = &after_open[..idx];
             let rest = &after_open[idx + 1..];
-            if let Some(cond) = parse_turtle_condition_body(body, prefixes) {
-                out.push(cond);
-            }
+            let cond = parse_turtle_condition_body(body, prefixes).ok_or_else(|| {
+                PodError::AclParse("ACL condition requires valid type and parameters".into())
+            })?;
+            out.push(cond);
             remaining = rest.trim_start().to_string();
         } else {
             // IRI reference form — try to pop a term and treat it as an
@@ -330,7 +332,7 @@ fn parse_turtle_condition_objects(
             // condition types without a registry lookup, so preserve).
             let (tok, rest) = match turtle_pop_term(r) {
                 Some(v) => v,
-                None => break,
+                None => return Err(PodError::AclParse("malformed ACL condition".into())),
             };
             let iri = expand_curie_or_iri(&tok, prefixes);
             out.push(Condition::Unknown { type_iri: iri });
@@ -338,12 +340,21 @@ fn parse_turtle_condition_objects(
         }
         let r = remaining.trim_start();
         if let Some(after_comma) = r.strip_prefix(',') {
+            if after_comma.trim().is_empty() {
+                return Err(PodError::AclParse("empty ACL condition".into()));
+            }
             remaining = after_comma.to_string();
         } else {
+            if !r.is_empty() {
+                return Err(PodError::AclParse("unexpected ACL condition suffix".into()));
+            }
             break;
         }
     }
-    out
+    if out.is_empty() || remaining.trim_end().ends_with(',') {
+        return Err(PodError::AclParse("empty ACL condition".into()));
+    }
+    Ok(out)
 }
 
 fn parse_turtle_condition_body(
@@ -428,7 +439,7 @@ fn parse_turtle_condition_body(
             issuer_class: strs_to_ids(issuer_classes),
         })),
         "acl:PaymentCondition" => Some(Condition::Payment(PaymentConditionBody {
-            cost_sats: cost_sats.unwrap_or(0),
+            cost_sats: cost_sats?,
         })),
         "acl:ProvenanceAnchor" => Some(Condition::ProvenanceAnchor(
             crate::wac::anchor::ProvenanceAnchorBody {
@@ -611,5 +622,39 @@ mod tests {
     #[test]
     fn default_limit_is_one_mib() {
         assert_eq!(MAX_ACL_BYTES, 1_048_576);
+    }
+
+    #[test]
+    fn restrictive_condition_cannot_disappear() {
+        for condition in [
+            "[ acl:client <urn:client> ]",
+            "[ a acl:ClientCondition",
+            "[ a acl:PaymentCondition; acl:costSats \"not-a-number\" ]",
+            "[ a acl:PaymentCondition ]",
+        ] {
+            let acl = format!("<#r> a acl:Authorization; acl:agentClass foaf:Agent; acl:accessTo <urn:private>; acl:mode acl:Read; acl:condition {condition} .");
+            assert!(
+                parse_turtle_acl(&acl).is_err(),
+                "malformed condition accepted: {condition}"
+            );
+            use crate::wac::resolver::{
+                classify_policy_read, PolicyOutcome, PolicyRead, PolicyStep,
+            };
+            assert!(
+                matches!(
+                    classify_policy_read(
+                        "/private.acl",
+                        PolicyRead::Present {
+                            body: acl.as_bytes(),
+                            content_type: "text/turtle"
+                        },
+                        false
+                    ),
+                    PolicyStep::Settled(PolicyOutcome::Invalid { .. })
+                ),
+                "malformed restriction must settle Invalid, never inherit"
+            );
+        }
+        assert!(parse_turtle_acl("<#r> a acl:Authorization; acl:mode acl:Read; acl:condition [ a acl:ClientCondition; acl:client <urn:client> ] .").is_ok());
     }
 }
