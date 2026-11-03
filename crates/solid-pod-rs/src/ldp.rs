@@ -1499,7 +1499,7 @@ pub fn evaluate_preconditions(
             match current_etag {
                 None => return ConditionalOutcome::PreconditionFailed,
                 Some(cur) => {
-                    if !wanted.iter().any(|w| w == cur || w == "*") {
+                    if !wanted.iter().any(|w| w == cur) {
                         return ConditionalOutcome::PreconditionFailed;
                     }
                 }
@@ -2556,6 +2556,17 @@ mod tests {
             ),
             ConditionalOutcome::Proceed,
             "a strong tag in the list still matches"
+        );
+        // `*` is a wildcard only as the whole field value, never inside a
+        // list (RFC 9110 §13.1.1: If-Match = "*" / #entity-tag).
+        assert_eq!(
+            evaluate_preconditions("PUT", Some("etag123"), Some("\"other\", *"), None),
+            ConditionalOutcome::PreconditionFailed
+        );
+        assert_eq!(
+            evaluate_preconditions("PUT", Some("etag123"), Some("\"*\""), None),
+            ConditionalOutcome::PreconditionFailed,
+            "a quoted \"*\" is an opaque tag, not a wildcard"
         );
         // If-None-Match keeps weak comparison (RFC 9110 §13.1.2).
         assert_eq!(
