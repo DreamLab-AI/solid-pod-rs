@@ -249,20 +249,13 @@ async fn malformed_specific_policy_denies_and_never_inherits() {
 
 #[tokio::test]
 async fn broken_turtle_policy_denies_and_never_inherits() {
-    // `parse_turtle_acl` is LENIENT: it skips statements it cannot read and
-    // returns a document with no authorisations rather than an error. This
-    // test pins that real behaviour, and — the part that matters for
-    // ADR-2005 — proves it is still fail-closed:
-    //
-    //   * the walk TERMINATES here (outcome is Found, not Ascend), so the
-    //     permissive ancestor is never reached; and
-    //   * the resulting document grants nothing, so every agent is denied.
-    //
-    // The security property therefore holds by a different route than the
-    // malformed-JSON case: deny-by-empty-grant rather than deny-by-Invalid.
-    // The cost is diagnostic, not authorisation — a corrupt Turtle ACL reads
-    // as a deliberate deny-all and is not logged as a fault. That residual
-    // gap is recorded in the ADR-2005 progress note.
+    // A broken Turtle ACL is Invalid, exactly like malformed JSON-LD: the
+    // walk terminates at the broken child (never reaching the permissive
+    // ancestor), no document reaches the evaluator, and the fault is
+    // reported as one. Until c27cdfe the Turtle reader skipped statements it
+    // could not read and returned an empty document, so a corrupt ACL read
+    // as a deliberate deny-all; the ADR-2005 residual diagnostic gap that
+    // this test used to pin is now closed.
     let store = pod_with(&[("/.acl", PERMISSIVE_ROOT)]).await;
     store
         .put(
@@ -274,25 +267,27 @@ async fn broken_turtle_policy_denies_and_never_inherits() {
         .unwrap();
 
     let outcome = resolve_policy_from_storage(&*store, "/secret").await;
-    let doc = match &outcome {
-        PolicyOutcome::Found(doc) => doc,
-        other => panic!("expected a terminating Found, got {other:?}"),
-    };
+    match &outcome {
+        PolicyOutcome::Invalid {
+            policy_path,
+            reason,
+        } => {
+            assert_eq!(policy_path, "/secret.acl");
+            assert!(matches!(reason, InvalidPolicyReason::Malformed(_)));
+        }
+        other => panic!("a broken Turtle policy must be Invalid. Got {other:?}"),
+    }
+    assert!(outcome.is_failure());
     assert!(
-        !doc.inherited,
+        !outcome.may_inherit(),
         "REGRESSION GUARD: the walk must stop at the broken child policy and \
          never reach the permissive root"
     );
     assert!(
-        doc.graph.as_ref().is_none_or(|g| g.is_empty()),
-        "a broken Turtle body must yield no authorisations"
+        outcome.document().is_none(),
+        "no document may be handed to the evaluator from an invalid policy"
     );
-    for agent in ["did:nostr:owner", "did:nostr:mallory"] {
-        assert!(
-            !evaluate_access(Some(doc), Some(agent), "/secret", AccessMode::Read, None),
-            "{agent} must be denied — the permissive ancestor must not leak through"
-        );
-    }
+    assert!(outcome.into_result().is_err());
 }
 
 #[tokio::test]
