@@ -472,6 +472,16 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
             return e;
         }
         crate::lock_resource(&base).await
+    } else if is_container {
+        // A container is stored under its trailing-slash key; mint, probe
+        // and lock that key, as LDP container creation does.
+        match crate::mint_and_lock_target(&*state.storage, &format!("{base}/")).await {
+            Ok((minted, guard)) => {
+                base = minted.trim_end_matches('/').to_string();
+                guard
+            }
+            Err(e) => return tool_error(format!("create refused: {e}")),
+        }
     } else {
         match crate::mint_and_lock_target(&*state.storage, &base).await {
             Ok((minted, guard)) => {
@@ -907,6 +917,9 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
 
     let acl_path = acl_url_for(path);
     let bytes = Bytes::from(serialized.into_bytes());
+    // Same per-resource serialisation as an LDP PATCH of this ACL, so a
+    // concurrent PATCH cannot write back the graph this call replaces.
+    let _write_guard = crate::lock_resource(&acl_path).await;
     let quota = match crate::reserve_quota_for_size(state, &acl_path, bytes.len() as u64).await {
         Ok(q) => q,
         Err(e) => return tool_error(format!("write refused: {e}")),

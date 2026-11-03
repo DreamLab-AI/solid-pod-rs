@@ -354,29 +354,42 @@ async fn concurrent_creations_of_one_pod_name_admit_exactly_one() {
 }
 
 /// Guarding the patched ACL under its stored content type must still refuse
-/// a PATCH that removes the owner's own Control.
+/// a PATCH that removes the owner's own Control. A positive control first
+/// shows deletes against the provisioned ACL do match (so the refusal is
+/// the lockout guard, not a delete that found nothing).
 #[actix_web::test]
 async fn patching_away_the_owners_control_is_refused() {
     let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
     let (app, owner) = create_alice!(storage);
-    let (before, _) = storage.get("/alice/public.acl").await.unwrap();
+    let delete_mode = |mode: &str| {
+        let body = format!(
+            "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+             @prefix acl: <http://www.w3.org/ns/auth/acl#>.\n\
+             _:p a solid:InsertDeletePatch; solid:deletes {{\n\
+               <#owner> acl:mode acl:{mode}.\n\
+             }}."
+        );
+        test::TestRequest::patch()
+            .uri("/alice/public.acl")
+            .insert_header(("content-type", "text/n3"))
+            .insert_header(("Authorization", bearer(&owner)))
+            .set_payload(body)
+            .to_request()
+    };
 
-    let strip = "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
-         @prefix acl: <http://www.w3.org/ns/auth/acl#>.\n\
-         _:p a solid:InsertDeletePatch; solid:deletes {\n\
-           <#owner> acl:mode acl:Control.\n\
-         }.";
-    let req = test::TestRequest::patch()
-        .uri("/alice/public.acl")
-        .insert_header(("content-type", "text/n3"))
-        .insert_header(("Authorization", bearer(&owner)))
-        .set_payload(strip)
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(
-        resp.status().as_u16(),
-        409,
-        "owner stripped their own Control"
+    let resp = test::call_service(&app, delete_mode("Write")).await;
+    let code = resp.status().as_u16();
+    let body = String::from_utf8_lossy(&test::read_body(resp).await).to_string();
+    assert_eq!(code, 204, "removing another mode should apply: {body}");
+
+    let (before, _) = storage.get("/alice/public.acl").await.unwrap();
+    let resp = test::call_service(&app, delete_mode("Control")).await;
+    let code = resp.status().as_u16();
+    let body = String::from_utf8_lossy(&test::read_body(resp).await).to_string();
+    assert_eq!(code, 409, "owner stripped their own Control: {body}");
+    assert!(
+        body.contains("would not grant Control"),
+        "refused for another reason: {body}"
     );
     let (after, _) = storage.get("/alice/public.acl").await.unwrap();
     assert_eq!(before, after, "refused PATCH still changed the ACL");

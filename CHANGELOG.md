@@ -298,7 +298,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existence check and provisioning, and refuse when the existence probe
   fails, so a concurrent or retried creation cannot overwrite an existing
   pod's ACL tree. Eight concurrent creations of one name previously all
-  answered 201.
+  answered 201. The ACL tree is written first, before the `.meta` documents
+  and the profile. Provisioning is not transactional: a storage failure part
+  way leaves a partial pod, and a retry then answers 409.
 
 ### Fixed
 
@@ -318,8 +320,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stored body (and any prefixed Turtle a client PUT) with the Turtle parser,
   so it is patchable rather than refused or truncated.
 - **Writes to one resource are serialised in-process**: LDP PUT (including
-  container creation), PATCH, POST, DELETE and COPY, and the MCP `write`,
-  `create` and `delete` tools, through a striped lock held across the read,
+  container creation), PATCH, POST, DELETE and COPY, pod creation, and the
+  MCP `write`, `create`, `delete` and `write_acl` tools, through a striped lock held across the read,
   the precondition check and the write. Concurrent PATCHes previously lost
   updates while every one answered 204 (3–4 of 20 inserts survived).
 - **POST never overwrites a sibling under concurrency.** A minted name is
@@ -327,6 +329,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   POSTs with one `Slug` previously all answered 201 at one `Location`.
 - **`If-Match` and `If-None-Match` are honoured on PUT, PATCH and DELETE**
   (412), evaluated under the write lock.
+- **PATCH reads the stored body in the patch's IRI space.** The body is read
+  as Turtle against the resource URL, so a delete or `where` naming a triple
+  stored with relative IRIs (`<#a>`, path-form ACL targets) matches it.
+- **N3 Patch `where` evaluation is bounded**: at most 32 patterns (400), and a
+  clause too broad to match exactly once within a fixed budget is 409.
+  Three all-variable patterns over 1,000 triples previously did not finish,
+  holding the resource's write lock.
+- **An N3 Patch with `solid:deletes` or `solid:where` needs Read as well as
+  Write** (Solid Protocol §5.3.1): its outcome reveals whether triples are
+  present. The Read check never charges a `PaymentCondition`; a paid Read
+  refuses the PATCH instead. SPARQL Update `DELETE`/`WHERE` is not yet
+  covered.
+- An RDF PATCH of an ACL that carries an `acl:condition` is refused (409):
+  the N-Triples write-back turns the inline condition into a blank node the
+  WAC reader does not resolve. PUT the whole document instead.
 - **An owner can PATCH their ACL again.** The lockout guard evaluated the
   re-serialised ACL as `application/n-triples`, which the shared policy
   reader refuses, so every RDF PATCH of an `.acl` answered 409. It now
@@ -342,7 +359,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ldp::PatchTriple`, `Term::lang_literal` and `PodError::Conflict` (HTTP 409).
   `PodError` gains a variant, so exhaustive matches on it must add an arm.
   `apply_n3_patch` keeps its signature as a wrapper over `N3Patch` with no base
-  IRI; bodies must now declare their prefixes, as N3 requires.
+  IRI; bodies must now declare their prefixes, as N3 requires. Breaking for
+  library callers of `apply_n3_patch` and `apply_patch_to_absent` with the
+  N3 dialect: the old permissive reader's bare `insert`/`delete`/`where`
+  keywords, undeclared `solid:` prefix and relative IRIs (with no base) are
+  now refused as syntax errors.
 
 ### Changed
 

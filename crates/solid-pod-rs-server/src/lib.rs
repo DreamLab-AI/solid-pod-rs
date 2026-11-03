@@ -228,11 +228,15 @@ static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
 /// Take the write lock for the resource at storage path `path`. Hold the
 /// guard across the read, the precondition check and the write.
 ///
-/// Every write path takes it: LDP PUT (including container creation),
-/// PATCH, POST, DELETE and COPY, and the MCP write, create and delete
-/// tools. The key is the storage path the handler writes; request paths are
-/// already canonical here (`NormalizePath` merges `//`, and
-/// [`PathTraversalGuard`] refuses `.` and `..` segments).
+/// Taken, keyed on the resource the request names, by LDP PUT (including
+/// container creation), PATCH, POST, DELETE and COPY (destination, then its
+/// ACL sidecar, one at a time), by pod and account creation (the pod root),
+/// and by the MCP `write`, `create`, `delete` and `write_acl` tools. Writes a
+/// handler makes to *other* keys while holding it are not separately locked:
+/// pod provisioning's containers, `.meta` and ACL documents, and the
+/// git-mark PROV-O sidecar. Request paths are already canonical here
+/// (`NormalizePath` merges `//`, and [`PathTraversalGuard`] refuses `.` and
+/// `..` segments), so one stored resource maps to one key.
 pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static, ()> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -257,8 +261,14 @@ pub(crate) async fn mint_and_lock_target(
     storage: &dyn Storage,
     target: &str,
 ) -> Result<(String, tokio::sync::MutexGuard<'static, ()>), PodError> {
+    let mut previous: Option<String> = None;
     for _ in 0..MINT_LOCK_ATTEMPTS {
         let candidate = mint_unique_target(storage, target).await;
+        // The same taken name twice means the suffixes are exhausted (the
+        // last resort is a deterministic hash): stop rather than re-probe.
+        if previous.as_deref() == Some(candidate.as_str()) {
+            break;
+        }
         let guard = lock_resource(&candidate).await;
         // A failed probe is not evidence the name is free: refuse rather
         // than risk overwriting.
@@ -266,6 +276,7 @@ pub(crate) async fn mint_and_lock_target(
             return Ok((candidate, guard));
         }
         drop(guard);
+        previous = Some(candidate);
     }
     Err(PodError::Conflict(format!(
         "no free name for {target} after {MINT_LOCK_ATTEMPTS} attempts"
@@ -675,6 +686,7 @@ pub(crate) fn to_actix(e: PodError) -> ActixError {
         PodError::Unauthenticated => actix_web::error::ErrorUnauthorized(e.to_string()),
         PodError::PreconditionFailed(_) => actix_web::error::ErrorPreconditionFailed(e.to_string()),
         PodError::Conflict(_) => actix_web::error::ErrorConflict(e.to_string()),
+        PodError::PayloadTooLarge(_) => actix_web::error::ErrorPayloadTooLarge(e.to_string()),
         _ => actix_web::error::ErrorInternalServerError(e.to_string()),
     }
 }
@@ -1845,15 +1857,20 @@ async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
     if !storage.exists(target).await.unwrap_or(false) {
         return target.to_string();
     }
+    // A container key keeps its trailing slash after the suffix.
+    let (name, slash) = match target.strip_suffix('/') {
+        Some(name) => (name, "/"),
+        None => (target, ""),
+    };
     // Split stem/ext at the last '.' that falls after the last '/', so a
     // leading-dot filename (e.g. `/c/.keep`) is treated as extension-less.
-    let seg_start = target.rfind('/').map(|s| s + 1).unwrap_or(0);
-    let (stem, ext) = match target.rfind('.') {
-        Some(dot) if dot > seg_start => (&target[..dot], &target[dot..]),
-        _ => (target, ""),
+    let seg_start = name.rfind('/').map(|s| s + 1).unwrap_or(0);
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > seg_start => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
     };
     for n in 1..10_000u32 {
-        let candidate = format!("{stem}-{n}{ext}");
+        let candidate = format!("{stem}-{n}{ext}{slash}");
         if !storage.exists(&candidate).await.unwrap_or(false) {
             return candidate;
         }
@@ -1861,7 +1878,7 @@ async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     target.hash(&mut h);
-    format!("{stem}-{:x}{ext}", h.finish())
+    format!("{stem}-{:x}{ext}{slash}", h.finish())
 }
 
 async fn handle_post(
@@ -3058,6 +3075,23 @@ async fn provision_named_pod(
     display_name: Option<&str>,
     base_uri: &str,
 ) -> Result<NamedPodOutcome, ActixError> {
+    let base_uri = base_uri.trim_end_matches('/');
+    let pod_uri = format!("{base_uri}/{name}/");
+    let canonical_prefix = format!("{base_uri}/pods/{name}/");
+    let webid = format!("{pod_uri}profile/card#me");
+
+    // The ACL tree goes in first, before the `.meta` documents and any
+    // content, so no resource of the new pod is ever governed by the
+    // operator's root ACL (which may grant the public more than an owner
+    // would). The pod root's ACL is the first write.
+    for (key, body) in named_pod_acls(name, &webid) {
+        state
+            .storage
+            .put(&key, Bytes::from(body), "text/turtle")
+            .await
+            .map_err(to_actix)?;
+    }
+
     for container in ["", "profile", "inbox", "public", "private", "settings"] {
         let path = if container.is_empty() {
             format!("/{name}")
@@ -3071,22 +3105,6 @@ async fn provision_named_pod(
                 Bytes::from_static(b"{}"),
                 "application/ld+json",
             )
-            .await
-            .map_err(to_actix)?;
-    }
-
-    let base_uri = base_uri.trim_end_matches('/');
-    let pod_uri = format!("{base_uri}/{name}/");
-    let canonical_prefix = format!("{base_uri}/pods/{name}/");
-    let webid = format!("{pod_uri}profile/card#me");
-
-    // The ACL tree goes in before any content, so no resource of the new pod
-    // is ever governed by the operator's root ACL (which may grant the public
-    // more than an owner would).
-    for (key, body) in named_pod_acls(name, &webid) {
-        state
-            .storage
-            .put(&key, Bytes::from(body), "text/turtle")
             .await
             .map_err(to_actix)?;
     }

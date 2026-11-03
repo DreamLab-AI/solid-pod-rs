@@ -847,8 +847,11 @@ fn parse_nt_line(line: &str) -> Result<Triple, String> {
     let (object, rest) = read_term(rest)?;
     // One statement per line: anything after the object (a `;`/`,` list or
     // a second statement) is Turtle, not N-Triples, and ignoring it would
-    // silently drop triples.
-    if !rest.trim().is_empty() {
+    // silently drop triples. A terminating `.` and a trailing `# comment`
+    // are valid N-Triples and are allowed.
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('.').unwrap_or(rest).trim_start();
+    if !rest.is_empty() && !rest.starts_with('#') {
         return Err(format!(
             "unexpected content after the object: {}",
             rest.trim()
@@ -2224,6 +2227,20 @@ impl<T: Storage + ?Sized> LdpContainerOps for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ntriples_trailing_comment_is_valid_but_trailing_triples_are_not() {
+        let g = Graph::parse_ntriples("<http://a> <http://b> \"c\" . # note\n").unwrap();
+        assert_eq!(g.len(), 1);
+        assert!(Graph::parse_ntriples(
+            "<http://a> <http://b> <http://c> ; <http://d> <http://e> .\n"
+        )
+        .is_err());
+        assert!(Graph::parse_ntriples(
+            "<http://a> <http://b> <http://c> . <http://a> <http://b> <http://d> .\n"
+        )
+        .is_err());
+    }
 
     #[test]
     fn blank_node_subjects_survive_ntriples_and_jsonld_round_trip() {
