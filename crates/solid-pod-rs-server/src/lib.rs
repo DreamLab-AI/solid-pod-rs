@@ -2017,6 +2017,13 @@ async fn handle_patch(
         }
         _ => None,
     };
+    // A patch that deletes or has a `where` clause inspects the resource:
+    // its 204 or 409 tells the caller whether given triples are present, so
+    // it needs Read as well as Write (Solid Protocol §5.3.1). Checked without
+    // charging, so a paid Read refuses rather than billing the PATCH twice.
+    if n3_patch.as_ref().is_some_and(|p| !p.is_insert_only()) {
+        enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false).await?;
+    }
     let acl_origin = protected_resource_for_acl(&path)
         .is_some()
         .then(|| scheme::request_origin(&req));
@@ -2035,10 +2042,10 @@ async fn handle_patch(
             // than on an empty graph (which silently discarded everything
             // on every incremental write — the data-loss bug fixed here;
             // PRD-014 Seam C / DDD-012 A2 non-destructive-write invariant).
-            // RDF resources are persisted as N-Triples by `graph_to_turtle`,
-            // so the current body round-trips through `parse_ntriples`. A
-            // body that is not parseable N-Triples is refused, not
-            // overwritten — fail closed rather than destroy.
+            // The body is read as Turtle against the resource URL (see
+            // `seed_graph_from_patch_target`); a body that is not readable
+            // RDF is refused, not overwritten — fail closed rather than
+            // destroy.
             let out = match dialect {
                 ldp::PatchDialect::N3 => {
                     let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
@@ -2303,10 +2310,11 @@ fn rdf_content_negotiate(
 
 /// Seed the PATCH working graph from the existing resource body so an
 /// N3/SPARQL-Update mutation is applied on top of the triples already
-/// stored. RDF resources are persisted as N-Triples (see `graph_to_turtle`),
-/// so the current body round-trips through `Graph::parse_ntriples`. An
-/// empty body yields an empty graph. A body that is neither empty nor
-/// parseable N-Triples is REFUSED (409) rather than silently overwritten:
+/// stored. The body is read as Turtle with `base_iri` (the resource URL)
+/// as its base, the IRI space the patch itself is resolved in; RDF this
+/// server persists is N-Triples, a subset of Turtle. An empty body yields an
+/// empty graph. A body that is neither empty nor readable RDF is REFUSED
+/// (409) rather than silently overwritten:
 /// destroying a resource the patch engine cannot read back would violate
 /// the non-destructive-write invariant (PRD-014 Seam C, DDD-012 A2).
 fn seed_graph_from_patch_target(
@@ -2321,12 +2329,16 @@ fn seed_graph_from_patch_target(
     if text.trim().is_empty() {
         return Ok(ldp::Graph::new());
     }
-    // Bodies this server wrote are N-Triples, read leniently so stored
-    // path-form IRIs (`</alice/>`) stay as they are. Anything else a client
-    // PUT as Turtle (prefixes, `;` and `,` lists) is read with the full
-    // grammar; N-Triples is a subset of Turtle, so nothing valid is refused.
-    ldp::Graph::parse_ntriples(text)
-        .or_else(|_| solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri))
+    // Read the stored body in the same IRI space as the patch, which is
+    // resolved against the resource URL: relative IRIs (`<#a>`, a path-form
+    // `</alice/>`) become absolute, so a delete or `where` naming a stored
+    // triple matches it. N-Triples is a subset of Turtle, so every body this
+    // server wrote parses; ACL targets go back to path form after the patch
+    // (`acl_targets_as_paths`). The lenient N-Triples reader is a last
+    // resort for bodies the Turtle grammar refuses; a relative IRI there
+    // stays unresolved and simply fails to match (409), never corrupts.
+    solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri)
+        .or_else(|_| ldp::Graph::parse_ntriples(text))
         .map_err(|_| {
             actix_web::error::ErrorConflict(
                 "existing resource is not Turtle or N-Triples RDF and cannot be \

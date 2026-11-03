@@ -22,6 +22,18 @@ use crate::rdf_input::{literal_to_term, MAX_RDF_INPUT_BYTES};
 const SOLID: &str = "http://www.w3.org/ns/solid/terms#";
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
+/// Most triple patterns a `solid:where` formula may hold. Solid clients send
+/// a handful; the bound keeps evaluation, a join over the document, small.
+const MAX_WHERE_PATTERNS: usize = 32;
+
+/// Most partial bindings `where` evaluation keeps between patterns. A clause
+/// broad enough to exceed it cannot match exactly once, which is the only
+/// outcome a patch accepts.
+const MAX_PARTIAL_BINDINGS: usize = 1_000;
+
+/// Most pattern-against-triple comparisons one `where` evaluation makes.
+const MAX_MATCH_STEPS: usize = 4_000_000;
+
 /// A position in a patch triple: a concrete RDF term or a `?variable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchTerm {
@@ -158,10 +170,17 @@ impl N3Patch {
                 .collect()
         };
 
+        let where_clause = formula("where")?;
+        if where_clause.len() > MAX_WHERE_PATTERNS {
+            return Err(bad(format!(
+                "Invalid N3 Patch: the where clause has {} patterns, more than {MAX_WHERE_PATTERNS}",
+                where_clause.len()
+            )));
+        }
         Ok(Self {
             inserts: formula("inserts")?,
             deletes: formula("deletes")?,
-            where_clause: formula("where")?,
+            where_clause,
         })
     }
 
@@ -177,13 +196,14 @@ impl N3Patch {
     /// # Errors
     ///
     /// [`PodError::Conflict`] (HTTP 409) when the `where` clause matches the
-    /// document zero times or more than once, when a triple to delete is
+    /// document zero times or more than once (including when it is too
+    /// broad to evaluate within a fixed budget), when a triple to delete is
     /// absent, or when a variable is used without being bound by `where`.
     pub fn apply(&self, target: Graph) -> Result<PatchOutcome, PodError> {
         let bindings = if self.where_clause.is_empty() {
             Vec::new()
         } else {
-            let mut found = solutions(&self.where_clause, &target);
+            let mut found = solutions(&self.where_clause, &target)?;
             match found.len() {
                 1 => found.remove(0),
                 0 => {
@@ -280,19 +300,43 @@ fn match_term(pattern: &PatchTerm, term: &Term, b: &mut Bindings) -> bool {
     }
 }
 
-/// Every distinct binding of the `where` patterns against the document.
-fn solutions(patterns: &[PatchTriple], g: &Graph) -> Vec<Bindings> {
+/// The bindings of the `where` patterns against the document, stopping at
+/// two: the caller accepts exactly one, so a second already decides.
+///
+/// The graph is a set, so a binding extended by a pattern it fully binds
+/// matches at most one triple; distinct triples therefore give distinct
+/// bindings and no deduplication is needed.
+///
+/// # Errors
+///
+/// [`PodError::Conflict`] when evaluation would exceed
+/// [`MAX_PARTIAL_BINDINGS`] or [`MAX_MATCH_STEPS`].
+fn solutions(patterns: &[PatchTriple], g: &Graph) -> Result<Vec<Bindings>, PodError> {
+    let too_broad =
+        || PodError::Conflict("the patch where clause is too broad to match exactly once".into());
+    let mut steps = 0usize;
     let mut partial: Vec<Bindings> = vec![Vec::new()];
-    for p in patterns {
+    for (i, p) in patterns.iter().enumerate() {
+        let last = i + 1 == patterns.len();
         let mut next = Vec::new();
-        for b in &partial {
+        'extend: for b in &partial {
             for t in g.triples() {
+                steps += 1;
+                if steps > MAX_MATCH_STEPS {
+                    return Err(too_broad());
+                }
                 let mut nb = b.clone();
                 if match_term(&p.subject, &t.subject, &mut nb)
                     && match_term(&p.predicate, &t.predicate, &mut nb)
                     && match_term(&p.object, &t.object, &mut nb)
                 {
                     next.push(nb);
+                    if last && next.len() > 1 {
+                        break 'extend;
+                    }
+                    if next.len() > MAX_PARTIAL_BINDINGS {
+                        return Err(too_broad());
+                    }
                 }
             }
         }
@@ -301,12 +345,7 @@ fn solutions(patterns: &[PatchTriple], g: &Graph) -> Vec<Bindings> {
             break;
         }
     }
-    for b in &mut partial {
-        b.sort_by(|x, y| x.0.cmp(&y.0));
-    }
-    partial.sort_by(|x, y| format!("{x:?}").cmp(&format!("{y:?}")));
-    partial.dedup();
-    partial
+    Ok(partial)
 }
 
 /// Renames the patch's blank nodes to labels no document can already hold.

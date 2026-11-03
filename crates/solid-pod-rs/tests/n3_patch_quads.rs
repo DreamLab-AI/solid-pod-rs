@@ -246,3 +246,42 @@ fn ntriples_reader_refuses_turtle_lists_instead_of_dropping_triples() {
         assert!(Graph::parse_ntriples(body).is_err(), "accepted {body:?}");
     }
 }
+
+/// `where` evaluation is bounded: an all-variable clause over a large
+/// document is refused as too broad instead of enumerating n^k bindings,
+/// and a clause with too many patterns is refused at parse time.
+#[test]
+fn where_evaluation_is_bounded() {
+    use solid_pod_rs::ldp::{Graph, N3Patch, Term, Triple};
+    use solid_pod_rs::PodError;
+
+    let mut g = Graph::new();
+    for i in 0..1000 {
+        g.insert(Triple::new(
+            Term::iri(format!("http://e/s{i}")),
+            Term::iri("http://e/p"),
+            Term::literal(i.to_string()),
+        ));
+    }
+    let patch = N3Patch::parse(
+        "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+         _:p a solid:InsertDeletePatch; solid:where { ?a ?b ?c . ?d ?e ?f . ?g ?h ?i }.",
+        None,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    assert!(matches!(patch.apply(g), Err(PodError::Conflict(_))));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+    let many: String = (0..33)
+        .map(|i| format!("?s <http://e/p{i}> ?o{i} . "))
+        .collect();
+    let body = format!(
+        "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+         _:p a solid:InsertDeletePatch; solid:where {{ {many} }}."
+    );
+    assert!(matches!(
+        N3Patch::parse(&body, None),
+        Err(PodError::BadRequest(_))
+    ));
+}
