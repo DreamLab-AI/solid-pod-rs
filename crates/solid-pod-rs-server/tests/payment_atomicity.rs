@@ -76,6 +76,29 @@ fn auth(body: &[u8], offset: u64) -> String {
 #[actix_web::test]
 async fn concurrent_payment_state_writes_lose_no_update() {
     let storage = Arc::new(YieldingStorage(MemoryBackend::new()));
+    // A seller may only list what they hold unlisted (c27cdfe): fund the
+    // NIP-98 key with enough tbtc3 for both orders, through the legacy
+    // ledger document the canonical store bootstraps from on first use.
+    let seller = {
+        let sk = hex::decode(SECRET).unwrap();
+        let signing = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
+        format!(
+            "did:nostr:{}",
+            hex::encode(signing.verifying_key().to_bytes())
+        )
+    };
+    let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
+    ledger
+        .credit_by_outpoint(&seller, "tbtc3", &"e1".repeat(32), 0, 1_000)
+        .unwrap();
+    storage
+        .put(
+            "/.well-known/webledgers/webledgers.json",
+            serde_json::to_vec(&ledger).unwrap().into(),
+            "application/json",
+        )
+        .await
+        .unwrap();
     let app = test::init_service(build_app(AppState::new(storage))).await;
 
     let sell = |price: u64, offset: u64| {
