@@ -363,6 +363,8 @@ async fn jss_get_container_link_headers_match() {
         vec![&enforced],
         "the acl link must name exactly the sidecar the resolver enforces"
     );
+    // And pin the enforced form itself: the sibling sidecar, not JSS's.
+    assert_eq!(enforced, "</container.acl>; rel=\"acl\"");
     // Accept-Post present
     let accept_post = header_values(&resp, "Accept-Post");
     assert!(accept_post.iter().any(|v| v.contains("text/turtle")));
