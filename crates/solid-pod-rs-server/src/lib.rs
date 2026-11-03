@@ -227,6 +227,12 @@ static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
 
 /// Take the write lock for the resource at storage path `path`. Hold the
 /// guard across the read, the precondition check and the write.
+///
+/// Every write path takes it: LDP PUT (including container creation),
+/// PATCH, POST, DELETE and COPY, and the MCP write, create and delete
+/// tools. The key is the storage path the handler writes; request paths are
+/// already canonical here (`NormalizePath` merges `//`, and
+/// [`PathTraversalGuard`] refuses `.` and `..` segments).
 pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static, ()> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -234,6 +240,36 @@ pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static
     RESOURCE_WRITE_LOCKS[(h.finish() as usize) % RESOURCE_WRITE_LOCK_STRIPES]
         .lock()
         .await
+}
+
+/// Attempts [`mint_and_lock_target`] makes before refusing with 409.
+const MINT_LOCK_ATTEMPTS: usize = 64;
+
+/// Mint a free name for a new child (see [`mint_unique_target`]) and return
+/// it together with its write lock, held.
+///
+/// Minting probes storage and then writes, so on its own two concurrent
+/// creators can pick the same free name and the second silently replaces
+/// the first. Under the lock the name is re-checked; if another writer took
+/// it first, the lock is released and a fresh name minted. Only one stripe
+/// is held at any moment.
+pub(crate) async fn mint_and_lock_target(
+    storage: &dyn Storage,
+    target: &str,
+) -> Result<(String, tokio::sync::MutexGuard<'static, ()>), PodError> {
+    for _ in 0..MINT_LOCK_ATTEMPTS {
+        let candidate = mint_unique_target(storage, target).await;
+        let guard = lock_resource(&candidate).await;
+        // A failed probe is not evidence the name is free: refuse rather
+        // than risk overwriting.
+        if !storage.exists(&candidate).await? {
+            return Ok((candidate, guard));
+        }
+        drop(guard);
+    }
+    Err(PodError::Conflict(format!(
+        "no free name for {target} after {MINT_LOCK_ATTEMPTS} attempts"
+    )))
 }
 
 /// Refuse a write whose `If-Match` / `If-None-Match` precondition fails
@@ -1728,6 +1764,7 @@ async fn handle_put(
                 req_origin(&req),
             )
             .await?;
+            let _write_guard = lock_resource(&path).await;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -1868,7 +1905,7 @@ async fn handle_post(
     // protected resource AND run the lockout guard on the proposed body.
     // (This gap is shared with JSS, which keys its Control guard on the
     // container path, not the resolved `.acl` — candidate upstream PR.)
-    if protected_resource_for_acl(&target).is_some() {
+    let _write_guard = if protected_resource_for_acl(&target).is_some() {
         enforce_write_ctx(
             &state,
             &target,
@@ -1885,14 +1922,20 @@ async fn handle_post(
                  (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
             ));
         }
+        lock_resource(&target).await
     } else {
         // P1-k: LDP POST must CREATE a new resource, never overwrite one.
         // `resolve_slug` joins the Slug verbatim, so a repeated `Slug: note`
         // would clobber the first note (silent data loss). Mint a unique
         // target by probing existence and appending `-1`, `-2`, … exactly as
-        // JSS `generateUniqueFilename` does.
-        target = mint_unique_target(&*state.storage, &target).await;
-    }
+        // JSS `generateUniqueFilename` does, and hold its lock to the write
+        // so a concurrent POST cannot mint the same name.
+        let (minted, guard) = mint_and_lock_target(&*state.storage, &target)
+            .await
+            .map_err(to_actix)?;
+        target = minted;
+        guard
+    };
 
     validate_rdf_body(&req, &state, &target, ct, &body)?;
 
@@ -2403,6 +2446,8 @@ async fn handle_delete(
     )
     .await?;
 
+    let _write_guard = lock_resource(&path).await;
+    check_write_preconditions(&req, &state, &path).await?;
     let quota = reserve_quota_for_size(&state, &path, 0).await?;
     match state.storage.delete(&path).await {
         Ok(()) => {
@@ -3159,10 +3204,15 @@ async fn handle_copy(
         ));
     }
 
-    let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
-    let write = state.storage.put(&dest, body, &meta.content_type).await;
-    finish_quota_reservation(&state, quota, write.is_ok()).await;
-    write.map_err(to_actix)?;
+    {
+        // Released before the sidecar below takes its own stripe, so this
+        // handler never holds two.
+        let _write_guard = lock_resource(&dest).await;
+        let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
+        let write = state.storage.put(&dest, body, &meta.content_type).await;
+        finish_quota_reservation(&state, quota, write.is_ok()).await;
+        write.map_err(to_actix)?;
+    }
 
     // Copy the ACL sidecar only for a caller who holds Control on both the
     // source (to read it) and the destination (to write it), and only if the
@@ -3194,6 +3244,7 @@ async fn handle_copy(
             )
             .await;
         if permitted {
+            let _write_guard = lock_resource(&dst_acl).await;
             let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
             let write = state
                 .storage

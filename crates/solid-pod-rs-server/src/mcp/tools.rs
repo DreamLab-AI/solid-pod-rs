@@ -466,13 +466,21 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if let Err(e) = check_dotfile(state, &base) {
         return e;
     }
-    if wac::protected_resource_for_acl(&base).is_some() {
+    // Hold the new child's write lock to the end, as REST POST does.
+    let _write_guard = if wac::protected_resource_for_acl(&base).is_some() {
         if let Err(e) = authorise(state, ctx, &base, AccessMode::Write, "create").await {
             return e;
         }
+        crate::lock_resource(&base).await
     } else {
-        base = crate::mint_unique_target(&*state.storage, &base).await;
-    }
+        match crate::mint_and_lock_target(&*state.storage, &base).await {
+            Ok((minted, guard)) => {
+                base = minted;
+                guard
+            }
+            Err(e) => return tool_error(format!("create refused: {e}")),
+        }
+    };
     if is_container {
         let child = format!("{base}/");
         match state.storage.create_container(&child).await {
@@ -511,6 +519,7 @@ async fn delete_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if let Err(e) = authorise(state, ctx, path, AccessMode::Write, "delete").await {
         return e;
     }
+    let _write_guard = crate::lock_resource(path).await;
     if !state.storage.exists(path).await.unwrap_or(false) {
         return tool_error(format!("not found: {path}"));
     }
