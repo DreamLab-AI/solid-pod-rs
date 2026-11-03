@@ -27,6 +27,27 @@ const OWNER: &str = "did:nostr:6e1cf6...owner";
 /// Owner-only ACL: a single rule granting one `did:nostr` Read+Write over the
 /// `/alice/` container and its descendants. No `foaf:Agent` class, so an
 /// anonymous caller is denied.
+/// Point the server at the installed `git-http-backend`, as the deployment
+/// does (`GIT_HTTP_BACKEND_PATH="$(git --exec-path)/git-http-backend"`)
+/// and as the git and forge suites do. The library default is the Debian
+/// path, so without this the export test fails with 500 on any other
+/// layout (Nix, macOS) before it reaches the authority check it guards.
+/// It does not skip: a missing backend is a failure.
+fn use_installed_git_http_backend() {
+    let out = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .expect("git runs");
+    let backend = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+        .join("git-http-backend");
+    assert!(
+        backend.is_file(),
+        "git-http-backend not found under `git --exec-path`: {}",
+        backend.display()
+    );
+    std::env::set_var("GIT_HTTP_BACKEND_PATH", backend);
+}
+
 fn owner_only_acl(container: &str) -> String {
     format!(
         r##"{{
@@ -223,6 +244,7 @@ async fn owner_can_export_a_single_pod_path() {
         .output()
         .unwrap();
     assert!(output.status.success());
+    use_installed_git_http_backend();
     let app = actix_web::test::init_service(build_app(state)).await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
