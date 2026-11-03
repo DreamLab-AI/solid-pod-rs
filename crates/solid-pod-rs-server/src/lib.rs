@@ -1961,6 +1961,12 @@ async fn handle_post(
     Ok(rsp)
 }
 
+/// Content type an RDF PATCH result is stored under. The `.acl` lockout
+/// guard evaluates the patched bytes under this same type, because that is
+/// how the WAC resolver reads them back; guarding them as N-Triples, which
+/// the resolver does not accept by type, refused every ACL PATCH.
+const PATCHED_RDF_CONTENT_TYPE: &str = "text/turtle";
+
 async fn handle_patch(
     req: HttpRequest,
     body: web::Bytes,
@@ -2104,7 +2110,7 @@ async fn handle_patch(
                     &req,
                     &path,
                     serialised.as_bytes(),
-                    "application/n-triples",
+                    PATCHED_RDF_CONTENT_TYPE,
                     agent.as_deref(),
                 )
                 .await
@@ -2117,7 +2123,11 @@ async fn handle_patch(
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
                 .storage
-                .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
+                .put(
+                    &path,
+                    Bytes::from(serialised.into_bytes()),
+                    PATCHED_RDF_CONTENT_TYPE,
+                )
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
@@ -2153,7 +2163,7 @@ async fn handle_patch(
                     &req,
                     &path,
                     serialised.as_bytes(),
-                    "application/n-triples",
+                    PATCHED_RDF_CONTENT_TYPE,
                     agent.as_deref(),
                 )
                 .await
@@ -2166,7 +2176,11 @@ async fn handle_patch(
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
                 .storage
-                .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
+                .put(
+                    &path,
+                    Bytes::from(serialised.into_bytes()),
+                    PATCHED_RDF_CONTENT_TYPE,
+                )
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
@@ -2862,7 +2876,12 @@ async fn handle_create_account(
         return Ok(response);
     }
     let pod_root = format!("/{}/", body.username);
-    if state.storage.exists(&pod_root).await.unwrap_or(false) {
+    // Hold the pod root's lock across the check and the provisioning, so
+    // two creations of one name cannot both pass the check. A failed probe
+    // is not evidence the name is free: provisioning would overwrite an
+    // existing pod's ACL tree.
+    let _write_guard = lock_resource(&pod_root).await;
+    if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "account already exists"}))
         );
@@ -3092,7 +3111,12 @@ async fn handle_create_pod(
     }
 
     let pod_root = format!("/{}/", body.name);
-    if state.storage.exists(&pod_root).await.unwrap_or(false) {
+    // Hold the pod root's lock across the check and the provisioning, so
+    // two creations of one name cannot both pass the check. A failed probe
+    // is not evidence the name is free: provisioning would overwrite an
+    // existing pod's ACL tree.
+    let _write_guard = lock_resource(&pod_root).await;
+    if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "Pod already exists"}))
         );

@@ -239,3 +239,145 @@ async fn patching_a_provisioned_acl_keeps_the_owner_in() {
     let code = status!(&app, "GET", "/alice/public/", Some(STRANGER));
     assert!(ok(code), "the new grant does not apply: {code}");
 }
+
+/// Storage whose existence probe for the `alice` pod root fails.
+struct UnprobeablePodRoot(MemoryBackend);
+
+#[async_trait::async_trait]
+impl Storage for UnprobeablePodRoot {
+    async fn get(
+        &self,
+        path: &str,
+    ) -> Result<(Bytes, solid_pod_rs::storage::ResourceMeta), solid_pod_rs::PodError> {
+        self.0.get(path).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Bytes,
+        ct: &str,
+    ) -> Result<solid_pod_rs::storage::ResourceMeta, solid_pod_rs::PodError> {
+        self.0.put(path, body, ct).await
+    }
+    async fn delete(&self, path: &str) -> Result<(), solid_pod_rs::PodError> {
+        self.0.delete(path).await
+    }
+    async fn list(&self, path: &str) -> Result<Vec<String>, solid_pod_rs::PodError> {
+        self.0.list(path).await
+    }
+    async fn head(
+        &self,
+        path: &str,
+    ) -> Result<solid_pod_rs::storage::ResourceMeta, solid_pod_rs::PodError> {
+        self.0.head(path).await
+    }
+    async fn exists(&self, path: &str) -> Result<bool, solid_pod_rs::PodError> {
+        if path == "/alice/" {
+            return Err(solid_pod_rs::PodError::Backend(
+                "injected probe failure".into(),
+            ));
+        }
+        self.0.exists(path).await
+    }
+    async fn watch(
+        &self,
+        path: &str,
+    ) -> Result<
+        tokio::sync::mpsc::Receiver<solid_pod_rs::storage::StorageEvent>,
+        solid_pod_rs::PodError,
+    > {
+        self.0.watch(path).await
+    }
+}
+
+/// A failed existence probe is not evidence the pod is free: provisioning
+/// would overwrite an existing pod's ACL tree with a fresh one, so it is
+/// refused and the stored ACL is untouched.
+#[actix_web::test]
+async fn pod_creation_refuses_when_the_existence_probe_fails() {
+    const KEPT: &str = "<#kept> a <http://www.w3.org/ns/auth/acl#Authorization> .\n";
+    let inner = MemoryBackend::new();
+    inner
+        .put("/alice.acl", Bytes::from(KEPT), "text/turtle")
+        .await
+        .unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(UnprobeablePodRoot(inner));
+    let mut state = AppState::new(storage.clone());
+    state.nodeinfo.open_registrations = true;
+    let app = test::init_service(build_app(state)).await;
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/.pods")
+            .insert_header(("content-type", "application/json"))
+            .set_payload(r#"{"name":"alice"}"#)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 500, "probe failure must refuse");
+    let (acl, _) = storage.get("/alice.acl").await.unwrap();
+    assert_eq!(&acl[..], KEPT.as_bytes(), "existing ACL was overwritten");
+}
+
+/// Concurrent creations of one pod name: exactly one wins, the rest are
+/// told it exists, rather than each re-provisioning over the last.
+#[actix_web::test]
+async fn concurrent_creations_of_one_pod_name_admit_exactly_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(
+        solid_pod_rs::storage::fs::FsBackend::new(dir.path())
+            .await
+            .unwrap(),
+    );
+    let mut state = AppState::new(storage);
+    state.nodeinfo.open_registrations = true;
+    let app = test::init_service(build_app(state)).await;
+    let requests = (0..8u8).map(|i| {
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/.pods")
+                // Distinct peers, so the per-IP creation limiter admits all.
+                .peer_addr(std::net::SocketAddr::from(([10, 0, 0, i + 1], 4000)))
+                .insert_header(("content-type", "application/json"))
+                .set_payload(r#"{"name":"alice"}"#)
+                .to_request(),
+        )
+    });
+    let codes: Vec<u16> = futures_util::future::join_all(requests)
+        .await
+        .iter()
+        .map(|r| r.status().as_u16())
+        .collect();
+    assert_eq!(codes.iter().filter(|c| **c == 201).count(), 1, "{codes:?}");
+    assert_eq!(codes.iter().filter(|c| **c == 409).count(), 7, "{codes:?}");
+}
+
+/// Guarding the patched ACL under its stored content type must still refuse
+/// a PATCH that removes the owner's own Control.
+#[actix_web::test]
+async fn patching_away_the_owners_control_is_refused() {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+    let (app, owner) = create_alice!(storage);
+    let (before, _) = storage.get("/alice/public.acl").await.unwrap();
+
+    let strip = "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+         @prefix acl: <http://www.w3.org/ns/auth/acl#>.\n\
+         _:p a solid:InsertDeletePatch; solid:deletes {\n\
+           <#owner> acl:mode acl:Control.\n\
+         }.";
+    let req = test::TestRequest::patch()
+        .uri("/alice/public.acl")
+        .insert_header(("content-type", "text/n3"))
+        .insert_header(("Authorization", bearer(&owner)))
+        .set_payload(strip)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "owner stripped their own Control"
+    );
+    let (after, _) = storage.get("/alice/public.acl").await.unwrap();
+    assert_eq!(before, after, "refused PATCH still changed the ACL");
+}
