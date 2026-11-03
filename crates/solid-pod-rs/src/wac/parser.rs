@@ -246,25 +246,25 @@ fn parse_turtle_authorization(
                 any_authz = true;
             }
             "http://www.w3.org/ns/auth/acl#agent" | "acl:agent" => {
-                auth.agent = Some(ids_of(objects));
+                add_ids(&mut auth.agent, objects);
             }
             "http://www.w3.org/ns/auth/acl#agentClass" | "acl:agentClass" => {
-                auth.agent_class = Some(ids_of(objects));
+                add_ids(&mut auth.agent_class, objects);
             }
             "http://www.w3.org/ns/auth/acl#agentGroup" | "acl:agentGroup" => {
-                auth.agent_group = Some(ids_of(objects));
+                add_ids(&mut auth.agent_group, objects);
             }
             "http://www.w3.org/ns/auth/acl#origin" | "acl:origin" => {
-                auth.origin = Some(ids_of(objects));
+                add_ids(&mut auth.origin, objects);
             }
             "http://www.w3.org/ns/auth/acl#accessTo" | "acl:accessTo" => {
-                auth.access_to = Some(ids_of(objects));
+                add_ids(&mut auth.access_to, objects);
             }
             "http://www.w3.org/ns/auth/acl#default" | "acl:default" => {
-                auth.default = Some(ids_of(objects));
+                add_ids(&mut auth.default, objects);
             }
             "http://www.w3.org/ns/auth/acl#mode" | "acl:mode" => {
-                auth.mode = Some(ids_of(objects));
+                add_ids(&mut auth.mode, objects);
             }
             "http://www.w3.org/ns/auth/acl#condition" | "acl:condition" => {
                 // Conditions are usually authored as a blank-node
@@ -284,6 +284,21 @@ fn parse_turtle_authorization(
     } else {
         Ok(None)
     }
+}
+
+/// Add `objects` to an authorisation field, keeping the values already
+/// there. A subject's statements are joined into one predicate list, so a
+/// repeated predicate (every N-Triples ACL, which is what a PATCH writes
+/// back) must accumulate, as RDF graph semantics require, rather than keep
+/// only its last occurrence.
+fn add_ids(field: &mut Option<IdOrIds>, objects: Vec<String>) {
+    let mut all: Vec<String> = match field.take() {
+        None => Vec::new(),
+        Some(IdOrIds::Single(r)) => vec![r.id],
+        Some(IdOrIds::Multiple(v)) => v.into_iter().map(|r| r.id).collect(),
+    };
+    all.extend(objects);
+    *field = Some(ids_of(all));
 }
 
 // ---------------------------------------------------------------------------
