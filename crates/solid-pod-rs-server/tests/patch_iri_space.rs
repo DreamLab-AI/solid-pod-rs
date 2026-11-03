@@ -174,6 +174,10 @@ async fn patching_an_acl_with_a_condition_is_refused_not_degraded() {
            acl:agent <https://friend.example/#me>; acl:accessTo </doc>; acl:mode acl:Read }"
     );
     assert_eq!(st, 409, "conditional ACL patched: {body}");
+    assert!(
+        body.contains("acl:condition"),
+        "refused for another reason: {body}"
+    );
     assert_eq!(stored(&storage, "/doc.acl").await, acl, "ACL changed");
 }
 
@@ -250,4 +254,63 @@ async fn where_and_deletes_need_read() {
     );
     assert_eq!(st, 204, "insert-only with Write: {body}");
     assert!(stored(&storage, "/box.ttl").await.contains("guess"));
+}
+
+/// JSON Patch is a value oracle (`test` answers 412 or 204), so a writer
+/// without Read is refused before anything is evaluated.
+#[actix_web::test]
+async fn json_patch_needs_read() {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+    let write_only = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         @prefix foaf: <http://xmlns.com/foaf/0.1/> .\n\
+         <#w> a acl:Authorization ; acl:agentClass foaf:Agent ;\n\
+           acl:accessTo </> ; acl:default </> ; acl:mode acl:Write .\n";
+    storage
+        .put("/.acl", Bytes::from(write_only), "text/turtle")
+        .await
+        .unwrap();
+    storage
+        .put(
+            "/box.json",
+            Bytes::from(r#"{"secret":"guess"}"#),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(AppState::new(storage.clone()))).await;
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri("/box.json")
+            .insert_header(("content-type", "application/json-patch+json"))
+            .set_payload(r#"[{"op":"test","path":"/secret","value":"guess"}]"#)
+            .to_request(),
+    )
+    .await;
+    let st = resp.status().as_u16();
+    assert!(
+        st == 401 || st == 403,
+        "write-only JSON Patch evaluated: {st}"
+    );
+}
+
+/// An unauthorised caller is refused before its patch body is judged.
+#[actix_web::test]
+async fn authorisation_precedes_patch_syntax_errors() {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+    let app = test::init_service(build_app(AppState::new(storage))).await;
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri("/doc.ttl")
+            .insert_header(("content-type", "text/n3"))
+            .set_payload("this is not N3 {")
+            .to_request(),
+    )
+    .await;
+    let st = resp.status().as_u16();
+    assert!(
+        st == 401 || st == 403,
+        "syntax judged before authorisation: {st}"
+    );
 }

@@ -26,13 +26,16 @@ const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 /// a handful; the bound keeps evaluation, a join over the document, small.
 const MAX_WHERE_PATTERNS: usize = 32;
 
-/// Most partial bindings `where` evaluation keeps between patterns. A clause
-/// broad enough to exceed it cannot match exactly once, which is the only
-/// outcome a patch accepts.
-const MAX_PARTIAL_BINDINGS: usize = 1_000;
+/// Most partial bindings `where` evaluation keeps between patterns.
+/// Patterns are joined most-bound-first, so a selective clause stays far
+/// below it; a clause whose evaluation exceeds it is refused (409) as too
+/// broad, even where its final answer might have been unique.
+const MAX_PARTIAL_BINDINGS: usize = 10_000;
 
 /// Most pattern-against-triple comparisons one `where` evaluation makes.
-const MAX_MATCH_STEPS: usize = 4_000_000;
+/// Each comparison is constant-time (bindings borrow from the document and
+/// are copied only on a match), so this bounds the work.
+const MAX_MATCH_STEPS: usize = 10_000_000;
 
 /// A position in a patch triple: a concrete RDF term or a `?variable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,10 +206,13 @@ impl N3Patch {
         let bindings = if self.where_clause.is_empty() {
             Vec::new()
         } else {
-            let mut found = solutions(&self.where_clause, &target)?;
-            match found.len() {
-                1 => found.remove(0),
-                0 => {
+            let found = solutions(&self.where_clause, &target)?;
+            match found.as_slice() {
+                [only] => only
+                    .iter()
+                    .map(|(name, term)| ((*name).to_string(), (*term).clone()))
+                    .collect(),
+                [] => {
                     return Err(PodError::Conflict(
                         "the patch where clause does not match the resource".into(),
                     ))
@@ -281,43 +287,128 @@ fn pattern_term(t: &N3Term, role: &str) -> Result<PatchTerm, PodError> {
     Ok(PatchTerm::Term(term))
 }
 
+/// Variable bindings owned by the applied patch.
 type Bindings = Vec<(String, Term)>;
 
 fn bound<'a>(b: &'a Bindings, name: &str) -> Option<&'a Term> {
     b.iter().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
-fn match_term(pattern: &PatchTerm, term: &Term, b: &mut Bindings) -> bool {
-    match pattern {
-        PatchTerm::Term(t) => t == term,
-        PatchTerm::Variable(name) => match bound(b, name) {
-            Some(v) => v == term,
-            None => {
-                b.push((name.clone(), term.clone()));
-                true
+/// Variable bindings during `where` evaluation, borrowing the variable names
+/// from the patch and the values from the document, so extending one copies
+/// pointers, never a literal's text.
+type BorrowedBindings<'a> = Vec<(&'a str, &'a Term)>;
+
+/// Extend `b` so `pattern` matches `triple`, or `None` when it cannot.
+/// Allocates only on a match.
+fn extend<'a>(
+    pattern: &'a PatchTriple,
+    triple: &'a Triple,
+    b: &BorrowedBindings<'a>,
+) -> Option<BorrowedBindings<'a>> {
+    let mut added: [Option<(&'a str, &'a Term)>; 3] = [None; 3];
+    let positions = [
+        (&pattern.subject, &triple.subject),
+        (&pattern.predicate, &triple.predicate),
+        (&pattern.object, &triple.object),
+    ];
+    for (i, (p, t)) in positions.into_iter().enumerate() {
+        match p {
+            PatchTerm::Term(term) => {
+                if term != t {
+                    return None;
+                }
             }
-        },
+            PatchTerm::Variable(name) => {
+                let earlier = b
+                    .iter()
+                    .copied()
+                    .chain(added[..i].iter().flatten().copied())
+                    .find(|(k, _)| *k == name.as_str());
+                match earlier {
+                    Some((_, v)) if v != t => return None,
+                    Some(_) => {}
+                    None => added[i] = Some((name.as_str(), t)),
+                }
+            }
+        }
     }
+    let mut next = b.clone();
+    next.extend(added.into_iter().flatten());
+    Some(next)
+}
+
+/// How many of `p`'s positions are fixed once the variables in `bound` are
+/// known: constants, and variables already bound.
+fn fixed_positions(p: &PatchTriple, bound: &[&str]) -> usize {
+    [&p.subject, &p.predicate, &p.object]
+        .into_iter()
+        .filter(|t| match t {
+            PatchTerm::Term(_) => true,
+            PatchTerm::Variable(v) => bound.contains(&v.as_str()),
+        })
+        .count()
 }
 
 /// The bindings of the `where` patterns against the document, stopping at
 /// two: the caller accepts exactly one, so a second already decides.
 ///
-/// The graph is a set, so a binding extended by a pattern it fully binds
-/// matches at most one triple; distinct triples therefore give distinct
-/// bindings and no deduplication is needed.
+/// Patterns are joined most-bound-first: greedily, the pattern with the
+/// most constants and already-bound variables next, ties going to the one
+/// whose constants match the fewest triples. The answer and the cost do not
+/// depend on the order the client wrote the patterns in. The graph is a
+/// set, so a binding extended by a pattern it fully binds matches at most
+/// one triple; distinct triples therefore give distinct bindings and no
+/// deduplication is needed.
 ///
 /// # Errors
 ///
 /// [`PodError::Conflict`] when evaluation would exceed
 /// [`MAX_PARTIAL_BINDINGS`] or [`MAX_MATCH_STEPS`].
-fn solutions(patterns: &[PatchTriple], g: &Graph) -> Result<Vec<Bindings>, PodError> {
-    let too_broad =
-        || PodError::Conflict("the patch where clause is too broad to match exactly once".into());
+fn solutions<'a>(
+    patterns: &'a [PatchTriple],
+    g: &'a Graph,
+) -> Result<Vec<BorrowedBindings<'a>>, PodError> {
+    let too_broad = || PodError::Conflict("the patch where clause is too broad to evaluate".into());
     let mut steps = 0usize;
-    let mut partial: Vec<Bindings> = vec![Vec::new()];
-    for (i, p) in patterns.iter().enumerate() {
-        let last = i + 1 == patterns.len();
+    // How many triples each pattern's constants alone match: one scan per
+    // pattern, charged to the step budget.
+    let mut remaining: Vec<(&PatchTriple, usize)> = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        let mut matches = 0usize;
+        for t in g.triples() {
+            steps += 1;
+            if steps > MAX_MATCH_STEPS {
+                return Err(too_broad());
+            }
+            if extend(p, t, &Vec::new()).is_some() {
+                matches += 1;
+            }
+        }
+        remaining.push((p, matches));
+    }
+    let mut bound_vars: Vec<&str> = Vec::new();
+    let mut partial: Vec<BorrowedBindings<'a>> = vec![Vec::new()];
+    while !remaining.is_empty() {
+        let pick = (0..remaining.len())
+            .max_by_key(|&i| {
+                let (p, matches) = remaining[i];
+                (
+                    fixed_positions(p, &bound_vars),
+                    usize::MAX - matches,
+                    usize::MAX - i,
+                )
+            })
+            .unwrap_or(0);
+        let (p, _) = remaining.remove(pick);
+        for t in [&p.subject, &p.predicate, &p.object] {
+            if let PatchTerm::Variable(v) = t {
+                if !bound_vars.contains(&v.as_str()) {
+                    bound_vars.push(v.as_str());
+                }
+            }
+        }
+        let last = remaining.is_empty();
         let mut next = Vec::new();
         'extend: for b in &partial {
             for t in g.triples() {
@@ -325,11 +416,7 @@ fn solutions(patterns: &[PatchTriple], g: &Graph) -> Result<Vec<Bindings>, PodEr
                 if steps > MAX_MATCH_STEPS {
                     return Err(too_broad());
                 }
-                let mut nb = b.clone();
-                if match_term(&p.subject, &t.subject, &mut nb)
-                    && match_term(&p.predicate, &t.predicate, &mut nb)
-                    && match_term(&p.object, &t.object, &mut nb)
-                {
+                if let Some(nb) = extend(p, t, b) {
                     next.push(nb);
                     if last && next.len() > 1 {
                         break 'extend;

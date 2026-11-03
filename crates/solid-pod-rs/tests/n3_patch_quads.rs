@@ -285,3 +285,101 @@ fn where_evaluation_is_bounded() {
         Err(PodError::BadRequest(_))
     ));
 }
+
+fn person_graph(n: usize) -> solid_pod_rs::ldp::Graph {
+    use solid_pod_rs::ldp::{Graph, Term, Triple};
+    let mut g = Graph::new();
+    for i in 0..n {
+        let s = Term::iri(format!("http://e/p{i}"));
+        g.insert(Triple::new(
+            s.clone(),
+            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri("http://e/Person"),
+        ));
+        g.insert(Triple::new(
+            s,
+            Term::iri("http://e/id"),
+            Term::literal(i.to_string()),
+        ));
+    }
+    g
+}
+
+/// A selective `where` succeeds over a large document whichever order the
+/// client writes its patterns in: patterns are joined most-bound-first.
+#[test]
+fn a_selective_where_succeeds_in_either_pattern_order() {
+    use solid_pod_rs::ldp::N3Patch;
+    for clause in [
+        "?s a <http://e/Person> . ?s <http://e/id> \"4242\"",
+        "?s <http://e/id> \"4242\" . ?s a <http://e/Person>",
+    ] {
+        let patch = N3Patch::parse(
+            &format!(
+                "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+                 _:p a solid:InsertDeletePatch; solid:where {{ {clause} }};\n\
+                 solid:inserts {{ ?s <http://e/found> true }}."
+            ),
+            None,
+        )
+        .unwrap();
+        let out = patch.apply(person_graph(20_000)).expect(clause);
+        assert_eq!(out.inserted, 1, "{clause}");
+    }
+}
+
+/// The step budget bounds a clause whose partial bindings stay under the
+/// cap but whose join scans the document once per binding.
+#[test]
+fn the_match_step_budget_is_enforced() {
+    use solid_pod_rs::ldp::N3Patch;
+    use solid_pod_rs::PodError;
+    // 5,000 Person bindings (under the partial cap), then a pattern sharing
+    // no variable and matching nothing: 5,000 x 10,000 comparisons.
+    let patch = N3Patch::parse(
+        "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+         _:p a solid:InsertDeletePatch; solid:where { ?s a <http://e/Person> . ?x <http://e/none> ?y }.",
+        None,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        patch.apply(person_graph(5_000)),
+        Err(PodError::Conflict(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
+/// Bindings borrow from the document: a `where` binding a multi-megabyte
+/// literal across many patterns never copies it per comparison.
+#[test]
+fn a_large_bound_literal_is_not_copied_per_step() {
+    use solid_pod_rs::ldp::{Graph, N3Patch, Term, Triple};
+    let mut g = person_graph(2_000);
+    let big = "x".repeat(4 * 1024 * 1024);
+    g.insert(Triple::new(
+        Term::iri("http://e/s0"),
+        Term::iri("http://e/big"),
+        Term::literal(big),
+    ));
+    let mut clause = String::from("<http://e/s0> <http://e/big> ?big . ");
+    for i in 0..30 {
+        clause.push_str(&format!("<http://e/p{i}> <http://e/id> ?v{i} . "));
+    }
+    let patch = N3Patch::parse(
+        &format!(
+            "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+             _:p a solid:InsertDeletePatch; solid:where {{ {clause} }}."
+        ),
+        None,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    patch.apply(g).unwrap();
+    let _ = Graph::new();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+}

@@ -238,12 +238,13 @@ static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
 /// (`NormalizePath` merges `//`, and [`PathTraversalGuard`] refuses `.` and
 /// `..` segments), so one stored resource maps to one key.
 pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static, ()> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    RESOURCE_WRITE_LOCKS[(h.finish() as usize) % RESOURCE_WRITE_LOCK_STRIPES]
-        .lock()
-        .await
+    use std::hash::BuildHasher;
+    // Keyed per process, so a client cannot choose a path that shares a
+    // given resource's stripe.
+    static STRIPE_KEY: std::sync::LazyLock<std::collections::hash_map::RandomState> =
+        std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
+    let stripe = (STRIPE_KEY.hash_one(path) as usize) % RESOURCE_WRITE_LOCK_STRIPES;
+    RESOURCE_WRITE_LOCKS[stripe].lock().await
 }
 
 /// Attempts [`mint_and_lock_target`] makes before refusing with 409.
@@ -278,9 +279,7 @@ pub(crate) async fn mint_and_lock_target(
         drop(guard);
         previous = Some(candidate);
     }
-    Err(PodError::Conflict(format!(
-        "no free name for {target} after {MINT_LOCK_ATTEMPTS} attempts"
-    )))
+    Err(PodError::Conflict(format!("no free name for {target}")))
 }
 
 /// Refuse a write whose `If-Match` / `If-None-Match` precondition fails
@@ -1978,6 +1977,22 @@ async fn handle_post(
     Ok(rsp)
 }
 
+/// Refusal for an RDF PATCH whose resulting ACL carries `acl:condition`.
+const CONDITIONAL_ACL_PATCH_REFUSED: &str =
+    "refused: the patched ACL carries acl:condition, which an RDF PATCH cannot \
+     preserve (the N-Triples write-back turns an inline condition into a blank \
+     node the WAC reader does not resolve); PUT the whole ACL document instead";
+
+/// True when `graph` holds an `acl:condition` statement. Such an ACL is
+/// refused on RDF PATCH rather than written back in a form whose conditions
+/// would no longer parse.
+fn graph_has_acl_condition(graph: &ldp::Graph) -> bool {
+    const CONDITION: &str = "http://www.w3.org/ns/auth/acl#condition";
+    graph
+        .triples()
+        .any(|t| matches!(&t.predicate, ldp::Term::Iri(p) if p == CONDITION))
+}
+
 /// Content type an RDF PATCH result is stored under. The `.acl` lockout
 /// guard evaluates the patched bytes under this same type, because that is
 /// how the WAC resolver reads them back; guarding them as N-Triples, which
@@ -1995,6 +2010,43 @@ async fn handle_patch(
     }
     let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
     let agent = agent_uri(auth_pk.as_ref());
+    // Parse before authorising, without answering yet: whether the patch
+    // inspects the resource decides whether it also needs Read, and that
+    // check has to precede the Write check, which may debit a
+    // `PaymentCondition`. Parse failures are answered after authorisation,
+    // so an unauthorised caller still gets 401/403 first.
+    let ct = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let dialect = ldp::patch_dialect_from_mime(&ct);
+    let body_str = std::str::from_utf8(&body).map(str::to_string);
+    // Relative IRIs in the patch and in a Turtle-stored body resolve against
+    // the resource URL, as a client expects (JSS `buildResourceUrl`).
+    let base_iri = format!("{}{path}", scheme::request_origin(&req));
+    let n3_parsed = match (dialect, &body_str) {
+        (Some(ldp::PatchDialect::N3), Ok(text)) => Some(ldp::N3Patch::parse(text, Some(&base_iri))),
+        _ => None,
+    };
+    // A patch whose outcome depends on what the resource holds inspects it,
+    // so it needs Read as well as Write (Solid Protocol §5.3.1): an N3 Patch
+    // with deletes or a `where` clause (204 vs 409), and any JSON Patch
+    // (`test`, `remove`, `replace`, `move` and `copy` all fail on absent
+    // content). SPARQL Update here ignores `WHERE` and absent deletes, so its
+    // outcome reveals nothing. Checked without charging, so a paid Read
+    // refuses rather than billing the PATCH twice.
+    let inspects = match dialect {
+        Some(ldp::PatchDialect::N3) => {
+            matches!(&n3_parsed, Some(Ok(p)) if !p.is_insert_only())
+        }
+        Some(ldp::PatchDialect::JsonPatch) => body_str.is_ok(),
+        _ => false,
+    };
+    if inspects {
+        enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false).await?;
+    }
     // PATCH can modify or delete data (e.g. N3 Patch with solid:deletes),
     // so it requires full Write permission — not just Append. Only POST
     // (which creates new child resources in a container) is allowed with
@@ -2009,38 +2061,17 @@ async fn handle_patch(
     )
     .await?;
 
-    let ct = req
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let dialect = match ldp::patch_dialect_from_mime(ct) {
-        Some(d) => d,
-        None => {
-            return Ok(HttpResponse::UnsupportedMediaType()
-                .body(format!("unsupported patch dialect for content-type {ct:?}")))
-        }
+    let Some(dialect) = dialect else {
+        return Ok(HttpResponse::UnsupportedMediaType()
+            .body(format!("unsupported patch dialect for content-type {ct:?}")));
     };
-    let body_str = match std::str::from_utf8(&body) {
-        Ok(s) => s.to_string(),
-        Err(_) => return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8")),
+    let Ok(body_str) = body_str else {
+        return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8"));
     };
-    // Relative IRIs in the patch and in a Turtle-stored body resolve against
-    // the resource URL, as a client expects (JSS `buildResourceUrl`).
-    let base_iri = format!("{}{path}", scheme::request_origin(&req));
-    let n3_patch = match dialect {
-        ldp::PatchDialect::N3 => {
-            Some(ldp::N3Patch::parse(&body_str, Some(&base_iri)).map_err(patch_parse_err)?)
-        }
-        _ => None,
+    let n3_patch = match n3_parsed {
+        Some(parsed) => Some(parsed.map_err(patch_parse_err)?),
+        None => None,
     };
-    // A patch that deletes or has a `where` clause inspects the resource:
-    // its 204 or 409 tells the caller whether given triples are present, so
-    // it needs Read as well as Write (Solid Protocol §5.3.1). Checked without
-    // charging, so a paid Read refuses rather than billing the PATCH twice.
-    if n3_patch.as_ref().is_some_and(|p| !p.is_insert_only()) {
-        enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false).await?;
-    }
     let acl_origin = protected_resource_for_acl(&path)
         .is_some()
         .then(|| scheme::request_origin(&req));
@@ -2122,6 +2153,9 @@ async fn handle_patch(
             }
             // Round-trip the updated graph back to Turtle so the next
             // GET reflects the mutation.
+            if acl_origin.is_some() && graph_has_acl_condition(&outcome.graph) {
+                return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
+            }
             let serialised = graph_to_turtle(&outcome.graph);
             // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
             // (enforced above), but — unlike PUT — the POST-patch result was
@@ -2179,6 +2213,9 @@ async fn handle_patch(
                 Some(origin) => acl_targets_as_paths(graph, origin),
                 None => graph,
             };
+            if acl_origin.is_some() && graph_has_acl_condition(&graph) {
+                return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
+            }
             let serialised = graph_to_turtle(&graph);
             // F7: same lockout guard on the create-via-PATCH `.acl` path.
             if protected_resource_for_acl(&path).is_some()
@@ -2354,14 +2391,19 @@ fn seed_graph_from_patch_target(
     // (`acl_targets_as_paths`). The lenient N-Triples reader is a last
     // resort for bodies the Turtle grammar refuses; a relative IRI there
     // stays unresolved and simply fails to match (409), never corrupts.
-    solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri)
-        .or_else(|_| ldp::Graph::parse_ntriples(text))
-        .map_err(|_| {
-            actix_web::error::ErrorConflict(
-                "existing resource is not Turtle or N-Triples RDF and cannot be \
+    match solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri) {
+        Ok(graph) => return Ok(graph),
+        // Over the RDF input bound: refuse, never fall back to the unbounded
+        // lenient reader (which would also lose the IRI-space fix).
+        Err(e @ PodError::PayloadTooLarge(_)) => return Err(to_actix(e)),
+        Err(_) => {}
+    }
+    ldp::Graph::parse_ntriples(text).map_err(|_| {
+        actix_web::error::ErrorConflict(
+            "existing resource is not Turtle or N-Triples RDF and cannot be \
                  non-destructively patched; PUT an RDF representation or use a JSON Patch",
-            )
-        })
+        )
+    })
 }
 
 /// Rewrite the `acl:accessTo` / `acl:default` targets of a patched ACL that

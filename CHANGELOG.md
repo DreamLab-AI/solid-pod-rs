@@ -332,15 +332,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **PATCH reads the stored body in the patch's IRI space.** The body is read
   as Turtle against the resource URL, so a delete or `where` naming a triple
   stored with relative IRIs (`<#a>`, path-form ACL targets) matches it.
-- **N3 Patch `where` evaluation is bounded**: at most 32 patterns (400), and a
-  clause too broad to match exactly once within a fixed budget is 409.
-  Three all-variable patterns over 1,000 triples previously did not finish,
-  holding the resource's write lock.
-- **An N3 Patch with `solid:deletes` or `solid:where` needs Read as well as
-  Write** (Solid Protocol §5.3.1): its outcome reveals whether triples are
-  present. The Read check never charges a `PaymentCondition`; a paid Read
-  refuses the PATCH instead. SPARQL Update `DELETE`/`WHERE` is not yet
-  covered.
+- **N3 Patch `where` evaluation is bounded**: at most 32 patterns (400);
+  patterns are joined most-bound-first (fewest matching triples on a tie),
+  with bindings borrowed from the document, and a clause whose evaluation
+  exceeds a fixed budget of partial bindings or comparisons is refused as
+  too broad (409). Three all-variable patterns over 1,000 triples previously
+  did not finish, holding the resource's write lock.
+- **A patch whose outcome depends on the stored content needs Read as well
+  as Write** (Solid Protocol §5.3.1): an N3 Patch with `solid:deletes` or
+  `solid:where`, and any JSON Patch (`test` is a value oracle). The Read
+  check runs before the Write check and never charges a `PaymentCondition`,
+  so a refused PATCH is not billed and a paid Read refuses rather than
+  charging twice. SPARQL Update here ignores `WHERE` and absent deletes, so
+  its outcome reveals nothing and it needs Write only. An unauthorised caller
+  is still refused before its patch body is judged.
 - An RDF PATCH of an ACL that carries an `acl:condition` is refused (409):
   the N-Triples write-back turns the inline condition into a blank node the
   WAC reader does not resolve. PUT the whole document instead.
