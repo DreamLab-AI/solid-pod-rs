@@ -523,6 +523,29 @@ async fn prov_anchor_upgrade_is_payment_gated_and_owner_only() {
         .to_request();
     assert_eq!(test::call_service(&app, anon).await.status().as_u16(), 401);
 
+    // One-shot verification must preserve authenticated-but-not-owner403.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = nip98::mint_with_payload(
+        &format!("http://localhost:8080{anchor_path}"),
+        "POST",
+        Some(body.as_bytes()),
+        &"22".repeat(32),
+        timestamp,
+    )
+    .unwrap();
+    let non_owner = test::TestRequest::post()
+        .uri(&anchor_path)
+        .insert_header(("authorization", format!("Nostr {token}")))
+        .set_payload(body.clone())
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, non_owner).await.status().as_u16(),
+        403
+    );
+
     // (b) Owner, sufficient balance → 200, anchor produced + sidecar upgraded.
     let ok = test::TestRequest::post()
         .uri(&anchor_path)
