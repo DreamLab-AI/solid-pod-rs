@@ -17,6 +17,18 @@ lineage: Distils archived ADR-058 rows 169-170 (safeJsonParse size-capped ACL pa
 
 # ADR-2005 — Parse untrusted access-control input fail-closed and bounded
 
+## Turtle residual closed — 2026-11-03
+
+The 2026-09-05 residual (a malformed Turtle ACL read as an empty `Found`
+document, a deny-all not reported as a fault) no longer holds. Since `c27cdfe`
+the Turtle subset parser returns `AclParse` for a malformed statement, so the
+shared classifier settles the policy `Invalid { Malformed }`: deny, never
+inherit, no document handed to the evaluator, reported as a fault.
+`wac_policy_outcomes::broken_turtle_policy_denies_and_never_inherits` was
+stale against that change and now pins `Invalid` (`b57bea4`, merged in
+`76f5d64`). Scoped to this residual; no runtime or deployment claim, and the
+record is not re-stamped.
+
 ## External findings repair — 2026-11-03
 
 The broader final review reproduced two further condition-loss cases: a restriction in a separate statement for the same authorization subject, and an HTTPS ACL predicate that was silently ignored despite HTTPS condition-type support. The subset parser now groups statements by expanded subject before authorization construction and normalises HTTP/HTTPS ACL predicates consistently. Its tokenisers preserve quoted hashes, escaped quotes and semicolons inside IRIs. Regression tests retain the payment condition for split-subject and HTTPS forms and preserve literal/IRI contents. This remains a documented Turtle subset, not a claim of complete RDF syntax support.
@@ -168,7 +180,9 @@ Full workspace: 1801 passed, 0 failed, across 114 binaries.
 
 **Receipts.** `../estate-closeout/2026-09-05/test-run.md`.
 
-**Residual behaviour worth recording.** `parse_turtle_acl` is lenient: a body
+**Residual behaviour worth recording** *(superseded 2026-11-03: see "Turtle
+residual closed" above; kept as the record of the 2026-09-05 state)*.
+`parse_turtle_acl` is lenient: a body
 that *looks* like Turtle but does not parse yields `Ok` with no
 authorisations rather than an error. The security property still holds — the
 walk terminates at that level (`Found`, `inherited == false`) and the empty
