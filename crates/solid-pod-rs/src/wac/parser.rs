@@ -246,25 +246,25 @@ fn parse_turtle_authorization(
                 any_authz = true;
             }
             "http://www.w3.org/ns/auth/acl#agent" | "acl:agent" => {
-                auth.agent = Some(ids_of(objects));
+                add_ids(&mut auth.agent, objects);
             }
             "http://www.w3.org/ns/auth/acl#agentClass" | "acl:agentClass" => {
-                auth.agent_class = Some(ids_of(objects));
+                add_ids(&mut auth.agent_class, objects);
             }
             "http://www.w3.org/ns/auth/acl#agentGroup" | "acl:agentGroup" => {
-                auth.agent_group = Some(ids_of(objects));
+                add_ids(&mut auth.agent_group, objects);
             }
             "http://www.w3.org/ns/auth/acl#origin" | "acl:origin" => {
-                auth.origin = Some(ids_of(objects));
+                add_ids(&mut auth.origin, objects);
             }
             "http://www.w3.org/ns/auth/acl#accessTo" | "acl:accessTo" => {
-                auth.access_to = Some(ids_of(objects));
+                add_ids(&mut auth.access_to, objects);
             }
             "http://www.w3.org/ns/auth/acl#default" | "acl:default" => {
-                auth.default = Some(ids_of(objects));
+                add_ids(&mut auth.default, objects);
             }
             "http://www.w3.org/ns/auth/acl#mode" | "acl:mode" => {
-                auth.mode = Some(ids_of(objects));
+                add_ids(&mut auth.mode, objects);
             }
             "http://www.w3.org/ns/auth/acl#condition" | "acl:condition" => {
                 // Conditions are usually authored as a blank-node
@@ -284,6 +284,21 @@ fn parse_turtle_authorization(
     } else {
         Ok(None)
     }
+}
+
+/// Add `objects` to an authorisation field, keeping the values already
+/// there. A subject's statements are joined into one predicate list, so a
+/// repeated predicate (every N-Triples ACL, which is what a PATCH writes
+/// back) must accumulate, as RDF graph semantics require, rather than keep
+/// only its last occurrence.
+fn add_ids(field: &mut Option<IdOrIds>, objects: Vec<String>) {
+    let mut all: Vec<String> = match field.take() {
+        None => Vec::new(),
+        Some(IdOrIds::Single(r)) => vec![r.id],
+        Some(IdOrIds::Multiple(v)) => v.into_iter().map(|r| r.id).collect(),
+    };
+    all.extend(objects);
+    *field = Some(ids_of(all));
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +724,41 @@ mod tests {
             acl:accessTo </> ;
             acl:mode acl:Read .
     "#;
+
+    /// One authorisation spread over several statements (N-Triples, or
+    /// Turtle that repeats the subject) is one authorisation. The server
+    /// writes ACLs back as N-Triples after a PATCH; reading each statement
+    /// as its own authorisation kept only the `rdf:type` line and dropped
+    /// every agent, mode and target.
+    #[test]
+    fn statements_about_one_subject_merge_into_one_authorization() {
+        let nt = "<http://h/a.acl#o> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/auth/acl#Authorization> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#agent> <http://h/me#i> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#accessTo> </a/> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Control> .\n\
+                  <http://h/a.acl#x> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Write> .\n";
+        let doc = parse_turtle_acl(nt).unwrap();
+        let graph = doc.graph.expect("one authorization");
+        assert_eq!(graph.len(), 1, "an untyped subject is not an authorization");
+        let auth = &graph[0];
+        let ids = |f: &Option<IdOrIds>| -> Vec<String> {
+            match f {
+                None => vec![],
+                Some(IdOrIds::Single(r)) => vec![r.id.clone()],
+                Some(IdOrIds::Multiple(v)) => v.iter().map(|r| r.id.clone()).collect(),
+            }
+        };
+        assert_eq!(ids(&auth.agent), vec!["http://h/me#i"]);
+        assert_eq!(ids(&auth.access_to), vec!["/a/"]);
+        assert_eq!(
+            ids(&auth.mode),
+            vec![
+                "http://www.w3.org/ns/auth/acl#Read",
+                "http://www.w3.org/ns/auth/acl#Control"
+            ]
+        );
+    }
 
     #[test]
     fn parse_turtle_acl_with_limit_accepts_small_doc() {

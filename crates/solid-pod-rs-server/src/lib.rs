@@ -208,6 +208,112 @@ static NIP98_REPLAY: std::sync::LazyLock<solid_pod_rs::auth::replay::Nip98Replay
 pub(crate) static PAYMENT_STATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+/// Number of stripes in [`RESOURCE_WRITE_LOCKS`].
+const RESOURCE_WRITE_LOCK_STRIPES: usize = 256;
+
+/// Serialises writes to one resource in this process (JSS
+/// `src/handlers/resource.js:1191-1215`, #633). PATCH is read-modify-write:
+/// without this, concurrent PATCHes all read the old body and the last
+/// write wins (the 2026-11-01 audit kept 3–4 of 20 concurrent inserts, every
+/// one answered 204). Stripes keyed by a hash of the storage path bound the
+/// memory; two paths that share a stripe merely serialise. A handler holds at
+/// most one stripe, so stripes cannot deadlock.
+static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
+    std::sync::LazyLock::new(|| {
+        (0..RESOURCE_WRITE_LOCK_STRIPES)
+            .map(|_| tokio::sync::Mutex::new(()))
+            .collect()
+    });
+
+/// Take the write lock for the resource at storage path `path`. Hold the
+/// guard across the read, the precondition check and the write.
+///
+/// Taken, keyed on the resource the request names, by LDP PUT (including
+/// container creation), PATCH, POST, DELETE and COPY (destination, then its
+/// ACL sidecar, one at a time), by pod and account creation (the pod root),
+/// and by the MCP `write`, `create`, `delete` and `write_acl` tools. Writes a
+/// handler makes to *other* keys while holding it are not separately locked:
+/// pod provisioning's containers, `.meta` and ACL documents, and the
+/// git-mark PROV-O sidecar. Request paths are already canonical here
+/// (`NormalizePath` merges `//`, and [`PathTraversalGuard`] refuses `.` and
+/// `..` segments), so one stored resource maps to one key.
+pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static, ()> {
+    use std::hash::BuildHasher;
+    // Keyed per process, so a client cannot choose a path that shares a
+    // given resource's stripe.
+    static STRIPE_KEY: std::sync::LazyLock<std::collections::hash_map::RandomState> =
+        std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
+    let stripe = (STRIPE_KEY.hash_one(path) as usize) % RESOURCE_WRITE_LOCK_STRIPES;
+    RESOURCE_WRITE_LOCKS[stripe].lock().await
+}
+
+/// Attempts [`mint_and_lock_target`] makes before refusing with 409.
+const MINT_LOCK_ATTEMPTS: usize = 64;
+
+/// Mint a free name for a new child (see [`mint_unique_target`]) and return
+/// it together with its write lock, held.
+///
+/// Minting probes storage and then writes, so on its own two concurrent
+/// creators can pick the same free name and the second silently replaces
+/// the first. Under the lock the name is re-checked; if another writer took
+/// it first, the lock is released and a fresh name minted. Only one stripe
+/// is held at any moment.
+pub(crate) async fn mint_and_lock_target(
+    storage: &dyn Storage,
+    target: &str,
+) -> Result<(String, tokio::sync::MutexGuard<'static, ()>), PodError> {
+    let mut previous: Option<String> = None;
+    for _ in 0..MINT_LOCK_ATTEMPTS {
+        let candidate = mint_unique_target(storage, target).await;
+        // The same taken name twice means the suffixes are exhausted (the
+        // last resort is a deterministic hash): stop rather than re-probe.
+        if previous.as_deref() == Some(candidate.as_str()) {
+            break;
+        }
+        let guard = lock_resource(&candidate).await;
+        // A failed probe is not evidence the name is free: refuse rather
+        // than risk overwriting.
+        if !storage.exists(&candidate).await? {
+            return Ok((candidate, guard));
+        }
+        drop(guard);
+        previous = Some(candidate);
+    }
+    Err(PodError::Conflict(format!("no free name for {target}")))
+}
+
+/// Refuse a write whose `If-Match` / `If-None-Match` precondition fails
+/// against the stored ETag (RFC 9110 §13; JSS `resource.js:1246-1255`).
+/// Call while holding [`lock_resource`] so the ETag cannot change between the
+/// check and the write.
+async fn check_write_preconditions(
+    req: &HttpRequest,
+    state: &AppState,
+    path: &str,
+) -> Result<(), ActixError> {
+    let value = |name| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let (if_match, if_none_match) = (value(header::IF_MATCH), value(header::IF_NONE_MATCH));
+    if if_match.is_none() && if_none_match.is_none() {
+        return Ok(());
+    }
+    let current = match state.storage.head(path).await {
+        Ok(meta) => Some(meta.etag),
+        Err(PodError::NotFound(_)) => None,
+        Err(e) => return Err(to_actix(e)),
+    };
+    match ldp::evaluate_preconditions(
+        req.method().as_str(),
+        current.as_deref(),
+        if_match,
+        if_none_match,
+    ) {
+        ldp::ConditionalOutcome::PreconditionFailed => Err(
+            actix_web::error::ErrorPreconditionFailed("precondition failed"),
+        ),
+        _ => Ok(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared app state
 // ---------------------------------------------------------------------------
@@ -578,6 +684,8 @@ pub(crate) fn to_actix(e: PodError) -> ActixError {
         PodError::Forbidden => actix_web::error::ErrorForbidden(e.to_string()),
         PodError::Unauthenticated => actix_web::error::ErrorUnauthorized(e.to_string()),
         PodError::PreconditionFailed(_) => actix_web::error::ErrorPreconditionFailed(e.to_string()),
+        PodError::Conflict(_) => actix_web::error::ErrorConflict(e.to_string()),
+        PodError::PayloadTooLarge(_) => actix_web::error::ErrorPayloadTooLarge(e.to_string()),
         _ => actix_web::error::ErrorInternalServerError(e.to_string()),
     }
 }
@@ -1667,6 +1775,7 @@ async fn handle_put(
                 req_origin(&req),
             )
             .await?;
+            let _write_guard = lock_resource(&path).await;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -1715,6 +1824,8 @@ async fn handle_put(
 
     validate_rdf_body(&req, &state, &path, ct, &body)?;
 
+    let _write_guard = lock_resource(&path).await;
+    check_write_preconditions(&req, &state, &path).await?;
     let quota = reserve_quota_for_size(&state, &path, body.len() as u64).await?;
     let write = state
         .storage
@@ -1745,15 +1856,20 @@ async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
     if !storage.exists(target).await.unwrap_or(false) {
         return target.to_string();
     }
+    // A container key keeps its trailing slash after the suffix.
+    let (name, slash) = match target.strip_suffix('/') {
+        Some(name) => (name, "/"),
+        None => (target, ""),
+    };
     // Split stem/ext at the last '.' that falls after the last '/', so a
     // leading-dot filename (e.g. `/c/.keep`) is treated as extension-less.
-    let seg_start = target.rfind('/').map(|s| s + 1).unwrap_or(0);
-    let (stem, ext) = match target.rfind('.') {
-        Some(dot) if dot > seg_start => (&target[..dot], &target[dot..]),
-        _ => (target, ""),
+    let seg_start = name.rfind('/').map(|s| s + 1).unwrap_or(0);
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > seg_start => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
     };
     for n in 1..10_000u32 {
-        let candidate = format!("{stem}-{n}{ext}");
+        let candidate = format!("{stem}-{n}{ext}{slash}");
         if !storage.exists(&candidate).await.unwrap_or(false) {
             return candidate;
         }
@@ -1761,7 +1877,7 @@ async fn mint_unique_target(storage: &dyn Storage, target: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     target.hash(&mut h);
-    format!("{stem}-{:x}{ext}", h.finish())
+    format!("{stem}-{:x}{ext}{slash}", h.finish())
 }
 
 async fn handle_post(
@@ -1805,7 +1921,7 @@ async fn handle_post(
     // protected resource AND run the lockout guard on the proposed body.
     // (This gap is shared with JSS, which keys its Control guard on the
     // container path, not the resolved `.acl` — candidate upstream PR.)
-    if protected_resource_for_acl(&target).is_some() {
+    let _write_guard = if protected_resource_for_acl(&target).is_some() {
         enforce_write_ctx(
             &state,
             &target,
@@ -1822,14 +1938,20 @@ async fn handle_post(
                  (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
             ));
         }
+        lock_resource(&target).await
     } else {
         // P1-k: LDP POST must CREATE a new resource, never overwrite one.
         // `resolve_slug` joins the Slug verbatim, so a repeated `Slug: note`
         // would clobber the first note (silent data loss). Mint a unique
         // target by probing existence and appending `-1`, `-2`, … exactly as
-        // JSS `generateUniqueFilename` does.
-        target = mint_unique_target(&*state.storage, &target).await;
-    }
+        // JSS `generateUniqueFilename` does, and hold its lock to the write
+        // so a concurrent POST cannot mint the same name.
+        let (minted, guard) = mint_and_lock_target(&*state.storage, &target)
+            .await
+            .map_err(to_actix)?;
+        target = minted;
+        guard
+    };
 
     validate_rdf_body(&req, &state, &target, ct, &body)?;
 
@@ -1855,6 +1977,28 @@ async fn handle_post(
     Ok(rsp)
 }
 
+/// Refusal for an RDF PATCH whose resulting ACL carries `acl:condition`.
+const CONDITIONAL_ACL_PATCH_REFUSED: &str =
+    "refused: the patched ACL carries acl:condition, which an RDF PATCH cannot \
+     preserve (the N-Triples write-back turns an inline condition into a blank \
+     node the WAC reader does not resolve); PUT the whole ACL document instead";
+
+/// True when `graph` holds an `acl:condition` statement. Such an ACL is
+/// refused on RDF PATCH rather than written back in a form whose conditions
+/// would no longer parse.
+fn graph_has_acl_condition(graph: &ldp::Graph) -> bool {
+    const CONDITION: &str = "http://www.w3.org/ns/auth/acl#condition";
+    graph
+        .triples()
+        .any(|t| matches!(&t.predicate, ldp::Term::Iri(p) if p == CONDITION))
+}
+
+/// Content type an RDF PATCH result is stored under. The `.acl` lockout
+/// guard evaluates the patched bytes under this same type, because that is
+/// how the WAC resolver reads them back; guarding them as N-Triples, which
+/// the resolver does not accept by type, refused every ACL PATCH.
+const PATCHED_RDF_CONTENT_TYPE: &str = "text/turtle";
+
 async fn handle_patch(
     req: HttpRequest,
     body: web::Bytes,
@@ -1866,6 +2010,43 @@ async fn handle_patch(
     }
     let auth_pk = extract_pubkey_with_body(&req, Some(&body)).await;
     let agent = agent_uri(auth_pk.as_ref());
+    // Parse before authorising, without answering yet: whether the patch
+    // inspects the resource decides whether it also needs Read, and that
+    // check has to precede the Write check, which may debit a
+    // `PaymentCondition`. Parse failures are answered after authorisation,
+    // so an unauthorised caller still gets 401/403 first.
+    let ct = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let dialect = ldp::patch_dialect_from_mime(&ct);
+    let body_str = std::str::from_utf8(&body).map(str::to_string);
+    // Relative IRIs in the patch and in a Turtle-stored body resolve against
+    // the resource URL, as a client expects (JSS `buildResourceUrl`).
+    let base_iri = format!("{}{path}", scheme::request_origin(&req));
+    let n3_parsed = match (dialect, &body_str) {
+        (Some(ldp::PatchDialect::N3), Ok(text)) => Some(ldp::N3Patch::parse(text, Some(&base_iri))),
+        _ => None,
+    };
+    // A patch whose outcome depends on what the resource holds inspects it,
+    // so it needs Read as well as Write (Solid Protocol §5.3.1): an N3 Patch
+    // with deletes or a `where` clause (204 vs 409), and any JSON Patch
+    // (`test`, `remove`, `replace`, `move` and `copy` all fail on absent
+    // content). SPARQL Update here ignores `WHERE` and absent deletes, so its
+    // outcome reveals no triple values. Checked without charging, so a paid
+    // Read refuses rather than billing the PATCH twice.
+    let inspects = match dialect {
+        Some(ldp::PatchDialect::N3) => {
+            matches!(&n3_parsed, Some(Ok(p)) if !p.is_insert_only())
+        }
+        Some(ldp::PatchDialect::JsonPatch) => body_str.is_ok(),
+        _ => false,
+    };
+    if inspects {
+        enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false).await?;
+    }
     // PATCH can modify or delete data (e.g. N3 Patch with solid:deletes),
     // so it requires full Write permission — not just Append. Only POST
     // (which creates new child resources in a container) is allowed with
@@ -1880,22 +2061,25 @@ async fn handle_patch(
     )
     .await?;
 
-    let ct = req
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let dialect = match ldp::patch_dialect_from_mime(ct) {
-        Some(d) => d,
-        None => {
-            return Ok(HttpResponse::UnsupportedMediaType()
-                .body(format!("unsupported patch dialect for content-type {ct:?}")))
-        }
+    let Some(dialect) = dialect else {
+        return Ok(HttpResponse::UnsupportedMediaType()
+            .body(format!("unsupported patch dialect for content-type {ct:?}")));
     };
-    let body_str = match std::str::from_utf8(&body) {
-        Ok(s) => s.to_string(),
-        Err(_) => return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8")),
+    let Ok(body_str) = body_str else {
+        return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8"));
     };
+    let n3_patch = match n3_parsed {
+        Some(parsed) => Some(parsed.map_err(patch_parse_err)?),
+        None => None,
+    };
+    let acl_origin = protected_resource_for_acl(&path)
+        .is_some()
+        .then(|| scheme::request_origin(&req));
+
+    // Serialise the read-modify-write; check `If-Match` / `If-None-Match`
+    // against the ETag that this PATCH will actually replace.
+    let _write_guard = lock_resource(&path).await;
+    check_write_preconditions(&req, &state, &path).await?;
 
     // Existing resource?
     let existing = state.storage.get(&path).await;
@@ -1906,17 +2090,21 @@ async fn handle_patch(
             // than on an empty graph (which silently discarded everything
             // on every incremental write — the data-loss bug fixed here;
             // PRD-014 Seam C / DDD-012 A2 non-destructive-write invariant).
-            // RDF resources are persisted as N-Triples by `graph_to_turtle`,
-            // so the current body round-trips through `parse_ntriples`. A
-            // body that is not parseable N-Triples is refused, not
-            // overwritten — fail closed rather than destroy.
+            // The body is read as Turtle against the resource URL (see
+            // `seed_graph_from_patch_target`); a body that is not readable
+            // RDF is refused, not overwritten — fail closed rather than
+            // destroy.
             let out = match dialect {
                 ldp::PatchDialect::N3 => {
-                    let seed = seed_graph_from_patch_target(&current_body)?;
-                    ldp::apply_n3_patch(seed, &body_str).map_err(patch_parse_err)
+                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
+                    n3_patch
+                        .as_ref()
+                        .expect("parsed above for the N3 dialect")
+                        .apply(seed)
+                        .map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::SparqlUpdate => {
-                    let seed = seed_graph_from_patch_target(&current_body)?;
+                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
                     ldp::apply_sparql_patch(seed, &body_str).map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::JsonPatch => {
@@ -1959,9 +2147,15 @@ async fn handle_patch(
                     return Ok(rsp);
                 }
             };
-            let outcome = out?;
+            let mut outcome = out?;
+            if let Some(origin) = &acl_origin {
+                outcome.graph = acl_targets_as_paths(outcome.graph, origin);
+            }
             // Round-trip the updated graph back to Turtle so the next
             // GET reflects the mutation.
+            if acl_origin.is_some() && graph_has_acl_condition(&outcome.graph) {
+                return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
+            }
             let serialised = graph_to_turtle(&outcome.graph);
             // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
             // (enforced above), but — unlike PUT — the POST-patch result was
@@ -1974,7 +2168,7 @@ async fn handle_patch(
                     &req,
                     &path,
                     serialised.as_bytes(),
-                    "application/n-triples",
+                    PATCHED_RDF_CONTENT_TYPE,
                     agent.as_deref(),
                 )
                 .await
@@ -1987,7 +2181,11 @@ async fn handle_patch(
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
                 .storage
-                .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
+                .put(
+                    &path,
+                    Bytes::from(serialised.into_bytes()),
+                    PATCHED_RDF_CONTENT_TYPE,
+                )
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
@@ -1998,12 +2196,26 @@ async fn handle_patch(
         }
         Err(PodError::NotFound(_)) => {
             // PATCH against an absent resource — create it.
-            let create = ldp::apply_patch_to_absent(dialect, &body_str).map_err(patch_parse_err)?;
-            let PatchCreateOutcome::Created { graph, .. } = create else {
-                return Err(to_actix(PodError::Unsupported(
-                    "unexpected patch outcome on absent resource".into(),
-                )));
+            let graph = match &n3_patch {
+                Some(p) => p.apply(ldp::Graph::new()).map_err(patch_parse_err)?.graph,
+                None => {
+                    let create =
+                        ldp::apply_patch_to_absent(dialect, &body_str).map_err(patch_parse_err)?;
+                    let PatchCreateOutcome::Created { graph, .. } = create else {
+                        return Err(to_actix(PodError::Unsupported(
+                            "unexpected patch outcome on absent resource".into(),
+                        )));
+                    };
+                    graph
+                }
             };
+            let graph = match &acl_origin {
+                Some(origin) => acl_targets_as_paths(graph, origin),
+                None => graph,
+            };
+            if acl_origin.is_some() && graph_has_acl_condition(&graph) {
+                return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
+            }
             let serialised = graph_to_turtle(&graph);
             // F7: same lockout guard on the create-via-PATCH `.acl` path.
             if protected_resource_for_acl(&path).is_some()
@@ -2012,7 +2224,7 @@ async fn handle_patch(
                     &req,
                     &path,
                     serialised.as_bytes(),
-                    "application/n-triples",
+                    PATCHED_RDF_CONTENT_TYPE,
                     agent.as_deref(),
                 )
                 .await
@@ -2025,7 +2237,11 @@ async fn handle_patch(
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
                 .storage
-                .put(&path, Bytes::from(serialised.into_bytes()), "text/turtle")
+                .put(
+                    &path,
+                    Bytes::from(serialised.into_bytes()),
+                    PATCHED_RDF_CONTENT_TYPE,
+                )
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
@@ -2148,13 +2364,17 @@ fn rdf_content_negotiate(
 
 /// Seed the PATCH working graph from the existing resource body so an
 /// N3/SPARQL-Update mutation is applied on top of the triples already
-/// stored. RDF resources are persisted as N-Triples (see `graph_to_turtle`),
-/// so the current body round-trips through `Graph::parse_ntriples`. An
-/// empty body yields an empty graph. A body that is neither empty nor
-/// parseable N-Triples is REFUSED (409) rather than silently overwritten:
+/// stored. The body is read as Turtle with `base_iri` (the resource URL)
+/// as its base, the IRI space the patch itself is resolved in; RDF this
+/// server persists is N-Triples, a subset of Turtle. An empty body yields an
+/// empty graph. A body that is neither empty nor readable RDF is REFUSED
+/// (409) rather than silently overwritten:
 /// destroying a resource the patch engine cannot read back would violate
 /// the non-destructive-write invariant (PRD-014 Seam C, DDD-012 A2).
-fn seed_graph_from_patch_target(current_body: &[u8]) -> Result<ldp::Graph, ActixError> {
+fn seed_graph_from_patch_target(
+    current_body: &[u8],
+    base_iri: &str,
+) -> Result<ldp::Graph, ActixError> {
     let text = std::str::from_utf8(current_body).map_err(|_| {
         actix_web::error::ErrorConflict(
             "existing resource is not UTF-8 RDF; refusing destructive RDF PATCH",
@@ -2163,12 +2383,58 @@ fn seed_graph_from_patch_target(current_body: &[u8]) -> Result<ldp::Graph, Actix
     if text.trim().is_empty() {
         return Ok(ldp::Graph::new());
     }
+    // Read the stored body in the same IRI space as the patch, which is
+    // resolved against the resource URL: relative IRIs (`<#a>`, a path-form
+    // `</alice/>`) become absolute, so a delete or `where` naming a stored
+    // triple matches it. N-Triples is a subset of Turtle, so every body this
+    // server wrote parses; ACL targets go back to path form after the patch
+    // (`acl_targets_as_paths`). The lenient N-Triples reader, which is what
+    // the server used before, is the fallback for bodies the Turtle reader
+    // refuses, including stored bodies over its input bound (PUT accepts up
+    // to the request body cap): those stay patchable, as they were, but a
+    // relative IRI in them stays unresolved and simply fails to match
+    // (409), never corrupts.
+    if let Ok(graph) = solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri) {
+        return Ok(graph);
+    }
     ldp::Graph::parse_ntriples(text).map_err(|_| {
         actix_web::error::ErrorConflict(
-            "existing resource is not N-Triples RDF and cannot be non-destructively \
-             patched; PUT an N-Triples representation or use a JSON Patch",
+            "existing resource is not Turtle or N-Triples RDF and cannot be \
+                 non-destructively patched; PUT an RDF representation or use a JSON Patch",
         )
     })
+}
+
+/// Rewrite the `acl:accessTo` / `acl:default` targets of a patched ACL that
+/// name this server's own origin as server-root paths.
+///
+/// The WAC evaluator matches targets against the request *path*, and every
+/// ACL this server provisions uses path-form targets (`</alice/>`). PATCH
+/// resolves IRIs against the resource URL, so without this a PATCH to an
+/// ACL would store `<https://host/alice/>`, which the evaluator never
+/// matches, and lock the owner out. Agents keep their full WebIDs; targets
+/// on another origin are left alone and so never match.
+fn acl_targets_as_paths(graph: ldp::Graph, origin: &str) -> ldp::Graph {
+    const ACCESS_TO: &str = "http://www.w3.org/ns/auth/acl#accessTo";
+    const DEFAULT: &str = "http://www.w3.org/ns/auth/acl#default";
+    let origin = origin.trim_end_matches('/');
+    let mut out = ldp::Graph::new();
+    for t in graph.triples() {
+        let object = match (&t.predicate, &t.object) {
+            (ldp::Term::Iri(p), ldp::Term::Iri(o)) if p == ACCESS_TO || p == DEFAULT => o
+                .strip_prefix(origin)
+                .filter(|rest| rest.starts_with('/'))
+                .map(|rest| ldp::Term::Iri(rest.to_string()))
+                .unwrap_or_else(|| t.object.clone()),
+            _ => t.object.clone(),
+        };
+        out.insert(ldp::Triple::new(
+            t.subject.clone(),
+            t.predicate.clone(),
+            object,
+        ));
+    }
+    out
 }
 
 /// Walk the storage tree from `path` upward, returning the first
@@ -2264,6 +2530,8 @@ async fn handle_delete(
     )
     .await?;
 
+    let _write_guard = lock_resource(&path).await;
+    check_write_preconditions(&req, &state, &path).await?;
     let quota = reserve_quota_for_size(&state, &path, 0).await?;
     match state.storage.delete(&path).await {
         Ok(()) => {
@@ -2678,7 +2946,12 @@ async fn handle_create_account(
         return Ok(response);
     }
     let pod_root = format!("/{}/", body.username);
-    if state.storage.exists(&pod_root).await.unwrap_or(false) {
+    // Hold the pod root's lock across the check and the provisioning, so
+    // two creations of one name cannot both pass the check. A failed probe
+    // is not evidence the name is free: provisioning would overwrite an
+    // existing pod's ACL tree.
+    let _write_guard = lock_resource(&pod_root).await;
+    if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "account already exists"}))
         );
@@ -2775,6 +3048,65 @@ async fn provisioning_gate(
     None
 }
 
+/// The ACL tree written with a pod created through `POST /.pods`, as
+/// `(sidecar storage key, Turtle body)` pairs.
+///
+/// Mirrors JSS `createPodStructure` (`src/handlers/container.js:260-296`):
+/// the owner has Read/Write/Control everywhere; the public may read the pod
+/// root itself (not inherited), everything under `profile/` and `public/`,
+/// and append to `inbox/`; `private/` and `settings/` inherit the owner-only
+/// default of the root. Targets are server-root paths, the form the WAC
+/// evaluator matches, and each document sits at the sibling sidecar the
+/// resolver reads (`/alice/profile/` → `/alice/profile.acl`).
+fn named_pod_acls(name: &str, webid: &str) -> Vec<(String, String)> {
+    const PREFIXES: &str = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+                            @prefix foaf: <http://xmlns.com/foaf/0.1/> .\n";
+    let owner = |target: &str| {
+        format!(
+            "<#owner> a acl:Authorization ;\n    acl:agent <{webid}> ;\n    \
+             acl:accessTo <{target}> ;\n    acl:default <{target}> ;\n    \
+             acl:mode acl:Read, acl:Write, acl:Control .\n"
+        )
+    };
+    let public = |target: &str, mode: &str, inherited: bool| {
+        let default = if inherited {
+            format!("    acl:default <{target}> ;\n")
+        } else {
+            String::new()
+        };
+        format!(
+            "<#public> a acl:Authorization ;\n    acl:agentClass foaf:Agent ;\n    \
+             acl:accessTo <{target}> ;\n{default}    acl:mode {mode} .\n"
+        )
+    };
+
+    let root = format!("/{name}/");
+    let mut acls = vec![(
+        solid_pod_rs::wac::resolver::acl_sidecar_key(&root),
+        format!(
+            "{PREFIXES}{}{}",
+            owner(&root),
+            public(&root, "acl:Read", false)
+        ),
+    )];
+    for (container, mode) in [
+        ("profile", "acl:Read"),
+        ("public", "acl:Read"),
+        ("inbox", "acl:Append"),
+    ] {
+        let target = format!("/{name}/{container}/");
+        acls.push((
+            solid_pod_rs::wac::resolver::acl_sidecar_key(&target),
+            format!(
+                "{PREFIXES}{}{}",
+                owner(&target),
+                public(&target, mode, true)
+            ),
+        ));
+    }
+    acls
+}
+
 /// Provision only below `/{name}/`; the core `provision_pod` helper expects a
 /// pod-scoped storage view and must not be called with the server's global
 /// storage backend.
@@ -2784,6 +3116,23 @@ async fn provision_named_pod(
     display_name: Option<&str>,
     base_uri: &str,
 ) -> Result<NamedPodOutcome, ActixError> {
+    let base_uri = base_uri.trim_end_matches('/');
+    let pod_uri = format!("{base_uri}/{name}/");
+    let canonical_prefix = format!("{base_uri}/pods/{name}/");
+    let webid = format!("{pod_uri}profile/card#me");
+
+    // The ACL tree goes in first, before the `.meta` documents and any
+    // content, so no resource of the new pod is ever governed by the
+    // operator's root ACL (which may grant the public more than an owner
+    // would). The pod root's ACL is the first write.
+    for (key, body) in named_pod_acls(name, &webid) {
+        state
+            .storage
+            .put(&key, Bytes::from(body), "text/turtle")
+            .await
+            .map_err(to_actix)?;
+    }
+
     for container in ["", "profile", "inbox", "public", "private", "settings"] {
         let path = if container.is_empty() {
             format!("/{name}")
@@ -2800,11 +3149,6 @@ async fn provision_named_pod(
             .await
             .map_err(to_actix)?;
     }
-
-    let base_uri = base_uri.trim_end_matches('/');
-    let pod_uri = format!("{base_uri}/{name}/");
-    let canonical_prefix = format!("{base_uri}/pods/{name}/");
-    let webid = format!("{pod_uri}profile/card#me");
     let profile = solid_pod_rs::webid::generate_webid_html(name, display_name, base_uri)
         .replace(&canonical_prefix, &pod_uri);
     state
@@ -2838,7 +3182,12 @@ async fn handle_create_pod(
     }
 
     let pod_root = format!("/{}/", body.name);
-    if state.storage.exists(&pod_root).await.unwrap_or(false) {
+    // Hold the pod root's lock across the check and the provisioning, so
+    // two creations of one name cannot both pass the check. A failed probe
+    // is not evidence the name is free: provisioning would overwrite an
+    // existing pod's ACL tree.
+    let _write_guard = lock_resource(&pod_root).await;
+    if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "Pod already exists"}))
         );
@@ -2950,10 +3299,15 @@ async fn handle_copy(
         ));
     }
 
-    let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
-    let write = state.storage.put(&dest, body, &meta.content_type).await;
-    finish_quota_reservation(&state, quota, write.is_ok()).await;
-    write.map_err(to_actix)?;
+    {
+        // Released before the sidecar below takes its own stripe, so this
+        // handler never holds two.
+        let _write_guard = lock_resource(&dest).await;
+        let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
+        let write = state.storage.put(&dest, body, &meta.content_type).await;
+        finish_quota_reservation(&state, quota, write.is_ok()).await;
+        write.map_err(to_actix)?;
+    }
 
     // Copy the ACL sidecar only for a caller who holds Control on both the
     // source (to read it) and the destination (to write it), and only if the
@@ -2985,6 +3339,7 @@ async fn handle_copy(
             )
             .await;
         if permitted {
+            let _write_guard = lock_resource(&dst_acl).await;
             let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
             let write = state
                 .storage

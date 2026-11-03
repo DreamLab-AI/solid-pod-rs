@@ -146,6 +146,7 @@ pub mod mashlib;
 pub mod metrics;
 pub mod mrc20;
 pub mod multitenant;
+mod n3_patch;
 pub mod payments;
 pub mod provenance;
 pub mod rdf_input;
@@ -226,10 +227,10 @@ pub use ldp::{
     cache_control_for_response, evaluate_preconditions, is_rdf_content_type, link_headers,
     negotiate_format, not_found_headers, options_for, parse_range_header, parse_range_header_v2,
     patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
-    ConditionalOutcome, ContainerRepresentation, Graph, OptionsResponse, PatchCreateOutcome,
-    PatchDialect, PatchOutcome, PreferHeader, RangeOutcome, RdfFormat, ResponseAudience, Term,
-    Triple, ACCEPT_PATCH, ACCEPT_POST, CACHE_CONTROL_PRIVATE, CACHE_CONTROL_RDF,
-    SPARQL_UPDATE_MAX_BYTES,
+    ConditionalOutcome, ContainerRepresentation, Graph, N3Patch, OptionsResponse,
+    PatchCreateOutcome, PatchDialect, PatchOutcome, PatchTerm, PatchTriple, PreferHeader,
+    RangeOutcome, RdfFormat, ResponseAudience, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
+    CACHE_CONTROL_PRIVATE, CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
 };
 pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
 pub use metrics::SecurityMetrics;

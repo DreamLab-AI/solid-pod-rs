@@ -49,7 +49,9 @@
 //!
 //! // Relay.
 //! let relay = Arc::new(Relay::in_memory());
-//! let _info = relay.info().clone(); // serve at GET / (Accept: application/nostr+json)
+//! // An embedder serves this at the relay URL to a GET whose `Accept`
+//! // contains `application/nostr+json` (NIP-11; JSS #635).
+//! let _info = relay.info().clone();
 //! ```
 
 #![doc = include_str!("../README.md")]

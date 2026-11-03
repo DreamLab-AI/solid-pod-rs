@@ -283,6 +283,100 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now includes SHA-256 of the empty body. Callers supplying an empty body to
   the verifier must include that payload tag; `None` remains an explicit
   opt-out from body verification. Publication and consumer upgrades are pending.
+- Pods created through `POST /.pods` now get an owner ACL tree (owner
+  Read/Write/Control everywhere; public read on the pod root, `profile/` and
+  `public/`; public append on `inbox/`), following JSS `createPodStructure`.
+  Previously the server wrote no ACL, so on a fresh server the owner was
+  refused on their own pod, and under an operator root ACL with `acl:default`
+  the new pod inherited the root's grants, public ones included (parity
+  row 287).
+- The Turtle ACL reader accumulates a repeated predicate instead of keeping
+  its last occurrence. It joins a subject's statements into one predicate
+  list, so an ACL stored as N-Triples (the form PATCH writes back) kept only
+  the last `acl:mode`, `acl:agent` and `acl:accessTo` of each authorisation.
+- Pod and account creation hold the pod root's write lock across the
+  existence check and provisioning, and refuse when the existence probe
+  fails, so a concurrent or retried creation cannot overwrite an existing
+  pod's ACL tree. Eight concurrent creations of one name previously all
+  answered 201. The ACL tree is written first, before the `.meta` documents
+  and the profile. Provisioning is not transactional: a storage failure part
+  way leaves a partial pod, and a retry then answers 409.
+
+### Fixed
+
+- **N3 Patch is parsed with the full N3 grammar** (`oxttl`) against the
+  resource URL, and applied with JSS 0.0.224 semantics (#633): prefixed names,
+  `a`, `;`/`,` lists, long and typed literals and relative IRIs are accepted;
+  `solid:where` variables are bound and must match exactly once; deleting an
+  absent triple, a `where` miss and an unbound variable are 409 (previously a
+  `where` miss was 412); patch blank nodes are minted fresh. JSS's own chat
+  bodies used to get 400.
+- **Non-ASCII literals are no longer corrupted by PATCH.** The N-Triples reader
+  decoded byte by byte, so every PATCH re-encoded stored non-ASCII text (`é`
+  became `c3 83 c2 a9`). It now decodes UTF-8 and `\uXXXX` / `\UXXXXXXXX`.
+  This stops further damage but does not repair text already double-encoded.
+- **The N-Triples reader refuses trailing content** instead of dropping the
+  triples after a `;` or a second statement on one line. PATCH reads such a
+  stored body (and any prefixed Turtle a client PUT) with the Turtle parser,
+  so it is patchable rather than refused or truncated.
+- **Writes to one resource are serialised in-process**: LDP PUT (including
+  container creation), PATCH, POST, DELETE and COPY, pod creation, and the
+  MCP `write`, `create`, `delete` and `write_acl` tools, through a striped lock held across the read,
+  the precondition check and the write. Concurrent PATCHes previously lost
+  updates while every one answered 204 (3–4 of 20 inserts survived).
+- **POST never overwrites a sibling under concurrency.** A minted name is
+  re-checked under its lock and re-minted on collision; twenty concurrent
+  POSTs with one `Slug` previously all answered 201 at one `Location`.
+- **`If-Match` and `If-None-Match` are honoured on PUT, PATCH and DELETE**
+  (412), evaluated under the write lock.
+- **PATCH reads the stored body in the patch's IRI space.** The body is read
+  as Turtle against the resource URL, so a delete or `where` naming a triple
+  stored with relative IRIs (`<#a>`, path-form ACL targets) matches it.
+  Relative IRIs in a patched document are written back absolute, resolved
+  against the request's origin (the configured public origin, else `Host`).
+  Bodies the Turtle reader refuses, including stored bodies over its input
+  bound, are read as before, with relative IRIs left unresolved.
+- **N3 Patch `where` evaluation is bounded**: at most 32 patterns (400);
+  document terms are interned so every comparison is constant-time,
+  patterns are joined most-selective-first (connected to bound variables,
+  then fewest matching triples), and a clause whose join exceeds a fixed
+  budget of partial bindings or comparisons is refused as too broad (409). Three all-variable patterns over 1,000 triples previously
+  did not finish, holding the resource's write lock.
+- **A patch whose outcome depends on the stored content needs Read as well
+  as Write** (Solid Protocol §5.3.1): an N3 Patch with `solid:deletes` or
+  `solid:where`, and any JSON Patch (`test` is a value oracle), including a
+  JSON Patch that creates a resource. The Read check runs before the Write
+  check and never charges a `PaymentCondition`: a PATCH refused for lack of
+  Read is not billed, and where Read is paid such a PATCH is refused rather
+  than charged twice (so JSON Patch is unavailable on a paid-Read resource).
+  A PATCH refused after the Write check (bad syntax, failed precondition,
+  `where` miss, lockout guard, quota) is still billed for its Write, as
+  before. SPARQL Update here ignores `WHERE` and absent deletes, so its
+  outcome reveals no triple values and it needs Write only. An unauthorised
+  caller is still refused before its patch body is judged.
+- An RDF PATCH of an ACL that carries an `acl:condition` is refused (409):
+  the N-Triples write-back turns the inline condition into a blank node the
+  WAC reader does not resolve. PUT the whole document instead.
+- **An owner can PATCH their ACL again.** The lockout guard evaluated the
+  re-serialised ACL as `application/n-triples`, which the shared policy
+  reader refuses, so every RDF PATCH of an `.acl` answered 409. It now
+  evaluates the bytes under `text/turtle`, the type they are stored and read
+  back as; a PATCH that removes the caller's own Control is still refused.
+- PATCH to an `.acl` keeps same-origin `acl:accessTo` / `acl:default` targets
+  in server-root path form, the form the WAC evaluator matches, so patching an
+  ACL no longer locks its owner out.
+
+### Added
+
+- `ldp::N3Patch` (`parse` / `is_insert_only` / `apply`), `ldp::PatchTerm`,
+  `ldp::PatchTriple`, `Term::lang_literal` and `PodError::Conflict` (HTTP 409).
+  `PodError` gains a variant, so exhaustive matches on it must add an arm.
+  `apply_n3_patch` keeps its signature as a wrapper over `N3Patch` with no base
+  IRI; bodies must now declare their prefixes, as N3 requires. Breaking for
+  library callers of `apply_n3_patch` and `apply_patch_to_absent` with the
+  N3 dialect: the old permissive reader's bare `insert`/`delete`/`where`
+  keywords, undeclared `solid:` prefix and relative IRIs (with no base) are
+  now refused as syntax errors.
 
 ### Changed
 

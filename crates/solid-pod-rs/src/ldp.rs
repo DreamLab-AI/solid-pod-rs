@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 
 use crate::error::PodError;
+pub use crate::n3_patch::{N3Patch, PatchTerm, PatchTriple};
 // `Storage` lives behind `tokio-runtime` — the LDP parsers themselves
 // are pure and compile under `core`, only the storage-driven container
 // representation helper at the bottom of this file needs the trait.
@@ -564,7 +565,7 @@ mod infer_dotfile_tests {
 // In-crate RDF triple model (minimal, sufficient for PATCH evaluation)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Term {
     Iri(String),
     BlankNode(String),
@@ -594,6 +595,14 @@ impl Term {
             value: v.into(),
             datatype: Some(dt.into()),
             language: None,
+        }
+    }
+    /// A language-tagged literal, e.g. `"chat"@en`.
+    pub fn lang_literal(v: impl Into<String>, lang: impl Into<String>) -> Self {
+        Term::Literal {
+            value: v.into(),
+            datatype: None,
+            language: Some(lang.into()),
         }
     }
 
@@ -835,7 +844,19 @@ fn parse_nt_line(line: &str) -> Result<Triple, String> {
     let rest = rest.trim_start();
     let (predicate, rest) = read_term(rest)?;
     let rest = rest.trim_start();
-    let (object, _rest) = read_term(rest)?;
+    let (object, rest) = read_term(rest)?;
+    // One statement per line: anything after the object (a `;`/`,` list or
+    // a second statement) is Turtle, not N-Triples, and ignoring it would
+    // silently drop triples. A terminating `.` and a trailing `# comment`
+    // are valid N-Triples and are allowed.
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('.').unwrap_or(rest).trim_start();
+    if !rest.is_empty() && !rest.starts_with('#') {
+        return Err(format!(
+            "unexpected content after the object: {}",
+            rest.trim()
+        ));
+    }
     Ok(Triple::new(subject, predicate, object))
 }
 
@@ -863,34 +884,52 @@ fn read_term(input: &str) -> Result<(Term, &str), String> {
 }
 
 fn read_literal(input: &str) -> Result<(Term, &str), String> {
-    let bytes = input.as_bytes();
-    if bytes.first() != Some(&b'"') {
+    // Walk by char, not byte: a byte loop pushed each UTF-8 byte as its own
+    // char, so every PATCH re-encoded stored non-ASCII text (`é` became
+    // `c3 83 c2 a9`). `\uXXXX` and `\UXXXXXXXX` are decoded per N-Triples.
+    let mut chars = input.char_indices();
+    if chars.next().map(|(_, c)| c) != Some('"') {
         return Err("expected '\"'".to_string());
     }
-    let mut i = 1usize;
     let mut value = String::new();
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if i + 1 < bytes.len() => {
-                match bytes[i + 1] {
-                    b'n' => value.push('\n'),
-                    b't' => value.push('\t'),
-                    b'r' => value.push('\r'),
-                    b'"' => value.push('"'),
-                    b'\\' => value.push('\\'),
-                    other => value.push(other as char),
-                }
-                i += 2;
-            }
-            b'"' => {
-                i += 1;
+    let mut i = input.len();
+    let mut closed = false;
+    while let Some((pos, c)) = chars.next() {
+        match c {
+            '"' => {
+                i = pos + 1;
+                closed = true;
                 break;
             }
-            other => {
-                value.push(other as char);
-                i += 1;
+            '\\' => {
+                let (_, esc) = chars.next().ok_or_else(|| "dangling escape".to_string())?;
+                match esc {
+                    'n' => value.push('\n'),
+                    't' => value.push('\t'),
+                    'r' => value.push('\r'),
+                    'b' => value.push('\u{8}'),
+                    'f' => value.push('\u{c}'),
+                    '"' | '\'' | '\\' => value.push(esc),
+                    'u' | 'U' => {
+                        let width = if esc == 'u' { 4 } else { 8 };
+                        let hex: String = chars.by_ref().take(width).map(|(_, h)| h).collect();
+                        let code = u32::from_str_radix(&hex, 16)
+                            .ok()
+                            .filter(|_| hex.len() == width)
+                            .ok_or_else(|| format!("bad \\{esc} escape"))?;
+                        value.push(
+                            char::from_u32(code)
+                                .ok_or_else(|| format!("bad code point {code:x}"))?,
+                        );
+                    }
+                    other => return Err(format!("unknown escape \\{other}")),
+                }
             }
+            other => value.push(other),
         }
+    }
+    if !closed {
+        return Err("unterminated literal".to_string());
     }
     let rest = &input[i..];
     let (datatype, language, rest) = if let Some(r) = rest.strip_prefix("^^<") {
@@ -1132,135 +1171,32 @@ pub struct PatchOutcome {
     pub deleted: usize,
 }
 
-/// Apply a solid-protocol N3 PATCH document to `target`.
+/// Apply a Solid N3 Patch document to `target`.
 ///
-/// Recognised clauses:
+/// Equivalent to [`N3Patch::parse`] with no base IRI followed by
+/// [`N3Patch::apply`]: the body is parsed with the full N3 grammar, so
+/// prefixed names, `;`/`,` lists and long literals are accepted, but a
+/// relative IRI is a syntax error. Servers should call [`N3Patch::parse`]
+/// with the resource URL as the base instead, so relative IRIs resolve as a
+/// client expects and the request can be authorised before it is applied.
 ///
-/// ```text
-/// _:rename a solid:InsertDeletePatch ;
-///   solid:inserts { <#s> <#p> <#o> . } ;
-///   solid:deletes { <#s> <#p> <#o> . } ;
-///   solid:where   { <#s> <#p> ?var . } .
+/// ```
+/// use solid_pod_rs::ldp::{apply_n3_patch, Graph};
+///
+/// let out = apply_n3_patch(
+///     Graph::new(),
+///     "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+///      _:p a solid:InsertDeletePatch; solid:inserts { <http://e/s> <http://e/p> \"o\" }.",
+/// )
+/// .unwrap();
+/// assert_eq!(out.inserted, 1);
 /// ```
 ///
-/// The parser is deliberately permissive: it hunts for `insert` /
-/// `delete` / `where` blocks delimited by curly braces anywhere in the
-/// body. The contents of each block are parsed as N-Triples.
+/// # Errors
+///
+/// See [`N3Patch::parse`] and [`N3Patch::apply`].
 pub fn apply_n3_patch(target: Graph, patch: &str) -> Result<PatchOutcome, PodError> {
-    let inserts = extract_block(patch, &["insert", "inserts", "solid:inserts"]).unwrap_or_default();
-    let deletes = extract_block(patch, &["delete", "deletes", "solid:deletes"]).unwrap_or_default();
-    let where_clause = extract_block(patch, &["where", "solid:where"]);
-
-    let insert_graph = if !inserts.is_empty() {
-        Graph::parse_ntriples(&strip_braces(&inserts))?
-    } else {
-        Graph::new()
-    };
-    let delete_graph = if !deletes.is_empty() {
-        Graph::parse_ntriples(&strip_braces(&deletes))?
-    } else {
-        Graph::new()
-    };
-
-    // WHERE clause: every triple must be present in the target graph,
-    // otherwise the PATCH fails. Variables (`?foo`) are treated as
-    // existential — we currently require them to match exactly any
-    // existing predicate/subject/object, so the simple empty-WHERE
-    // and literal-WHERE flows both work.
-    if let Some(wc) = where_clause {
-        if !wc.trim().is_empty() {
-            let where_graph = Graph::parse_ntriples(&strip_braces(&wc))?;
-            for t in where_graph.triples() {
-                if !target.contains(t) {
-                    return Err(PodError::PreconditionFailed(format!(
-                        "WHERE clause triple missing: {t:?}"
-                    )));
-                }
-            }
-        }
-    }
-
-    let mut graph = target;
-    let inserted_count = insert_graph.len();
-    let deleted_count = delete_graph.triples().filter(|t| graph.contains(t)).count();
-    graph.subtract(&delete_graph);
-    graph.extend(&insert_graph);
-
-    Ok(PatchOutcome {
-        graph,
-        inserted: inserted_count,
-        deleted: deleted_count,
-    })
-}
-
-fn extract_block(source: &str, keywords: &[&str]) -> Option<String> {
-    // Treat the keyword match as a word boundary on the left (so
-    // `solid:inserts` matches but `InsertDeletePatch` does not), and
-    // require the keyword to be followed — ignoring whitespace — by
-    // an opening brace. This prevents the `insert`/`delete` substrings
-    // inside `solid:InsertDeletePatch` from being mistaken for block
-    // keywords.
-    let lower = source.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    for kw in keywords {
-        let needle = kw.to_ascii_lowercase();
-        let mut search_from = 0usize;
-        while let Some(pos) = lower[search_from..].find(&needle) {
-            let abs = search_from + pos;
-            let after_kw = abs + needle.len();
-            search_from = abs + needle.len();
-
-            // Left boundary: the char before must not be an ASCII
-            // alphanumeric (so we don't match inside a longer word).
-            // Colons and underscores are allowed so `solid:inserts`
-            // still matches after the `solid:` prefix.
-            let left_ok = if abs == 0 {
-                true
-            } else {
-                let prev = bytes[abs - 1];
-                !(prev.is_ascii_alphanumeric() || prev == b'_')
-            };
-            if !left_ok {
-                continue;
-            }
-
-            // The next non-whitespace char must be `{`.
-            let tail = &source[after_kw..];
-            let trimmed = tail.trim_start();
-            if !trimmed.starts_with('{') {
-                continue;
-            }
-            let open = after_kw + (tail.len() - trimmed.len());
-
-            // Find the matching close brace.
-            let mut depth = 0i32;
-            let mut end = None;
-            for (i, c) in source[open..].char_indices() {
-                match c {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = Some(open + i + 1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(e) = end {
-                return Some(source[open..e].to_string());
-            }
-        }
-    }
-    None
-}
-
-fn strip_braces(block: &str) -> String {
-    let t = block.trim();
-    let t = t.strip_prefix('{').unwrap_or(t);
-    let t = t.strip_suffix('}').unwrap_or(t);
-    t.trim().to_string()
+    N3Patch::parse(patch, None)?.apply(target)
 }
 
 /// Maximum size (in bytes) of a SPARQL-Update body the server will
@@ -2293,6 +2229,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ntriples_trailing_comment_is_valid_but_trailing_triples_are_not() {
+        let g = Graph::parse_ntriples("<http://a> <http://b> \"c\" . # note\n").unwrap();
+        assert_eq!(g.len(), 1);
+        assert!(Graph::parse_ntriples(
+            "<http://a> <http://b> <http://c> ; <http://d> <http://e> .\n"
+        )
+        .is_err());
+        assert!(Graph::parse_ntriples(
+            "<http://a> <http://b> <http://c> . <http://a> <http://b> <http://d> .\n"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn blank_node_subjects_survive_ntriples_and_jsonld_round_trip() {
         // JSS #536 regression class: a blank-node SUBJECT whose label is
         // written bare (no `_:` prefix) into JSON-LD `@id` gets re-read as
@@ -2480,6 +2430,7 @@ mod tests {
         ));
 
         let patch = r#"
+            @prefix solid: <http://www.w3.org/ns/solid/terms#> .
             _:r a solid:InsertDeletePatch ;
               solid:deletes {
                 <http://s/a> <http://p/drop> "old" .
@@ -2504,14 +2455,18 @@ mod tests {
     }
 
     #[test]
-    fn n3_patch_where_failure_returns_precondition() {
+    fn n3_patch_where_failure_is_a_conflict() {
+        // Solid Protocol and JSS 0.0.224 (#633): a `where` clause that does
+        // not match exactly once is 409, not 412 (412 is for HTTP
+        // preconditions such as `If-Match`).
         let g = Graph::new();
         let patch = r#"
+            @prefix solid: <http://www.w3.org/ns/solid/terms#> .
             _:r solid:where   { <http://s/a> <http://p/need> "x" . } ;
                 solid:inserts { <http://s/a> <http://p/added> "y" . } .
         "#;
         let err = apply_n3_patch(g, patch).err().unwrap();
-        assert!(matches!(err, PodError::PreconditionFailed(_)));
+        assert!(matches!(err, PodError::Conflict(_)));
     }
 
     #[test]

@@ -366,3 +366,33 @@ fn dev_now() -> u64 {
         .unwrap()
         .as_secs()
 }
+
+/// MCP `create_resource` with `isContainer` mints a fresh name against the
+/// container's own (trailing-slash) key, so an existing child container is
+/// never silently reused as the "new" one.
+#[actix_web::test]
+async fn mcp_create_container_never_reuses_an_existing_child() {
+    let s: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
+    let acl = format!(
+        "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         <#w> a acl:Authorization ; acl:agent <{WRITER}> ;\n\
+           acl:accessTo </> ; acl:default </> ;\n\
+           acl:mode acl:Read, acl:Write, acl:Append .\n"
+    );
+    s.put("/.acl", Bytes::from(acl), "text/turtle")
+        .await
+        .unwrap();
+    s.create_container("/c/").await.unwrap();
+    s.create_container("/c/box/").await.unwrap();
+    let mut state = AppState::new(s.clone());
+    state.mcp_enabled = true;
+    let (err, out) = mcp(
+        state,
+        Some(WRITER),
+        "create_resource",
+        json!({"container": "/c/", "slug": "box", "isContainer": true}),
+    )
+    .await;
+    assert!(!err, "{out}");
+    assert_eq!(out, "created container /c/box-1/");
+}

@@ -107,6 +107,7 @@ async fn n3_patch_preserves_existing_triples() {
     let app = test::init_service(build_app(state)).await;
 
     let patch = r#"
+        @prefix solid: <http://www.w3.org/ns/solid/terms#> .
         _:add a solid:InsertDeletePatch ;
           solid:inserts {
             <http://example.org/alice> <http://example.org/knows> <http://example.org/dave> .

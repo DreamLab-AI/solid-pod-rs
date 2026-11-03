@@ -258,14 +258,19 @@ SSRF validation (`src/idp/provider.js:22–85, 429–452`).
 
 ### WebRTC / peer transport
 
-**Not implemented.** No RTCPeerConnection, SDP, ICE, or libp2p code in the
-source tree. Peer-to-peer federation is exclusively ActivityPub + Nostr.
+**Implemented since March 2026** (corrected 2026-11-01; this section
+previously said the opposite). JSS ships a WebRTC signalling server over
+WebSocket at `/.webrtc`, behind `--webrtc` / `--webrtc-path`
+(`src/webrtc/index.js`, added `338f0ae` 2026-03-10; `bin/jss.js:121-123`,
+at `7c9b0de`). solid-pod-rs does not provide it: parity checklist row 282.
 
 ### remoteStorage compatibility
 
-**Not implemented.** No remoteStorage draft endpoints (`/storage/`), no
-OAuth2-based bearer scope per the rs spec, no webfinger rs-provider hint.
-Discovery stops at Solid + AP + Nostr.
+**Implemented since March 2026** (corrected 2026-11-01). JSS serves
+remoteStorage draft-22 at `/storage/:user/*`, documents stored as
+WAC-governed pod resources, and mounts it on every instance
+(`src/remotestorage.js`, added `a18467f` 2026-03-15; `src/server.js:500`, at
+`7c9b0de`). solid-pod-rs does not provide it: parity checklist row 283.
 
 ### CLI flags (enumerated from `bin/jss.js`)
 
