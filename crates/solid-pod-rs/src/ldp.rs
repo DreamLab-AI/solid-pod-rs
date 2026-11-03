@@ -1472,9 +1472,13 @@ pub enum ConditionalOutcome {
 /// observed on the storage side; `None` for the ETag means the
 /// resource does not exist.
 ///
-/// * `If-Match: *` matches any existing resource (fails if absent).
+/// * `If-Match: *` matches any existing resource (fails if absent). `*` is a
+///   wildcard only as the whole field value; inside a list, or quoted
+///   (`"*"`), it is an ordinary tag.
 /// * `If-None-Match: *` fails if the resource exists.
-/// * `If-Match: "etag1", "etag2"` — pass if any matches.
+/// * `If-Match: "etag1", "etag2"` — pass if any matches, by strong
+///   comparison (RFC 9110 §13.1.1): weak tags (`W/"…"`) never match.
+///   `If-None-Match` uses weak comparison (§13.1.2).
 /// * `If-None-Match: "etag1", "etag2"` — for GET/HEAD a match means
 ///   `NotModified`; for any other method a match means
 ///   `PreconditionFailed`.

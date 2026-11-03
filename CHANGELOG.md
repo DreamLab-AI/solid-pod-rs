@@ -332,7 +332,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`If-Match` uses strong comparison** (RFC 9110 §13.1.1): a weak tag
   (`W/"…"`) never satisfies it, so a weak validator can no longer authorise
   a conditional PUT, PATCH or DELETE. `If-None-Match` keeps weak comparison.
-  The server issues only strong ETags.
+  The server issues only strong ETags. `*` is a wildcard only as the whole
+  `If-Match` value: `"x", *`, a quoted `"*"` and `W/"*"`, which all matched
+  any existing resource, now fail (412).
 - **PATCH reads the stored body in the patch's IRI space.** The body is read
   as Turtle against the resource URL, so a delete or `where` naming a triple
   stored with relative IRIs (`<#a>`, path-form ACL targets) matches it.
