@@ -290,9 +290,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refused on their own pod, and under an operator root ACL with `acl:default`
   the new pod inherited the root's grants, public ones included (parity
   row 287).
-- The Turtle ACL reader now merges statements that share a subject. An ACL
-  stored as N-Triples (the form PATCH writes back) was read as one empty
-  authorisation per statement, which denied everyone.
+- The Turtle ACL reader accumulates a repeated predicate instead of keeping
+  its last occurrence. It joins a subject's statements into one predicate
+  list, so an ACL stored as N-Triples (the form PATCH writes back) kept only
+  the last `acl:mode`, `acl:agent` and `acl:accessTo` of each authorisation.
+- Pod and account creation hold the pod root's write lock across the
+  existence check and provisioning, and refuse when the existence probe
+  fails, so a concurrent or retried creation cannot overwrite an existing
+  pod's ACL tree. Eight concurrent creations of one name previously all
+  answered 201.
 
 ### Fixed
 
@@ -311,11 +317,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   triples after a `;` or a second statement on one line. PATCH reads such a
   stored body (and any prefixed Turtle a client PUT) with the Turtle parser,
   so it is patchable rather than refused or truncated.
-- **Writes to one resource are serialised in-process** (PUT, PATCH, MCP
-  `write`). Concurrent PATCHes previously lost updates while every one
-  answered 204 (3–4 of 20 inserts survived).
-- **`If-Match` and `If-None-Match` are honoured on PUT and PATCH** (412),
-  evaluated under the write lock.
+- **Writes to one resource are serialised in-process**: LDP PUT (including
+  container creation), PATCH, POST, DELETE and COPY, and the MCP `write`,
+  `create` and `delete` tools, through a striped lock held across the read,
+  the precondition check and the write. Concurrent PATCHes previously lost
+  updates while every one answered 204 (3–4 of 20 inserts survived).
+- **POST never overwrites a sibling under concurrency.** A minted name is
+  re-checked under its lock and re-minted on collision; twenty concurrent
+  POSTs with one `Slug` previously all answered 201 at one `Location`.
+- **`If-Match` and `If-None-Match` are honoured on PUT, PATCH and DELETE**
+  (412), evaluated under the write lock.
+- **An owner can PATCH their ACL again.** The lockout guard evaluated the
+  re-serialised ACL as `application/n-triples`, which the shared policy
+  reader refuses, so every RDF PATCH of an `.acl` answered 409. It now
+  evaluates the bytes under `text/turtle`, the type they are stored and read
+  back as; a PATCH that removes the caller's own Control is still refused.
 - PATCH to an `.acl` keeps same-origin `acl:accessTo` / `acl:default` targets
   in server-root path form, the form the WAC evaluator matches, so patching an
   ACL no longer locks its owner out.
