@@ -334,12 +334,35 @@ async fn jss_get_container_link_headers_match() {
         .map(|(_, v)| v)
         .collect();
     let actual_links = header_values(&resp, "Link");
-    for e in expected_links {
+    // Deliberate deviation (docs/how-to/migrate-from-jss.md, "Container ACL
+    // locations"): JSS advertises `</container/.acl>`, but this server's
+    // resolver enforces the sibling sidecar `/container.acl`. Advertising a
+    // location the resolver ignores would let a client install a policy that
+    // never applies, so the `rel="acl"` link must name the enforced sidecar
+    // (WAC: clients follow the link rather than construct a filename). Every
+    // other link the JSS fixture records must match exactly.
+    for e in expected_links
+        .iter()
+        .filter(|e| !e.ends_with("rel=\"acl\""))
+    {
         assert!(
-            actual_links.iter().any(|a| a == e),
+            actual_links.iter().any(|a| a == *e),
             "missing Link header: {e}\nactual: {actual_links:?}"
         );
     }
+    let enforced = format!(
+        "<{}>; rel=\"acl\"",
+        solid_pod_rs::wac::acl_sidecar_key("/container/")
+    );
+    let acl_links: Vec<&String> = actual_links
+        .iter()
+        .filter(|a| a.ends_with("rel=\"acl\""))
+        .collect();
+    assert_eq!(
+        acl_links,
+        vec![&enforced],
+        "the acl link must name exactly the sidecar the resolver enforces"
+    );
     // Accept-Post present
     let accept_post = header_values(&resp, "Accept-Post");
     assert!(accept_post.iter().any(|v| v.contains("text/turtle")));
