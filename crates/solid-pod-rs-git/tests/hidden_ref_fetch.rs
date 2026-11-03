@@ -1,7 +1,11 @@
 //! Hidden-ref policy through the real HTTP CGI, using synthetic local objects.
 #![cfg(feature = "with-git-binary")]
 
-use std::{io::Write, path::Path, process::Stdio};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use bytes::Bytes;
 use solid_pod_rs_git::{hardened_git, GitError, GitHttpService, GitRequest};
@@ -19,6 +23,17 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// The installed `git-http-backend`, found through `git --exec-path` as the
+/// push-guard suite does. The library default is the Debian path, so without
+/// this the suite fails off Debian before reaching the hidden-ref policy it
+/// guards. A missing backend is a failure, not a skip.
+fn backend() -> PathBuf {
+    let exec = git(Path::new("."), &["--exec-path"]);
+    let p = PathBuf::from(exec).join("git-http-backend");
+    assert!(p.exists(), "git-http-backend not found at {}", p.display());
+    p
 }
 
 fn request(method: &str, endpoint: &str, query: &str, body: String) -> GitRequest {
@@ -69,7 +84,7 @@ async fn check_hidden_tip(permissive_repository: bool) {
             git(&repo, &["config", key, "true"]);
         }
     }
-    let service = GitHttpService::new(root.path().to_path_buf());
+    let service = GitHttpService::new(root.path().to_path_buf()).with_backend_path(backend());
     // Explicit feature selection requires a working backend: never silently skip.
     let advertisement = service
         .handle(request(
