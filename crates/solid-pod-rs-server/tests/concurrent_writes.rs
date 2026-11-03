@@ -203,3 +203,27 @@ async fn if_none_match_with_the_current_etag_refuses_put() {
     let (bytes, _) = storage.get("/public/doc.txt").await.unwrap();
     assert_eq!(&bytes[..], b"v1");
 }
+
+/// `If-Match` uses strong comparison (RFC 9110 §13.1.1): a weak tag naming
+/// the current ETag does not authorise the write.
+#[actix_web::test]
+async fn if_match_with_a_weak_tag_refuses_put() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = fs_storage(&dir).await;
+    let app = test::init_service(build_app(AppState::new(storage.clone()))).await;
+
+    let current = put_doc!(&app, "v1");
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri("/public/doc.txt")
+            .insert_header(("content-type", "text/plain"))
+            .insert_header(("if-match", format!("W/{current}")))
+            .set_payload("v2")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 412);
+    let (bytes, _) = storage.get("/public/doc.txt").await.unwrap();
+    assert_eq!(&bytes[..], b"v1");
+}

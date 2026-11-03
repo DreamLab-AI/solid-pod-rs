@@ -1494,7 +1494,8 @@ pub fn evaluate_preconditions(
                 return ConditionalOutcome::PreconditionFailed;
             }
         } else {
-            let wanted = parse_etag_list(raw);
+            // Strong comparison (RFC 9110 §13.1.1): weak tags never match.
+            let wanted = parse_etag_list(raw, true);
             match current_etag {
                 None => return ConditionalOutcome::PreconditionFailed,
                 Some(cur) => {
@@ -1516,7 +1517,8 @@ pub fn evaluate_preconditions(
                 return ConditionalOutcome::PreconditionFailed;
             }
         } else {
-            let wanted = parse_etag_list(raw);
+            // Weak comparison (RFC 9110 §13.1.2).
+            let wanted = parse_etag_list(raw, false);
             if let Some(cur) = current_etag {
                 if wanted.iter().any(|w| w == cur) {
                     if safe {
@@ -1531,16 +1533,20 @@ pub fn evaluate_preconditions(
     ConditionalOutcome::Proceed
 }
 
-fn parse_etag_list(input: &str) -> Vec<String> {
+/// The opaque tags of an entity-tag list, without quotes. With `strong`,
+/// weak tags (`W/"…"`) are dropped, since strong comparison never matches
+/// them; otherwise their `W/` prefix is stripped (weak comparison).
+fn parse_etag_list(input: &str, strong: bool) -> Vec<String> {
     input
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| {
-            // Strip weak-etag prefix + surrounding double quotes.
-            let s = s.strip_prefix("W/").unwrap_or(s);
-            s.trim_matches('"').to_string()
+        .filter_map(|s| match s.strip_prefix("W/") {
+            Some(_) if strong => None,
+            Some(weak) => Some(weak),
+            None => Some(s),
         })
+        .map(|s| s.trim_matches('"').to_string())
         .collect()
 }
 
@@ -2532,6 +2538,30 @@ mod tests {
     fn preconditions_if_match_star_fails_when_resource_absent() {
         let got = evaluate_preconditions("PUT", None, Some("*"), None);
         assert_eq!(got, ConditionalOutcome::PreconditionFailed);
+    }
+
+    #[test]
+    fn if_match_uses_strong_comparison() {
+        // RFC 9110 §13.1.1: a weak entity tag never satisfies If-Match.
+        assert_eq!(
+            evaluate_preconditions("PUT", Some("etag123"), Some("W/\"etag123\""), None),
+            ConditionalOutcome::PreconditionFailed
+        );
+        assert_eq!(
+            evaluate_preconditions(
+                "PATCH",
+                Some("etag123"),
+                Some("W/\"etag123\", \"etag123\""),
+                None
+            ),
+            ConditionalOutcome::Proceed,
+            "a strong tag in the list still matches"
+        );
+        // If-None-Match keeps weak comparison (RFC 9110 §13.1.2).
+        assert_eq!(
+            evaluate_preconditions("GET", Some("etag123"), None, Some("W/\"etag123\"")),
+            ConditionalOutcome::NotModified
+        );
     }
 
     #[test]
