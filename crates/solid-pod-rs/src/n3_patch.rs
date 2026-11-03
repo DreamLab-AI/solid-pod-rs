@@ -27,14 +27,14 @@ const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const MAX_WHERE_PATTERNS: usize = 32;
 
 /// Most partial bindings `where` evaluation keeps between patterns.
-/// Patterns are joined most-bound-first, so a selective clause stays far
+/// Patterns are joined most-selective-first, so a selective clause stays far
 /// below it; a clause whose evaluation exceeds it is refused (409) as too
 /// broad, even where its final answer might have been unique.
 const MAX_PARTIAL_BINDINGS: usize = 10_000;
 
-/// Most pattern-against-triple comparisons one `where` evaluation makes.
-/// Each comparison is constant-time (bindings borrow from the document and
-/// are copied only on a match), so this bounds the work.
+/// Most pattern-against-triple comparisons one `where` evaluation's join
+/// makes. Terms are interned to integer ids first, so each comparison is
+/// constant-time whatever the length of the IRIs and literals involved.
 const MAX_MATCH_STEPS: usize = 10_000_000;
 
 /// A position in a patch triple: a concrete RDF term or a `?variable`.
@@ -294,129 +294,149 @@ fn bound<'a>(b: &'a Bindings, name: &str) -> Option<&'a Term> {
     b.iter().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
-/// Variable bindings during `where` evaluation, borrowing the variable names
-/// from the patch and the values from the document, so extending one copies
-/// pointers, never a literal's text.
+/// A `where` solution: each variable name with the document term bound to it.
 type BorrowedBindings<'a> = Vec<(&'a str, &'a Term)>;
 
-/// Extend `b` so `pattern` matches `triple`, or `None` when it cannot.
-/// Allocates only on a match.
-fn extend<'a>(
-    pattern: &'a PatchTriple,
-    triple: &'a Triple,
-    b: &BorrowedBindings<'a>,
-) -> Option<BorrowedBindings<'a>> {
-    let mut added: [Option<(&'a str, &'a Term)>; 3] = [None; 3];
-    let positions = [
-        (&pattern.subject, &triple.subject),
-        (&pattern.predicate, &triple.predicate),
-        (&pattern.object, &triple.object),
-    ];
-    for (i, (p, t)) in positions.into_iter().enumerate() {
-        match p {
-            PatchTerm::Term(term) => {
-                if term != t {
-                    return None;
-                }
-            }
-            PatchTerm::Variable(name) => {
-                let earlier = b
-                    .iter()
-                    .copied()
-                    .chain(added[..i].iter().flatten().copied())
-                    .find(|(k, _)| *k == name.as_str());
+/// Marks an unbound variable slot in an interned binding.
+const UNBOUND: u32 = u32::MAX;
+
+/// One position of a `where` pattern, interned against the document.
+#[derive(Clone, Copy)]
+enum Slot {
+    /// A constant, by term id; `None` when the document never holds it, so
+    /// the pattern cannot match.
+    Const(Option<u32>),
+    /// A variable, by index into the binding.
+    Var(usize),
+}
+
+/// Extend interned binding `b` so pattern `p` matches triple `t`, or `None`.
+/// Constant-time; allocates only on a match.
+fn extend(p: &[Slot; 3], t: &[u32; 3], b: &[u32]) -> Option<Vec<u32>> {
+    let mut tentative: [(usize, u32); 3] = [(usize::MAX, UNBOUND); 3];
+    for i in 0..3 {
+        match p[i] {
+            Slot::Const(Some(id)) if id == t[i] => {}
+            Slot::Const(_) => return None,
+            Slot::Var(v) => {
+                let earlier = if b[v] != UNBOUND {
+                    Some(b[v])
+                } else {
+                    tentative[..i]
+                        .iter()
+                        .find(|(k, _)| *k == v)
+                        .map(|(_, id)| *id)
+                };
                 match earlier {
-                    Some((_, v)) if v != t => return None,
+                    Some(id) if id != t[i] => return None,
                     Some(_) => {}
-                    None => added[i] = Some((name.as_str(), t)),
+                    None => tentative[i] = (v, t[i]),
                 }
             }
         }
     }
-    let mut next = b.clone();
-    next.extend(added.into_iter().flatten());
+    let mut next = b.to_vec();
+    for (v, id) in tentative {
+        if v != usize::MAX {
+            next[v] = id;
+        }
+    }
     Some(next)
-}
-
-/// How many of `p`'s positions are fixed once the variables in `bound` are
-/// known: constants, and variables already bound.
-fn fixed_positions(p: &PatchTriple, bound: &[&str]) -> usize {
-    [&p.subject, &p.predicate, &p.object]
-        .into_iter()
-        .filter(|t| match t {
-            PatchTerm::Term(_) => true,
-            PatchTerm::Variable(v) => bound.contains(&v.as_str()),
-        })
-        .count()
 }
 
 /// The bindings of the `where` patterns against the document, stopping at
 /// two: the caller accepts exactly one, so a second already decides.
 ///
-/// Patterns are joined most-bound-first: greedily, the pattern with the
-/// most constants and already-bound variables next, ties going to the one
-/// whose constants match the fewest triples. The answer and the cost do not
-/// depend on the order the client wrote the patterns in. The graph is a
-/// set, so a binding extended by a pattern it fully binds matches at most
-/// one triple; distinct triples therefore give distinct bindings and no
-/// deduplication is needed.
+/// Every document term is interned to an integer id once (hashing, linear in
+/// the document's size), so the join compares ids in constant time. Each
+/// pattern's matches are counted once, then patterns are joined greedily:
+/// next, a pattern sharing a variable already bound (avoiding cartesian
+/// products), fewest counted matches first. The answer and the cost do not
+/// depend on the order the client wrote the patterns in. The graph is a set,
+/// so a binding extended by a pattern it fully binds matches at most one
+/// triple; distinct triples therefore give distinct bindings.
 ///
 /// # Errors
 ///
-/// [`PodError::Conflict`] when evaluation would exceed
+/// [`PodError::Conflict`] when the join would exceed
 /// [`MAX_PARTIAL_BINDINGS`] or [`MAX_MATCH_STEPS`].
 fn solutions<'a>(
     patterns: &'a [PatchTriple],
     g: &'a Graph,
 ) -> Result<Vec<BorrowedBindings<'a>>, PodError> {
     let too_broad = || PodError::Conflict("the patch where clause is too broad to evaluate".into());
+
+    let mut ids: std::collections::HashMap<&'a Term, u32> = std::collections::HashMap::new();
+    let mut terms: Vec<&'a Term> = Vec::new();
+    let mut intern = |t: &'a Term| -> u32 {
+        *ids.entry(t).or_insert_with(|| {
+            terms.push(t);
+            u32::try_from(terms.len() - 1).unwrap_or(UNBOUND)
+        })
+    };
+    let triples: Vec<[u32; 3]> = g
+        .triples()
+        .map(|t| [intern(&t.subject), intern(&t.predicate), intern(&t.object)])
+        .collect();
+
+    let mut var_names: Vec<&'a str> = Vec::new();
+    let compiled: Vec<[Slot; 3]> = patterns
+        .iter()
+        .map(|p| {
+            [&p.subject, &p.predicate, &p.object].map(|term| match term {
+                PatchTerm::Term(t) => Slot::Const(ids.get(t).copied()),
+                PatchTerm::Variable(name) => {
+                    Slot::Var(match var_names.iter().position(|n| *n == name.as_str()) {
+                        Some(i) => i,
+                        None => {
+                            var_names.push(name.as_str());
+                            var_names.len() - 1
+                        }
+                    })
+                }
+            })
+        })
+        .collect();
+    let empty = vec![UNBOUND; var_names.len()];
+    // Matches per pattern on its own: one linear scan each, at most
+    // MAX_WHERE_PATTERNS of them, outside the join budget.
+    let counts: Vec<usize> = compiled
+        .iter()
+        .map(|p| {
+            triples
+                .iter()
+                .filter(|t| extend(p, t, &empty).is_some())
+                .count()
+        })
+        .collect();
+
+    let mut remaining: Vec<usize> = (0..compiled.len()).collect();
+    let mut bound = vec![false; var_names.len()];
     let mut steps = 0usize;
-    // How many triples each pattern's constants alone match: one scan per
-    // pattern, charged to the step budget.
-    let mut remaining: Vec<(&PatchTriple, usize)> = Vec::with_capacity(patterns.len());
-    for p in patterns {
-        let mut matches = 0usize;
-        for t in g.triples() {
-            steps += 1;
-            if steps > MAX_MATCH_STEPS {
-                return Err(too_broad());
-            }
-            if extend(p, t, &Vec::new()).is_some() {
-                matches += 1;
-            }
-        }
-        remaining.push((p, matches));
-    }
-    let mut bound_vars: Vec<&str> = Vec::new();
-    let mut partial: Vec<BorrowedBindings<'a>> = vec![Vec::new()];
+    let mut partial: Vec<Vec<u32>> = vec![empty.clone()];
     while !remaining.is_empty() {
         let pick = (0..remaining.len())
-            .max_by_key(|&i| {
-                let (p, matches) = remaining[i];
-                (
-                    fixed_positions(p, &bound_vars),
-                    usize::MAX - matches,
-                    usize::MAX - i,
-                )
+            .min_by_key(|&i| {
+                let p = &compiled[remaining[i]];
+                let joined = p.iter().any(|s| matches!(s, Slot::Var(v) if bound[*v]));
+                (!joined, counts[remaining[i]], i)
             })
             .unwrap_or(0);
-        let (p, _) = remaining.remove(pick);
-        for t in [&p.subject, &p.predicate, &p.object] {
-            if let PatchTerm::Variable(v) = t {
-                if !bound_vars.contains(&v.as_str()) {
-                    bound_vars.push(v.as_str());
-                }
+        let p = compiled[remaining.remove(pick)];
+        for s in p {
+            if let Slot::Var(v) = s {
+                bound[v] = true;
             }
         }
         let last = remaining.is_empty();
         let mut next = Vec::new();
         'extend: for b in &partial {
-            for t in g.triples() {
+            for t in &triples {
                 steps += 1;
                 if steps > MAX_MATCH_STEPS {
                     return Err(too_broad());
                 }
-                if let Some(nb) = extend(p, t, b) {
+                if let Some(nb) = extend(&p, t, b) {
                     next.push(nb);
                     if last && next.len() > 1 {
                         break 'extend;
@@ -432,7 +452,16 @@ fn solutions<'a>(
             break;
         }
     }
-    Ok(partial)
+    Ok(partial
+        .into_iter()
+        .map(|b| {
+            b.into_iter()
+                .enumerate()
+                .filter(|(_, id)| *id != UNBOUND)
+                .map(|(v, id)| (var_names[v], terms[id as usize]))
+                .collect()
+        })
+        .collect())
 }
 
 /// Renames the patch's blank nodes to labels no document can already hold.

@@ -2035,8 +2035,8 @@ async fn handle_patch(
     // with deletes or a `where` clause (204 vs 409), and any JSON Patch
     // (`test`, `remove`, `replace`, `move` and `copy` all fail on absent
     // content). SPARQL Update here ignores `WHERE` and absent deletes, so its
-    // outcome reveals nothing. Checked without charging, so a paid Read
-    // refuses rather than billing the PATCH twice.
+    // outcome reveals no triple values. Checked without charging, so a paid
+    // Read refuses rather than billing the PATCH twice.
     let inspects = match dialect {
         Some(ldp::PatchDialect::N3) => {
             matches!(&n3_parsed, Some(Ok(p)) if !p.is_insert_only())
@@ -2388,15 +2388,14 @@ fn seed_graph_from_patch_target(
     // `</alice/>`) become absolute, so a delete or `where` naming a stored
     // triple matches it. N-Triples is a subset of Turtle, so every body this
     // server wrote parses; ACL targets go back to path form after the patch
-    // (`acl_targets_as_paths`). The lenient N-Triples reader is a last
-    // resort for bodies the Turtle grammar refuses; a relative IRI there
-    // stays unresolved and simply fails to match (409), never corrupts.
-    match solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri) {
-        Ok(graph) => return Ok(graph),
-        // Over the RDF input bound: refuse, never fall back to the unbounded
-        // lenient reader (which would also lose the IRI-space fix).
-        Err(e @ PodError::PayloadTooLarge(_)) => return Err(to_actix(e)),
-        Err(_) => {}
+    // (`acl_targets_as_paths`). The lenient N-Triples reader, which is what
+    // the server used before, is the fallback for bodies the Turtle reader
+    // refuses, including stored bodies over its input bound (PUT accepts up
+    // to the request body cap): those stay patchable, as they were, but a
+    // relative IRI in them stays unresolved and simply fails to match
+    // (409), never corrupts.
+    if let Ok(graph) = solid_pod_rs::rdf_input::parse_turtle(current_body, base_iri) {
+        return Ok(graph);
     }
     ldp::Graph::parse_ntriples(text).map_err(|_| {
         actix_web::error::ErrorConflict(

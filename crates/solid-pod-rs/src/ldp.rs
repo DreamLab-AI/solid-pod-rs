@@ -565,7 +565,7 @@ mod infer_dotfile_tests {
 // In-crate RDF triple model (minimal, sufficient for PATCH evaluation)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Term {
     Iri(String),
     BlankNode(String),

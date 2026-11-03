@@ -383,3 +383,60 @@ fn a_large_bound_literal_is_not_copied_per_step() {
         started.elapsed()
     );
 }
+
+/// A pattern with fewer constants but a unique match is joined first: the
+/// order follows counted matches, not just the number of constants.
+#[test]
+fn a_rare_pattern_with_fewer_constants_is_joined_first() {
+    use solid_pod_rs::ldp::N3Patch;
+    let patch = N3Patch::parse(
+        "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+         _:p a solid:InsertDeletePatch; solid:where { ?s a <http://e/Person> . ?s ?p \"4242\" };\n\
+         solid:inserts { ?s <http://e/found> true }.",
+        None,
+    )
+    .unwrap();
+    assert_eq!(patch.apply(person_graph(20_000)).unwrap().inserted, 1);
+}
+
+/// Comparisons cost the same whatever the term length: two subjects of
+/// equal, large length that differ only in their last byte, joined across
+/// thousands of partial bindings, finish promptly.
+#[test]
+fn long_equal_length_terms_do_not_slow_the_join() {
+    use solid_pod_rs::ldp::{Graph, N3Patch, Term, Triple};
+    let long = "a".repeat(1024 * 1024);
+    let mut g = Graph::new();
+    for tail in ["x", "y"] {
+        g.insert(Triple::new(
+            Term::iri(format!("http://e/{long}{tail}")),
+            Term::iri("http://e/p"),
+            Term::literal(tail),
+        ));
+    }
+    // 12 independent all-variable patterns: 2^12 = 4,096 partial bindings,
+    // then patterns re-using ?s0 compare its bound value against each
+    // triple's subject.
+    let mut clause = String::new();
+    for i in 0..12 {
+        clause.push_str(&format!("?s{i} ?p{i} ?o{i} . "));
+    }
+    for i in 0..19 {
+        clause.push_str(&format!("?s0 ?q{i} ?r{i} . "));
+    }
+    let patch = N3Patch::parse(
+        &format!(
+            "@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n\
+             _:p a solid:InsertDeletePatch; solid:where {{ {clause} }}."
+        ),
+        None,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let _ = patch.apply(g);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+}
