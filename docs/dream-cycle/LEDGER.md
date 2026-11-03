@@ -14,3 +14,4 @@
 | 2026-10-31 | storage-backend | In-memory backend accepted ../ and NUL paths; normalize now rejects like FS | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/12 | yes | ACCEPT |  | 86db8980e19d |  |  |  |
 | 2026-11-01 | storage-backend | VETOED: Criterion bench added for SubdomainResolver::resolve per 2026-10-24… | NONE | NONE | yes | REJECT |  | beeb15c1a6ad |  |  |  |
 | 2026-11-02 | provenance-api | no acceptance claimed (model verdict INCONCLUSIVE) | NONE | NONE | yes | INCONCLUSIVE |  | f88f742e8fa9 |  |  |  |
+| 2026-11-03 | did-nostr-resolver | red bench: link_headers acl /container.acl vs /container/.acl; need ldp module | NONE | NONE | yes | INCONCLUSIVE |  | b26428b24cec |  |  |  |
