@@ -57,8 +57,9 @@ document**, or every request will 401. See
 | `JSS_MULTIUSER`                          | `multitenant` resolver + provisioning policy | No single compatibility switch |
 | `JSS_PUBLIC`                             | install permissive `/.acl` manually | solid-pod-rs has no public-mode switch |
 | `JSS_READ_ONLY`                          | enforce at the HTTP framework layer | — |
-| `JSS_NOTIFICATIONS`                      | notification feature selection and server wiring | WebSocket, webhook, and legacy adapters are separate Rust features |
-| `JSS_NOSTR` / `JSS_ACTIVITYPUB`          | sibling crates / compile-time features | Rebuild required; there is no runtime plugin loader |
+| `JSS_NOTIFICATIONS`                      | none in the bundled server | The WebSocket, webhook and legacy (`solid-0.1`) channels exist as library features, but `solid-pod-rs-server` mounts no notifications endpoint (parity row 279) |
+| `JSS_NOSTR`                              | none in the bundled server | The relay is a library crate (`solid-pod-rs-nostr`) for embedders; no server feature or flag mounts it (parity rows 278, 280) |
+| `JSS_ACTIVITYPUB`                        | server `activitypub` cargo feature | Rebuild required, and only the actor document is served; inbox and outbox are library-only (parity row 281) |
 | `JSS_MASHLIB`                            | core `mashlib` feature and server route wiring | Compile-time rather than runtime selection |
 | `JSS_BODY_LIMIT`                         | `server.body_cap` (`JSS_MAX_REQUEST_BODY` alias) | Rust default 50 MiB; JSS `0.0.220` default 20 MB |
 | `JSS_MCP`                                | server MCP enable flag | Off by default |

@@ -79,6 +79,12 @@ pub enum PodError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    /// The request conflicts with the resource's current state (HTTP 409),
+    /// e.g. an N3 Patch whose `where` clause does not match exactly once or
+    /// that deletes a triple the resource does not hold.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     /// Request body exceeds a size limit (HTTP 413 equivalent).
     ///
     /// Used by the ACL parsers (`parse_turtle_acl`, `parse_jsonld_acl`) to

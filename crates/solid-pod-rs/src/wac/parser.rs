@@ -74,15 +74,29 @@ pub fn parse_turtle_acl_with_limit(input: &str, max_bytes: usize) -> Result<AclD
     }
 
     let statements = split_turtle_statements(&body);
-    let mut graph: Vec<AclAuthorization> = Vec::new();
+    // Statements about one subject describe one authorisation: N-Triples
+    // (the form the server writes back after a PATCH) gives every triple its
+    // own statement, and Turtle may repeat a subject. Merge by subject, in
+    // first-seen order, and keep the subjects typed `acl:Authorization`.
+    let mut merged: Vec<(String, AclAuthorization, bool)> = Vec::new();
     for stmt in statements {
         if stmt.trim().is_empty() {
             continue;
         }
-        if let Some(auth) = parse_turtle_authorization(&stmt, &prefixes) {
-            graph.push(auth);
+        if let Some((subject, auth, typed)) = parse_turtle_authorization(&stmt, &prefixes) {
+            match merged.iter_mut().find(|(s, _, _)| *s == subject) {
+                Some((_, into, was_typed)) => {
+                    merge_authorization(into, auth);
+                    *was_typed |= typed;
+                }
+                None => merged.push((subject, auth, typed)),
+            }
         }
     }
+    let graph: Vec<AclAuthorization> = merged
+        .into_iter()
+        .filter_map(|(_, auth, typed)| typed.then_some(auth))
+        .collect();
     Ok(AclDocument {
         context: None,
         graph: if graph.is_empty() { None } else { Some(graph) },
@@ -147,15 +161,17 @@ fn split_turtle_statements(input: &str) -> Vec<String> {
     out
 }
 
+/// Parse one Turtle statement into `(subject, authorisation fields, typed
+/// acl:Authorization)`. The caller merges statements that share a subject.
 fn parse_turtle_authorization(
     stmt: &str,
     prefixes: &HashMap<String, String>,
-) -> Option<AclAuthorization> {
+) -> Option<(String, AclAuthorization, bool)> {
     let trimmed = stmt.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let (_subject, body) = turtle_pop_term(trimmed)?;
+    let (subject, body) = turtle_pop_term(trimmed)?;
     let mut auth = AclAuthorization {
         id: None,
         r#type: None,
@@ -224,10 +240,37 @@ fn parse_turtle_authorization(
             _ => {}
         }
     }
-    if any_authz {
-        Some(auth)
-    } else {
-        None
+    Some((subject, auth, any_authz))
+}
+
+/// Fold the fields of `from` into `into`, keeping every IRI from both.
+fn merge_authorization(into: &mut AclAuthorization, from: AclAuthorization) {
+    fn union(a: &mut Option<IdOrIds>, b: Option<IdOrIds>) {
+        let Some(b) = b else { return };
+        let mut refs: Vec<IdRef> = match a.take() {
+            None => Vec::new(),
+            Some(IdOrIds::Single(r)) => vec![r],
+            Some(IdOrIds::Multiple(v)) => v,
+        };
+        match b {
+            IdOrIds::Single(r) => refs.push(r),
+            IdOrIds::Multiple(v) => refs.extend(v),
+        }
+        *a = Some(if refs.len() == 1 {
+            IdOrIds::Single(refs.remove(0))
+        } else {
+            IdOrIds::Multiple(refs)
+        });
+    }
+    union(&mut into.agent, from.agent);
+    union(&mut into.agent_class, from.agent_class);
+    union(&mut into.agent_group, from.agent_group);
+    union(&mut into.origin, from.origin);
+    union(&mut into.access_to, from.access_to);
+    union(&mut into.default, from.default);
+    union(&mut into.mode, from.mode);
+    if let Some(c) = from.condition {
+        into.condition.get_or_insert_with(Vec::new).extend(c);
     }
 }
 
@@ -575,6 +618,41 @@ mod tests {
             acl:accessTo </> ;
             acl:mode acl:Read .
     "#;
+
+    /// One authorisation spread over several statements (N-Triples, or
+    /// Turtle that repeats the subject) is one authorisation. The server
+    /// writes ACLs back as N-Triples after a PATCH; reading each statement
+    /// as its own authorisation kept only the `rdf:type` line and dropped
+    /// every agent, mode and target.
+    #[test]
+    fn statements_about_one_subject_merge_into_one_authorization() {
+        let nt = "<http://h/a.acl#o> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/auth/acl#Authorization> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#agent> <http://h/me#i> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#accessTo> </a/> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read> .\n\
+                  <http://h/a.acl#o> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Control> .\n\
+                  <http://h/a.acl#x> <http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Write> .\n";
+        let doc = parse_turtle_acl(nt).unwrap();
+        let graph = doc.graph.expect("one authorization");
+        assert_eq!(graph.len(), 1, "an untyped subject is not an authorization");
+        let auth = &graph[0];
+        let ids = |f: &Option<IdOrIds>| -> Vec<String> {
+            match f {
+                None => vec![],
+                Some(IdOrIds::Single(r)) => vec![r.id.clone()],
+                Some(IdOrIds::Multiple(v)) => v.iter().map(|r| r.id.clone()).collect(),
+            }
+        };
+        assert_eq!(ids(&auth.agent), vec!["http://h/me#i"]);
+        assert_eq!(ids(&auth.access_to), vec!["/a/"]);
+        assert_eq!(
+            ids(&auth.mode),
+            vec![
+                "http://www.w3.org/ns/auth/acl#Read",
+                "http://www.w3.org/ns/auth/acl#Control"
+            ]
+        );
+    }
 
     #[test]
     fn parse_turtle_acl_with_limit_accepts_small_doc() {

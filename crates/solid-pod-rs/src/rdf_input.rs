@@ -103,7 +103,7 @@ fn push_checked(g: &mut Graph, t: Triple) -> Result<(), PodError> {
     Ok(())
 }
 
-fn literal_to_term(l: &oxrdf::Literal) -> Term {
+pub(crate) fn literal_to_term(l: &oxrdf::Literal) -> Term {
     let value = l.value().to_string();
     if let Some(lang) = l.language() {
         return Term::Literal {

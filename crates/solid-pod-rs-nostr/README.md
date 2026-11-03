@@ -24,13 +24,16 @@ Target LOC: 800–1,200 at first landing.
 
 ## Parity rows
 
-Rows that will close when this crate lands (see
+Rows this crate serves (see
 [`../solid-pod-rs/PARITY-CHECKLIST.md`](../solid-pod-rs/PARITY-CHECKLIST.md)):
 
-- **89** — Embedded Nostr relay (NIP-01).
-- **90** — Relay NIP-11 + NIP-16 support.
-- **101** — did:nostr Tier 3 DID Document surface.
-- **132** — SAND composition (AP Actor + did:nostr `alsoKnownAs`).
+- **89** and **132** — did:nostr DID Document publication (Tier 1 / Tier 3).
+- **90** — did:nostr ↔ WebID resolver via `alsoKnownAs`.
+- **101** — Nostr relay, NIP-01 / NIP-11 / NIP-16. `partial-parity`: the relay
+  is a library for embedders; `solid-pod-rs-server` does not mount it, so the
+  NIP-11 document is not served over HTTP (rows 278, 280).
+- **108** — SAND composition (AP Actor + did:nostr `alsoKnownAs`), with
+  `solid-pod-rs-activitypub`.
 
 ## JSS references
 
