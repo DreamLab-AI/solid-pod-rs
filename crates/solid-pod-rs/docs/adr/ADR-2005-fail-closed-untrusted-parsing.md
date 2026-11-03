@@ -19,6 +19,8 @@ lineage: Distils archived ADR-058 rows 169-170 (safeJsonParse size-capped ACL pa
 
 ## External findings repair — 2026-11-03
 
+The broader final review reproduced two further condition-loss cases: a restriction in a separate statement for the same authorization subject, and an HTTPS ACL predicate that was silently ignored despite HTTPS condition-type support. The subset parser now groups statements by expanded subject before authorization construction and normalises HTTP/HTTPS ACL predicates consistently. Its tokenisers preserve quoted hashes, escaped quotes and semicolons inside IRIs. Regression tests retain the payment condition for split-subject and HTTPS forms and preserve literal/IRI contents. This remains a documented Turtle subset, not a claim of complete RDF syntax support.
+
 Malformed Turtle condition objects now return a parse error rather than dropping a restrictive clause. Missing types, unbalanced brackets, empty objects and unexpected trailing condition text invalidate the document, so the shared policy classifier settles Invalid instead of inheriting. The regression retains a valid typed-condition control; the 504 core-library tests pass. This narrows the forgiving subset at an access-control boundary; no arbitrary RDF grammar completeness is claimed.
 
 ## External review reconciliation — 2026-11-02

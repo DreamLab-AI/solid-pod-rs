@@ -133,6 +133,14 @@ pub struct StoragePaymentStore<'a> {
 }
 
 impl<'a> StoragePaymentStore<'a> {
+    /// Atomically charge the canonical ledger for a WAC payment grant.
+    pub(crate) async fn charge_access(&self, did: &str, cost: u64) -> Result<(), PaymentError> {
+        let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+        let mut state = self.read_state().await?;
+        state.ledger.charge(did, cost)?;
+        self.commit_state(&mut state).await
+    }
+
     pub fn new(storage: &'a dyn Storage) -> Self {
         Self {
             storage,
@@ -533,7 +541,7 @@ fn pod_issuer_pubkey(state: &AppState) -> Option<String> {
 ///    configured issuer key (or one of `accepted_issuers`) and carry the
 ///    configured ticker. A self-issued trail with the right ticker is a
 ///    different token, refused 403; another ticker is refused 400;
-/// 3. derive the pod's generic deposit address `bt_address(issuer, [], net)`
+/// 3. derive the authenticated beneficiary's address `bt_address(issuer, [did], net)`
 ///    — the `toAddress` transfers must target;
 /// 4. **replay-guard** on `JCS(state)` (the shared replay set) so a
 ///    state can't be credited twice;
@@ -587,8 +595,19 @@ async fn handle_mrc20_deposit(
         .clone()
         .unwrap_or_else(|| "testnet4".to_string());
 
-    // (3) The pod's generic deposit address — transfers must target it.
-    let to_address = match bt_address(&issuer, &[], &network) {
+    if !state.pay_config.chains.is_empty()
+        && !state
+            .pay_config
+            .chains
+            .iter()
+            .any(|c| network_for_chain(&c.id) == network)
+    {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error":"deposit network not configured"})));
+    }
+    // Bind the receipt to its authenticated beneficiary. A shared generic
+    // address would make any public deposit proof a bearer credit claim.
+    let to_address = match bt_address(&issuer, &[did.to_string()], &network) {
         Ok(a) => a,
         Err(e) => return Ok(payment_error_response(e)),
     };
@@ -912,6 +931,24 @@ async fn handle_sell(
         Ok(state) => state,
         Err(e) => return Ok(payment_error_response(e)),
     };
+    let orders = payment_state.order_book.list_offers(None);
+    if orders.len() >= 1024 || orders.iter().filter(|o| o.seller == seller).count() >= 32 {
+        return Ok(HttpResponse::TooManyRequests()
+            .json(serde_json::json!({"error":"order limit reached; cancel an existing order"})));
+    }
+    let reserved = orders
+        .iter()
+        .filter(|o| o.seller == seller && o.sell_currency == body.sell_currency)
+        .try_fold(body.sell_amount, |sum, o| sum.checked_add(o.sell_amount));
+    if reserved.is_none_or(|amount| {
+        amount
+            > payment_state
+                .ledger
+                .get_currency_balance(&seller, &body.sell_currency)
+    }) {
+        return Ok(HttpResponse::PaymentRequired()
+            .json(serde_json::json!({"error":"insufficient unlisted balance"})));
+    }
     let order = payment_state.order_book.create_order(
         &seller,
         &body.sell_currency,
@@ -935,6 +972,36 @@ async fn handle_sell(
 #[derive(Debug, Deserialize)]
 struct SwapBody {
     id: String,
+}
+
+async fn handle_cancel(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: Bytes,
+) -> Result<HttpResponse, ActixError> {
+    let seller = match require_did_with_body(&req, Some(&body)).await {
+        Ok(did) => did,
+        Err(response) => return Ok(response),
+    };
+    let Ok(request) = serde_json::from_slice::<SwapBody>(&body) else {
+        return Ok(
+            HttpResponse::BadRequest().json(serde_json::json!({"error":"Invalid JSON body"}))
+        );
+    };
+    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let store = StoragePaymentStore::new(&*state.storage);
+    let mut state = match store.read_state().await {
+        Ok(state) => state,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    let order = match state.order_book.cancel_order(&request.id, &seller) {
+        Ok(order) => order,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if let Err(e) = store.commit_state(&mut state).await {
+        return Ok(payment_error_response(e));
+    }
+    Ok(HttpResponse::Ok().json(order))
 }
 
 async fn handle_swap(
@@ -1092,12 +1159,12 @@ async fn handle_pool_post(
                 &body.currency_b,
                 fee_bps,
             );
-            match pool.add_liquidity(
-                &provider,
-                body.amount_a,
-                body.amount_b,
-                &mut payment_state.ledger,
-            ) {
+            let (amount_a, amount_b) = if pool.currency_a == body.currency_a {
+                (body.amount_a, body.amount_b)
+            } else {
+                (body.amount_b, body.amount_a)
+            };
+            match pool.add_liquidity(&provider, amount_a, amount_b, &mut payment_state.ledger) {
                 Ok(issued) => {
                     let mut deposited = serde_json::Map::new();
                     deposited.insert(body.currency_a.clone(), body.amount_a.into());
@@ -1465,7 +1532,7 @@ async fn handle_buy(
         };
         (a, cost)
     } else if let Some(s) = req_body.sats {
-        (s / pay_rate, s)
+        (s / pay_rate, (s / pay_rate) * pay_rate)
     } else {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Specify amount (tokens to buy) or sats (sats to spend)",
@@ -1552,9 +1619,9 @@ async fn handle_withdraw(
 
     // all / sats / tokens — JSS `pay.js:688-705`.
     let (token_amount, sat_cost) = if req_body.all.unwrap_or(false) {
-        (balance / pay_rate, balance)
+        (balance / pay_rate, (balance / pay_rate) * pay_rate)
     } else if let Some(s) = req_body.sats {
-        (s / pay_rate, s)
+        (s / pay_rate, (s / pay_rate) * pay_rate)
     } else if let Some(t) = req_body.tokens {
         let Some(cost) = t.checked_mul(pay_rate) else {
             return Ok(HttpResponse::BadRequest()
@@ -1788,6 +1855,7 @@ pub fn register(app: &mut web::ServiceConfig) {
         .route("/pay/.address", web::get().to(handle_address))
         .route("/pay/.offers", web::get().to(handle_offers))
         .route("/pay/.sell", web::post().to(handle_sell))
+        .route("/pay/.cancel", web::post().to(handle_cancel))
         .route("/pay/.swap", web::post().to(handle_swap))
         .route("/pay/.pool", web::get().to(handle_pool_get))
         .route("/pay/.pool", web::post().to(handle_pool_post))

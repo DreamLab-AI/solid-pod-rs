@@ -40,7 +40,7 @@ use solid_pod_rs::PodError;
 
 use crate::mempool::{GitmarkAnchorer, MempoolBlockAnchorer, MempoolHttpClient};
 use crate::trail_store::{load_gitmark_trail, load_trail, DEFAULT_GITMARK_TRAIL};
-use crate::{extract_pubkey_with_body, pod_repo_path, require_pod_owner_with_body, AppState};
+use crate::{extract_pubkey_with_body, pod_repo_path, AppState};
 
 /// Default epoch close threshold (commit count) when the operator has not
 /// configured one. Bounds on-chain cost: one anchor per this many commits
@@ -469,15 +469,10 @@ async fn handle_anchor(
 
     // (1) AuthN: NIP-98, and the caller MUST be the pod owner (only the owner
     // upgrades their own provenance — keys + on-chain spend live pod-side).
-    let owner = match require_pod_owner_with_body(&req, &pod, Some(&body)).await {
-        Some(pk) => pk,
-        None => {
-            // Distinguish "no/invalid NIP-98" from "authenticated but not owner".
-            return Ok(match extract_pubkey_with_body(&req, Some(&body)).await {
-                Some(_) => prov_err("not the pod owner", 403),
-                None => prov_err("NIP-98 authentication required", 401),
-            });
-        }
+    let owner = match extract_pubkey_with_body(&req, Some(&body)).await {
+        Some(pk) if pk == pod => pk,
+        Some(_) => return Ok(prov_err("not the pod owner", 403)),
+        None => return Ok(prov_err("NIP-98 authentication required", 401)),
     };
     let did = format!("did:nostr:{owner}");
 

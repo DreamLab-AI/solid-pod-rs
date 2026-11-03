@@ -1275,33 +1275,16 @@ async fn enforce_read_inner(
 /// updated ledger document, deducting exactly once for a granted
 /// payment-gated request.
 ///
-/// Reads [`WEBLEDGER_PATH`], applies [`WebLedger::charge`] (which fails
-/// closed on an insufficient or missing balance), and writes the ledger
-/// back. A read, debit, or write failure returns `Err` so the caller can
-/// deny the request rather than serve it unpaid.
+/// Uses the same canonical store and transaction lock as `/pay/*`.
+/// A read, debit, or write failure denies the request.
 async fn debit_ledger(
     storage: &dyn Storage,
     did: &str,
     cost: u64,
 ) -> Result<(), solid_pod_rs::payments::PaymentError> {
-    use solid_pod_rs::payments::{PaymentError, WebLedger};
-    let _transaction = PAYMENT_STATE_LOCK.lock().await;
-
-    let (bytes, _meta) = storage
-        .get(WEBLEDGER_PATH)
+    handlers::pay::StoragePaymentStore::new(storage)
+        .charge_access(did, cost)
         .await
-        .map_err(|e| PaymentError::Store(e.to_string()))?;
-    let mut ledger: WebLedger = serde_json::from_slice(&bytes)
-        .map_err(|e| PaymentError::Store(format!("malformed ledger: {e}")))?;
-    // The access fee is spent, not refunded: the request is served.
-    let _charge = ledger.charge(did, cost)?;
-    let body = serde_json::to_vec(&ledger)
-        .map_err(|e| PaymentError::Store(format!("serialise ledger: {e}")))?;
-    storage
-        .put(WEBLEDGER_PATH, Bytes::from(body), "application/json")
-        .await
-        .map_err(|e| PaymentError::Store(e.to_string()))?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5694,8 +5677,11 @@ mod payment_gating_tests {
     // -----------------------------------------------------------------
 
     async fn read_balance(storage: &dyn Storage, did: &str) -> u64 {
-        let (bytes, _) = storage.get(WEBLEDGER_PATH).await.unwrap();
-        let ledger: WebLedger = serde_json::from_slice(&bytes).unwrap();
+        use solid_pod_rs::payments::PaymentStore;
+        let ledger = handlers::pay::StoragePaymentStore::new(storage)
+            .read_ledger()
+            .await
+            .unwrap();
         ledger.get_balance(did)
     }
 
@@ -5723,7 +5709,13 @@ mod payment_gating_tests {
     async fn paid_write_debits_each_grant() {
         let storage = Arc::new(MemoryBackend::new());
         seed_acl(storage.as_ref()).await;
-        seed_ledger(storage.as_ref(), PRINCIPAL, 250).await; // cost 100
+        seed_ledger(storage.as_ref(), PRINCIPAL, 250).await;
+        // Simulate a pod already migrated by a `/pay/*` write: the mirror
+        // must no longer be an authoritative debit destination.
+        use solid_pod_rs::payments::PaymentStore;
+        let store = handlers::pay::StoragePaymentStore::new(storage.as_ref());
+        let ledger = store.read_ledger().await.unwrap();
+        store.write_ledger(&ledger).await.unwrap();
         let state = AppState::new(storage.clone());
 
         enforce_write(&state, "/premium/inbox", AccessMode::Write, Some(PRINCIPAL))

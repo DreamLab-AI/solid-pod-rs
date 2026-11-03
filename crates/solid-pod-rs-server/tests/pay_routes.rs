@@ -403,3 +403,100 @@ async fn pool_add_liquidity_then_swap() {
     assert_eq!(json["action"], "swap");
     assert_eq!(json["amount_out"], 833);
 }
+
+#[actix_web::test]
+async fn reversed_pool_pair_maps_amounts_to_named_currencies() {
+    let st = state();
+    let storage = st.storage.clone();
+    let (_, did) = nip98_auth("POST", "/pay/.pool", None);
+    let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
+    ledger
+        .credit_by_outpoint(&did, "A", &"e7".repeat(32), 0, 10_000)
+        .unwrap();
+    ledger
+        .credit_by_outpoint(&did, "B", &"e8".repeat(32), 0, 10_000)
+        .unwrap();
+    storage
+        .put(
+            "/.well-known/webledgers/webledgers.json",
+            serde_json::to_vec(&ledger).unwrap().into(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(st)).await;
+    for (a, b, amount_a, amount_b) in [("A", "B", 1000, 2000), ("B", "A", 4000, 2000)] {
+        let payload = serde_json::to_vec(&serde_json::json!({"action":"add-liquidity","currency_a":a,"currency_b":b,"amount_a":amount_a,"amount_b":amount_b,"fee_bps":0})).unwrap();
+        let (auth, _) = nip98_auth("POST", "/pay/.pool", Some(&payload));
+        let request = test::TestRequest::post()
+            .uri("/pay/.pool")
+            .insert_header((header::AUTHORIZATION, auth))
+            .set_payload(payload)
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status().as_u16(), 200);
+    }
+    let (bytes, _) = storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .unwrap();
+    let state: Value = serde_json::from_slice(&bytes).unwrap();
+    let ledger: solid_pod_rs::payments::WebLedger =
+        serde_json::from_value(state["ledger"].clone()).unwrap();
+    assert_eq!(ledger.get_currency_balance(&did, "A"), 7000);
+    assert_eq!(ledger.get_currency_balance(&did, "B"), 4000);
+}
+
+#[actix_web::test]
+async fn sell_balance_reservations_and_cancellation_bound_listing() {
+    let st = state();
+    let storage = st.storage.clone();
+    let (_, did) = nip98_auth("POST", "/pay/.sell", None);
+    let mut ledger = solid_pod_rs::payments::WebLedger::new("Pod Credits");
+    ledger
+        .credit_by_outpoint(&did, "A", &"e9".repeat(32), 0, 10)
+        .unwrap();
+    storage
+        .put(
+            "/.well-known/webledgers/webledgers.json",
+            serde_json::to_vec(&ledger).unwrap().into(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(st)).await;
+    let mut order_id = String::new();
+    for expected in [200, 402] {
+        let payload = serde_json::to_vec(
+            &serde_json::json!({"sell_currency":"A","buy_currency":"B","sell_amount":10,"price":1}),
+        )
+        .unwrap();
+        let (auth, _) = nip98_auth("POST", "/pay/.sell", Some(&payload));
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/pay/.sell")
+                .insert_header((header::AUTHORIZATION, auth))
+                .set_payload(payload)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), expected);
+        let body: Value = test::read_body_json(response).await;
+        if expected == 200 {
+            order_id = body["id"].as_str().unwrap().to_string();
+        }
+    }
+    let payload = serde_json::to_vec(&serde_json::json!({"id":order_id})).unwrap();
+    let (auth, _) = nip98_auth("POST", "/pay/.cancel", Some(&payload));
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/pay/.cancel")
+            .insert_header((header::AUTHORIZATION, auth))
+            .set_payload(payload)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status().as_u16(), 200);
+}

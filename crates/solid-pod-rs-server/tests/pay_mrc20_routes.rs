@@ -229,8 +229,14 @@ fn build_trail_fixture(
     amount: u64,
 ) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
     let issuer = issuer.to_string();
-    // The pod's generic deposit address (no tweak) — transfers target it.
-    let pod_address = bt_address(&issuer_pubkey(), &[], NETWORK).unwrap();
+    // The transfer beneficiary is cryptographically bound to the caller DID.
+    let sk = hex::decode(SK_HEX).unwrap();
+    let signer = k256::schnorr::SigningKey::from_slice(&sk).unwrap();
+    let did = format!(
+        "did:nostr:{}",
+        hex::encode(signer.verifying_key().to_bytes())
+    );
+    let pod_address = bt_address(&issuer_pubkey(), &[did], NETWORK).unwrap();
 
     let genesis = Mrc20State {
         profile: solid_pod_rs::mrc20::MRC20_PROFILE.into(),
@@ -323,6 +329,32 @@ async fn mrc20_deposit_credits_when_utxo_present() {
     let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
     let payload = serde_json::to_vec(&body).unwrap();
     let (auth, did) = nip98_auth("POST", "/pay/.deposit", Some(&payload));
+
+    // Public proof bytes must not let another principal steal the credit.
+    let thief_key = "22".repeat(32);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let thief = nip98::mint_with_payload(
+        "http://localhost:8080/pay/.deposit",
+        "POST",
+        Some(&payload),
+        &thief_key,
+        timestamp,
+    )
+    .unwrap();
+    let request = test::TestRequest::post()
+        .uri("/pay/.deposit")
+        .insert_header((header::AUTHORIZATION, format!("Nostr {thief}")))
+        .set_payload(payload.clone())
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_ne!(
+        response.status().as_u16(),
+        200,
+        "a proof is not a bearer credit claim"
+    );
 
     let req = test::TestRequest::post()
         .uri("/pay/.deposit")

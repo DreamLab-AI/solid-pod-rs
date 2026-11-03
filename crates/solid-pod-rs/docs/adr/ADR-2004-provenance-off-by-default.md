@@ -19,6 +19,8 @@ lineage: Distils archived ADR-059 D1 (git-mark described as always-on, contradic
 
 ## External findings repair — 2026-11-03
 
+Anchor authentication now verifies the one-shot NIP-98 event exactly once, then compares the captured principal with the pod owner in memory. An authenticated non-owner receives 403 rather than a second replay-cache lookup incorrectly converting that refusal into 401.
+
 The resolve handler now authenticates through the shared verifier and enforces Read on the resolved resource before returning metadata. It applies the normal private/public cache policy. A current generated sidecar is included only when its single canonical activity identifies the requested commit; otherwise the historical response omits that sidecar. Native route regressions cover a public control, private anonymous denial and a newer sidecar requested through an older commit. Arbitrary authored Turtle is not certified as a historical mark.
 
 ## External review reconciliation — 2026-11-02

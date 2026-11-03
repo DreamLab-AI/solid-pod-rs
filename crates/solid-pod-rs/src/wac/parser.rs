@@ -74,11 +74,30 @@ pub fn parse_turtle_acl_with_limit(input: &str, max_bytes: usize) -> Result<AclD
     }
 
     let statements = split_turtle_statements(&body);
-    let mut graph: Vec<AclAuthorization> = Vec::new();
+    // Turtle permits one subject's predicates to span several statements.
+    // Combine them before deciding whether the subject is an authorization;
+    // otherwise a later restriction would be silently discarded.
+    let mut subjects: Vec<(String, String)> = Vec::new();
+    let mut subject_indices = HashMap::new();
     for stmt in statements {
         if stmt.trim().is_empty() {
             continue;
         }
+        let (subject, predicates) = turtle_pop_term(stmt.trim())
+            .ok_or_else(|| PodError::AclParse("malformed ACL statement".into()))?;
+        let key = expand_curie_or_iri(&subject, &prefixes);
+        if let Some(index) = subject_indices.get(&key).copied() {
+            let (_, body): &mut (String, String) = &mut subjects[index];
+            body.push_str(" ; ");
+            body.push_str(&predicates);
+        } else {
+            subject_indices.insert(key.clone(), subjects.len());
+            subjects.push((key, predicates));
+        }
+    }
+    let mut graph: Vec<AclAuthorization> = Vec::new();
+    for (subject, predicates) in subjects {
+        let stmt = format!("<{subject}> {predicates}");
         if let Some(auth) = parse_turtle_authorization(&stmt, &prefixes)? {
             graph.push(auth);
         }
@@ -94,9 +113,26 @@ fn strip_turtle_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for line in input.lines() {
         let mut in_iri = false;
+        let mut in_str = false;
+        let mut escaped = false;
         let mut filtered = String::with_capacity(line.len());
         for c in line.chars() {
+            if in_str {
+                filtered.push(c);
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
             match c {
+                '"' if !in_iri => {
+                    in_str = true;
+                    filtered.push(c);
+                }
                 '<' => {
                     in_iri = true;
                     filtered.push(c);
@@ -120,7 +156,19 @@ fn split_turtle_statements(input: &str) -> Vec<String> {
     let mut cur = String::new();
     let mut depth_iri = 0i32;
     let mut in_str = false;
+    let mut escaped = false;
     for c in input.chars() {
+        if in_str {
+            cur.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
         match c {
             '<' if !in_str => {
                 depth_iri += 1;
@@ -181,13 +229,18 @@ fn parse_turtle_authorization(
         }
         let (pred, rest) = turtle_pop_term(pair)
             .ok_or_else(|| PodError::AclParse("malformed ACL predicate".into()))?;
-        let pred_expanded = expand_curie_or_iri(&pred, prefixes);
+        let pred_expanded = expand_curie_or_iri(&pred, prefixes).replace(
+            "https://www.w3.org/ns/auth/acl#",
+            "http://www.w3.org/ns/auth/acl#",
+        );
         let objects = parse_object_list(rest.trim(), prefixes);
 
         match pred_expanded.as_str() {
             "a" | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" | "rdf:type"
                 if objects.iter().any(|o| {
-                    o == "http://www.w3.org/ns/auth/acl#Authorization" || o == "acl:Authorization"
+                    o == "http://www.w3.org/ns/auth/acl#Authorization"
+                        || o == "https://www.w3.org/ns/auth/acl#Authorization"
+                        || o == "acl:Authorization"
                 }) =>
             {
                 any_authz = true;
@@ -246,8 +299,32 @@ fn split_predicate_list(input: &str) -> Vec<String> {
     let mut cur = String::new();
     let mut depth: i32 = 0;
     let mut in_str = false;
+    let mut in_iri = false;
+    let mut escaped = false;
     for c in input.chars() {
+        if in_str {
+            cur.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_iri {
+            cur.push(c);
+            if c == '>' {
+                in_iri = false;
+            }
+            continue;
+        }
         match c {
+            '<' => {
+                in_iri = true;
+                cur.push(c);
+            }
             '"' => {
                 in_str = !in_str;
                 cur.push(c);
@@ -302,7 +379,18 @@ fn parse_turtle_condition_objects(
             let mut depth: i32 = 1;
             let mut idx = 0usize;
             let mut in_str = false;
+            let mut escaped = false;
             for (i, c) in after_open.char_indices() {
+                if in_str {
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        in_str = false;
+                    }
+                    continue;
+                }
                 match c {
                     '"' => in_str = !in_str,
                     '[' if !in_str => depth += 1,
@@ -381,7 +469,10 @@ fn parse_turtle_condition_body(
             Some(v) => v,
             None => continue,
         };
-        let pred_expanded = expand_curie_or_iri(&pred, prefixes);
+        let pred_expanded = expand_curie_or_iri(&pred, prefixes).replace(
+            "https://www.w3.org/ns/auth/acl#",
+            "http://www.w3.org/ns/auth/acl#",
+        );
         let objects = parse_object_list(rest.trim(), prefixes);
         match pred_expanded.as_str() {
             "a" | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" | "rdf:type" => {
@@ -575,6 +666,38 @@ fn expand_curie_or_iri(tok: &str, prefixes: &HashMap<String, String>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_subject_and_https_restrictions_are_preserved() {
+        for condition_predicate in [
+            "acl:condition",
+            "<https://www.w3.org/ns/auth/acl#condition>",
+        ] {
+            let acl = format!("<#r> a acl:Authorization; acl:agentClass foaf:Agent; acl:accessTo </x>; acl:mode acl:Read . <#r> {condition_predicate} [ a acl:PaymentCondition; acl:costSats 100 ] .");
+            let doc = parse_turtle_acl(&acl).unwrap();
+            let graph = doc.graph.unwrap();
+            assert_eq!(graph.len(), 1);
+            assert!(
+                matches!(&graph[0].condition.as_ref().unwrap()[0], Condition::Payment(body) if body.cost_sats == 100)
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_hash_and_iri_semicolon_are_not_delimiters() {
+        let acl = r##"<#r> a acl:Authorization; acl:accessTo <https://example/r?a=1;b=2>; acl:mode acl:Read; acl:condition [ a acl:ProvenanceAnchor; acl:anchorTicker "a#b" ] ."##;
+        let graph = parse_turtle_acl(acl).unwrap().graph.unwrap();
+        assert!(
+            matches!(&graph[0].access_to, Some(IdOrIds::Single(id)) if id.id == "https://example/r?a=1;b=2")
+        );
+        assert!(
+            matches!(&graph[0].condition.as_ref().unwrap()[0], Condition::ProvenanceAnchor(body) if body.ticker.as_deref() == Some("a#b"))
+        );
+        assert_eq!(
+            strip_turtle_comments(r##""a\"#b" # real comment"##).trim(),
+            r##""a\"#b""##
+        );
+    }
 
     /// Valid minimal Turtle ACL for round-trip sanity.
     const TINY_ACL: &str = r#"

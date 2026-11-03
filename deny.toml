@@ -41,9 +41,10 @@ yanked = "deny"
 # Each entry below has no reachable in-semver fix.
 ignore = [
     # `rsa` 0.9.x Marvin timing sidechannel — no patched release exists. Pulled
-    # by `openidconnect` (oidc) + activitypub for RSA signature *verification*
-    # (public-key ops); the attack targets private-key decryption timing, which
-    # this codebase never performs. Revisit when openidconnect drops `rsa`.
+    # by `openidconnect` (OIDC signature verification) + ActivityPub HTTP
+    # signature signing/verification. No RSA decryption or key-unwrapping
+    # oracle is exposed. Retained risk: upstream's signature implementation
+    # and the unpatched crate remain in the closure; revisit on upstream fix.
     "RUSTSEC-2023-0071",
     # `h2` 0.3 is pulled unconditionally by `actix-http` 3.19.0. The advisory is
     # patched only at `>= 0.4.16`, a different major line, so there is no

@@ -232,6 +232,34 @@ fn genesis_spk_hex() -> String {
 // ── /pay/.buy ────────────────────────────────────────────────────────────
 
 #[actix_web::test]
+async fn whole_token_pricing_keeps_the_satoshi_remainder() {
+    for (path, payload, result_field) in [
+        ("/pay/.buy", json!({"sats":301}), "bought"),
+        ("/pay/.withdraw", json!({"all":true}), "withdrawn"),
+        ("/pay/.withdraw", json!({"sats":301}), "withdrawn"),
+    ] {
+        let (url, handle) = spawn_fixture(genesis_spk_hex()).await;
+        let (mut state, _) = state_with_minted_trail(url, 301).await;
+        state.pay_config.token.as_mut().unwrap().rate = 3;
+        let app = test::init_service(build_app(state)).await;
+        let payload = payload.to_string();
+        let (auth, _) = nip98_auth("POST", path, Some(payload.as_bytes()));
+        let request = test::TestRequest::post()
+            .uri(path)
+            .insert_header((header::AUTHORIZATION, auth))
+            .set_payload(payload)
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), 200);
+        let body: Value = test::read_body_json(response).await;
+        assert_eq!(body[result_field], 100);
+        assert_eq!(body["cost"], 300);
+        assert_eq!(body["balance"], 1, "the remainder remains spendable");
+        handle.stop(false).await;
+    }
+}
+
+#[actix_web::test]
 async fn buy_moves_tokens_and_debits_sats() {
     let (mempool_url, handle) = spawn_fixture(genesis_spk_hex()).await;
     let (st, storage) = state_with_minted_trail(mempool_url, 500).await;
