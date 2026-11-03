@@ -7,12 +7,14 @@
 //! `Basic nostr:`/`Nostr` NIP-98 credential and enforces Read for
 //! clone/fetch and Write for push against the pod-root container ACL.
 //!
-//! These assertions are deterministic and CGI-independent: the WAC gate runs
+//! The gate assertions are deterministic and CGI-independent: the WAC gate runs
 //! *before* the `git http-backend` CGI is ever spawned, so a denial surfaces
 //! as 401/403 regardless of whether a git repo (or the CGI binary) exists. A
 //! public pod that passes the gate but has no initialised repo surfaces as
 //! 404 (`NotARepository`) — which is exactly how we tell "gate denied"
-//! (401/403) apart from "gate allowed, nothing to serve" (404).
+//! (401/403) apart from "gate allowed, nothing to serve" (404). The one
+//! test that proves the owner's export is served needs the real CGI, found
+//! through `git --exec-path`.
 //!
 //! Run with: `cargo test -p solid-pod-rs-server --features git`.
 #![cfg(feature = "git")]
@@ -23,6 +25,33 @@ use solid_pod_rs::storage::fs::FsBackend;
 use solid_pod_rs_server::{build_app, AppState};
 
 const OWNER: &str = "did:nostr:6e1cf6...owner";
+
+/// Point the server at the installed `git-http-backend`, as the deployment
+/// does (`GIT_HTTP_BACKEND_PATH="$(git --exec-path)/git-http-backend"`)
+/// and as the git and forge suites do. The library default is the Debian
+/// path, so without this the export test fails with 500 on any other
+/// layout (Nix, macOS) before it reaches the authority check it guards.
+/// It does not skip: a missing backend is a failure. Set at most once per
+/// test binary; every test in it that reaches the CGI wants the same value.
+fn use_installed_git_http_backend() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(set_git_http_backend_from_exec_path);
+}
+
+fn set_git_http_backend_from_exec_path() {
+    let out = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .expect("git runs");
+    let backend = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+        .join("git-http-backend");
+    assert!(
+        backend.is_file(),
+        "git-http-backend not found under `git --exec-path`: {}",
+        backend.display()
+    );
+    std::env::set_var("GIT_HTTP_BACKEND_PATH", backend);
+}
 
 /// Owner-only ACL: a single rule granting one `did:nostr` Read+Write over the
 /// `/alice/` container and its descendants. No `foaf:Agent` class, so an
@@ -223,6 +252,7 @@ async fn owner_can_export_a_single_pod_path() {
         .output()
         .unwrap();
     assert!(output.status.success());
+    use_installed_git_http_backend();
     let app = actix_web::test::init_service(build_app(state)).await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

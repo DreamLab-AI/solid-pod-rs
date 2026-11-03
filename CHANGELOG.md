@@ -329,6 +329,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   POSTs with one `Slug` previously all answered 201 at one `Location`.
 - **`If-Match` and `If-None-Match` are honoured on PUT, PATCH and DELETE**
   (412), evaluated under the write lock.
+- **`If-Match` uses strong comparison** (RFC 9110 §13.1.1): a weak tag
+  (`W/"…"`) never satisfies it, so a weak validator can no longer authorise
+  a conditional PUT, PATCH or DELETE. `If-None-Match` keeps weak comparison.
+  The server issues only strong ETags.
 - **PATCH reads the stored body in the patch's IRI space.** The body is read
   as Turtle against the resource URL, so a delete or `where` naming a triple
   stored with relative IRIs (`<#a>`, path-form ACL targets) matches it.
