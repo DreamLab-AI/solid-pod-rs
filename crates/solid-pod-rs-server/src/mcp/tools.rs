@@ -422,6 +422,8 @@ async fn write_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     }
     let bytes = Bytes::from(content.as_bytes().to_vec());
     let len = bytes.len();
+    // Same per-resource serialisation as LDP PUT and PATCH.
+    let _write_guard = crate::lock_resource(path).await;
     let quota = match crate::reserve_quota_for_size(state, path, len as u64).await {
         Ok(q) => q,
         Err(e) => return tool_error(format!("write refused: {e}")),

@@ -283,6 +283,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now includes SHA-256 of the empty body. Callers supplying an empty body to
   the verifier must include that payload tag; `None` remains an explicit
   opt-out from body verification. Publication and consumer upgrades are pending.
+- Pods created through `POST /.pods` now get an owner ACL tree (owner
+  Read/Write/Control everywhere; public read on the pod root, `profile/` and
+  `public/`; public append on `inbox/`), following JSS `createPodStructure`.
+  Previously the server wrote no ACL, so on a fresh server the owner was
+  refused on their own pod, and under an operator root ACL with `acl:default`
+  the new pod inherited the root's grants, public ones included (parity
+  row 287).
+- The Turtle ACL reader now merges statements that share a subject. An ACL
+  stored as N-Triples (the form PATCH writes back) was read as one empty
+  authorisation per statement, which denied everyone.
+
+### Fixed
+
+- **N3 Patch is parsed with the full N3 grammar** (`oxttl`) against the
+  resource URL, and applied with JSS 0.0.224 semantics (#633): prefixed names,
+  `a`, `;`/`,` lists, long and typed literals and relative IRIs are accepted;
+  `solid:where` variables are bound and must match exactly once; deleting an
+  absent triple, a `where` miss and an unbound variable are 409 (previously a
+  `where` miss was 412); patch blank nodes are minted fresh. JSS's own chat
+  bodies used to get 400.
+- **Non-ASCII literals are no longer corrupted by PATCH.** The N-Triples reader
+  decoded byte by byte, so every PATCH re-encoded stored non-ASCII text (`é`
+  became `c3 83 c2 a9`). It now decodes UTF-8 and `\uXXXX` / `\UXXXXXXXX`.
+  This stops further damage but does not repair text already double-encoded.
+- **The N-Triples reader refuses trailing content** instead of dropping the
+  triples after a `;` or a second statement on one line. PATCH reads such a
+  stored body (and any prefixed Turtle a client PUT) with the Turtle parser,
+  so it is patchable rather than refused or truncated.
+- **Writes to one resource are serialised in-process** (PUT, PATCH, MCP
+  `write`). Concurrent PATCHes previously lost updates while every one
+  answered 204 (3–4 of 20 inserts survived).
+- **`If-Match` and `If-None-Match` are honoured on PUT and PATCH** (412),
+  evaluated under the write lock.
+- PATCH to an `.acl` keeps same-origin `acl:accessTo` / `acl:default` targets
+  in server-root path form, the form the WAC evaluator matches, so patching an
+  ACL no longer locks its owner out.
+
+### Added
+
+- `ldp::N3Patch` (`parse` / `is_insert_only` / `apply`), `ldp::PatchTerm`,
+  `ldp::PatchTriple`, `Term::lang_literal` and `PodError::Conflict` (HTTP 409).
+  `PodError` gains a variant, so exhaustive matches on it must add an arm.
+  `apply_n3_patch` keeps its signature as a wrapper over `N3Patch` with no base
+  IRI; bodies must now declare their prefixes, as N3 requires.
 
 ### Changed
 

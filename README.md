@@ -168,7 +168,7 @@ Full documentation follows the [Diátaxis](https://diataxis.fr/) framework and l
 
 | Area | Current source position | Boundary |
 |---|---|---|
-| Protocol parity | Checklist reports at most 86.4% strict over 300 rows (2026-11-01 audit), with 21 missing rows including two P0s | Comparator is JSS `7c9b0de` / package 0.0.224 plus the separately bounded plugins/forge comparator `63a16cb`; not a universal conformance score |
+| Protocol parity | Checklist reports at most 89.6% strict over 300 rows (2026-11-01 audit), with 15 missing rows | Comparator is JSS `7c9b0de` / package 0.0.224 plus the separately bounded plugins/forge comparator `63a16cb`; not a universal conformance score |
 | Forge | Alpha.17 implements the previously missing forge surface and mirror hardening | Compiled features, configured service and consumer activation remain separate |
 | Provenance | Receipt stages describe how far marking and anchoring reached | A stored resource is not necessarily committed or confirmed; see [`provenance.rs`](crates/solid-pod-rs/src/provenance.rs) |
 | Storage | Filesystem and memory implementations | Case-sensitive POSIX deployment target; no supported S3 backend |

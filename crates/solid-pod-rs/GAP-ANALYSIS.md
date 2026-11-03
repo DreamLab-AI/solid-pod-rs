@@ -4,13 +4,14 @@
 > lives in [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md) and is authoritative.
 > Re-synchronised 2026-11-01 against upstream JSS `7c9b0de`, package `0.0.224`,
 > and the JSS `plugins` repository at `63a16cb`. The tracker contains 300 rows and
-> reports **at most 86.4% strict classified in-scope parity** (242/280 rows). The
+> reports **at most 89.6% strict classified in-scope parity** (251/280 rows). The
 > earlier 99.2% counted library presence. The 2026-11-01 audit checked server-reached
 > behaviour for the rows in its scope, reproducing the PATCH and WAC findings against
 > the built server; the other `present` rows are not yet re-audited, so the figure is
-> an upper bound. **21 rows are now missing.** Two P0s: pods created through
-> `POST /.pods` get no ACL of their own (row 287), and every N3 PATCH corrupts
-> non-ASCII literals in the stored document (§27 defects). Section 26 records the
+> an upper bound. **15 rows are missing.** The audit's two P0s (pods created
+> through `POST /.pods` with no ACL of their own, row 287; non-ASCII literals
+> corrupted by every N3 PATCH) and the PATCH and conditional-write P1s were fixed
+> on 2026-11-01. Section 26 records the
 > `0.0.221 → 0.0.224` delta (WAC #631/#632, PATCH #633, NIP-11 #635), section 27
 > the pre-existing core gaps (notifications, relay, ActivityPub inbox/outbox,
 > conditional writes, ACL IRI resolution, webrtc, remoteStorage), and section 28
@@ -933,11 +934,11 @@ drop-in component.
 
 ### Bottom line
 
-solid-pod-rs has **at most 86.4% strict parity** (242/280 classified in-scope rows,
+solid-pod-rs has **at most 89.6% strict parity** (251/280 classified in-scope rows,
 derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) as of the 2026-11-01
 JSS `7c9b0de` (`0.0.224`) / plugins `63a16cb` audit. The spec-normative surface is
-not complete: N3 Patch parsing, `where` binding, conditional writes and ACL IRI
-resolution are open (checklist §26–§27). Six net-new features push us **ahead** of
+not complete: ACL IRI resolution, JSON-LD ACL reading and JSON-LD PATCH are open
+(checklist §26–§27). Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL

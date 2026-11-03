@@ -9,6 +9,7 @@ use solid_pod_rs::ldp::{apply_patch_to_absent, PatchCreateOutcome, PatchDialect}
 #[test]
 fn n3_patch_against_absent_resource_returns_created() {
     let body = r#"
+        @prefix solid: <http://www.w3.org/ns/solid/terms#> .
         _:r a solid:InsertDeletePatch ;
           solid:inserts {
             <http://s/a> <http://p/new> "shiny" .
@@ -50,6 +51,7 @@ fn n3_delete_only_patch_against_absent_is_empty_create() {
     // (inserted=0), because the WHERE/DELETE produces nothing to remove
     // against an empty graph but that is not an error here.
     let body = r#"
+        @prefix solid: <http://www.w3.org/ns/solid/terms#> .
         _:r a solid:InsertDeletePatch ;
           solid:inserts { } .
     "#;
