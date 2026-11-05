@@ -162,10 +162,14 @@ pub fn verify_at_with_policy(
         let e = normalize_url(expected_url);
         match policy {
             MatchPolicy::Strict => t == e,
-            // Token URL is the repo base; accept it as a prefix of the
-            // request URL so one token covers every git smart-protocol
-            // sub-path under that repo.
-            MatchPolicy::GitLenient => t == e || e.starts_with(t),
+            // Token URL is the repo base; accept it as a *path-segment*
+            // prefix of the request URL so one token covers every git
+            // smart-protocol sub-path under that repo — but a sibling
+            // repo whose URL merely starts with the same byte string
+            // (`…/notes` vs `…/notes-backup`) stays out of scope.
+            MatchPolicy::GitLenient => {
+                t == e || (e.starts_with(t) && (t.ends_with('/') || e[t.len()..].starts_with('/')))
+            }
         }
     };
     if !url_ok {
@@ -962,5 +966,46 @@ mod tests {
         let id2 = compute_event_id(&event);
         assert_eq!(id1, id2);
         assert_eq!(id1.len(), 64);
+    }
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn git_lenient_rejects_sibling_repo_with_common_prefix() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        // Token signed for the repo base `…/alice/notes` …
+        let token = mint("https://pod.example/alice/notes", "*", &privkey_hex, ts).unwrap();
+        let hdr = authorization_header(&token);
+        // … must NOT authorise the sibling `…/alice/notes-backup`,
+        // whose URL merely starts with the same byte string.
+        let err = verify_at_with_policy(
+            &hdr,
+            "https://pod.example/alice/notes-backup/info/refs",
+            "GET",
+            None,
+            ts,
+            MatchPolicy::GitLenient,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    #[cfg(feature = "nip98-schnorr")]
+    #[test]
+    fn git_lenient_accepts_base_signed_with_trailing_slash() {
+        let ts = 1_700_000_000u64;
+        let privkey_hex = hex::encode([0x42u8; 32]);
+        // A base signed WITH a trailing slash must still cover every
+        // smart-protocol sub-path under the repo.
+        let token = mint("https://pod.example/alice/notes/", "*", &privkey_hex, ts).unwrap();
+        let hdr = authorization_header(&token);
+        verify_at_with_policy(
+            &hdr,
+            "https://pod.example/alice/notes/info/refs",
+            "GET",
+            None,
+            ts,
+            MatchPolicy::GitLenient,
+        )
+        .unwrap_or_else(|e| panic!("trailing-slash base should cover sub-paths: {e:?}"));
     }
 }
