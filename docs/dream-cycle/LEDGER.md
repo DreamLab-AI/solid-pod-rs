@@ -16,3 +16,4 @@
 | 2026-11-02 | provenance-api | no acceptance claimed (model verdict INCONCLUSIVE) | NONE | NONE | yes | INCONCLUSIVE |  | f88f742e8fa9 |  |  |  |
 | 2026-11-03 | did-nostr-resolver | red bench: link_headers acl /container.acl vs /container/.acl; need ldp module | NONE | NONE | yes | INCONCLUSIVE |  | b26428b24cec |  |  |  |
 | 2026-11-04 | performance-hardening | quota pod_lock drops warm-path key String alloc; Arc+map reuse pinned by test | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/13 | yes | ACCEPT |  | 76d92c8fb7ea |  |  |  |
+| 2026-11-05 | wac-evaluator | NIP-98 GitLenient byte-prefix URL match accepted sibling repos; now /-bounded | NONE | https://github.com/DreamLab-AI/solid-pod-rs/pull/14 | yes | ACCEPT |  | d612460d07e2 |  |  |  |
