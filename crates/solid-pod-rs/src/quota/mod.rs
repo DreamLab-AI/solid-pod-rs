@@ -124,9 +124,20 @@ mod fs_impl {
         }
 
         fn pod_lock(&self, pod: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-            self.locks
+            let mut locks = self
+                .locks
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Warm path (quota-enforcement scan, 2026-11-04): every
+            // reserve/record/reconcile call used to allocate a throwaway
+            // key String via `entry(pod.to_string())` even when the pod's
+            // lock already existed. A get-first lookup hands out the Arc
+            // clone with zero key allocations; `entry` runs only on the
+            // first touch. Lock identity per pod is unchanged.
+            if let Some(lock) = locks.get(pod) {
+                return lock.clone();
+            }
+            locks
                 .entry(pod.to_string())
                 .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
@@ -378,6 +389,35 @@ mod fs_impl {
                 }
                 Ok(None) | Err(_) => None,
             }
+        }
+    }
+
+    /// Pins the `pod_lock` get-first fast path added 2026-11-04: warm
+    /// calls hand out the same lock Arc with no new map entry, and
+    /// distinct pods still get distinct locks. Disk-free by design:
+    /// `pod_lock` never touches the filesystem.
+    #[cfg(test)]
+    mod pod_lock_tests {
+        use super::*;
+
+        #[test]
+        fn warm_pod_lock_reuses_the_same_arc() {
+            let store =
+                FsQuotaStore::new(std::path::PathBuf::from("/nonexistent-quota-root"), 1024);
+            let a = store.pod_lock("alice");
+            let b = store.pod_lock("alice");
+            assert!(std::sync::Arc::ptr_eq(&a, &b));
+            assert_eq!(store.locks.lock().unwrap().len(), 1);
+        }
+
+        #[test]
+        fn distinct_pods_get_distinct_locks() {
+            let store =
+                FsQuotaStore::new(std::path::PathBuf::from("/nonexistent-quota-root"), 1024);
+            let a = store.pod_lock("alice");
+            let b = store.pod_lock("bob");
+            assert!(!std::sync::Arc::ptr_eq(&a, &b));
+            assert_eq!(store.locks.lock().unwrap().len(), 2);
         }
     }
 }
