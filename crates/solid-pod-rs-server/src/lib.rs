@@ -3540,6 +3540,10 @@ const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
 ///      client (`ClientBuilder::resolve`) so the socket connects to exactly
 ///      the address that was vetted — closing the DNS-rebinding window between
 ///      this check and the connect, and re-checked on every redirect hop.
+// Returns the ready-to-send error response, the usual actix early-return
+// shape; actix-web 4.18 grew `HttpResponse` past clippy's 128-byte threshold,
+// and boxing it would only add a deref at every call site.
+#[allow(clippy::result_large_err)]
 async fn validate_proxy_target(target: &str) -> Result<(url::Url, IpAddr), HttpResponse> {
     let parsed = match url::Url::parse(target) {
         Ok(u) => u,

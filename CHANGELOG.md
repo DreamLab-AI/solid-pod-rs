@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.21] — 2026-11-08
+
+### Security
+
+- **RUSTSEC-2026-0387 cleared from the OIDC path.** `openidconnect` moves from 4.0.1 to 4.1.0 (lockfile only;
+  the manifest's `"4"` already admits it). 4.0.1 pulled `p256`/`p384` 0.13 and with them `elliptic-curve` 0.13
+  and `crypto-bigint` 0.5.5. 4.1.0 is on the 0.14 line, so `crypto-bigint` 0.5.5 leaves the lock entirely.
+  This reaches every build with the `oidc` feature, which includes `solid-pod-rs-server` through
+  `solid-pod-rs-idp`. `ed25519-dalek` moves 2 → 3 inside `openidconnect`'s graph only.
+- **actix-web 4.18.2 / actix-http 3.20.5** (lockfile only) for RUSTSEC-2026-0446 (request smuggling through
+  malformed chunked trailers), RUSTSEC-2026-0447, RUSTSEC-2026-0448 and RUSTSEC-2026-0455 (unbounded or
+  large-window decompression exhausting memory before extractor limits apply). `solid-pod-rs-server` serves
+  over actix, so every deployed pod server was exposed.
+- **NIP-98 `GitLenient` matching no longer accepts a sibling repository** (#14). A token minted for
+  `https://pod.example/alice/notes` was accepted for `https://pod.example/alice/notes-backup/info/refs`, because
+  the byte prefix was matched without a path-segment boundary. The remainder must now start with `/`, or the
+  signed base must end with `/`.
+- **The in-memory storage backend refuses `../` and NUL paths** (#12), as the filesystem backend already
+  did, so the two backends agree under the shared conformance suite.
+
+### Performance
+
+- `FsQuotaStore::pod_lock` returns the existing lock for a pod it has already seen without allocating a key
+  string (#13).
+
 ## [0.5.0-alpha.20] — 2026-11-03
 
 ### Security

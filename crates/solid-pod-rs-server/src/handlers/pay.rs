@@ -379,10 +379,18 @@ async fn load_exchange(storage: &dyn Storage) -> Result<Exchange, ActixError> {
 /// JSS parity: every `/pay/*` route except `.info` and `.offers` requires
 /// NIP-98 auth. Returns the authenticated `did:nostr:<pubkey>` or a 401
 /// response body matching JSS (`pay.js:54`, `pay.js:122`).
+// Returns the ready-to-send error response, the usual actix early-return
+// shape; actix-web 4.18 grew `HttpResponse` past clippy's 128-byte threshold,
+// and boxing it would only add a deref at every call site.
+#[allow(clippy::result_large_err)]
 async fn require_did(req: &HttpRequest) -> Result<String, HttpResponse> {
     require_did_with_body(req, None).await
 }
 
+// Returns the ready-to-send error response, the usual actix early-return
+// shape; actix-web 4.18 grew `HttpResponse` past clippy's 128-byte threshold,
+// and boxing it would only add a deref at every call site.
+#[allow(clippy::result_large_err)]
 async fn require_did_with_body(
     req: &HttpRequest,
     body: Option<&[u8]>,
@@ -1329,6 +1337,10 @@ const TRAIL_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Fail-closed: if the broadcast or persistence fails the ledger is NOT
 /// debited (debit happens only after a successful broadcast, matching JSS
 /// ordering at `pay.js:636-637,740-741`).
+// Returns the ready-to-send error response, the usual actix early-return
+// shape; actix-web 4.18 grew `HttpResponse` past clippy's 128-byte threshold,
+// and boxing it would only add a deref at every call site.
+#[allow(clippy::result_large_err)]
 async fn execute_token_transfer(
     state: &AppState,
     ticker: &str,
