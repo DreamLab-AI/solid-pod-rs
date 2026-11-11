@@ -25,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `rerank_fallback_equals_pre_change_output_for_every_trigger` assert the flag-off baseline but read
   `SOLID_POD_JEV` from the real process environment, so they failed on any host that exports
   `SOLID_POD_JEV=1`. Their shared fixture now clears the variable.
-- `mrc20::anchor`'s `vector_tests` module moves to the end of the module, clearing clippy's
+- Beta-clippy lints cleared: `manual_range_patterns` in `export_jsonld_smoke`; `mrc20::anchor`'s `vector_tests` module moves to the end of the module, clearing clippy's
   `items_after_test_module` on the beta toolchain. A pure move.
 
 No library or server behaviour changes since alpha.21.

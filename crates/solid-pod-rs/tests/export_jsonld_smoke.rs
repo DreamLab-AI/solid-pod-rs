@@ -149,7 +149,7 @@ async fn export_entries_ordered_by_created_ascending() {
     for (i, e) in bundle.entries.iter().enumerate() {
         if let Some(rest) = e.path.strip_prefix("/profile/") {
             if let Some(ch) = rest.chars().next() {
-                if matches!(ch, 'a' | 'b' | 'c') && rest.ends_with(".txt") {
+                if matches!(ch, 'a'..='c') && rest.ends_with(".txt") {
                     letter_positions.push((ch, i));
                 }
             }
