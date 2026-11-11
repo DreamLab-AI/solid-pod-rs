@@ -830,6 +830,149 @@ mod anchor {
         Ok(Address::p2tr_tweaked(output_key, hrp).to_string())
     }
 
+    /// Verify an MRC20 deposit is anchored on Bitcoin, every link of its trail
+    /// checked.
+    ///
+    /// The independently-verifiable anchor check (JSS `mrc20.js:279-335`),
+    /// with the head-only UTXO lookup replaced by the per-link walk of
+    /// blocktrails/verify 043e7af. It composes
+    ///
+    /// 1. state-chain integrity + transfer extraction ([`verify_mrc20_deposit`]),
+    /// 2. `stateStrings`/pubkey shape validation and the last-string↔`JCS(state)` bind,
+    /// 3. taproot address re-derivation ([`bt_address`]) from the *portable*
+    ///    proof (`pubkey` + `state_strings`),
+    /// 4. a **mempool UTXO lookup** at that derived address via the supplied
+    ///    [`MempoolLookup`], which finds the head mark, and then
+    /// 5. the walk back from that head
+    ///    ([`verify_anchor_chain`](crate::blocktrail::verify_anchor_chain)):
+    ///    every earlier mark's output must be the key its prefix of states
+    ///    derives, and each mark must spend the one before it.
+    ///
+    /// Step 5 is what the head alone cannot show: a UTXO at the head address
+    /// proves only that the head key was paid, not that each earlier state was
+    /// committed by its own mark, in order, before it.
+    ///
+    /// As before, a head still in the mempool is accepted: the result carries
+    /// the full [`TrailReport`](crate::blocktrail::TrailReport) (per-mark
+    /// confirmation and block heights) for a caller that wants
+    /// [`is_verified`](crate::blocktrail::TrailReport::is_verified) rather
+    /// than [`is_intact`](crate::blocktrail::TrailReport::is_intact). Pass a
+    /// server-side `MempoolHttpClient` on native, or a fixture implementation
+    /// in tests.
+    ///
+    /// # Errors
+    ///
+    /// [`PaymentError::InvalidState`] for a broken state chain, no transfer to
+    /// `to_address`, a malformed proof, no UTXO at the derived address, or a
+    /// trail whose walk from every UTXO there finds a mark that is missing,
+    /// does not commit to its state, or does not spend its predecessor.
+    pub async fn verify_mrc20_anchor(
+        state: &Mrc20State,
+        prev_state: &Mrc20State,
+        to_address: &str,
+        pubkey_hex: &str,
+        state_strings: &[String],
+        network: &str,
+        mempool: &dyn MempoolLookup,
+    ) -> Result<Mrc20AnchorResult, PaymentError> {
+        let deposit = verify_mrc20_deposit(state, prev_state, to_address)?;
+
+        if state_strings.is_empty() {
+            return Err(PaymentError::InvalidState(
+                "stateStrings required for anchor verification".into(),
+            ));
+        }
+        if pubkey_hex.len() != 66 {
+            return Err(PaymentError::InvalidState(
+                "pubkey must be a 66-char compressed pubkey hex".into(),
+            ));
+        }
+
+        // Verify last state string matches current state JCS
+        let current_value = serde_json::to_value(state)
+            .map_err(|e| PaymentError::InvalidState(format!("serialize: {e}")))?;
+        let current_jcs = jcs(&current_value);
+        if let Some(last) = state_strings.last() {
+            if *last != current_jcs {
+                return Err(PaymentError::InvalidState(
+                    "last stateString does not match JCS(state)".into(),
+                ));
+            }
+        }
+
+        let address = bt_address(pubkey_hex, state_strings, network)?;
+
+        // Mempool lookup: the head mark is a UTXO at the derived taproot
+        // address (JSS `mrc20.js:315-327`).
+        let utxos = mempool.address_utxos(&address).await?;
+        if utxos.is_empty() {
+            return Err(PaymentError::InvalidState(format!(
+                "no UTXO at derived address {address}"
+            )));
+        }
+
+        // Every link: walk back from a UTXO at the head address. Any one whose
+        // whole chain holds anchors the deposit.
+        let mut failure = None;
+        for utxo in &utxos {
+            let report = crate::blocktrail::verify_anchor_chain(
+                pubkey_hex,
+                state_strings,
+                &utxo.txid,
+                utxo.vout,
+                mempool,
+            )
+            .await?;
+            if report.is_intact() {
+                return Ok(Mrc20AnchorResult {
+                    amount: deposit.amount,
+                    ticker: deposit.ticker,
+                    address,
+                    utxos,
+                    report,
+                });
+            }
+            if failure.is_none() {
+                failure = report.first_failure().map(|m| {
+                    format!(
+                        "mark {} ({}): {}",
+                        m.index,
+                        if m.txid.is_empty() {
+                            "unreached"
+                        } else {
+                            &m.txid
+                        },
+                        m.status
+                    )
+                });
+            }
+        }
+        Err(PaymentError::InvalidState(format!(
+            "the anchor's trail does not verify link by link: {}",
+            failure.unwrap_or_else(|| "no mark reached".into())
+        )))
+    }
+
+    /// Result of anchor verification.
+    ///
+    /// Carries the verified transfer amount/ticker, the derived taproot
+    /// `address`, the `utxos` found there, and the per-link `report` of the
+    /// trail walked back from the UTXO that verified (so callers can inspect
+    /// every mark's confirmation without a second round-trip).
+    #[derive(Debug, Clone)]
+    pub struct Mrc20AnchorResult {
+        /// Total amount transferred to the deposit address.
+        pub amount: u64,
+        /// Ticker of the token transferred.
+        pub ticker: String,
+        /// Taproot address re-derived from the portable proof.
+        pub address: String,
+        /// UTXOs found at `address`.
+        pub utxos: Vec<Utxo>,
+        /// The trail, mark by mark, walked back from the head UTXO.
+        pub report: crate::blocktrail::TrailReport,
+    }
+
     #[cfg(test)]
     mod vector_tests {
         use super::*;
@@ -993,149 +1136,6 @@ mod anchor {
                 );
             }
         }
-    }
-
-    /// Verify an MRC20 deposit is anchored on Bitcoin, every link of its trail
-    /// checked.
-    ///
-    /// The independently-verifiable anchor check (JSS `mrc20.js:279-335`),
-    /// with the head-only UTXO lookup replaced by the per-link walk of
-    /// blocktrails/verify 043e7af. It composes
-    ///
-    /// 1. state-chain integrity + transfer extraction ([`verify_mrc20_deposit`]),
-    /// 2. `stateStrings`/pubkey shape validation and the last-string↔`JCS(state)` bind,
-    /// 3. taproot address re-derivation ([`bt_address`]) from the *portable*
-    ///    proof (`pubkey` + `state_strings`),
-    /// 4. a **mempool UTXO lookup** at that derived address via the supplied
-    ///    [`MempoolLookup`], which finds the head mark, and then
-    /// 5. the walk back from that head
-    ///    ([`verify_anchor_chain`](crate::blocktrail::verify_anchor_chain)):
-    ///    every earlier mark's output must be the key its prefix of states
-    ///    derives, and each mark must spend the one before it.
-    ///
-    /// Step 5 is what the head alone cannot show: a UTXO at the head address
-    /// proves only that the head key was paid, not that each earlier state was
-    /// committed by its own mark, in order, before it.
-    ///
-    /// As before, a head still in the mempool is accepted: the result carries
-    /// the full [`TrailReport`](crate::blocktrail::TrailReport) (per-mark
-    /// confirmation and block heights) for a caller that wants
-    /// [`is_verified`](crate::blocktrail::TrailReport::is_verified) rather
-    /// than [`is_intact`](crate::blocktrail::TrailReport::is_intact). Pass a
-    /// server-side `MempoolHttpClient` on native, or a fixture implementation
-    /// in tests.
-    ///
-    /// # Errors
-    ///
-    /// [`PaymentError::InvalidState`] for a broken state chain, no transfer to
-    /// `to_address`, a malformed proof, no UTXO at the derived address, or a
-    /// trail whose walk from every UTXO there finds a mark that is missing,
-    /// does not commit to its state, or does not spend its predecessor.
-    pub async fn verify_mrc20_anchor(
-        state: &Mrc20State,
-        prev_state: &Mrc20State,
-        to_address: &str,
-        pubkey_hex: &str,
-        state_strings: &[String],
-        network: &str,
-        mempool: &dyn MempoolLookup,
-    ) -> Result<Mrc20AnchorResult, PaymentError> {
-        let deposit = verify_mrc20_deposit(state, prev_state, to_address)?;
-
-        if state_strings.is_empty() {
-            return Err(PaymentError::InvalidState(
-                "stateStrings required for anchor verification".into(),
-            ));
-        }
-        if pubkey_hex.len() != 66 {
-            return Err(PaymentError::InvalidState(
-                "pubkey must be a 66-char compressed pubkey hex".into(),
-            ));
-        }
-
-        // Verify last state string matches current state JCS
-        let current_value = serde_json::to_value(state)
-            .map_err(|e| PaymentError::InvalidState(format!("serialize: {e}")))?;
-        let current_jcs = jcs(&current_value);
-        if let Some(last) = state_strings.last() {
-            if *last != current_jcs {
-                return Err(PaymentError::InvalidState(
-                    "last stateString does not match JCS(state)".into(),
-                ));
-            }
-        }
-
-        let address = bt_address(pubkey_hex, state_strings, network)?;
-
-        // Mempool lookup: the head mark is a UTXO at the derived taproot
-        // address (JSS `mrc20.js:315-327`).
-        let utxos = mempool.address_utxos(&address).await?;
-        if utxos.is_empty() {
-            return Err(PaymentError::InvalidState(format!(
-                "no UTXO at derived address {address}"
-            )));
-        }
-
-        // Every link: walk back from a UTXO at the head address. Any one whose
-        // whole chain holds anchors the deposit.
-        let mut failure = None;
-        for utxo in &utxos {
-            let report = crate::blocktrail::verify_anchor_chain(
-                pubkey_hex,
-                state_strings,
-                &utxo.txid,
-                utxo.vout,
-                mempool,
-            )
-            .await?;
-            if report.is_intact() {
-                return Ok(Mrc20AnchorResult {
-                    amount: deposit.amount,
-                    ticker: deposit.ticker,
-                    address,
-                    utxos,
-                    report,
-                });
-            }
-            if failure.is_none() {
-                failure = report.first_failure().map(|m| {
-                    format!(
-                        "mark {} ({}): {}",
-                        m.index,
-                        if m.txid.is_empty() {
-                            "unreached"
-                        } else {
-                            &m.txid
-                        },
-                        m.status
-                    )
-                });
-            }
-        }
-        Err(PaymentError::InvalidState(format!(
-            "the anchor's trail does not verify link by link: {}",
-            failure.unwrap_or_else(|| "no mark reached".into())
-        )))
-    }
-
-    /// Result of anchor verification.
-    ///
-    /// Carries the verified transfer amount/ticker, the derived taproot
-    /// `address`, the `utxos` found there, and the per-link `report` of the
-    /// trail walked back from the UTXO that verified (so callers can inspect
-    /// every mark's confirmation without a second round-trip).
-    #[derive(Debug, Clone)]
-    pub struct Mrc20AnchorResult {
-        /// Total amount transferred to the deposit address.
-        pub amount: u64,
-        /// Ticker of the token transferred.
-        pub ticker: String,
-        /// Taproot address re-derived from the portable proof.
-        pub address: String,
-        /// UTXOs found at `address`.
-        pub utxos: Vec<Utxo>,
-        /// The trail, mark by mark, walked back from the head UTXO.
-        pub report: crate::blocktrail::TrailReport,
     }
 }
 

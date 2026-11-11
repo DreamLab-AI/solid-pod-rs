@@ -20,4 +20,14 @@ ignore = [
     # openidconnect path is unassessed. Remove this ignore when openidconnect
     # moves to the 0.14 line.
     "RUSTSEC-2026-0387",
+    # 2026-11-11: RUSTSEC-2026-0459 (SQLite < 3.54.0 can return uninitialised
+    # page-cache memory when a database is opened with a sibling -wal file whose
+    # page size differs). libsqlite3-sys 0.30.1 is pinned by sqlx-sqlite 0.8.6,
+    # the last 0.8 release, and the patch needs libsqlite3-sys >=0.39, so there
+    # is no in-semver fix. Reachable only through solid-pod-rs-activitypub's
+    # Store, which opens a database file the server created itself; the attack
+    # is local and needs an attacker-written db+wal pair in the pod's data dir,
+    # which is already inside the trust boundary. Exit: sqlx 0.9 migration
+    # (separate change). Review no later than 2026-12-20.
+    "RUSTSEC-2026-0459",
 ]

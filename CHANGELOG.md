@@ -8,13 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.5.0-alpha.22] — 2026-11-11
 
+### Security
+
+- **cap-primitives 3.4.5 → 3.4.6** (RUSTSEC-2026-0482, paths or symlinks ending in a slash escape the
+  `cap-std` sandbox) and **rustix 1.1.4 → 1.1.6** (RUSTSEC-2026-0486, xattr functions with a zero-length
+  buffer). Lockfile only. `cap-std` backs the filesystem storage backend.
+- **RUSTSEC-2026-0459 (SQLite < 3.54.0, uninitialised memory with a mismatched `-wal` sibling) is a dated,
+  justified ignore** in `deny.toml` and `.cargo/audit.toml`. `libsqlite3-sys` 0.30.1 is pinned by
+  `sqlx-sqlite` 0.8.6, the last 0.8 release, and the patch needs `libsqlite3-sys` >=0.39, so there is no
+  in-semver fix. Only `solid-pod-rs-activitypub`'s own local database is affected; the exit is the sqlx 0.9
+  migration. Review by 2026-12-20.
+
 ### Fixed
 
 - **`solid-pod-rs-server` MCP Jev tests are hermetic.** `propose_flag_off_tool_is_absent_and_unknown` and
   `rerank_fallback_equals_pre_change_output_for_every_trigger` assert the flag-off baseline but read
   `SOLID_POD_JEV` from the real process environment, so they failed on any host that exports
-  `SOLID_POD_JEV=1`. Their shared fixture now clears the variable. Test-only: no library or server
-  behaviour changes since alpha.21.
+  `SOLID_POD_JEV=1`. Their shared fixture now clears the variable.
+- `mrc20::anchor`'s `vector_tests` module moves to the end of the module, clearing clippy's
+  `items_after_test_module` on the beta toolchain. A pure move.
+
+No library or server behaviour changes since alpha.21.
 
 ## [0.5.0-alpha.21] — 2026-11-08
 

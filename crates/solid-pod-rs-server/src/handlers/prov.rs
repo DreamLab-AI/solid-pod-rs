@@ -642,6 +642,10 @@ fn anchor_price_sats(state: &AppState) -> u64 {
 /// 402 and other failures to a 500. Uses the same `StoragePaymentStore` ledger
 /// path as `/pay/*` so balances are consistent. The returned
 /// [`Charge`](solid_pod_rs::payments::Charge) is what [`refund`] gives back.
+// `HttpResponse` is the error type on purpose: callers return it as-is to the
+// client; actix-web 4.18 grew it past clippy's 128-byte threshold, and boxing it
+// would only add a deref at every call site.
+#[allow(clippy::result_large_err)]
 async fn debit(
     state: &AppState,
     did: &str,
