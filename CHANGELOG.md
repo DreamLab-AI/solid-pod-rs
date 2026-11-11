@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.22] — 2026-11-11
+
+### Fixed
+
+- **`solid-pod-rs-server` MCP Jev tests are hermetic.** `propose_flag_off_tool_is_absent_and_unknown` and
+  `rerank_fallback_equals_pre_change_output_for_every_trigger` assert the flag-off baseline but read
+  `SOLID_POD_JEV` from the real process environment, so they failed on any host that exports
+  `SOLID_POD_JEV=1`. Their shared fixture now clears the variable. Test-only: no library or server
+  behaviour changes since alpha.21.
+
 ## [0.5.0-alpha.21] — 2026-11-08
 
 ### Security

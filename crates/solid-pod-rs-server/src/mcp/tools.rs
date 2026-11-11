@@ -1407,6 +1407,12 @@ mod jev_tests {
         acl:accessTo </pub/secret-plans.ttl> ; acl:mode acl:Read, acl:Write, acl:Control .\n";
 
     async fn fixture() -> (AppState, McpCtx) {
+        // These tests assert the flag-off baseline, which `list_resources` and
+        // `list_tools_for_rpc` read from the process environment. A host that
+        // exports `SOLID_POD_JEV=1` (the agentbox does) would otherwise flip them
+        // on; no test in this module switches the flag on in-process (the
+        // accept paths inject a `JevRuntime`), so clearing it is race-free.
+        std::env::remove_var("SOLID_POD_JEV");
         let s = Arc::new(MemoryBackend::new());
         s.create_container("/pub/").await.unwrap();
         s.put("/pub/.acl", Bytes::from(PUBLIC_ACL), "text/turtle")
