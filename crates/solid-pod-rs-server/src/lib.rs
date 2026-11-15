@@ -6484,15 +6484,24 @@ mod proxy_origin_tests {
 
     #[test]
     fn same_scheme_host_port_keeps_credential() {
-        assert!(same_origin("https://a.example/x", "https://a.example/y?z=1"));
-        assert!(same_origin("https://a.example/x", "https://a.example:443/y"));
+        assert!(same_origin(
+            "https://a.example/x",
+            "https://a.example/y?z=1"
+        ));
+        assert!(same_origin(
+            "https://a.example/x",
+            "https://a.example:443/y"
+        ));
     }
 
     #[test]
     fn cross_origin_hops_drop_credential() {
         let o = "https://a.example/x";
         assert!(!same_origin(o, "https://b.example/x"), "host change");
-        assert!(!same_origin(o, "http://a.example/x"), "https->http downgrade");
+        assert!(
+            !same_origin(o, "http://a.example/x"),
+            "https->http downgrade"
+        );
         assert!(!same_origin(o, "https://a.example:8443/x"), "port change");
         assert!(!same_origin(o, "not a url"));
     }

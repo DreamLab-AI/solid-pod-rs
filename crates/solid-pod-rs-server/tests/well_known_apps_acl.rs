@@ -39,7 +39,11 @@ async fn only_publicly_readable_manifests_are_listed() {
             format!(r#"{{"name":"{pod}-app"}}"#),
         )
         .unwrap();
-        std::fs::write(root.join(format!("{pod}.acl")), acl(&format!("/{pod}/"), public)).unwrap();
+        std::fs::write(
+            root.join(format!("{pod}.acl")),
+            acl(&format!("/{pod}/"), public),
+        )
+        .unwrap();
     }
     let fs = FsBackend::new(root.clone()).await.unwrap();
     let mut state = AppState::new(Arc::new(fs));
@@ -53,7 +57,13 @@ async fn only_publicly_readable_manifests_are_listed() {
     assert_eq!(rsp.status().as_u16(), 200);
     let body: serde_json::Value = actix_web::test::read_body_json(rsp).await;
     let text = body.to_string();
-    assert!(text.contains("openpod-app"), "public manifest missing: {text}");
-    assert!(!text.contains("closedpod-app"), "private manifest leaked: {text}");
+    assert!(
+        text.contains("openpod-app"),
+        "public manifest missing: {text}"
+    );
+    assert!(
+        !text.contains("closedpod-app"),
+        "private manifest leaked: {text}"
+    );
     assert_eq!(body["count"], 1);
 }
