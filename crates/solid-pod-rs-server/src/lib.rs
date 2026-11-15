@@ -5006,6 +5006,20 @@ async fn handle_well_known_apps(state: web::Data<AppState>) -> HttpResponse {
 
         scanned += 1;
 
+        // The directory listing is public discovery, so each manifest is
+        // subject to the same anonymous WAC read check as an ordinary GET of
+        // that resource; manifests that are not publicly readable are omitted.
+        let Some(pod_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let resource = format!("/{pod_name}/apps/manifest.json");
+        if enforce_read_ctx(&state, &resource, None, None)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+
         let manifest_path = entry.path().join("apps").join("manifest.json");
         let contents = match tokio::fs::read(&manifest_path).await {
             Ok(c) => c,
