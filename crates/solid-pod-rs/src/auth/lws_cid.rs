@@ -340,7 +340,7 @@ fn split_kid_url(kid: &str) -> Option<(String, String)> {
 
 fn validate_time_bounds(claims: &JwtClaims, now: u64, skew: u64) -> Result<(), SelfSignedError> {
     // iat must be within skew window.
-    if now.saturating_sub(claims.iat) > skew && claims.iat.saturating_sub(now) > skew {
+    if now.saturating_sub(claims.iat) > skew || claims.iat.saturating_sub(now) > skew {
         return Err(SelfSignedError::OutOfTimeWindow(format!(
             "iat={} outside skew={}s from now={}",
             claims.iat, skew, now
@@ -965,6 +965,33 @@ mod tests {
             client_id: None,
         };
         assert!(validate_time_bounds(&claims, 1000, 60).is_ok());
+    }
+
+    fn claims_at(iat: u64, exp: Option<u64>) -> JwtClaims {
+        JwtClaims {
+            sub: "x".into(),
+            iss: "x".into(),
+            htm: "GET".into(),
+            htu: "https://x".into(),
+            iat,
+            exp,
+            client_id: None,
+        }
+    }
+
+    #[test]
+    fn time_bounds_reject_stale_iat() {
+        let err = validate_time_bounds(&claims_at(1000, None), 1000 + 61, 60).unwrap_err();
+        assert!(matches!(err, SelfSignedError::OutOfTimeWindow(_)));
+        // Exactly at the skew boundary is still accepted.
+        assert!(validate_time_bounds(&claims_at(1000, None), 1000 + 60, 60).is_ok());
+    }
+
+    #[test]
+    fn time_bounds_reject_future_iat() {
+        let err = validate_time_bounds(&claims_at(1061, None), 1000, 60).unwrap_err();
+        assert!(matches!(err, SelfSignedError::OutOfTimeWindow(_)));
+        assert!(validate_time_bounds(&claims_at(1060, None), 1000, 60).is_ok());
     }
 
     #[test]

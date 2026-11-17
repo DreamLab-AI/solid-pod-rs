@@ -3615,6 +3615,19 @@ fn build_pinned_proxy_client(url: &url::Url, ip: IpAddr) -> Result<reqwest::Clie
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("proxy client: {e}")))
 }
 
+/// `true` when `a` and `b` share scheme, host and effective port. Used to
+/// decide whether a caller-supplied upstream credential may follow a redirect.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => {
+            a.scheme() == b.scheme()
+                && a.host_str() == b.host_str()
+                && a.port_or_known_default() == b.port_or_known_default()
+        }
+        _ => false,
+    }
+}
+
 async fn handle_proxy(
     req: HttpRequest,
     _state: web::Data<AppState>,
@@ -3628,6 +3641,7 @@ async fn handle_proxy(
             .json(serde_json::json!({"error": "authentication required"})));
     }
 
+    let origin_url = query.url.clone();
     let mut current_url = query.url.clone();
     let mut redirect_count = 0u8;
     const MAX_REDIRECTS: u8 = 5;
@@ -3659,11 +3673,15 @@ async fn handle_proxy(
 
         let mut upstream_req = client.get(&current_url).timeout(remaining);
 
-        // Forward X-Upstream-Authorization if present.
+        // Forward X-Upstream-Authorization if present, but only while the hop
+        // still targets the original origin (scheme, host and port): a
+        // redirect must never carry the credential to another origin or
+        // downgrade it to cleartext.
         if let Some(auth_val) = req
             .headers()
             .get("x-upstream-authorization")
             .and_then(|v| v.to_str().ok())
+            .filter(|_| same_origin(&origin_url, &current_url))
         {
             upstream_req = upstream_req.header("Authorization", auth_val);
         }
@@ -4987,6 +5005,20 @@ async fn handle_well_known_apps(state: web::Data<AppState>) -> HttpResponse {
         }
 
         scanned += 1;
+
+        // The directory listing is public discovery, so each manifest is
+        // subject to the same anonymous WAC read check as an ordinary GET of
+        // that resource; manifests that are not publicly readable are omitted.
+        let Some(pod_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let resource = format!("/{pod_name}/apps/manifest.json");
+        if enforce_read_ctx(&state, &resource, None, None)
+            .await
+            .is_err()
+        {
+            continue;
+        }
 
         let manifest_path = entry.path().join("apps").join("manifest.json");
         let contents = match tokio::fs::read(&manifest_path).await {
@@ -6443,5 +6475,34 @@ mod forge_env_tests {
         let other = tempfile::tempdir().unwrap();
         let c = forge_service(other.path().join(".forge")).unwrap();
         assert!(!Arc::ptr_eq(&a, &c));
+    }
+}
+
+#[cfg(test)]
+mod proxy_origin_tests {
+    use super::same_origin;
+
+    #[test]
+    fn same_scheme_host_port_keeps_credential() {
+        assert!(same_origin(
+            "https://a.example/x",
+            "https://a.example/y?z=1"
+        ));
+        assert!(same_origin(
+            "https://a.example/x",
+            "https://a.example:443/y"
+        ));
+    }
+
+    #[test]
+    fn cross_origin_hops_drop_credential() {
+        let o = "https://a.example/x";
+        assert!(!same_origin(o, "https://b.example/x"), "host change");
+        assert!(
+            !same_origin(o, "http://a.example/x"),
+            "https->http downgrade"
+        );
+        assert!(!same_origin(o, "https://a.example:8443/x"), "port change");
+        assert!(!same_origin(o, "not a url"));
     }
 }

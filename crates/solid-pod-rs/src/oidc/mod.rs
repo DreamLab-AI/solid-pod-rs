@@ -639,19 +639,12 @@ fn verify_dpop_proof_core(
     })
 }
 
-/// Constant-time byte comparison. Short-circuits on length mismatch
-/// (the length of the expected hash is not a secret — it is always
-/// 43 bytes for SHA-256 base64url — but we still fold every byte to
-/// keep the timing invariant simple to reason about).
+/// Constant-time byte comparison via [`subtle::ConstantTimeEq`]. Unequal
+/// lengths compare unequal (the length of the expected hash is not a secret —
+/// it is always 43 bytes for SHA-256 base64url).
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 fn normalise_htu(u: &str) -> String {
@@ -1080,6 +1073,15 @@ impl IntrospectionResponse {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn constant_time_eq_matches_plain_equality() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(!constant_time_eq(b"ab", b"abc"));
+    }
+
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
