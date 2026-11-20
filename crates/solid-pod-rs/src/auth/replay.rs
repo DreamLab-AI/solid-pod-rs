@@ -331,10 +331,7 @@ mod tests {
         assert_eq!(resolve_ttl_secs(Some("0")), MIN_TTL_SECS);
         assert_eq!(resolve_ttl_secs(Some("junk")), MIN_TTL_SECS);
         assert_eq!(resolve_ttl_secs(None), MIN_TTL_SECS);
-        assert!(
-            MIN_TTL_SECS > 2 * TIMESTAMP_TOLERANCE,
-            "covers whole-second rounding"
-        );
+        const { assert!(MIN_TTL_SECS > 2 * TIMESTAMP_TOLERANCE) };
     }
 
     #[tokio::test]
