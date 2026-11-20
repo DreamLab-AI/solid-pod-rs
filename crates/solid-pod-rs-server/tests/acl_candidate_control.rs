@@ -119,22 +119,31 @@ impl Fixture {
 }
 
 #[actix_web::test]
-async fn put_refuses_unparseable_and_misdirected_policies_without_lockout() {
+async fn put_refuses_unparseable_with_400_and_misdirected_policies_with_409() {
     let f = Fixture::new().await;
     let before = f.storage.get(POLICY).await.unwrap().0;
+    // SP-PAR-266: a body that is not an ACL at all is a client error (400).
     for (ct, body) in [
         ("application/ld+json", "{not json".to_owned()),
         ("application/ld+json", "[]".to_owned()),
         ("text/plain", "not an ACL".to_owned()),
-        ("text/turtle", f.turtle("/elsewhere", false)),
     ] {
         assert_eq!(
             f.call("PUT", POLICY, ct, &body, &[]).await,
-            409,
-            "candidate: {body}"
+            400,
+            "unparseable candidate: {body}"
         );
         f.unchanged_and_usable(&before).await;
     }
+    // A well-formed ACL that would not leave the caller Control is a state
+    // conflict (409), not a syntax error.
+    let misdirected = f.turtle("/elsewhere", false);
+    assert_eq!(
+        f.call("PUT", POLICY, "text/turtle", &misdirected, &[]).await,
+        409,
+        "misdirected candidate"
+    );
+    f.unchanged_and_usable(&before).await;
     assert_eq!(
         f.call(
             "PUT",
@@ -195,7 +204,11 @@ async fn post_and_copy_refuse_invalid_acl_bodies_before_storage() {
             f.call(method, POLICY, "", "", &[("source", "/source.json")])
                 .await
         };
-        assert_eq!(status, 409, "method {method}");
+        // A POSTed body is the client's own, so it is a 400 like PUT. COPY
+        // reads stored bytes, so there is no malformed request body to name:
+        // it stays a 409 conflict.
+        let expected = if method == "POST" { 400 } else { 409 };
+        assert_eq!(status, expected, "method {method}");
         f.unchanged_and_usable(&before).await;
     }
 }

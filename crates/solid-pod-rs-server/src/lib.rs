@@ -968,30 +968,59 @@ pub(crate) fn canonical_pod_path(raw: &str) -> Option<String> {
     Some(out)
 }
 
+/// Why a candidate ACL body may not be committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AclRefusal {
+    /// The body is not an ACL document at all (neither the JSON-LD nor the
+    /// Turtle reader accepts it): a malformed request body, `400`.
+    Unparseable,
+    /// A well-formed ACL that would not leave the caller `acl:Control` on the
+    /// protected resource, or that carries an unsupported condition: a
+    /// conflict with the lockout guard, `409`.
+    WouldLockOut,
+}
+
+impl AclRefusal {
+    /// The response for a refusal of the body the client itself sent (`PUT`,
+    /// `POST`).
+    fn response(self) -> HttpResponse {
+        match self {
+            Self::Unparseable => HttpResponse::BadRequest().body(
+                "refused: the body is not a parseable ACL document \
+                 (expected JSON-LD or Turtle)",
+            ),
+            Self::WouldLockOut => HttpResponse::Conflict().body(
+                "refused: the proposed ACL would not grant Control to the caller \
+                 (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+            ),
+        }
+    }
+}
+
 /// Validate a candidate ACL with the shared bounded parser and evaluate
 /// effective Control on its protected resource before committing the bytes.
 /// Metadata remains Control-protected by admission, but is not an ACL body.
-async fn proposed_acl_keeps_caller_control(
+async fn check_proposed_acl(
     state: &AppState,
     req: &HttpRequest,
     path: &str,
     body: &[u8],
     content_type: &str,
     caller: Option<&str>,
-) -> bool {
+) -> Result<(), AclRefusal> {
     if !ldp::is_acl_path(path) {
-        return true;
+        return Ok(());
     }
     let Some(resource) = protected_resource_for_acl(path) else {
-        return false;
+        return Err(AclRefusal::WouldLockOut);
     };
     let wac::PolicyStep::Settled(wac::PolicyOutcome::Found(doc)) =
         wac::classify_policy_read(path, wac::PolicyRead::Present { body, content_type }, false)
     else {
-        return false;
+        return Err(AclRefusal::Unparseable);
     };
     if wac::validate_acl_document(&doc).is_err() {
-        return false;
+        return Err(AclRefusal::WouldLockOut);
     }
     // The historical Turtle policy reader is lenient. Check its syntax with
     // the existing RDF parser as well, including COPY (which has no generic
@@ -1003,7 +1032,7 @@ async fn proposed_acl_keeps_caller_control(
             RdfInputSyntax::from_content_type(content_type).unwrap_or(RdfInputSyntax::Turtle);
         let base = format!("{}{}", scheme::request_origin(req), path);
         if parse_rdf_body(syntax, body, &base).is_err() {
-            return false;
+            return Err(AclRefusal::Unparseable);
         }
     }
     let balance = resolve_balance_sats(&*state.storage, caller).await;
@@ -1023,7 +1052,24 @@ async fn proposed_acl_keeps_caller_control(
         &groups,
         &registry,
     )
-    .is_some()
+    .map(|_| ())
+    .ok_or(AclRefusal::WouldLockOut)
+}
+
+/// `true` when the candidate ACL parses and keeps the caller's Control. Used
+/// by the sites that answer every refusal with the same `409` (`PATCH`, whose
+/// body is a patch rather than an ACL, and `COPY`, whose bytes are stored).
+async fn proposed_acl_keeps_caller_control(
+    state: &AppState,
+    req: &HttpRequest,
+    path: &str,
+    body: &[u8],
+    content_type: &str,
+    caller: Option<&str>,
+) -> bool {
+    check_proposed_acl(state, req, path, body, content_type, caller)
+        .await
+        .is_ok()
 }
 
 /// Origin-unaware convenience wrapper (used where no HTTP `Origin` is
@@ -1812,14 +1858,12 @@ async fn handle_put(
     // proposed ACL that would strip the caller's own Control — the same
     // footgun the MCP `write_acl` path blocks (mcp/tools.rs:511). Without
     // this a Control holder could lock themselves (and everyone) out.
-    if protected_resource_for_acl(&path).is_some()
-        && !proposed_acl_keeps_caller_control(&state, &req, &path, &body, ct, agent.as_deref())
-            .await
-    {
-        return Ok(HttpResponse::Conflict().body(
-            "refused: the proposed ACL would not grant Control to the caller \
-             (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
-        ));
+    if protected_resource_for_acl(&path).is_some() {
+        if let Err(refusal) =
+            check_proposed_acl(&state, &req, &path, &body, ct, agent.as_deref()).await
+        {
+            return Ok(refusal.response());
+        }
     }
 
     validate_rdf_body(&req, &state, &path, ct, &body)?;
@@ -1930,13 +1974,10 @@ async fn handle_post(
             req_origin(&req),
         )
         .await?;
-        if !proposed_acl_keeps_caller_control(&state, &req, &target, &body, ct, agent.as_deref())
-            .await
+        if let Err(refusal) =
+            check_proposed_acl(&state, &req, &target, &body, ct, agent.as_deref()).await
         {
-            return Ok(HttpResponse::Conflict().body(
-                "refused: the proposed ACL would not grant Control to the caller \
-                 (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
-            ));
+            return Ok(refusal.response());
         }
         lock_resource(&target).await
     } else {

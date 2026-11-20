@@ -684,6 +684,15 @@ reaches the behaviour, not just whether the library has it.
 
 ### Local repair progress — candidate ACL admission, 2026-11-01
 
+> Note 2026-11-20 (SP-PAR-266): an unparseable `.acl` body sent by the client
+> (`PUT`, `POST`) now answers `400` (`AclRefusal::Unparseable`,
+> `crates/solid-pod-rs-server/src/lib.rs`, `check_proposed_acl`), as the JSS
+> comparator does for `{not json` and `[]`; `text/plain` is `400` rather than
+> JSS's `415`. A well-formed ACL that would strip the caller's Control, or that
+> carries an unsupported condition, stays `409`. `PATCH` (the ACL is derived
+> from a patch) and `COPY` (stored bytes) keep the single `409`. Test:
+> `put_refuses_unparseable_with_400_and_misdirected_policies_with_409`.
+
 Rows 266–268 now have a scoped, unreleased server repair. Candidate policies
 must parse and grant effective Control on the destination through the same
 shared evaluator and linked identities as request admission. PUT, POST,
