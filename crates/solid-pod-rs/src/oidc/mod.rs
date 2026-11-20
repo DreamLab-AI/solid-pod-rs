@@ -916,12 +916,26 @@ pub fn verify_access_token_with_policy(
                                      // `aud` is checked below against the configured policy.
     validation.validate_aud = false;
 
-    let data = decode::<SolidOidcClaims>(token, &key, &validation)
+    // `nbf` is not part of the public claim struct; read it beside it so the
+    // caller-supplied `now` (not jsonwebtoken's system clock) is the reference.
+    #[derive(Deserialize)]
+    struct Wire {
+        #[serde(flatten)]
+        claims: SolidOidcClaims,
+        #[serde(default)]
+        nbf: Option<u64>,
+    }
+    let data = decode::<Wire>(token, &key, &validation)
         .map_err(|e| PodError::Nip98(format!("access token decode failed: {e}")))?;
-    let claims = data.claims;
+    let Wire { claims, nbf } = data.claims;
 
-    if claims.exp < now {
+    // RFC 7519 §4.1.4: the token must not be accepted on or after `exp`.
+    if claims.exp <= now {
         return Err(PodError::Nip98("access token expired".into()));
+    }
+    // RFC 7519 §4.1.5: nor before `nbf`.
+    if nbf.is_some_and(|nbf| nbf > now) {
+        return Err(PodError::Nip98("access token not yet valid (nbf)".into()));
     }
 
     if !audience_matches(&claims.aud, &policy.expected_audience) {
@@ -1247,6 +1261,61 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, PodError::Nip98(_)));
+    }
+
+    /// HS256 access token over raw claim JSON, so a test can set `nbf` (not a
+    /// field of [`SolidOidcClaims`]) or a malformed `webid`.
+    fn hs256_token_from(secret: &[u8], claims: serde_json::Value) -> String {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    }
+
+    fn base_claims() -> serde_json::Value {
+        serde_json::json!({
+            "iss": "https://op",
+            "sub": "https://me.example/profile#me",
+            "aud": "solid",
+            "exp": 2_000u64,
+            "iat": 1_000u64,
+            "cnf": { "jkt": "T" },
+        })
+    }
+
+    #[test]
+    fn access_token_expires_at_exp_not_after() {
+        // RFC 7519 §4.1.4: the token must not be accepted on or after `exp`.
+        let secret = b"test-secret";
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let token = hs256_token_from(secret, base_claims());
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_999).is_ok());
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 2_000).is_err(),
+            "exp == now is expired"
+        );
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 2_001).is_err());
+    }
+
+    #[test]
+    fn access_token_rejects_future_nbf() {
+        // RFC 7519 §4.1.5: not valid before `nbf`.
+        let secret = b"test-secret";
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let mut claims = base_claims();
+        claims["nbf"] = serde_json::json!(1_500u64);
+        let token = hs256_token_from(secret, claims);
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 1_499).is_err(),
+            "now < nbf is not yet valid"
+        );
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_500).is_ok());
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_600).is_ok());
+        // No `nbf` at all stays valid.
+        let plain = hs256_token_from(secret, base_claims());
+        assert!(verify_access_token(&plain, &ks, "https://op", "T", 1_100).is_ok());
     }
 
     #[test]

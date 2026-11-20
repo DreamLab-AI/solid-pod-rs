@@ -24,7 +24,7 @@
 //!   deserialise. Both halves are pinned here.
 //! - **D. Unsupported identity shapes** — one assertion per refused
 //!   shape, checking the concrete [`PodError`] variant.
-//! - **E. Expiry** — the `exp < now` boundary.
+//! - **E. Expiry** — the `exp <= now` boundary and `nbf`.
 //!
 //! No network access: every token is minted in-process with a
 //! test-only symmetric secret, exactly as the existing OIDC tests do.
@@ -732,18 +732,31 @@ fn e1_expired_token_is_refused() {
 }
 
 #[test]
-fn e2_expiry_boundary_is_exp_less_than_now() {
-    // `exp == now` is still valid: the check is `claims.exp < now`.
-    // There is no configurable leeway on the access-token path (unlike
-    // the DPoP `iat` skew parameter).
+fn e2_expiry_boundary_is_exp_less_than_or_equal_to_now() {
+    // RFC 7519 §4.1.4: the current time must be *before* `exp`, so
+    // `exp == now` is expired. There is no configurable leeway on the
+    // access-token path (unlike the DPoP `iat` skew parameter).
     let at_boundary = mint_hs256(&base_claims("JKT-E2", NOW));
-    verify_access_token(&at_boundary, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
-        .expect("exp == now is inside the window");
-
-    let one_past = mint_hs256(&base_claims("JKT-E2", NOW));
-    let err = verify_access_token(&one_past, &symmetric_keyset(), ISSUER, "JKT-E2", NOW + 1)
-        .expect_err("exp < now is expired");
+    let err = verify_access_token(&at_boundary, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
+        .expect_err("exp == now is expired");
     expect_nip98(err, "access token expired");
+
+    let one_left = mint_hs256(&base_claims("JKT-E2", NOW + 1));
+    verify_access_token(&one_left, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
+        .expect("exp > now is inside the window");
+}
+
+#[test]
+fn e4_a_token_is_refused_before_its_nbf() {
+    // RFC 7519 §4.1.5: `nbf` is honoured against the caller's `now`.
+    let mut claims = base_claims("JKT-E4", NOW + 3600);
+    claims["nbf"] = json!(NOW + 30);
+    let token = mint_hs256(&claims);
+    let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E4", NOW)
+        .expect_err("nbf in the future is not yet valid");
+    expect_nip98(err, "not yet valid");
+    verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E4", NOW + 30)
+        .expect("nbf == now is valid");
 }
 
 #[test]
