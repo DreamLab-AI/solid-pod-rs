@@ -5,7 +5,7 @@
 //! verifier in [`crate::auth::nip98`] proves the token is well-formed, in-window
 //! (±[`crate::auth::nip98`] `TIMESTAMP_TOLERANCE`) and correctly signed, but it
 //! holds no state — so a captured token can be **replayed** for the whole
-//! ~120s tolerance window. This module closes that window with a
+//! ~120s tolerance window (see [`MIN_TTL_SECS`]). This module closes that window with a
 //! single-use nonce store keyed on the canonical NIP-01 event id
 //! ([`crate::auth::nip98::Nip98Verified::event_id`]).
 //!
@@ -70,12 +70,24 @@ use tokio::sync::Mutex;
 // `auth::replay::ReplayError` path keeps resolving.
 pub use super::replay_store::{ReplayError, ReplayStore};
 
-/// Default TTL for a remembered event id. Must be at least the NIP-98
-/// timestamp tolerance so an id can never expire from the cache while the
-/// same token would still pass the freshness check (which would reopen the
-/// replay window). `2 * TIMESTAMP_TOLERANCE` (= 120s) covers the full
-/// accept window symmetrically around `now`.
-pub const DEFAULT_TTL_SECS: u64 = 120;
+use super::nip98::TIMESTAMP_TOLERANCE;
+
+/// Smallest TTL that can never let an id expire while its token still passes
+/// the freshness check.
+///
+/// The verifier accepts `created_at` within ±[`TIMESTAMP_TOLERANCE`] seconds
+/// of `now` in whole seconds, so one token is acceptable across a span of
+/// `2 * TIMESTAMP_TOLERANCE` seconds plus the rounding of both ends (just
+/// under one extra second). The replay check refuses while the id's age is
+/// below the TTL, so the TTL must cover that whole span; one further second is
+/// margin for clock jitter. [`Nip98ReplayCache::from_env`] raises any smaller
+/// operator setting to this floor, because a shorter TTL silently reopens the
+/// replay window.
+pub const MIN_TTL_SECS: u64 = 2 * TIMESTAMP_TOLERANCE + 2;
+
+/// Default TTL for a remembered event id: the [`MIN_TTL_SECS`] floor, which
+/// covers the full accept window symmetrically around `now`.
+pub const DEFAULT_TTL_SECS: u64 = MIN_TTL_SECS;
 
 /// Default capacity: 10_000 event ids. At ~150 bytes/entry (64-hex id
 /// string + `Instant`) this bounds worst-case memory to ~1.5 MB.
@@ -85,6 +97,18 @@ pub const DEFAULT_MAX_SIZE: usize = 10_000;
 pub const ENV_TTL_SECS: &str = "SOLID_POD_NIP98_REPLAY_TTL_SECS";
 pub const ENV_MAX_SIZE: &str = "SOLID_POD_NIP98_REPLAY_MAX_SIZE";
 
+/// The TTL, in seconds, for an operator-supplied [`ENV_TTL_SECS`] value.
+///
+/// An absent, unparseable or zero value gives [`DEFAULT_TTL_SECS`]; any value
+/// below [`MIN_TTL_SECS`] is raised to it, since a TTL shorter than the
+/// freshness window lets a captured token be replayed once its id has expired.
+fn resolve_ttl_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_TTL_SECS)
+        .max(MIN_TTL_SECS)
+}
+
 /// The smallest capacity that can hold every credential presentable inside one
 /// replay window at `peak_rps` — i.e. `ceil(peak_rps × ttl)`.
 ///
@@ -92,7 +116,7 @@ pub const ENV_MAX_SIZE: &str = "SOLID_POD_NIP98_REPLAY_MAX_SIZE";
 /// [`ReplayError::CapacityExhausted`] under the modelled load, so the
 /// fail-closed refusal path stays a safety net rather than a routine outcome.
 /// The default pairing ([`DEFAULT_MAX_SIZE`] at [`DEFAULT_TTL_SECS`]) covers
-/// roughly 83 rps.
+/// roughly 81 rps.
 ///
 /// Saturates rather than overflowing on absurd inputs.
 #[must_use]
@@ -131,11 +155,7 @@ impl Nip98ReplayCache {
     /// Construct with defaults, optionally overridden by the environment
     /// variables [`ENV_TTL_SECS`] / [`ENV_MAX_SIZE`].
     pub fn from_env() -> Self {
-        let ttl_secs = std::env::var(ENV_TTL_SECS)
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .filter(|n| *n > 0)
-            .unwrap_or(DEFAULT_TTL_SECS);
+        let ttl_secs = resolve_ttl_secs(std::env::var(ENV_TTL_SECS).ok().as_deref());
         let max_size = std::env::var(ENV_MAX_SIZE)
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -144,7 +164,9 @@ impl Nip98ReplayCache {
         Self::with_config(Duration::from_secs(ttl_secs), max_size)
     }
 
-    /// Construct with an explicit TTL and maximum entry count. `max_size`
+    /// Construct with an explicit TTL and maximum entry count. The TTL is used
+    /// as given (tests rely on short ones); only [`Self::from_env`] enforces
+    /// the [`MIN_TTL_SECS`] floor. `max_size`
     /// is clamped to at least 1 (a zero-capacity LRU cannot detect replay).
     pub fn with_config(ttl: Duration, max_size: usize) -> Self {
         let cap = NonZeroUsize::new(max_size.max(1)).expect("clamped to >= 1 above");
@@ -291,6 +313,19 @@ impl Default for Nip98ReplayCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_ttl_is_never_shorter_than_the_freshness_window() {
+        // A token is acceptable for 2 * TIMESTAMP_TOLERANCE seconds plus
+        // rounding; a 1s TTL would forget its id long before that.
+        assert_eq!(resolve_ttl_secs(Some("1")), MIN_TTL_SECS);
+        assert_eq!(resolve_ttl_secs(Some(&(MIN_TTL_SECS - 1).to_string())), MIN_TTL_SECS);
+        assert_eq!(resolve_ttl_secs(Some("600")), 600, "a longer TTL is honoured");
+        assert_eq!(resolve_ttl_secs(Some("0")), MIN_TTL_SECS);
+        assert_eq!(resolve_ttl_secs(Some("junk")), MIN_TTL_SECS);
+        assert_eq!(resolve_ttl_secs(None), MIN_TTL_SECS);
+        assert!(MIN_TTL_SECS > 2 * TIMESTAMP_TOLERANCE, "covers whole-second rounding");
+    }
 
     #[tokio::test]
     async fn first_sighting_accepts_replay_rejects() {
@@ -488,12 +523,12 @@ mod tests {
         assert_eq!(sizing_floor(100, Duration::from_secs(120)), 12_000);
         assert_eq!(sizing_floor(0, Duration::from_secs(120)), 1);
         assert_eq!(sizing_floor(1, Duration::from_millis(1500)), 2);
-        // The shipped defaults cover ~83 rps.
+        // The shipped defaults cover ~81 rps.
         assert!(
-            sizing_floor(83, Duration::from_secs(DEFAULT_TTL_SECS)) <= DEFAULT_MAX_SIZE,
+            sizing_floor(81, Duration::from_secs(DEFAULT_TTL_SECS)) <= DEFAULT_MAX_SIZE,
             "documented default sizing claim must hold"
         );
-        assert!(sizing_floor(84, Duration::from_secs(DEFAULT_TTL_SECS)) > DEFAULT_MAX_SIZE);
+        assert!(sizing_floor(82, Duration::from_secs(DEFAULT_TTL_SECS)) > DEFAULT_MAX_SIZE);
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::error::PodError;
 
 const HTTP_AUTH_KIND: u64 = 27235;
-const TIMESTAMP_TOLERANCE: u64 = 60;
+pub(crate) const TIMESTAMP_TOLERANCE: u64 = 60;
 const MAX_EVENT_SIZE: usize = 64 * 1024;
 const NOSTR_PREFIX: &str = "Nostr ";
 
