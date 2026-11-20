@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **DPoP `htu` is compared per RFC 9449** (SP-OIDC-03): scheme and host case-insensitive, query and fragment
+  ignored, path exact. It was lower-cased and trailing-slash-trimmed, so a proof for `/r` or `/Private` was
+  accepted for `/r/` or `/private`.
+- **Access tokens are refused at `exp == now` and before `nbf`** (SP-OIDC-06). The non-URL `webid` claim
+  fallback to `sub` is unchanged (documented in the compatibility matrix).
+- **The DPoP `jti` caches refuse a new proof at capacity instead of evicting a live one** (AW1-05),
+  matching the NIP-98 policy of ADR-2006. `oidc::ReplayError` gains `CapacityExhausted`.
+- **The NIP-98 replay TTL is never below the freshness window** (SP-ID-02): `from_env` raises
+  `SOLID_POD_NIP98_REPLAY_TTL_SECS` to `MIN_TTL_SECS` (122 s). The default is now 122 s (was 120 s).
+
+### Fixed
+
+- **The forge mirror admits the operator's loopback relay** (AW1-01) through `Mirror::with_relay_ssrf`,
+  built from `FORGE_MIRROR_RELAYS`; clone URLs keep the default SSRF policy. `OperatorRelays` moves to
+  `solid_pod_rs_forge::operator_relays` (still re-exported from `publish`).
+- **An unparseable `.acl` body sent by `PUT` or `POST` answers 400** (SP-PAR-266); a lockout stays 409.
+
 ## [0.5.0-alpha.22] — 2026-11-11
 
 ### Security
