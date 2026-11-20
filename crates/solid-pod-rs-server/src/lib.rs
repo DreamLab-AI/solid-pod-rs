@@ -5415,7 +5415,14 @@ fn forge_service(
     let mirror = mirror_config().map(|mcfg| {
         use solid_pod_rs_forge::mirror::{GitCli, Mirror, MirrorStore};
         let git = Arc::new(GitCli::new(plugin_dir.join("repos")));
-        let engine = Arc::new(Mirror::new(mcfg, MirrorStore::new(&plugin_dir), git));
+        // ADR-2010: a loopback or private-network relay is admitted only when
+        // the operator lists it. The allowance covers the relay sockets alone;
+        // clone URLs from remote announcements keep the default SSRF policy.
+        let relays = Arc::new(solid_pod_rs_forge::operator_relays::OperatorRelays::new(
+            &mcfg.relays,
+        ));
+        let engine =
+            Arc::new(Mirror::new(mcfg, MirrorStore::new(&plugin_dir), git).with_relay_ssrf(relays));
         tracing::info!("forge: mirror on kind-30618 started");
         engine.start()
     });

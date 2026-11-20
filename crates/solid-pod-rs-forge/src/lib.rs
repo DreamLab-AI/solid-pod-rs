@@ -72,6 +72,8 @@ pub mod mirror;
 mod mirror_record;
 #[cfg(feature = "announce")]
 pub mod nip34;
+#[cfg(any(feature = "announce", feature = "mirror"))]
+pub mod operator_relays;
 pub mod ownership;
 pub mod preview;
 mod prgit;

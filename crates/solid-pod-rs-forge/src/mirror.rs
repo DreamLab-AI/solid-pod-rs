@@ -2188,7 +2188,11 @@ pub struct Mirror {
     store: MirrorStore,
     git: Arc<dyn MirrorGit>,
     clock: Arc<dyn MirrorClock>,
+    /// Judges clone-URL hosts (taken from a remote announcement).
     ssrf: Arc<dyn SsrfCheck>,
+    /// Judges the operator's own relay hosts. Defaults to `ssrf`; an operator
+    /// allowance for an internal relay goes here and never reaches clones.
+    relay_ssrf: Arc<dyn SsrfCheck>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Newest verified-by-filter event per `(repo, kind)` waiting for a worker.
     /// Bounded by construction: at most two entries per followed repository.
@@ -2325,6 +2329,7 @@ impl Mirror {
             store,
             git,
             clock,
+            relay_ssrf: Arc::clone(&ssrf),
             ssrf,
             locks: Mutex::new(HashMap::new()),
             inbox: std::sync::Mutex::new(HashMap::new()),
@@ -2332,6 +2337,20 @@ impl Mirror {
             wake: tokio::sync::Notify::new(),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES)),
         }
+    }
+
+    /// Judge the relays this engine dials with `policy` instead of the clone
+    /// policy given to [`Self::with_parts`].
+    ///
+    /// This is how an operator admits a loopback or private-network relay
+    /// (see [`crate::operator_relays::OperatorRelays`]): the allowance covers
+    /// the relay sockets only. A clone URL, which a remote announcement
+    /// controls, is still judged by the stricter policy, so naming an internal
+    /// relay does not let an announcement aim a `git fetch` at it.
+    #[must_use]
+    pub fn with_relay_ssrf(mut self, policy: Arc<dyn SsrfCheck>) -> Self {
+        self.relay_ssrf = policy;
+        self
     }
 
     /// The configuration in force.
@@ -2375,13 +2394,25 @@ impl Mirror {
     }
 
     async fn host_allowed(&self, url: &str) -> Result<Option<std::net::IpAddr>, String> {
+        Self::judge_host(self.ssrf.as_ref(), url).await
+    }
+
+    /// As [`Self::host_allowed`] but for one of the operator's relays.
+    async fn relay_host_allowed(&self, url: &str) -> Result<Option<std::net::IpAddr>, String> {
+        Self::judge_host(self.relay_ssrf.as_ref(), url).await
+    }
+
+    async fn judge_host(
+        policy: &dyn SsrfCheck,
+        url: &str,
+    ) -> Result<Option<std::net::IpAddr>, String> {
         let parsed = url::Url::parse(url).map_err(|e| format!("bad URL: {e}"))?;
         let host = parsed.host_str().ok_or("URL has no host")?;
         let target = match parsed.port() {
             Some(p) => format!("{host}:{p}"),
             None => host.to_string(),
         };
-        self.ssrf.verify_host(&target).await
+        policy.verify_host(&target).await
     }
 
     /// Handle one relay event: verify it, keep only kinds 30617/30618 from
@@ -3195,7 +3226,10 @@ impl Mirror {
         attempt: &mut u32,
         stop: &mut watch::Receiver<bool>,
     ) -> String {
-        if let Err(why) = self.host_allowed(&relay.replacen("ws", "http", 1)).await {
+        if let Err(why) = self
+            .relay_host_allowed(&relay.replacen("ws", "http", 1))
+            .await
+        {
             return format!("relay host refused: {why}");
         }
         let limits = WebSocketConfig {
@@ -5648,6 +5682,101 @@ mod tests {
             &sk,
             KIND_ANNOUNCE,
             tags(&[&["d", "x"], &["clone", "http://127.0.0.1:9/x.git"]]),
+            50,
+        ))
+        .await;
+        let rec = m
+            .on_event(&state_event(
+                &sk,
+                "x",
+                &[("refs/heads/main", &"a".repeat(40))],
+                None,
+                60,
+            ))
+            .await
+            .unwrap();
+        let seen = rec.last_seen.unwrap();
+        assert_eq!(seen.action, SeenAction::FetchFailed);
+        assert!(
+            seen.reason.contains("clone host refused"),
+            "{}",
+            seen.reason
+        );
+    }
+
+    /// A mirror whose only relay is `relay`, judged by `Mirror::new`'s default
+    /// policy, optionally with the operator allowance for that relay.
+    fn engine_with_relay(
+        relay: &str,
+        operator_allowance: bool,
+    ) -> (Arc<Mirror>, tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = key(11);
+        let pubk = pubhex(&sk);
+        let cfg = MirrorConfig {
+            relays: vec![relay.into()],
+            follow: vec![FollowEntry {
+                pubkey: pubk.clone(),
+                name: "x".into(),
+                clone: None,
+            }],
+            min_interval_ms: 0,
+        };
+        let allowance = crate::operator_relays::OperatorRelays::new(&cfg.relays);
+        let mut m = Mirror::new(
+            cfg,
+            MirrorStore::new(tmp.path()),
+            Arc::new(GitCli::new(tmp.path().join("repos"))),
+        );
+        if operator_allowance {
+            m = m.with_relay_ssrf(Arc::new(allowance));
+        }
+        (Arc::new(m), tmp, pubk)
+    }
+
+    async fn session_outcome(m: &Arc<Mirror>, relay: &str) -> String {
+        let (_tx, mut rx) = watch::channel(false);
+        let mut attempt = 0u32;
+        m.relay_session(relay, &mut attempt, &mut rx).await
+    }
+
+    #[tokio::test]
+    async fn an_operator_listed_loopback_relay_is_dialled_and_an_unlisted_one_is_not() {
+        // Nothing listens on these ports: an admitted relay fails at connect,
+        // a refused one never gets that far.
+        let (m, _tmp, _pk) = engine_with_relay("ws://127.0.0.1:1", true);
+        let listed = session_outcome(&m, "ws://127.0.0.1:1").await;
+        assert!(
+            !listed.contains("relay host refused"),
+            "ADR-2010: the operator's loopback relay is admitted: {listed}"
+        );
+        // Same engine, a loopback port the operator did not list.
+        let unlisted = session_outcome(&m, "ws://127.0.0.1:2").await;
+        assert!(unlisted.contains("relay host refused"), "{unlisted}");
+        // A private-network address the operator did not list.
+        let private = session_outcome(&m, "ws://10.1.2.3:7777").await;
+        assert!(private.contains("relay host refused"), "{private}");
+    }
+
+    #[tokio::test]
+    async fn without_an_operator_allowance_the_default_policy_refuses_a_loopback_relay() {
+        let (m, _tmp, _pk) = engine_with_relay("ws://127.0.0.1:1", false);
+        let why = session_outcome(&m, "ws://127.0.0.1:1").await;
+        assert!(why.contains("relay host refused"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn the_relay_allowance_does_not_admit_a_clone_url_at_the_relays_address() {
+        // An announcement controls the clone URL. Pointing it at the very
+        // host:port the operator allowed for the relay must still be refused,
+        // or the allowance would be an SSRF primitive aimed at that service.
+        let (m, _tmp, pubk) = engine_with_relay("ws://127.0.0.1:1", true);
+        let sk = key(11);
+        assert_eq!(pubhex(&sk), pubk);
+        m.on_event(&sign(
+            &sk,
+            KIND_ANNOUNCE,
+            tags(&[&["d", "x"], &["clone", "http://127.0.0.1:1/x.git"]]),
             50,
         ))
         .await;
