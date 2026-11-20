@@ -139,7 +139,8 @@ async fn put_refuses_unparseable_with_400_and_misdirected_policies_with_409() {
     // conflict (409), not a syntax error.
     let misdirected = f.turtle("/elsewhere", false);
     assert_eq!(
-        f.call("PUT", POLICY, "text/turtle", &misdirected, &[]).await,
+        f.call("PUT", POLICY, "text/turtle", &misdirected, &[])
+            .await,
         409,
         "misdirected candidate"
     );
