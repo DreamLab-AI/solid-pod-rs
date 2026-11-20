@@ -598,7 +598,7 @@ fn verify_dpop_proof_core(
             claims.htm, expected_htm
         )));
     }
-    if normalise_htu(&claims.htu) != normalise_htu(expected_htu) {
+    if !htu_matches(&claims.htu, expected_htu) {
         return Err(PodError::Nip98(format!(
             "DPoP htu mismatch: {} vs {}",
             claims.htu, expected_htu
@@ -647,8 +647,21 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.ct_eq(b).into()
 }
 
-fn normalise_htu(u: &str) -> String {
-    u.trim_end_matches('/').to_ascii_lowercase()
+/// Compare a DPoP `htu` claim with the URI the server expects, per RFC 9449
+/// §4.3: the query and fragment are ignored and the scheme and host compare
+/// case-insensitively (the `url` parser lower-cases both and drops a default
+/// port). The path is compared exactly: it is case-sensitive, and a trailing
+/// slash names a different LDP resource (`/r` a document, `/r/` its
+/// container), so a proof minted for one must not authorise the other.
+/// Either side failing to parse as an absolute URL never matches.
+fn htu_matches(claimed: &str, expected: &str) -> bool {
+    fn canonical(raw: &str) -> Option<url::Url> {
+        let mut u = url::Url::parse(raw).ok()?;
+        u.set_query(None);
+        u.set_fragment(None);
+        Some(u)
+    }
+    matches!((canonical(claimed), canonical(expected)), (Some(a), Some(b)) if a == b)
 }
 
 // ---------------------------------------------------------------------------

@@ -894,10 +894,22 @@ mod dpop_stitch {
             .expect_err("htu is enforced");
         expect_nip98(err, "DPoP htu mismatch");
 
-        // htu comparison is trailing-slash- and case-insensitive.
-        verify_dpop_proof(&proof, "HTTPS://POD.EXAMPLE/R/", "get", NOW, 60, None)
+        // RFC 9449 §4.3 / RFC 3986 §6.2.2-3: scheme and host compare
+        // case-insensitively, the default port is implied, and the query
+        // and fragment are ignored; htm compares case-insensitively here.
+        verify_dpop_proof(&proof, "HTTPS://POD.EXAMPLE:443/r?x=1#f", "get", NOW, 60, None)
             .await
-            .expect("htu/htm comparison normalises case and trailing slash");
+            .expect("htu scheme/host case, default port, query and fragment are normalised");
+
+        // The path is case-sensitive and a trailing slash names a different
+        // resource (LDP: `/r` is a document, `/r/` its container), so a proof
+        // minted for one must not authorise the other.
+        for other in ["https://pod.example/R", "https://pod.example/r/"] {
+            let err = verify_dpop_proof(&proof, other, "GET", NOW, 60, None)
+                .await
+                .expect_err("htu path is compared exactly");
+            expect_nip98(err, "DPoP htu mismatch");
+        }
 
         // iat outside the skew window, in both directions.
         for clock in [NOW + 61, NOW - 61] {
