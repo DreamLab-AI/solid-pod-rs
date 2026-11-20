@@ -424,6 +424,11 @@ pub async fn verify_dpop_proof_with_ath(
                     DPOP_REPLAY_REJECTED_TOTAL.increment();
                     return Err(PodError::Nip98(format!("DPoP jti replay detected: {e}")));
                 }
+                // Fail closed: admitting a proof we cannot record would let it
+                // be replayed.
+                ReplayError::CapacityExhausted { .. } => {
+                    return Err(PodError::Nip98(format!("DPoP proof refused: {e}")));
+                }
             }
         }
     }

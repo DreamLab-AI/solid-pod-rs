@@ -102,6 +102,7 @@ async fn f5b_replay_within_ttl_is_rejected() {
     let err = cache.check_and_record(jti).await.unwrap_err();
     match err {
         ReplayError::Replayed { ttl } => assert_eq!(ttl, Duration::from_secs(60)),
+        other @ ReplayError::CapacityExhausted { .. } => panic!("unexpected: {other}"),
     }
 
     // Replay must NOT refresh the entry (size stays at 1).
@@ -132,29 +133,51 @@ async fn f5c_replay_after_ttl_is_accepted() {
 }
 
 // ---------------------------------------------------------------------------
-// F5d — max_size eviction: oldest entry is evicted when at capacity
+// F5d — max_size: a full cache refuses new jtis; it never evicts a live one
+// (AW1-05, the policy NIP-98 adopted in ADR-2006)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn f5d_max_size_eviction_drops_oldest() {
+async fn f5d_full_cache_refuses_new_jti_and_keeps_every_live_one() {
     let max = 4usize;
     let cache = DpopReplayCache::with_config(Duration::from_secs(60), max);
 
-    // Insert max+1 distinct jtis — the first must be evicted.
-    for i in 0..=max {
-        let jti = format!("jti-cap-{i:04}");
-        cache.check_and_record(&jti).await.unwrap();
+    for i in 0..max {
+        cache
+            .check_and_record(&format!("jti-cap-{i:04}"))
+            .await
+            .unwrap();
     }
 
-    assert_eq!(cache.len().await, max);
-    // The oldest entry (i=0) was evicted — re-submitting it should
-    // succeed (it is no longer tracked).
-    cache
-        .check_and_record("jti-cap-0000")
+    // One more distinct jti: evicting the oldest would reopen its replay
+    // window, so the newcomer is refused instead.
+    let err = cache
+        .check_and_record("jti-cap-overflow")
         .await
-        .expect("evicted jti should be accepted again");
-    // Cache stays at max (new insert causes another eviction).
+        .expect_err("a full cache of live entries must refuse, not evict");
+    assert!(matches!(
+        err,
+        ReplayError::CapacityExhausted { capacity: 4, .. }
+    ));
     assert_eq!(cache.len().await, max);
+
+    // The oldest live jti is still remembered: replaying it is still caught.
+    let replay = cache.check_and_record("jti-cap-0000").await.unwrap_err();
+    assert!(matches!(replay, ReplayError::Replayed { .. }));
+}
+
+#[tokio::test]
+async fn f5d_expired_entries_are_reclaimed_to_admit_a_new_jti() {
+    let cache = DpopReplayCache::with_config(Duration::from_millis(10), 2);
+    cache.check_and_record("a").await.unwrap();
+    cache.check_and_record("b").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    // Both are past TTL, so they can no longer be replayed and may go.
+    cache
+        .check_and_record("c")
+        .await
+        .expect("expired entries free their slots");
+    assert!(cache.len().await <= 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +204,7 @@ async fn f5e_concurrent_same_jti_exactly_one_wins() {
         match h.await.unwrap() {
             Ok(()) => ok_count += 1,
             Err(ReplayError::Replayed { .. }) => replay_count += 1,
+            Err(other) => panic!("unexpected: {other}"),
         }
     }
 

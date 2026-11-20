@@ -19,10 +19,16 @@
 //!    on replay).
 //! 3. A `jti` re-submitted strictly after TTL is treated as a fresh
 //!    first-seen — entry is re-inserted.
-//! 4. Cache is bounded by `max_size`; the oldest entry is evicted on
-//!    overflow. This opens a **capacity-driven replay window**; size
-//!    the cache for worst-case rate (10_000 default ≈ 166 rps at 60s
-//!    TTL).
+//! 4. Cache is bounded by `max_size`, and capacity is never a way to lose
+//!    replay protection. When full, entries past their TTL are reclaimed
+//!    (they can no longer be replayed); if every entry is still live the new
+//!    `jti` is refused with [`ReplayError::CapacityExhausted`] and the proof
+//!    is rejected. A live entry is **never** evicted, because evicting it
+//!    would reopen the replay window for that proof. The cost is
+//!    availability, not authentication: flooding the cache with valid unique
+//!    proofs can make legitimate requests fail until entries expire, so size
+//!    the cache for worst-case rate (10_000 default ≈ 166 rps at 60s TTL).
+//!    This is the policy ADR-2006 adopted for the NIP-98 replay store.
 //! 5. All operations are `async` and use a single `tokio::sync::Mutex`;
 //!    the critical section is panic-free-by-construction (no indexing,
 //!    no unwrap, checked arithmetic only).
@@ -74,6 +80,16 @@ pub enum ReplayError {
     /// twice.
     #[error("DPoP jti already used within TTL window ({ttl:?})")]
     Replayed { ttl: Duration },
+    /// The cache is full of entries that are all still inside their TTL, so
+    /// recording this `jti` would mean evicting a live one and reopening its
+    /// replay window. The proof is refused instead (fail closed).
+    #[error("DPoP replay cache at capacity ({capacity}) with every entry live (ttl {ttl:?})")]
+    CapacityExhausted {
+        /// Configured maximum entry count.
+        capacity: usize,
+        /// Configured TTL.
+        ttl: Duration,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +188,25 @@ impl DpopReplayCache {
             }
             // Expired: treat as fresh insertion (overwrites).
         }
-        // First-seen (or expired) — insert. `put` automatically evicts
-        // the LRU entry when at capacity.
+        // A genuinely new jti needs a slot. Never take it from a live entry.
+        if !guard.entries.contains(jti) && guard.entries.len() >= self.max_size {
+            let ttl = self.ttl;
+            let expired: Vec<String> = guard
+                .entries
+                .iter()
+                .filter(|(_, seen)| now.saturating_duration_since(**seen) >= ttl)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in expired {
+                guard.entries.pop(&k);
+            }
+            if guard.entries.len() >= self.max_size {
+                return Err(ReplayError::CapacityExhausted {
+                    capacity: self.max_size,
+                    ttl: self.ttl,
+                });
+            }
+        }
         guard.entries.put(jti.to_string(), now);
         Ok(())
     }
@@ -363,7 +396,8 @@ impl JtiReplayCache {
     /// under the supplied `now` and return `Ok(())`. If the `jti` was
     /// already recorded within TTL, return [`ReplayError::Replayed`]
     /// without refreshing the entry. Expired entries are transparently
-    /// overwritten.
+    /// overwritten. A full cache of live entries refuses a new `jti` with
+    /// [`ReplayError::CapacityExhausted`] instead of evicting one.
     pub fn check_and_insert(&self, jti: &str, now: SystemTime) -> Result<(), ReplayError> {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&first_seen) = guard.entries.peek(jti) {
@@ -372,6 +406,25 @@ impl JtiReplayCache {
                 return Err(ReplayError::Replayed { ttl: self.ttl });
             }
             // Expired — fall through to overwrite.
+        }
+        // A genuinely new jti needs a slot. Never take it from a live entry.
+        if !guard.entries.contains(jti) && guard.entries.len() >= self.capacity {
+            let ttl = self.ttl;
+            let expired: Vec<String> = guard
+                .entries
+                .iter()
+                .filter(|(_, seen)| now.duration_since(**seen).unwrap_or(Duration::ZERO) >= ttl)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in expired {
+                guard.entries.pop(&k);
+            }
+            if guard.entries.len() >= self.capacity {
+                return Err(ReplayError::CapacityExhausted {
+                    capacity: self.capacity,
+                    ttl: self.ttl,
+                });
+            }
         }
         guard.entries.put(jti.to_string(), now);
         Ok(())

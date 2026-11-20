@@ -6,7 +6,7 @@
 //!   * Second insert of the same `jti` within TTL returns
 //!     [`ReplayError::Replayed`].
 //!   * Expired entries may be re-used.
-//!   * Capacity-driven eviction: oldest entry evicted on overflow.
+//!   * Capacity: a full cache refuses new jtis rather than evicting a live one.
 //!   * Thread-safe under concurrent insert load.
 
 #![cfg(feature = "dpop-replay-cache")]
@@ -55,24 +55,31 @@ fn expired_jti_allows_reuse() {
 }
 
 #[test]
-fn capacity_evicts_oldest() {
+fn full_cache_refuses_new_jti_and_keeps_every_live_one() {
     let cap = 4;
     let cache = JtiReplayCache::new(cap, Duration::from_secs(300));
     let t0 = SystemTime::now();
-    // Insert cap + 1 distinct jtis; the first is evicted.
-    for i in 0..=cap {
+    for i in 0..cap {
         let jti = format!("jti-cap-{i:03}");
         cache
             .check_and_insert(&jti, t0 + Duration::from_millis(i as u64))
             .unwrap();
     }
+    // A fifth distinct jti is refused rather than evicting the oldest live one.
+    let err = cache
+        .check_and_insert("jti-cap-overflow", t0 + Duration::from_millis(100))
+        .expect_err("a full cache of live entries must refuse");
+    assert!(matches!(err, ReplayError::CapacityExhausted { .. }));
     assert_eq!(cache.len(), cap);
-    // The oldest jti was evicted; re-inserting it succeeds.
-    cache
+    // The oldest jti is still tracked, so replaying it is still caught.
+    let replay = cache
         .check_and_insert("jti-cap-000", t0 + Duration::from_millis(1_000))
-        .expect("evicted jti should be accepted again");
-    // Cache stays at capacity — another eviction took place.
-    assert_eq!(cache.len(), cap);
+        .unwrap_err();
+    assert!(matches!(replay, ReplayError::Replayed { .. }));
+    // Once the TTL has passed the entries are reclaimable and a new jti fits.
+    cache
+        .check_and_insert("jti-cap-new", t0 + Duration::from_secs(301))
+        .expect("expired entries free their slots");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
