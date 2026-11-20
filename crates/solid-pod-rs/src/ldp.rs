@@ -1205,6 +1205,31 @@ pub fn apply_n3_patch(target: Graph, patch: &str) -> Result<PatchOutcome, PodErr
 /// deeply nested SPARQL documents.
 pub const SPARQL_UPDATE_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
+/// True when `update` parses as a SPARQL Update that can only add triples.
+///
+/// Only a document made of `INSERT DATA` operations (and `DELETE DATA` blocks
+/// holding no quads) qualifies, and it needs at least one operation. Anything
+/// that may remove a triple or depends on a `WHERE` clause (`DELETE WHERE`,
+/// `DELETE/INSERT ... WHERE`, `INSERT ... WHERE`, `CLEAR`, `DROP`, `LOAD`, ...),
+/// a body over [`SPARQL_UPDATE_MAX_BYTES`] and a body that does not parse are
+/// all `false`, so the caller falls back to requiring `acl:Write`.
+#[must_use]
+pub fn sparql_update_is_insert_only(update: &str) -> bool {
+    use spargebra::{GraphUpdateOperation, Update};
+    if update.len() > SPARQL_UPDATE_MAX_BYTES {
+        return false;
+    }
+    let Ok(parsed) = Update::parse(update, None) else {
+        return false;
+    };
+    !parsed.operations.is_empty()
+        && parsed.operations.iter().all(|op| match op {
+            GraphUpdateOperation::InsertData { .. } => true,
+            GraphUpdateOperation::DeleteData { data } => data.is_empty(),
+            _ => false,
+        })
+}
+
 /// Apply a SPARQL 1.1 Update document (`INSERT DATA`, `DELETE DATA`,
 /// `DELETE WHERE`) to `target` using `spargebra` for parsing.
 ///

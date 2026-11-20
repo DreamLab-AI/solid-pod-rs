@@ -2088,15 +2088,29 @@ async fn handle_patch(
     if inspects {
         enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false).await?;
     }
-    // PATCH can modify or delete data (e.g. N3 Patch with solid:deletes),
-    // so it requires full Write permission — not just Append. Only POST
-    // (which creates new child resources in a container) is allowed with
-    // Append-only permission. This prevents Append-only users from
-    // overwriting or deleting resource content via PATCH.
+    // A PATCH that provably inserts and deletes nothing (an N3 Patch with no
+    // `solid:deletes` and no `solid:where`; a SPARQL Update made only of
+    // `INSERT DATA`) is authorised as `acl:Append`, as the Solid Protocol and
+    // JSS do. Everything else (any delete, any `where`, JSON Patch, a body
+    // that does not parse or is not UTF-8) still needs full `acl:Write`, so
+    // an Append-only agent cannot overwrite or remove content through PATCH.
+    // A sidecar (`.acl`, `.meta`) or server-state path is elevated to Control
+    // inside `enforce_write_ctx` whatever mode is asked for here.
+    let insert_only = match (dialect, &n3_parsed, &body_str) {
+        (Some(ldp::PatchDialect::N3), Some(Ok(p)), _) => p.is_insert_only(),
+        (Some(ldp::PatchDialect::SparqlUpdate), _, Ok(text)) => {
+            ldp::sparql_update_is_insert_only(text)
+        }
+        _ => false,
+    };
     enforce_write_ctx(
         &state,
         &path,
-        AccessMode::Write,
+        if insert_only {
+            AccessMode::Append
+        } else {
+            AccessMode::Write
+        },
         agent.as_deref(),
         req_origin(&req),
     )

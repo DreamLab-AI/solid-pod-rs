@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An insert-only PATCH needs only `acl:Append`** (SP-PAR-273): an N3 Patch with no `solid:deletes` and no
+  `solid:where`, or a SPARQL Update of `INSERT DATA` only, no longer needs `acl:Write`. Any delete, `where`,
+  `INSERT ... WHERE`, JSON Patch or unparseable body still does. New `ldp::sparql_update_is_insert_only`.
 - **The forge mirror admits the operator's loopback relay** (AW1-01) through `Mirror::with_relay_ssrf`,
   built from `FORGE_MIRROR_RELAYS`; clone URLs keep the default SSRF policy. `OperatorRelays` moves to
   `solid_pod_rs_forge::operator_relays` (still re-exported from `publish`).
