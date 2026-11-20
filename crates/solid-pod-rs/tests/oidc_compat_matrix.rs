@@ -910,9 +910,16 @@ mod dpop_stitch {
         // RFC 9449 §4.3 / RFC 3986 §6.2.2-3: scheme and host compare
         // case-insensitively, the default port is implied, and the query
         // and fragment are ignored; htm compares case-insensitively here.
-        verify_dpop_proof(&proof, "HTTPS://POD.EXAMPLE:443/r?x=1#f", "get", NOW, 60, None)
-            .await
-            .expect("htu scheme/host case, default port, query and fragment are normalised");
+        verify_dpop_proof(
+            &proof,
+            "HTTPS://POD.EXAMPLE:443/r?x=1#f",
+            "get",
+            NOW,
+            60,
+            None,
+        )
+        .await
+        .expect("htu scheme/host case, default port, query and fragment are normalised");
 
         // The path is case-sensitive and a trailing slash names a different
         // resource (LDP: `/r` is a document, `/r/` its container), so a proof

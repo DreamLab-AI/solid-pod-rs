@@ -319,12 +319,22 @@ mod tests {
         // A token is acceptable for 2 * TIMESTAMP_TOLERANCE seconds plus
         // rounding; a 1s TTL would forget its id long before that.
         assert_eq!(resolve_ttl_secs(Some("1")), MIN_TTL_SECS);
-        assert_eq!(resolve_ttl_secs(Some(&(MIN_TTL_SECS - 1).to_string())), MIN_TTL_SECS);
-        assert_eq!(resolve_ttl_secs(Some("600")), 600, "a longer TTL is honoured");
+        assert_eq!(
+            resolve_ttl_secs(Some(&(MIN_TTL_SECS - 1).to_string())),
+            MIN_TTL_SECS
+        );
+        assert_eq!(
+            resolve_ttl_secs(Some("600")),
+            600,
+            "a longer TTL is honoured"
+        );
         assert_eq!(resolve_ttl_secs(Some("0")), MIN_TTL_SECS);
         assert_eq!(resolve_ttl_secs(Some("junk")), MIN_TTL_SECS);
         assert_eq!(resolve_ttl_secs(None), MIN_TTL_SECS);
-        assert!(MIN_TTL_SECS > 2 * TIMESTAMP_TOLERANCE, "covers whole-second rounding");
+        assert!(
+            MIN_TTL_SECS > 2 * TIMESTAMP_TOLERANCE,
+            "covers whole-second rounding"
+        );
     }
 
     #[tokio::test]
