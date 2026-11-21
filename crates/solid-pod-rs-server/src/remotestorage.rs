@@ -867,7 +867,16 @@ async fn delete(req: &HttpRequest, state: &AppState, path: &RsPath) -> HttpRespo
             return reply(StatusCode::PRECONDITION_FAILED, "If-Match failed");
         }
     }
-    match state.storage.delete(&key).await {
+    // Size 0 against the current size is a negative delta: finishing the
+    // reservation after a successful delete returns the bytes to the quota
+    // (the LDP DELETE does the same).
+    let quota = match crate::reserve_quota_for_size(state, &key, 0).await {
+        Ok(q) => q,
+        Err(e) => return HttpResponse::from_error(e),
+    };
+    let deleted = state.storage.delete(&key).await;
+    crate::finish_quota_reservation(state, quota, deleted.is_ok()).await;
+    match deleted {
         Ok(()) => cors(HttpResponse::Ok())
             .insert_header((header::ETAG, quote(&meta.etag)))
             .finish(),
