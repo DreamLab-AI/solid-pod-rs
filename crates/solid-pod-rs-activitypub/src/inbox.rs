@@ -21,6 +21,22 @@ pub const MAX_FOLLOWERS: i64 = 5_000;
 /// Most inbox rows kept per store; older rows are deleted first.
 pub const MAX_INBOX_ROWS: i64 = 10_000;
 
+/// Most inbox rows kept per sender; that sender's older rows are deleted
+/// first, so one sender cannot evict another's rows.
+pub const MAX_INBOX_ROWS_PER_SENDER: i64 = 200;
+
+/// Most `Accept` replies kept in the outbox (one per follower is the
+/// legitimate ceiling); older ones are deleted first.
+pub const MAX_ACCEPT_ROWS: i64 = MAX_FOLLOWERS;
+
+/// Most deliveries waiting in the queue. An owner post queues one row per
+/// follower (at most [`MAX_FOLLOWERS`]), so this holds a few such posts; past
+/// it new deliveries are refused rather than queued.
+pub const MAX_DELIVERY_QUEUE: i64 = 4 * MAX_FOLLOWERS;
+
+/// Longest activity `id` accepted (bytes).
+pub const MAX_ACTIVITY_ID_BYTES: usize = 2_048;
+
 /// The outcome of processing an inbox activity. The HTTP layer maps
 /// this to status codes and any extra response side-effects
 /// (e.g. enqueue an Accept reply).
@@ -76,10 +92,35 @@ pub async fn handle_inbox(
         )));
     }
 
-    let was_new = store.record_inbox(local_actor_id, activity).await?;
+    if activity
+        .get("id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|id| id.len() > MAX_ACTIVITY_ID_BYTES)
+    {
+        return Err(InboxError::InvalidJson("activity id too long".into()));
+    }
+
+    // A Follow from someone who already follows is idempotent: nothing is
+    // stored, no Accept is built and no delivery is queued, however many
+    // times (and under however many fresh ids) it is sent.
+    if activity_type == "Follow"
+        && activity.get("object").and_then(|v| v.as_str()) == Some(local_actor_id)
+        && store
+            .is_follower(local_actor_id, &verified_actor.actor_url)
+            .await?
+    {
+        return Ok(InboxOutcome::Duplicate);
+    }
+
+    let was_new = store
+        .record_inbox_from(local_actor_id, &verified_actor.actor_url, activity)
+        .await?;
     if !was_new {
         return Ok(InboxOutcome::Duplicate);
     }
+    store
+        .trim_inbox_for_sender(&verified_actor.actor_url, MAX_INBOX_ROWS_PER_SENDER)
+        .await?;
     store.trim_inbox(MAX_INBOX_ROWS).await?;
 
     match activity_type {
@@ -168,9 +209,28 @@ pub async fn handle_inbox(
     }
 }
 
-/// Build an `Accept(Follow)` activity to send back to a follower,
-/// matching JSS's `outbox.createAccept` structure.
+/// Build an `Accept(Follow)` activity to send back to a follower, matching
+/// JSS's `outbox.createAccept` structure.
+///
+/// The embedded `object` is rebuilt from the Follow's `id`, `actor` and
+/// `object` strings only (each bounded); the sender's body is never copied,
+/// so a remote cannot make the server store or send anything it chose.
 pub fn build_accept(local_actor_id: &str, follow: &serde_json::Value) -> serde_json::Value {
+    let text = |k: &str| {
+        follow
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| s.len() <= MAX_ACTIVITY_ID_BYTES)
+            .map(|s| serde_json::Value::String(s.to_string()))
+    };
+    let mut embedded = serde_json::Map::new();
+    embedded.insert("type".into(), "Follow".into());
+    for k in ["id", "actor", "object"] {
+        if let Some(v) = text(k) {
+            embedded.insert(k.into(), v);
+        }
+    }
+    let follow = serde_json::Value::Object(embedded);
     serde_json::json!({
         "@context": "https://www.w3.org/ns/activitystreams",
         "id": format!("{}/accept/{}", local_actor_id.trim_end_matches("#me"), uuid::Uuid::new_v4()),

@@ -29,6 +29,9 @@ use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+    /// Set while the delivery queue is refusing work, so the refusal is
+    /// logged once per episode instead of once per attempt.
+    queue_full_logged: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Outbox row representation.
@@ -76,10 +79,12 @@ CREATE TABLE IF NOT EXISTS following (
     PRIMARY KEY (actor_id, target_id)
 );
 CREATE TABLE IF NOT EXISTS inbox (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
+    sender TEXT NOT NULL DEFAULT '',
     actor_id TEXT NOT NULL,
     activity TEXT NOT NULL,
-    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (sender, id)
 );
 CREATE TABLE IF NOT EXISTS outbox (
     id TEXT PRIMARY KEY,
@@ -103,6 +108,48 @@ CREATE TABLE IF NOT EXISTS actors (
 );
 "#;
 
+/// Upgrade an `inbox` table written before rows carried their sender (primary
+/// key `id` alone): the rows are copied across with the sender taken from the
+/// stored activity's `actor`. A no-op for a fresh or already current database.
+async fn migrate_legacy_inbox(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let (exists,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'inbox'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let (has_sender,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM pragma_table_info('inbox') WHERE name = 'sender'")
+            .fetch_one(pool)
+            .await?;
+    if exists == 0 || has_sender > 0 {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE inbox RENAME TO inbox_legacy")
+        .execute(&mut *tx)
+        .await?;
+    // The legacy table is dropped after the copy; the current table is created
+    // by `SCHEMA`, so create it here first to receive the rows.
+    sqlx::query(
+        "CREATE TABLE inbox (id TEXT NOT NULL, sender TEXT NOT NULL DEFAULT '', \
+         actor_id TEXT NOT NULL, activity TEXT NOT NULL, \
+         received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (sender, id))",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO inbox (id, sender, actor_id, activity, received_at) \
+         SELECT id, COALESCE(json_extract(activity, '$.actor'), ''), actor_id, activity, received_at \
+         FROM inbox_legacy",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE inbox_legacy")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
 impl Store {
     /// Connect to an arbitrary SQLite URL (use `sqlite::memory:` for
     /// tests). Runs the schema idempotently.
@@ -111,8 +158,12 @@ impl Store {
             .max_connections(5)
             .connect(url)
             .await?;
+        migrate_legacy_inbox(&pool).await?;
         sqlx::query(SCHEMA).execute(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            queue_full_logged: std::sync::Arc::default(),
+        })
     }
 
     /// In-memory store — useful for tests.
@@ -245,10 +296,29 @@ impl Store {
 
     // --------------------------- inbox -----------------------------------
 
-    /// Record an inbox activity. Idempotent on activity `id`.
+    /// Record an inbox activity from the sender its `actor` names. Idempotent
+    /// on `(sender, id)`; see [`Self::record_inbox_from`].
     pub async fn record_inbox(
         &self,
         actor_id: &str,
+        activity: &serde_json::Value,
+    ) -> Result<bool, sqlx::Error> {
+        let sender = activity
+            .get("actor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        self.record_inbox_from(actor_id, &sender, activity).await
+    }
+
+    /// Record an inbox activity that `sender` (the verified signer) sent to the
+    /// local `actor_id`. Idempotent on `(sender, id)`: another sender reusing
+    /// the same `id` neither collides with nor pre-empts this row. Returns
+    /// `false` for a duplicate or an activity with no `id`.
+    pub async fn record_inbox_from(
+        &self,
+        actor_id: &str,
+        sender: &str,
         activity: &serde_json::Value,
     ) -> Result<bool, sqlx::Error> {
         let id = activity
@@ -261,10 +331,11 @@ impl Store {
         }
         let body = serde_json::to_string(activity).unwrap_or_else(|_| "{}".into());
         let res = sqlx::query(
-            "INSERT OR IGNORE INTO inbox (id, actor_id, activity, received_at) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR IGNORE INTO inbox (id, sender, actor_id, activity, received_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind(&id)
+        .bind(sender)
         .bind(actor_id)
         .bind(&body)
         .bind(Utc::now())
@@ -353,6 +424,40 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(res.last_insert_rowid())
+    }
+
+    /// Queue a delivery unless `max_queued` rows are already waiting. Returns
+    /// the new queue id, or `None` when the queue is full (the delivery is
+    /// refused, not queued). The first refusal of an episode is logged; the
+    /// next log happens only after the queue has had room again.
+    pub async fn try_enqueue_delivery(
+        &self,
+        activity_id: &str,
+        inbox_url: &str,
+        max_queued: i64,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        use std::sync::atomic::Ordering;
+        if self.delivery_queue_len().await? >= max_queued {
+            if !self.queue_full_logged.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    max_queued,
+                    "delivery queue is full: refusing new deliveries"
+                );
+            }
+            return Ok(None);
+        }
+        self.queue_full_logged.store(false, Ordering::Relaxed);
+        self.enqueue_delivery(activity_id, inbox_url)
+            .await
+            .map(Some)
+    }
+
+    /// Deliveries waiting in the queue.
+    pub async fn delivery_queue_len(&self) -> Result<i64, sqlx::Error> {
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM delivery_queue")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n)
     }
 
     pub async fn next_due_delivery(&self) -> Result<Option<DeliveryItem>, sqlx::Error> {
@@ -547,6 +652,44 @@ impl Store {
             "DELETE FROM inbox WHERE rowid IN ( \
                SELECT rowid FROM inbox ORDER BY received_at DESC, rowid DESC LIMIT -1 OFFSET ?1)",
         )
+        .bind(keep.max(0))
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete the oldest inbox rows of `sender` beyond `keep`, leaving every
+    /// other sender's rows alone, so one sender cannot evict the rest.
+    pub async fn trim_inbox_for_sender(&self, sender: &str, keep: i64) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM inbox WHERE rowid IN ( \
+               SELECT rowid FROM inbox WHERE sender = ?1 \
+               ORDER BY received_at DESC, rowid DESC LIMIT -1 OFFSET ?2)",
+        )
+        .bind(sender)
+        .bind(keep.max(0))
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete the oldest outbox rows of `actor_id` whose activity `type` is
+    /// `kind`, beyond `keep`. Used to bound server-generated replies (the
+    /// `Accept`s) that remote senders can provoke.
+    pub async fn trim_outbox_kind(
+        &self,
+        actor_id: &str,
+        kind: &str,
+        keep: i64,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM outbox WHERE rowid IN ( \
+               SELECT rowid FROM outbox \
+               WHERE actor_id = ?1 AND json_extract(activity, '$.type') = ?2 \
+               ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?3)",
+        )
+        .bind(actor_id)
+        .bind(kind)
         .bind(keep.max(0))
         .execute(&self.pool)
         .await?;

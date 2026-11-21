@@ -22,6 +22,7 @@ use std::sync::Arc;
 use actix_web::http::{header, StatusCode};
 use actix_web::{web, HttpRequest, HttpResponse};
 use futures_util::StreamExt;
+use solid_pod_rs_activitypub::inbox::{MAX_ACCEPT_ROWS, MAX_DELIVERY_QUEUE};
 use solid_pod_rs_activitypub::{
     generate_actor_keypair, handle_inbox, handle_outbox_post as handle_outbox_post_lib,
     render_actor, verify_request_signature, with_also_known_as, Actor, DeliveryConfig,
@@ -513,7 +514,12 @@ pub(crate) async fn handle_inbox_post(
                         .store
                         .record_outbox(&fed.actor.id, &accept_object)
                         .await?;
-                    fed.store.enqueue_delivery(&id, &inbox).await
+                    fed.store
+                        .try_enqueue_delivery(&id, &inbox, MAX_DELIVERY_QUEUE)
+                        .await?;
+                    fed.store
+                        .trim_outbox_kind(&fed.actor.id, "Accept", MAX_ACCEPT_ROWS)
+                        .await
                 };
                 if let Err(e) = queued.await {
                     tracing::warn!(error = %e, "could not queue the Accept");
