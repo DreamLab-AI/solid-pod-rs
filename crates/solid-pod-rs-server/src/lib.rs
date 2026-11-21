@@ -2512,7 +2512,7 @@ fn best_explicit_rdf_format(accept: &str) -> Option<ldp::RdfFormat> {
 ///   * the stored content-type is not an RDF media type,
 ///   * the client named no concrete RDF type (only wildcards),
 ///   * the requested format equals the stored format (no transcode),
-///   * the stored body does not parse (as N-Triples, or as JSON-LD for a
+///   * the stored body does not parse (as Turtle or N-Triples, or as JSON-LD for a
 ///     stored `application/ld+json` resource, whose `@graph` is read in full
 ///     and whose remote contexts are never fetched; GET fails soft to
 ///     verbatim — it never destroys or misrepresents), or
@@ -2534,7 +2534,14 @@ fn rdf_content_negotiate(
     let text = std::str::from_utf8(body).ok()?;
     let graph = match stored_format {
         ldp::RdfFormat::JsonLd => solid_pod_rs::rdf_input::parse_jsonld(body, base_iri).ok()?,
-        _ => ldp::Graph::parse_ntriples(text).ok()?,
+        // Turtle is a superset of N-Triples. Reading it against the URL the
+        // resource is being read from resolves any relative IRI a PATCH or a
+        // Turtle PUT left in the stored body, so a transcode never emits a
+        // relative IRI into N-Triples. The lenient N-Triples reader is the
+        // fallback for bodies the Turtle reader refuses.
+        _ => solid_pod_rs::rdf_input::parse_turtle(body, base_iri)
+            .ok()
+            .or_else(|| ldp::Graph::parse_ntriples(text).ok())?,
     };
     match target {
         // N-Triples is a syntactic subset of Turtle; the canonical

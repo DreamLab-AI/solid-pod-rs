@@ -17,6 +17,17 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 
 # ADR-2002 — Ground access control on Web Access Control, not ACP
 
+> Note 2026-11-21 (SP-PAR-265, SP-PAR-288): relative `acl:accessTo` / `acl:default`
+> targets are read differently by the two ACL syntaxes while no pod origin
+> (`public_base_url`) is configured. A JSON-LD ACL is expanded
+> (`crates/solid-pod-rs/src/wac/jsonld_acl.rs`), which resolves `./a/` against
+> the ACL's own path whatever the configuration; a Turtle ACL is read as written
+> and leaves `./a/` unresolved, so it denies. Absolute IRIs deny in both, and
+> with a configured origin (`wac::AclBase`) both resolve identically, an origin
+> match being required for an absolute IRI. This is not a cross-origin leak
+> (a relative reference can only name this pod); it is an inconsistency to close
+> by resolving Turtle relative targets the same way or by requiring an origin.
+
 > Note 2026-11-21: three open decisions recorded here, none changed by code.
 > (1) SP-ACL-REVIEW-02, whether a Web-Ledger fee is for *admission* or for
 > *successful service*. Today it is debited at admission

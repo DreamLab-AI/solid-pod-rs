@@ -128,8 +128,10 @@ replacing them; a body that cannot be read (or a JSON-LD body with a named
 graph or a remote `@context`) is refused with `409` rather than silently
 overwritten. The result is written back in the stored form: JSON-LD stays
 JSON-LD (expanded, without `@context`; blank-node labels, key order and
-prefixes are not preserved), anything else goes back as N-Triples served as
-`text/turtle` (comments and prefixes are dropped). The patch and the stored
+prefixes are not preserved), anything else goes back as N-Triples-shaped Turtle
+served as `text/turtle`, with relative IRIs kept relative (comments and prefixes
+are dropped; a read that asks for N-Triples or JSON-LD resolves them against the
+URL it is read from). The patch and the stored
 body are read in one fixed IRI space that no request header chooses, and every
 relative IRI is written back relative, so a request `Host` can never rebase
 what is stored, with or without `public_base_url`. HTML data islands are not

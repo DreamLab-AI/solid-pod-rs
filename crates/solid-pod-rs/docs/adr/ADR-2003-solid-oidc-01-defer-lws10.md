@@ -49,8 +49,10 @@ lineage: Distils archived ADR-057 (LWS10 OIDC delta, ten port tickets, partial-p
 > options are an operator allow-list of WebID origins, or public WebIDs only.
 > (4) Trusted issuers must come from configuration only (`public_base_url` is
 > required so `htu` is never built from request headers) and the DPoP replay
-> cache must record only after the access token verifies. Test:
-> `crates/solid-pod-rs-server/tests/auth_challenge.rs`.
+> cache must record only after the access token verifies. Note also that
+> `/.well-known/solid` still publishes `solid_oidc_issuer`, so a pod can
+> advertise an issuer whose tokens its own resource routes do not yet accept.
+> Test: `crates/solid-pod-rs-server/tests/auth_challenge.rs`.
 
 ## Context
 

@@ -25,6 +25,11 @@
 //!   relative agent into an absolute WebID when the pod origin is configured.
 //!   An IRI that really names the placeholder host is indistinguishable from a
 //!   relative one and is read the same way; it can name only this pod.
+//!   This happens with or without a configured pod origin: expansion cannot
+//!   tell `/a/` from `./a/`, and a relative reference can only name this pod.
+//!   A Turtle ACL with no configured origin still leaves `./a/` unresolved
+//!   (it denies), so the two syntaxes differ on relative targets until an
+//!   origin is configured; absolute IRIs deny in both.
 //! * Only the default graph is read. Quads in a named graph are ignored, so
 //!   they can add no rule.
 //! * Everything a rule is built from is read from the expansion: the rule

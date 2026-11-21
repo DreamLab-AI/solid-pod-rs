@@ -290,3 +290,43 @@ async fn a_json_ld_acl_patch_is_checked_and_stays_json_ld() {
         solid_pod_rs::wac::parse_jsonld_acl_at(text.as_bytes(), "/doc.acl").expect("ACL reads");
     assert_eq!(doc.graph.as_ref().map(Vec::len), Some(2), "{text}");
 }
+
+#[actix_web::test]
+async fn a_negotiated_read_of_a_patched_resource_resolves_relative_iris_at_read_time() {
+    // The stored form keeps `<#a>` relative; N-Triples cannot hold a relative
+    // IRI, so a read that asks for it must resolve against the URL it was read
+    // from, never emit `<#a>` inside N-Triples.
+    let s = storage_with("/doc.ttl", "<#a> <#b> \"v1\" .\n", "text/turtle").await;
+    let (st, _) = patch(
+        AppState::new(s.clone()),
+        "/doc.ttl",
+        "pod.example",
+        "text/n3",
+        &n3("<#a> <#c> \"v2\" ."),
+    )
+    .await;
+    assert_eq!(st, 204);
+    assert!(
+        stored(&s, "/doc.ttl").await.0.contains("<#a>"),
+        "stored form is relative"
+    );
+    let app = test::init_service(build_app(AppState::new(s.clone()))).await;
+    for accept in ["application/n-triples", "application/ld+json"] {
+        let rsp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/doc.ttl")
+                .insert_header(("host", "pod.example"))
+                .insert_header(("accept", accept))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(rsp.status().as_u16(), 200, "{accept}");
+        let body = String::from_utf8(test::read_body(rsp).await.to_vec()).unwrap();
+        assert!(
+            body.contains("http://pod.example/doc.ttl#a") && !body.contains("<#a>"),
+            "{accept}: {body}"
+        );
+        assert!(!body.contains("patch-base.invalid"), "{accept}: {body}");
+    }
+}

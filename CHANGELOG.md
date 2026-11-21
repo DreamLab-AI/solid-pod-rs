@@ -43,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wac::resolve_policy_from_storage_with_base`; the server builds the base from `public_base_url` only (never a
   request `Host`). A target matches only when its origin is exactly the configured one; another origin, a
   look-alike host, another port or scheme, userinfo, a query, a fragment or an encoded separator matches nothing.
-  With no `public_base_url` the old fail-closed behaviour is unchanged. The lockout guard judges a candidate ACL
+  With no `public_base_url` absolute IRIs, and relative targets in a Turtle ACL, still fail closed; a JSON-LD ACL (SP-PAR-265) resolves its relative targets against its own path even then, since a relative reference can only name this pod. The lockout guard judges a candidate ACL
   with the same resolution.
 - **The 401 challenge no longer advertises schemes the server does not honour** (SP-OIDC-02). Resource admission
   dispatches NIP-98 only (and the `dev-bearer` HMAC token in those builds), so `WWW-Authenticate` is now
