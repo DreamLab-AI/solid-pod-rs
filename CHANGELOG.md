@@ -22,11 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reference server's layout) and drops every sidecar ACL, widening access to the parent's grant: run
   `--acl-layout-report` first (read-only; lists inner ACLs, both forms and whether they differ, and sidecar-only
   containers). `both` reads the sidecar first and the inner file only when the sidecar is absent: the upgrade path.
+  **Both `inner` and `both` honour inner `<container>/.acl` files that early releases let agents create without
+  `acl:Control`; review the report before opting in.** It also lists symlinked ACL files (not followed by the report;
+  the server reads a relative link that stays inside the data root and refuses an absolute or outside one), reports a
+  read failure or a tree deeper than 64 levels as an error per path, and exits non-zero if anything could not be read.
 - **Two hardenings apply in every layout, including the default**: (1) nothing can be created beneath an ACL or meta
   document, by HTTP or MCP (`PUT /docs.acl/x`, `/docs/.acl/x`, `/x.meta/y`, and a container at those names: 400;
   before, the first was accepted and then every request under `/docs/` answered 503 to everyone); DELETE beneath
   is still allowed so junk can be removed; (2) a directory at an ACL key reads as absent (an unreadable ACL file
-  still denies). `/_admin/provision` writes what it always wrote (`sidecar`, `both`) and only the inner file under
+  still denies): **a subtree beneath a directory that sits at an ACL key used to answer an error and now inherits its
+  parent's ACL**, so access can widen there; `--acl-layout-report` lists every such directory
+  (`directory-at-acl-key`) so you can find those subtrees. `/_admin/provision` writes what it always wrote (`sidecar`, `both`) and only the inner file under
   `inner`; `POST /.pods` writes each pod's ACLs in the active layout.
 
 - **A JSON-LD ACL with a plain string on a rule predicate** (for example `"acl:mode": "acl:Read"` without an
@@ -122,6 +128,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SOLID_POD_NIP98_REPLAY_TTL_SECS` to `MIN_TTL_SECS` (122 s). The default is now 122 s (was 120 s).
 
 ### Changed
+
+- **MCP `write_acl` and `read_acl` take the same gate as an HTTP PUT or GET of the ACL** (SP-PAR-290 review). They
+  authorised with a bare Control check on the path and wrote `{path}.acl`; under `both` an agent with Control only from a
+  parent's default could write `/docs.acl` and take over a container whose inner ACL excludes it, and for `/docs/` the
+  tool always wrote the inner form, which the default layout ignores. They now go through `enforce_write_ctx` /
+  `enforce_read_ctx` on the key the active layout reads (under `both`: the sidecar if present, else the inner form); a
+  path without a trailing slash that names a container is that container.
 
 - **Cross-process resource lock** (SP-PAR-275, ER-29): two server processes sharing one filesystem data root can no longer
   interleave a read-modify-write. `Storage::lock_exclusive` (new, defaulted) is taken by `FsBackend` as an OS `flock` on

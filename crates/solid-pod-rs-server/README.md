@@ -153,8 +153,14 @@ exist. Pods provisioned by v0.5.0-alpha.10 to .22 hold both copies.
 In early releases an inner ACL could be created without `acl:Control`, so review
 before opting in: `solid-pod-rs-server --acl-layout-report` (read-only) lists
 every container holding an inner ACL, every container holding both forms and
-whether they differ, and every sidecar-only container (the ones `inner` would
-drop), skipping `.git`.
+whether they differ, every sidecar-only container (the ones `inner` would
+drop), every directory sitting at an ACL key (its subtree now inherits the
+parent's ACL), and every symlinked ACL file (not followed by the report; the
+server reads a relative link that stays inside the data root and refuses an
+absolute or outside one), skipping `.git`. A read failure or a tree deeper than
+64 levels is listed as an `error` and the command exits non-zero. **`inner` and
+`both` honour inner ACL files that early releases let agents create without
+`acl:Control`, so review the report before opting in.**
 
 Writing either form of a container's ACL needs `acl:Control` on the container,
 whatever the layout and the method (PUT, PATCH, POST with Slug, COPY, DELETE).

@@ -140,14 +140,22 @@ struct Cli {
     /// sibling `<container>.acl`, as before), `inner` (`<container>/.acl`, the
     /// reference JavaScript server's layout) or `both` (sidecar first, inner
     /// only when the sidecar is absent). `inner` drops every sidecar ACL and
-    /// widens access to the parent's grant: run `--acl-layout-report` first;
-    /// `both` is the upgrade path for a root holding either form.
+    /// widens access to the parent's grant. `inner` and `both` also honour
+    /// every inner `<container>/.acl` file, and early releases let an agent
+    /// create one without `acl:Control`: review `--acl-layout-report` before
+    /// opting in. `both` is the upgrade path for a root holding either form.
     #[arg(long, env = "JSS_ACL_LAYOUT", default_value = "sidecar")]
     acl_layout: String,
 
     /// Print a read-only review of every container ACL under the filesystem
-    /// data root (inner files, both forms and whether they differ, sidecar
-    /// only) and exit. Changes nothing.
+    /// data root and exit: inner files, both forms and whether they differ,
+    /// sidecar-only containers, directories sitting at an ACL key (their
+    /// subtrees now inherit the parent's ACL), symlinked ACL files (not
+    /// followed; the server reads a relative link inside the data root and
+    /// refuses an absolute or outside one) and any read error. Exits non-zero
+    /// if anything could not be read. Review it before choosing `inner` or
+    /// `both`, which honour inner ACL files that early releases let agents
+    /// create without Control. Changes nothing.
     #[arg(long)]
     acl_layout_report: bool,
 
@@ -341,6 +349,9 @@ async fn main() -> anyhow::Result<()> {
             "{}",
             solid_pod_rs_server::acl_layout_report::render(&findings)
         );
+        if solid_pod_rs_server::acl_layout_report::has_errors(&findings) {
+            anyhow::bail!("the ACL layout report is incomplete: see the `error` lines above");
+        }
         return Ok(());
     }
 
