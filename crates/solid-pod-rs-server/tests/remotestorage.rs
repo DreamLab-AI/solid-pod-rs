@@ -1186,3 +1186,46 @@ async fn an_existing_acl_is_reported_permissive_only_when_it_grants_read_broadly
         );
     }
 }
+
+#[actix_web::test]
+async fn token_writes_keep_working_after_a_deny_all_container_acl() {
+    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
+    // Property: the deny-all ACL written for a root with no `acl:agent`
+    // controller closes the container over LDP only. In the order the server
+    // runs them (mount first, then uploads), a token can still write, read
+    // back through `/storage/`, and an anonymous LDP GET stays refused.
+    let p = pod(true).await;
+    class_control_root(&p).await;
+    let storage = p.storage.clone();
+    let layout = p.state.acl_layout;
+    assert_eq!(
+        secure_container(&*storage, layout).await.unwrap(),
+        ContainerAcl::NoOwner
+    );
+    let app = test::init_service(build_app(p.state)).await;
+    let rw = mint(&app, "notes:rw", None).await;
+    let (s, _, _) = call(
+        &app,
+        with("PUT", "/storage/me/public/notes/after.html", Some(&rw))
+            .insert_header(("content-type", "text/html"))
+            .set_payload("<p>after mount</p>"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _, body) = call(&app, with("GET", "/storage/me/notes/", Some(&rw))).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (s, h, body) = call(
+        &app,
+        with("GET", "/storage/me/public/notes/after.html", None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body, b"<p>after mount</p>");
+    assert_inert(&h, "storage read-back");
+    let (s, _, _) = call(
+        &app,
+        with("GET", "/remotestorage/public/notes/after.html", None),
+    )
+    .await;
+    assert!(matches!(s.as_u16(), 401 | 403), "LDP GET was {s}");
+}
