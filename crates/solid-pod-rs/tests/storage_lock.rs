@@ -256,3 +256,45 @@ async fn a_state_lock_does_not_collide_with_a_resource_lock_in_one_task() {
         drop((s, r));
     }
 }
+
+/// First use must tolerate the lock directory appearing and disappearing under
+/// it: a creator can be told `NotFound` for an entry another creator has just
+/// made (or removed), and that must never surface as an error. Here a thread
+/// removes the whole lock directory repeatedly while eight handles take their
+/// first lock; every handle must still get a lock. (Linux reports `NotFound`
+/// for the removed directory; macOS can report it for a creation race.)
+#[tokio::test]
+async fn first_use_survives_the_lock_directory_vanishing_underneath_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let locks = dir.path().join(".solid-pod-locks");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let chaos = {
+        let (locks, stop) = (locks.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = std::fs::remove_dir_all(&locks);
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        })
+    };
+    let mut joins = Vec::new();
+    for i in 0..8 {
+        let root = dir.path().to_path_buf();
+        joins.push(tokio::spawn(async move {
+            let b = FsBackend::new(root).await.unwrap();
+            drop(
+                b.lock_exclusive(&format!("/v{i}"), Duration::from_secs(5))
+                    .await
+                    .unwrap_or_else(|e| panic!("first lock {i} failed: {e}")),
+            );
+        }));
+    }
+    // Let the disturbance run for a while, then stop it so the retries can
+    // settle (they are bounded, as the filesystem here is not).
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    chaos.join().unwrap();
+    for j in joins {
+        j.await.unwrap();
+    }
+}

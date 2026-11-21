@@ -49,51 +49,115 @@ const STATE_KEY_PREFIX: &str = "state:";
 /// a waiting request never occupies a runtime thread).
 const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// How many times key creation and the stripe-file open are retried when the
+/// filesystem reports `NotFound` for an entry this process has just created or
+/// is racing other processes to create.
+#[cfg(unix)]
+const LOCK_SETUP_ATTEMPTS: u32 = 32;
+
+/// Pause before retry number `attempt` (0-based): 1 ms, growing to a 16 ms cap.
+#[cfg(unix)]
+fn lock_setup_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(u64::from((attempt + 1).min(16)))
+}
+
+/// Run one step of lock setup, naming it in the error so a failure is
+/// diagnosable from the message alone.
+#[cfg(unix)]
+fn lock_step<T>(op: &str, r: std::io::Result<T>) -> Result<T, (std::io::ErrorKind, PodError)> {
+    r.map_err(|e| {
+        (
+            e.kind(),
+            PodError::Backend(format!("lock setup: {op}: {e}")),
+        )
+    })
+}
+
 /// Read the stripe key, creating it if absent. The candidate is written to a
 /// private temporary file (mode 0600) and installed with a hard link, which
 /// fails if the key already exists, so exactly one creator wins and every
 /// other process reads the winner's key.
+///
+/// Every step is retried when it reports `NotFound`. The lock directory and
+/// the key are created concurrently by every first user, and a creator can be
+/// told that an entry is absent after another creator has made it (or that the
+/// directory it just created is not yet visible to its next call): the rules
+/// for concurrent `mkdir`, `open(O_CREAT)` and `link` differ between Linux and
+/// macOS, so correctness must not depend on a `NotFound` meaning "really
+/// absent". A retry redoes the whole attempt from `create_dir_all`, so a
+/// genuinely missing directory is recreated rather than looped on, and an
+/// attempt never leaves its temporary file behind.
 #[cfg(unix)]
 fn load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], PodError> {
+    let mut last = PodError::Backend("could not settle on a lock key".into());
+    for attempt in 0..LOCK_SETUP_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(lock_setup_backoff(attempt - 1));
+        }
+        match try_load_or_create_lock_key(dir) {
+            Ok(key) => return Ok(key),
+            Err((std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists, e)) => last = e,
+            Err((_, e)) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
+/// One attempt at [`load_or_create_lock_key`]. The error carries the
+/// `io::ErrorKind` that decides whether the caller retries.
+#[cfg(unix)]
+fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKind, PodError)> {
     use cap_std::fs::OpenOptionsExt;
     let key_rel = PathBuf::from(LOCK_DIR).join(LOCK_KEY_FILE);
-    dir.create_dir_all(LOCK_DIR)?;
-    for _ in 0..8 {
-        match dir.read(&key_rel) {
-            Ok(bytes) => {
-                return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+    lock_step("create the lock directory", dir.create_dir_all(LOCK_DIR))?;
+    match dir.read(&key_rel) {
+        Ok(bytes) => {
+            return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                (
+                    std::io::ErrorKind::InvalidData,
                     PodError::Backend(format!(
                         "the lock key file {LOCK_DIR}/{LOCK_KEY_FILE} holds {} bytes, expected 32; \
                          refusing to replace it (that would split the stripes between processes)",
                         bytes.len()
-                    ))
-                });
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+                    )),
+                )
+            });
         }
-        let mut candidate = [0u8; 32];
-        getrandom::getrandom(&mut candidate).map_err(|e| {
-            PodError::Backend(format!("no system randomness for the lock key: {e}"))
-        })?;
-        let tmp =
-            PathBuf::from(LOCK_DIR).join(format!("{LOCK_KEY_FILE}.tmp-{}", uuid::Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        let mut file = dir.open_with(&tmp, &options)?;
-        file.write_all(&candidate)?;
-        file.sync_all()?;
-        drop(file);
-        let linked = dir.hard_link(&tmp, dir, &key_rel);
-        let _ = dir.remove_file(&tmp);
-        match linked {
-            Ok(()) => return Ok(candidate),
-            // Another process installed its key first: read that one.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return lock_step("read the lock key", Err(e)),
     }
-    Err(PodError::Backend("could not settle on a lock key".into()))
+    let mut candidate = [0u8; 32];
+    getrandom::getrandom(&mut candidate).map_err(|e| {
+        (
+            std::io::ErrorKind::Other,
+            PodError::Backend(format!("no system randomness for the lock key: {e}")),
+        )
+    })?;
+    let tmp = PathBuf::from(LOCK_DIR).join(format!("{LOCK_KEY_FILE}.tmp-{}", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = lock_step(
+        "create the key candidate",
+        dir.open_with(&tmp, &options).map_err(Into::into),
+    )?;
+    let written = file.write_all(&candidate).and_then(|()| file.sync_all());
+    drop(file);
+    let linked = match written {
+        Ok(()) => dir.hard_link(&tmp, dir, &key_rel),
+        Err(e) => Err(e),
+    };
+    // The candidate is private to this attempt: removing it cannot disturb a
+    // concurrent creator, and its absence is not an error.
+    let _ = dir.remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(candidate),
+        // Another process installed its key first: the next attempt reads it.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err((
+            std::io::ErrorKind::AlreadyExists,
+            PodError::Backend("lock key installed concurrently".into()),
+        )),
+        Err(e) => lock_step("install the lock key", Err(e)),
+    }
 }
 
 /// Filesystem-rooted `Storage` implementation.
@@ -482,11 +546,25 @@ impl Storage for FsBackend {
         };
         let rel = PathBuf::from(LOCK_DIR).join(name);
         let dir = self.dir.clone();
-        let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
-            dir.create_dir_all(LOCK_DIR)?;
+        let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File, PodError> {
             let mut options = OpenOptions::new();
             options.read(true).write(true).create(true);
-            Ok(dir.open_with(&rel, &options)?.into_std())
+            let mut last = PodError::Backend("could not open the lock file".into());
+            for attempt in 0..LOCK_SETUP_ATTEMPTS {
+                if attempt > 0 {
+                    std::thread::sleep(lock_setup_backoff(attempt - 1));
+                }
+                let opened = lock_step("create the lock directory", dir.create_dir_all(LOCK_DIR))
+                    .and_then(|()| lock_step("open the lock file", dir.open_with(&rel, &options)));
+                match opened {
+                    Ok(f) => return Ok(f.into_std()),
+                    // `NotFound` after `create_dir_all` and `O_CREAT` can only
+                    // be a creation race (see `load_or_create_lock_key`).
+                    Err((std::io::ErrorKind::NotFound, e)) => last = e,
+                    Err((_, e)) => return Err(e),
+                }
+            }
+            Err(last)
         })
         .await
         .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
