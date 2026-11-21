@@ -272,6 +272,9 @@ async fn self_describing_turtle_document_keeps_its_own_subject() {
         assert!(body.contains("/pub/doc.ttl"), "{accept}: {body}");
         assert!(!body.contains("\"@id\":\".\""), "{accept}: {body}");
         assert!(!body.contains("\"@id\":\"/pub/\""), "{accept}: {body}");
-        assert!(!body.contains("<http://localhost:8080/pub/> "), "{accept}: {body}");
+        assert!(
+            !body.contains("<http://localhost:8080/pub/> "),
+            "{accept}: {body}"
+        );
     }
 }
