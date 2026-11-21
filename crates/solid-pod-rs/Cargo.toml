@@ -55,6 +55,10 @@ spargebra = "0.3"
 # oxigraph family as spargebra; shares oxrdf 0.2 so no second RDF stack.
 oxttl = "0.1"
 oxrdf = "0.2"
+# JSON-LD 1.1 to RDF (stored `application/ld+json` served as Turtle / N-Triples,
+# SP-PAR-277). Same family; pins oxrdf =0.2.4, so no second RDF stack. Remote
+# contexts are never fetched (no document loader is installed).
+oxjsonld = "0.1"
 
 # WebSocketChannel2023 (Solid Notifications 0.2). Optional: only needed
 # when a tokio runtime is configured for the notifications feature.

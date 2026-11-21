@@ -208,6 +208,66 @@ pub fn parse_n3(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
     parse_rdf_body(RdfInputSyntax::N3, body, base_iri)
 }
 
+/// Parse a JSON-LD 1.1 document into the default graph, resolving relative
+/// IRIs against `base_iri` (pass `""` for none).
+///
+/// A top-level `@graph` with no `@id` is the default graph, so every node in
+/// it is read. Embedded contexts are honoured; **remote contexts are never
+/// fetched** (no loader is installed), so a document that needs one is an
+/// error rather than an outbound request. A document that places triples in a
+/// named graph is refused with [`PodError::Unsupported`]: flattening it would
+/// misstate the data.
+///
+/// # Errors
+///
+/// [`PodError::PayloadTooLarge`], [`PodError::BadRequest`] (not UTF-8, bad
+/// base IRI, JSON-LD syntax or context error) or [`PodError::Unsupported`]
+/// (named graph).
+///
+/// # Example
+///
+/// ```
+/// use solid_pod_rs::rdf_input::parse_jsonld;
+///
+/// let doc = br#"{"@context": {"n": "http://xmlns.com/foaf/0.1/name"},
+///                 "@graph": [{"@id": "http://e.org/a", "n": "A"},
+///                            {"@id": "http://e.org/b", "n": "B"}]}"#;
+/// assert_eq!(parse_jsonld(doc, "").unwrap().len(), 2);
+/// ```
+pub fn parse_jsonld(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
+    if body.len() > MAX_RDF_INPUT_BYTES {
+        return Err(PodError::PayloadTooLarge(format!(
+            "RDF body of {} bytes exceeds the {MAX_RDF_INPUT_BYTES} byte limit",
+            body.len()
+        )));
+    }
+    if std::str::from_utf8(body).is_err() {
+        return Err(bad("RDF body is not valid UTF-8"));
+    }
+    let mut parser = oxjsonld::JsonLdParser::new();
+    if !base_iri.is_empty() {
+        parser = parser
+            .with_base_iri(base_iri)
+            .map_err(|e| bad(format!("invalid base IRI: {e}")))?;
+    }
+    let mut g = Graph::new();
+    for item in parser.for_slice(body) {
+        let q = item.map_err(|e| bad(format!("JSON-LD error: {e}")))?;
+        if !matches!(q.graph_name, oxrdf::GraphName::DefaultGraph) {
+            return Err(PodError::Unsupported(
+                "JSON-LD named graphs are not supported".into(),
+            ));
+        }
+        let triple = Triple::new(
+            subject_to_term(&q.subject)?,
+            Term::Iri(q.predicate.as_str().to_string()),
+            term_to_term(&q.object)?,
+        );
+        push_checked(&mut g, triple)?;
+    }
+    Ok(g)
+}
+
 fn parse_turtle_inner(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
     let parser = TurtleParser::new()
         .with_base_iri(base_iri)

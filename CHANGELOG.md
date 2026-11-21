@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stored JSON-LD document, `@graph` included, is served as Turtle or N-Triples on request** (SP-PAR-277).
+  New `rdf_input::parse_jsonld` on `oxjsonld` (new dependency, same oxigraph family and `oxrdf` pin). Remote
+  contexts are never fetched; unreadable JSON-LD and named graphs are served verbatim.
 - **The server closes the forge mirror's relay sessions at shutdown** (SP-PAR-292) through the new
   `stop_forge`, rather than cutting them when the runtime drops.
 - **A forge that cannot start fails boot** (SP-PAR-293): `start_forge` now returns `Result` (was `()`) and the

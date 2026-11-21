@@ -1712,9 +1712,12 @@ async fn handle_get(
             // can GET the same graph as Turtle, N-Triples, or JSON-LD on
             // demand (PRD-014 Seam C / C4). Non-RDF resources, unparseable
             // bodies, and wildcard/`*/*` Accepts fall through to verbatim.
-            if let Some((negotiated_body, negotiated_ct)) =
-                rdf_content_negotiate(&body, &meta.content_type, accept)
-            {
+            if let Some((negotiated_body, negotiated_ct)) = rdf_content_negotiate(
+                &body,
+                &meta.content_type,
+                accept,
+                &format!("{}{path}", scheme::request_origin(&req)),
+            ) {
                 let mut rsp = HttpResponse::Ok().body(negotiated_body);
                 rsp.headers_mut().insert(
                     header::CONTENT_TYPE,
@@ -2379,13 +2382,16 @@ fn best_explicit_rdf_format(accept: &str) -> Option<ldp::RdfFormat> {
 ///   * the stored content-type is not an RDF media type,
 ///   * the client named no concrete RDF type (only wildcards),
 ///   * the requested format equals the stored format (no transcode),
-///   * the stored body does not parse as N-Triples (GET fails soft to
+///   * the stored body does not parse (as N-Triples, or as JSON-LD for a
+///     stored `application/ld+json` resource, whose `@graph` is read in full
+///     and whose remote contexts are never fetched; GET fails soft to
 ///     verbatim — it never destroys or misrepresents), or
 ///   * the requested target has no serialiser (RDF/XML).
 fn rdf_content_negotiate(
     body: &[u8],
     stored_ct: &str,
     accept: &str,
+    base_iri: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
     if accept.trim().is_empty() {
         return None;
@@ -2396,7 +2402,10 @@ fn rdf_content_negotiate(
         return None;
     }
     let text = std::str::from_utf8(body).ok()?;
-    let graph = ldp::Graph::parse_ntriples(text).ok()?;
+    let graph = match stored_format {
+        ldp::RdfFormat::JsonLd => solid_pod_rs::rdf_input::parse_jsonld(body, base_iri).ok()?,
+        _ => ldp::Graph::parse_ntriples(text).ok()?,
+    };
     match target {
         // N-Triples is a syntactic subset of Turtle; the canonical
         // serialiser emits N-Triples, which is valid Turtle.
