@@ -168,6 +168,8 @@ and deployment status unchanged.
   `jwk_matches_alg` checks key family and any declared algorithm. The updated
   compatibility matrix and existing tests reflect these changes; the old
   arbitrary-audience finding is no longer current.
+> Note 2026-11-20: DPoP `htu` is now compared per RFC 9449 (`crates/solid-pod-rs/src/auth/htu.rs`; path exact, query and fragment ignored), the replay cache refuses at capacity rather than evicting a live entry (`oidc/replay.rs`), and its lifetime is at least 122 s. The next bullet predates those fixes; the `exp`/`nbf` gaps are unchanged.
+
 - DPoP URL matching still folds path case and trailing slashes, retains queries,
   and uses an opt-in cache whose capacity eviction can forget an unexpired
   proof. Token expiry accepts equality and `nbf` is not checked. These are open
