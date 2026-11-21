@@ -116,7 +116,7 @@ impl Provider {
     /// environment). For deployments sizing the cache themselves, and tests.
     ///
     /// A cache whose lifetime is shorter than
-    /// [`min_ttl_for_skew`](solid_pod_rs::oidc::replay::min_ttl_for_skew) for this
+    /// [`min_ttl_for_skew`] for this
     /// provider's `dpop_skew_secs` would let a future-dated proof be replayed
     /// after its entry expires, so it is raised to that floor (and the
     /// change logged) rather than installed as given.
