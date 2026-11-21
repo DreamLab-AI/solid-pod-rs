@@ -41,6 +41,9 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 notify = { version = "6", optional = true }
 cap-std = { version = "3.4.4", optional = true }
+# Advisory `flock` for the cross-process resource lock (SP-PAR-275). Already in
+# the tree through cap-std; used directly rather than hand-rolling a lock file.
+rustix = { version = "1", default-features = false, features = ["fs", "std"], optional = true }
 
 # Extension → MIME resolution for sidecar-absent resources (e.g. files
 # extracted from a git push to /public/apps/). Pure-logic, wasm-safe,
@@ -136,7 +139,7 @@ embedded-docs = ["dep:include_dir"]
 # leave this off via `default-features = false, features = ["core"]`.
 tokio-runtime = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 
-fs-backend = ["tokio-runtime", "dep:notify", "dep:cap-std"]
+fs-backend = ["tokio-runtime", "dep:notify", "dep:cap-std", "dep:rustix"]
 memory-backend = ["tokio-runtime"]
 oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]

@@ -240,14 +240,57 @@ static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
 /// git-mark PROV-O sidecar. Request paths are already canonical here
 /// (`NormalizePath` merges `//`, and [`PathTraversalGuard`] refuses `.` and
 /// `..` segments), so one stored resource maps to one key.
-pub(crate) async fn lock_resource(path: &str) -> tokio::sync::MutexGuard<'static, ()> {
+pub(crate) async fn lock_resource_pod(
+    storage: &dyn Storage,
+    path: &str,
+) -> Result<ResourceGuard, PodError> {
     use std::hash::BuildHasher;
     // Keyed per process, so a client cannot choose a path that shares a
     // given resource's stripe.
     static STRIPE_KEY: std::sync::LazyLock<std::collections::hash_map::RandomState> =
         std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
     let stripe = (STRIPE_KEY.hash_one(path) as usize) % RESOURCE_WRITE_LOCK_STRIPES;
-    RESOURCE_WRITE_LOCKS[stripe].lock().await
+    let mutex = RESOURCE_WRITE_LOCKS[stripe].lock().await;
+    // SP-PAR-275: the in-process lock above is taken first, then the backend's
+    // cross-process lock (an OS file lock on the filesystem backend), so two
+    // server processes on one data root cannot interleave a read-modify-write.
+    // A task holds at most one resource lock at a time, so the order cannot
+    // deadlock.
+    let storage_lock = storage
+        .lock_exclusive(path, CROSS_PROCESS_LOCK_WAIT)
+        .await?;
+    Ok(ResourceGuard {
+        _mutex: mutex,
+        _storage_lock: storage_lock,
+    })
+}
+
+/// How long a write waits for another process's lock on the same resource
+/// before answering `503` with `Retry-After`.
+const CROSS_PROCESS_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Both halves of a resource write lock; released together on drop.
+pub(crate) struct ResourceGuard {
+    _mutex: tokio::sync::MutexGuard<'static, ()>,
+    _storage_lock: Option<solid_pod_rs::storage::StorageLock>,
+}
+
+/// [`lock_resource_pod`] for a handler: a lock held by another process past
+/// the wait is `503` with `Retry-After: 1`.
+pub(crate) async fn lock_resource(
+    storage: &dyn Storage,
+    path: &str,
+) -> Result<ResourceGuard, ActixError> {
+    match lock_resource_pod(storage, path).await {
+        Ok(g) => Ok(g),
+        Err(PodError::Conflict(msg)) => {
+            let rsp = HttpResponse::ServiceUnavailable()
+                .insert_header((header::RETRY_AFTER, "1"))
+                .body(msg.clone());
+            Err(actix_web::error::InternalError::from_response(msg, rsp).into())
+        }
+        Err(e) => Err(to_actix(e)),
+    }
 }
 
 /// Attempts [`mint_and_lock_target`] makes before refusing with 409.
@@ -264,7 +307,7 @@ const MINT_LOCK_ATTEMPTS: usize = 64;
 pub(crate) async fn mint_and_lock_target(
     storage: &dyn Storage,
     target: &str,
-) -> Result<(String, tokio::sync::MutexGuard<'static, ()>), PodError> {
+) -> Result<(String, ResourceGuard), PodError> {
     let mut previous: Option<String> = None;
     for _ in 0..MINT_LOCK_ATTEMPTS {
         let candidate = mint_unique_target(storage, target).await;
@@ -273,7 +316,7 @@ pub(crate) async fn mint_and_lock_target(
         if previous.as_deref() == Some(candidate.as_str()) {
             break;
         }
-        let guard = lock_resource(&candidate).await;
+        let guard = lock_resource_pod(storage, &candidate).await?;
         // A failed probe is not evidence the name is free: refuse rather
         // than risk overwriting.
         if !storage.exists(&candidate).await? {
@@ -1935,7 +1978,7 @@ async fn handle_put(
                 req_origin(&req),
             )
             .await?;
-            let _write_guard = lock_resource(&path).await;
+            let _write_guard = lock_resource(&*state.storage, &path).await?;
             let meta = state
                 .storage
                 .create_container(&path)
@@ -1982,7 +2025,7 @@ async fn handle_put(
 
     validate_rdf_body(&req, &state, &path, ct, &body)?;
 
-    let _write_guard = lock_resource(&path).await;
+    let _write_guard = lock_resource(&*state.storage, &path).await?;
     check_write_preconditions(&req, &state, &path).await?;
     let quota = reserve_quota_for_size(&state, &path, body.len() as u64).await?;
     let write = state
@@ -2100,7 +2143,7 @@ async fn handle_post(
         {
             return Ok(refusal.response());
         }
-        lock_resource(&target).await
+        lock_resource(&*state.storage, &target).await?
     } else {
         // P1-k: LDP POST must CREATE a new resource, never overwrite one.
         // `resolve_slug` joins the Slug verbatim, so a repeated `Slug: note`
@@ -2284,7 +2327,7 @@ async fn handle_patch(
 
     // Serialise the read-modify-write; check `If-Match` / `If-None-Match`
     // against the ETag that this PATCH will actually replace.
-    let _write_guard = lock_resource(&path).await;
+    let _write_guard = lock_resource(&*state.storage, &path).await?;
     check_write_preconditions(&req, &state, &path).await?;
 
     // Existing resource?
@@ -2937,7 +2980,7 @@ async fn handle_delete(
     )
     .await?;
 
-    let _write_guard = lock_resource(&path).await;
+    let _write_guard = lock_resource(&*state.storage, &path).await?;
     check_write_preconditions(&req, &state, &path).await?;
     let quota = reserve_quota_for_size(&state, &path, 0).await?;
     match state.storage.delete(&path).await {
@@ -3368,7 +3411,7 @@ async fn handle_create_account(
     // two creations of one name cannot both pass the check. A failed probe
     // is not evidence the name is free: provisioning would overwrite an
     // existing pod's ACL tree.
-    let _write_guard = lock_resource(&pod_root).await;
+    let _write_guard = lock_resource(&*state.storage, &pod_root).await?;
     if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "account already exists"}))
@@ -3605,7 +3648,7 @@ async fn handle_create_pod(
     // two creations of one name cannot both pass the check. A failed probe
     // is not evidence the name is free: provisioning would overwrite an
     // existing pod's ACL tree.
-    let _write_guard = lock_resource(&pod_root).await;
+    let _write_guard = lock_resource(&*state.storage, &pod_root).await?;
     if state.storage.exists(&pod_root).await.map_err(to_actix)? {
         return Ok(
             HttpResponse::Conflict().json(serde_json::json!({"error": "Pod already exists"}))
@@ -3722,7 +3765,7 @@ async fn handle_copy(
     {
         // Released before the sidecar below takes its own stripe, so this
         // handler never holds two.
-        let _write_guard = lock_resource(&dest).await;
+        let _write_guard = lock_resource(&*state.storage, &dest).await?;
         let quota = reserve_quota_for_size(&state, &dest, body.len() as u64).await?;
         let write = state.storage.put(&dest, body, &meta.content_type).await;
         finish_quota_reservation(&state, quota, write.is_ok()).await;
@@ -3760,7 +3803,7 @@ async fn handle_copy(
             .await
             .is_ok();
         if permitted {
-            let _write_guard = lock_resource(&dst_acl).await;
+            let _write_guard = lock_resource(&*state.storage, &dst_acl).await?;
             let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;
             let write = state
                 .storage

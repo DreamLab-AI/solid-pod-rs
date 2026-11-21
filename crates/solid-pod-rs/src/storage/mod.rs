@@ -64,6 +64,29 @@ pub enum StorageEvent {
     Deleted(String),
 }
 
+/// An exclusive hold on one resource key, released when dropped.
+///
+/// Returned by [`Storage::lock_exclusive`]. It is opaque: the backend decides
+/// what it holds (an OS file lock for the filesystem backend).
+pub struct StorageLock {
+    _held: Box<dyn std::any::Any + Send + Sync>,
+}
+
+impl StorageLock {
+    /// Wrap whatever keeps the lock alive.
+    pub fn new(held: impl std::any::Any + Send + Sync) -> Self {
+        Self {
+            _held: Box::new(held),
+        }
+    }
+}
+
+impl std::fmt::Debug for StorageLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StorageLock")
+    }
+}
+
 /// The storage abstraction. Implementations back a Solid pod with
 /// arbitrary persistence.
 ///
@@ -98,6 +121,23 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Return whether a resource exists.
     async fn exists(&self, path: &str) -> Result<bool, PodError>;
+
+    /// Take a cross-process exclusive lock on `key`, waiting at most `wait`.
+    ///
+    /// A write that reads, decides and writes (PATCH, a conditional PUT or
+    /// DELETE) holds this around the whole sequence so that two server
+    /// processes sharing one data root cannot interleave. The default returns
+    /// `Ok(None)`: the backend is not shared between processes, and the
+    /// caller's in-process lock is all there is. A backend that can be shared
+    /// returns `Ok(Some(lock))`, or [`PodError::Conflict`] when the lock was
+    /// not obtained within `wait`.
+    async fn lock_exclusive(
+        &self,
+        _key: &str,
+        _wait: std::time::Duration,
+    ) -> Result<Option<StorageLock>, PodError> {
+        Ok(None)
+    }
 
     /// Whether a *directory* (not a resource) sits at exactly `path`.
     ///

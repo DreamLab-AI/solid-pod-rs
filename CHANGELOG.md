@@ -114,6 +114,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Cross-process resource lock** (SP-PAR-275, ER-29): two server processes sharing one filesystem data root can no longer
+  interleave a read-modify-write. `Storage::lock_exclusive` (new, defaulted) is taken by `FsBackend` as an OS `flock` on
+  one of 256 stripe files under `.solid-pod-locks/` (hidden from listings), inside the in-process lock, for every write.
+  After 30 s the write answers `503` with `Retry-After: 1`. New direct dependency `rustix` (already in the tree).
+  Also fixed: listing the filesystem root (`FsBackend::list("/")`) returned nothing.
+
 - **The twelve JSS #631 ACL fixtures run as Rust tests** (row 268): `crates/solid-pod-rs-server/tests/jss_wac_fixtures.rs`.
   No failing case: the four differences (remote `@context`, bare modes under `@id` coercion, 409 against 400, short
   against full IRIs) are recorded in the row as kept, fail-closed behaviour.

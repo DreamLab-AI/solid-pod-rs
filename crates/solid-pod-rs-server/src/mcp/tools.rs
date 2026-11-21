@@ -430,7 +430,10 @@ async fn write_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     let bytes = Bytes::from(content.as_bytes().to_vec());
     let len = bytes.len();
     // Same per-resource serialisation as LDP PUT and PATCH.
-    let _write_guard = crate::lock_resource(path).await;
+    let _write_guard = match crate::lock_resource_pod(&*state.storage, path).await {
+        Ok(g) => g,
+        Err(e) => return tool_error(format!("write refused: {e}")),
+    };
     let quota = match crate::reserve_quota_for_size(state, path, len as u64).await {
         Ok(q) => q,
         Err(e) => return tool_error(format!("write refused: {e}")),
@@ -478,7 +481,10 @@ async fn create_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
         if let Err(e) = authorise(state, ctx, &base, AccessMode::Write, "create").await {
             return e;
         }
-        crate::lock_resource(&base).await
+        match crate::lock_resource_pod(&*state.storage, &base).await {
+            Ok(g) => g,
+            Err(e) => return tool_error(format!("create refused: {e}")),
+        }
     } else if is_container {
         // A container is stored under its trailing-slash key; mint, probe
         // and lock that key, as LDP container creation does.
@@ -536,7 +542,10 @@ async fn delete_resource(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     if let Err(e) = authorise(state, ctx, path, AccessMode::Write, "delete").await {
         return e;
     }
-    let _write_guard = crate::lock_resource(path).await;
+    let _write_guard = match crate::lock_resource_pod(&*state.storage, path).await {
+        Ok(g) => g,
+        Err(e) => return tool_error(format!("write refused: {e}")),
+    };
     if !state.storage.exists(path).await.unwrap_or(false) {
         return tool_error(format!("not found: {path}"));
     }
@@ -926,7 +935,10 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     let bytes = Bytes::from(serialized.into_bytes());
     // Same per-resource serialisation as an LDP PATCH of this ACL, so a
     // concurrent PATCH cannot write back the graph this call replaces.
-    let _write_guard = crate::lock_resource(&acl_path).await;
+    let _write_guard = match crate::lock_resource_pod(&*state.storage, &acl_path).await {
+        Ok(g) => g,
+        Err(e) => return tool_error(format!("write refused: {e}")),
+    };
     let quota = match crate::reserve_quota_for_size(state, &acl_path, bytes.len() as u64).await {
         Ok(q) => q,
         Err(e) => return tool_error(format!("write refused: {e}")),

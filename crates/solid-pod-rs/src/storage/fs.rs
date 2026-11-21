@@ -21,6 +21,19 @@ use crate::storage::{ResourceMeta, Storage, StorageEvent};
 
 const META_SUFFIX: &str = ".meta.json";
 
+/// Directory under the data root that holds the cross-process lock files.
+/// A dotfile, so no HTTP route reaches it, and hidden from listings.
+const LOCK_DIR: &str = ".solid-pod-locks";
+
+/// Lock files: a key hashes (SHA-256, so every process agrees) to one of this
+/// many files. Striping keeps the lock directory bounded whatever the number
+/// of resources and puts no file beside a resource.
+const LOCK_STRIPES: usize = 256;
+
+/// How often a waiting locker retries (the lock is taken without blocking, so
+/// a waiting request never occupies a runtime thread).
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Filesystem-rooted `Storage` implementation.
 #[derive(Clone)]
 pub struct FsBackend {
@@ -296,7 +309,11 @@ impl Storage for FsBackend {
 
     async fn list(&self, container: &str) -> Result<Vec<String>, PodError> {
         let _guard = self.operations.read().await;
-        let container_path = Self::relative(container)?;
+        let mut container_path = Self::relative(container)?;
+        // The root is the empty relative path, which `read_dir` rejects.
+        if container_path.as_os_str().is_empty() {
+            container_path = PathBuf::from(".");
+        }
         let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || {
             let entries = match dir.read_dir(&container_path) {
@@ -308,7 +325,10 @@ impl Storage for FsBackend {
             for entry in entries {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(META_SUFFIX) || name.contains(".solid-pod-tmp-") {
+                if name.ends_with(META_SUFFIX)
+                    || name.contains(".solid-pod-tmp-")
+                    || name == LOCK_DIR
+                {
                     continue;
                 }
                 let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
@@ -350,6 +370,41 @@ impl Storage for FsBackend {
         tokio::task::spawn_blocking(move || Ok(dir.exists(data_path)))
             .await
             .map_err(|e| PodError::Backend(format!("filesystem exists task failed: {e}")))?
+    }
+
+    #[cfg(unix)]
+    async fn lock_exclusive(
+        &self,
+        key: &str,
+        wait: std::time::Duration,
+    ) -> Result<Option<crate::storage::StorageLock>, PodError> {
+        use rustix::fs::{flock, FlockOperation};
+        let stripe = usize::from(Sha256::digest(key.as_bytes())[0]) % LOCK_STRIPES;
+        let rel = PathBuf::from(LOCK_DIR).join(format!("{stripe:02x}.lock"));
+        let dir = self.dir.clone();
+        let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
+            dir.create_dir_all(LOCK_DIR)?;
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true);
+            Ok(dir.open_with(&rel, &options)?.into_std())
+        })
+        .await
+        .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(Some(crate::storage::StorageLock::new(file))),
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(PodError::Conflict(format!(
+                            "the resource is being written by another process: {key}"
+                        )));
+                    }
+                    tokio::time::sleep(LOCK_POLL).await;
+                }
+                Err(e) => return Err(PodError::Io(std::io::Error::from(e))),
+            }
+        }
     }
 
     async fn is_directory(&self, path: &str) -> bool {
