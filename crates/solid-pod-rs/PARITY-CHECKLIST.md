@@ -754,15 +754,15 @@ They are listed for the fix queue, not counted in the parity figures.
 - **Fixed: P1, silent triple loss.** A second triple on one stored line was dropped by the next
   PATCH (`src/ldp.rs:832-840`); Turtle using `;` passes the 409 guard, the PATCH returns
   204, and the triple after the `;` is lost.
-- **P1, SPARQL Update with variables is a no-op that returns 204** (`src/ldp.rs:1441-1460`).
-  Row 41's "full SPARQL 1.1 algebra" is overstated.
+- **Fixed 2026-11-21: P1, SPARQL Update with variables was a no-op that returned 204.** The
+  `WHERE` basic graph pattern is now evaluated (row 41); unsupported forms are refused.
 
 The first two were fixed on 2026-11-01: the N-Triples reader decodes UTF-8 and
 `\u` escapes and refuses trailing content, and PATCH reads other stored Turtle with the
 Turtle parser. Text already double-encoded is not repaired. Found while fixing them: the
 Turtle ACL reader treated each statement as a whole authorisation, so an ACL stored as
 N-Triples (as PATCH writes it) read as empty and denied everyone; it now merges
-statements by subject (`src/wac/parser.rs`). The SPARQL defect remains open.
+statements by subject (`src/wac/parser.rs`). The SPARQL defect was fixed on 2026-11-21.
 
 ---
 
