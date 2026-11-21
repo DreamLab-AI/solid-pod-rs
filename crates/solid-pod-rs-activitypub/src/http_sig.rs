@@ -192,7 +192,7 @@ impl HttpActorKeyResolver {
     }
 
     /// Replace the address guard (tests use
-    /// [`SsrfGuard::permit_loopback_for_tests`]).
+    /// `SsrfGuard::permit_loopback_for_tests` (feature `test-loopback`)).
     #[must_use]
     pub fn with_guard(mut self, guard: SsrfGuard) -> Self {
         self.guard = guard;

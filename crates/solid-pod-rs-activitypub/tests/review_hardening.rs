@@ -607,3 +607,121 @@ async fn the_key_cache_is_bounded() {
     resolver.resolve(&format!("{actor}?n=0#k")).await.unwrap();
     assert_eq!(server.received_requests().await.unwrap().len(), before + 1);
 }
+
+// ---------------------------------------------------------------------------
+// A5: scheme, activity-id origin, dedup per sender
+// ---------------------------------------------------------------------------
+
+/// Property: the strict guard refuses plain `http` even to a public address,
+/// and still refuses loopback over `https`, so each refusal stands alone.
+#[tokio::test]
+async fn the_strict_guard_refuses_plain_http_and_https_loopback() {
+    use solid_pod_rs_activitypub::resolve_ssrf_safe_with;
+    let strict = SsrfGuard::strict();
+    let http = resolve_ssrf_safe_with("http://93.184.216.34/inbox", strict).await;
+    assert!(
+        http.is_err_and(|e| e.to_string().contains("scheme")),
+        "plain http to a public address was allowed"
+    );
+    assert!(
+        resolve_ssrf_safe_with("https://93.184.216.34/inbox", strict)
+            .await
+            .is_ok()
+    );
+    let loopback = resolve_ssrf_safe_with("https://127.0.0.1:9/inbox", strict).await;
+    assert!(
+        loopback.is_err_and(|e| e.to_string().contains("private/reserved")),
+        "loopback over https must be refused as an address, not a scheme"
+    );
+    // The test allowance still reaches a local plain-http server.
+    assert!(resolve_ssrf_safe_with(
+        "http://127.0.0.1:9/inbox",
+        SsrfGuard::permit_loopback_for_tests()
+    )
+    .await
+    .is_ok());
+}
+
+/// Property: an activity whose `id` is not on its actor's origin is refused
+/// before anything is stored (a sender cannot mint ids under another origin).
+#[tokio::test]
+async fn an_activity_id_must_share_its_actors_origin() {
+    let (store, _dir) = file_store().await;
+    let who = "https://remote.example/actor";
+    let note = |id: &str| serde_json::json!({"id": id, "type": "Create", "actor": who});
+    for bad in [
+        "https://victim.example/n/1",
+        "http://remote.example/n/1",
+        "urn:uuid:1",
+    ] {
+        let r = handle_inbox(&store, ME, &verified(who), &note(bad)).await;
+        assert!(r.is_err(), "{bad} was accepted");
+    }
+    assert_eq!(store.inbox_count().await.unwrap(), 0);
+    assert!(handle_inbox(
+        &store,
+        ME,
+        &verified(who),
+        &note("https://remote.example/n/1")
+    )
+    .await
+    .is_ok());
+}
+
+/// Property: two actors on one origin reusing an activity id do not collide:
+/// the second is stored, not treated as a duplicate of the first.
+#[tokio::test]
+async fn dedup_is_keyed_by_sender_and_id() {
+    let (store, _dir) = file_store().await;
+    let a = "https://remote.example/users/a";
+    let b = "https://remote.example/users/b";
+    let id = "https://remote.example/objects/1";
+    let act = |who: &str| serde_json::json!({"id": id, "type": "Create", "actor": who});
+    let first = handle_inbox(&store, ME, &verified(a), &act(a))
+        .await
+        .unwrap();
+    let second = handle_inbox(&store, ME, &verified(b), &act(b))
+        .await
+        .unwrap();
+    let again = handle_inbox(&store, ME, &verified(a), &act(a))
+        .await
+        .unwrap();
+    assert_eq!(first, InboxOutcome::Accepted);
+    assert_eq!(second, InboxOutcome::Accepted, "b was pre-empted by a");
+    assert_eq!(again, InboxOutcome::Duplicate);
+    assert_eq!(store.inbox_count().await.unwrap(), 2);
+}
+
+/// Property (the assumption `open_store` in the server relies on): SQLite gives
+/// the `-wal` and `-shm` files the mode of the main database file, so a main
+/// file created 0600 yields private siblings whatever the umask.
+#[cfg(unix)]
+#[tokio::test]
+async fn wal_and_shm_inherit_the_database_files_mode() {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ap.db");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&db)
+        .unwrap();
+    let store = Store::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store
+        .record_outbox(ME, &serde_json::json!({"id": "urn:w", "type": "Create"}))
+        .await
+        .unwrap();
+    for name in ["ap.db", "ap.db-wal", "ap.db-shm"] {
+        let f = dir.path().join(name);
+        let m = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(m, 0o600, "{name}");
+    }
+}

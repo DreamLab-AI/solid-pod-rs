@@ -286,3 +286,16 @@ async fn a_trickled_body_is_cut_off() {
         String::from_utf8_lossy(&buf)
     );
 }
+
+#[actix_web::test]
+async fn the_default_policy_refuses_a_loopback_follow_target_over_https_too() {
+    // Property: the loopback refusal stands on its own. Plain http is refused
+    // by scheme under the strict guard, so this uses https to show the
+    // address check still refuses 127.0.0.1.
+    let a = node("alice", 0x11, SsrfGuard::strict()).await;
+    let r = a
+        .post_outbox(&json!({"type": "Follow", "object": "https://127.0.0.1:9/actor"}))
+        .await;
+    assert_eq!(r.status().as_u16(), 502);
+    assert_eq!(a.fed.store().outbox_count().await.unwrap(), 0);
+}

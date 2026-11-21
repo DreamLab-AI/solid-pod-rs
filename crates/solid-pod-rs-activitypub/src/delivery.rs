@@ -128,7 +128,7 @@ impl DeliveryWorker {
     }
 
     /// Replace the address guard. Tests federating two local servers pass
-    /// [`SsrfGuard::permit_loopback_for_tests`]; the default is strict.
+    /// `SsrfGuard::permit_loopback_for_tests` (feature `test-loopback`); the default is strict.
     #[must_use]
     pub fn with_guard(mut self, guard: SsrfGuard) -> Self {
         self.guard = guard;

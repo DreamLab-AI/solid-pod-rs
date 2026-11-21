@@ -149,12 +149,17 @@ pub async fn handle_inbox_with(
         )));
     }
 
-    if activity
-        .get("id")
-        .and_then(|v| v.as_str())
-        .is_some_and(|id| id.len() > MAX_ACTIVITY_ID_BYTES)
-    {
-        return Err(InboxError::InvalidJson("activity id too long".into()));
+    if let Some(id) = activity.get("id").and_then(|v| v.as_str()) {
+        if id.len() > MAX_ACTIVITY_ID_BYTES {
+            return Err(InboxError::InvalidJson("activity id too long".into()));
+        }
+        // An id is minted by its actor's server: one on another origin would
+        // let a sender claim identifiers it does not own.
+        if !same_origin(id, &verified_actor.actor_url) {
+            return Err(InboxError::ActorMismatch(
+                "activity id is not on the actor's origin".into(),
+            ));
+        }
     }
 
     // Every Follow check runs before anything is stored, so a refused Follow

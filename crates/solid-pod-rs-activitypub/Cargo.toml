@@ -13,6 +13,13 @@ keywords = ["solid", "activitypub", "federation", "http-signatures", "nodeinfo"]
 categories = ["web-programming::http-server"]
 readme = "README.md"
 
+[features]
+default = []
+# Compiles `SsrfGuard::permit_loopback_for_tests` (loopback and plain http).
+# Enable it ONLY from `[dev-dependencies]`: with resolver 2 it then never
+# reaches a release build.
+test-loopback = []
+
 [dependencies]
 solid-pod-rs = { version = "0.5.0-alpha.22", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
 
@@ -44,6 +51,8 @@ rand = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+# This crate's own tests need the loopback guard (see `test-loopback`).
+solid-pod-rs-activitypub = { path = ".", features = ["test-loopback"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 wiremock = "0.6"

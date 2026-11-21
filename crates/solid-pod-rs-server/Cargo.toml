@@ -188,6 +188,9 @@ install = ["solid-pod-rs/nip98-schnorr"]
 jev = []
 
 [dev-dependencies]
+# The federation tests run two local plain-http servers; the feature is
+# dev-only, so a release build of this crate cannot contain the guard.
+solid-pod-rs-activitypub = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-activitypub", features = ["test-loopback"] }
 actix-http = "3"
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

@@ -157,6 +157,64 @@ pub fn load_or_create_public_key(data_root: Option<&Path>) -> Result<String, Str
     load_or_create_keypair(data_root).map(|(_, public)| public)
 }
 
+/// Set `path` to mode 0600 if it exists (Unix; elsewhere a no-op). Failure to
+/// change the mode is logged, not fatal: the file is still usable.
+fn restrict_to_owner(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "could not restrict file mode")
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Open the federation store: a SQLite file `<data_root>/.ap/ap.db`, or a
+/// shared in-memory database when there is no data root.
+///
+/// # Errors
+///
+/// A message when the directory or database cannot be created or opened.
+pub async fn open_store(data_root: Option<&Path>) -> Result<Store, String> {
+    let url = match data_root {
+        Some(root) => {
+            let dir = root.join(".ap");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            let db = dir.join("ap.db");
+            // Create the database file ourselves with mode 0600 before SQLite
+            // does: SQLite gives its `-wal` and `-shm` files the main file's
+            // mode, so all three are private whatever the umask.
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                opts.mode(0o600);
+            }
+            opts.open(&db)
+                .map_err(|e| format!("{}: {e}", db.display()))?;
+            for name in ["ap.db", "ap.db-wal", "ap.db-shm"] {
+                restrict_to_owner(&dir.join(name));
+            }
+            format!("sqlite://{}?mode=rwc", db.display())
+        }
+        None => "sqlite::memory:?cache=shared".to_string(),
+    };
+    let store = Store::connect(&url).await.map_err(|e| e.to_string())?;
+    if let Some(root) = data_root {
+        for name in ["ap.db", "ap.db-wal", "ap.db-shm"] {
+            restrict_to_owner(&root.join(".ap").join(name));
+        }
+    }
+    Ok(store)
+}
+
 /// The actor's `(private, public)` PEM pair, loaded from or created in
 /// `<data_root>/.ap/keys.json` exactly as [`load_or_create_public_key`] does.
 /// Without a data root a fresh pair is generated for this call only, so the
@@ -169,6 +227,9 @@ pub fn load_or_create_keypair(data_root: Option<&Path>) -> Result<(String, Strin
     };
     for _ in 0..4 {
         if let Some(pair) = read_keypair(f)? {
+            // A file from an older build or a restore may be group- or
+            // world-readable: it holds the private key.
+            restrict_to_owner(f);
             return Ok(pair);
         }
         let (private_pem, public_pem) = generate_actor_keypair().map_err(|e| e.to_string())?;
@@ -791,6 +852,55 @@ impl Federation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// Property: the federation database, its write-ahead log and shared-memory
+    /// file are readable by the pod user alone (they hold every follower, inbox
+    /// and outbox row), whatever the process umask.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_store_files_are_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(Some(dir.path())).await.unwrap();
+        store
+            .record_outbox("me", &serde_json::json!({"id": "urn:x", "type": "Create"}))
+            .await
+            .unwrap();
+        // The database and every sibling SQLite keeps beside it (`-wal`,
+        // `-shm`, `-journal`, whichever exist).
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir.path().join(".ap")).unwrap() {
+            let f = entry.unwrap().path();
+            if f.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("ap.db")
+            {
+                assert_eq!(mode(&f), 0o600, "{}", f.display());
+                checked += 1;
+            }
+        }
+        assert!(checked >= 1);
+    }
+
+    /// Property: a `keys.json` left group- or world-readable (an older build, a
+    /// restore from backup) is tightened to 0600 the next time it is loaded.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_key_file_is_tightened() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_keypair(Some(dir.path())).unwrap();
+        let f = dir.path().join(".ap/keys.json");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        load_or_create_keypair(Some(dir.path())).unwrap();
+        assert_eq!(mode(&f), 0o600);
+    }
 
     const PK: &str = "abcd000000000000000000000000000000000000000000000000000000000001";
 

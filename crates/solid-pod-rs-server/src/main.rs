@@ -591,16 +591,9 @@ async fn main() -> anyhow::Result<()> {
                      key and collection ids are minted from it"
                 );
             };
-            let store_url = match state.data_root.as_deref() {
-                Some(root) => {
-                    let dir = root.join(".ap");
-                    std::fs::create_dir_all(&dir).context("create .ap")?;
-                    format!("sqlite://{}?mode=rwc", dir.join("ap.db").display())
-                }
-                None => "sqlite::memory:?cache=shared".to_string(),
-            };
-            let store = solid_pod_rs_activitypub::Store::connect(&store_url)
+            let store = solid_pod_rs_server::activitypub::open_store(state.data_root.as_deref())
                 .await
+                .map_err(anyhow::Error::msg)
                 .context("ActivityPub store")?;
             let fed = solid_pod_rs_server::activitypub::Federation::start(
                 &ap,

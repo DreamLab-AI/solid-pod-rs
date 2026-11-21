@@ -6,7 +6,8 @@
 //! delegated to the core crate. This module adds only the AP-specific
 //! concerns:
 //!
-//! - **Scheme restriction**: only `http` and `https` are permitted.
+//! - **Scheme restriction**: only `https` is permitted (plain `http` only to
+//!   the test guard, below).
 //! - **Error mapping**: core
 //!   [`SsrfError`](solid_pod_rs::security::ssrf::SsrfError) is mapped to AP-layer
 //!   [`SigError::SsrfBlocked`] for ergonomic use in signature verification
@@ -31,13 +32,17 @@ use crate::error::SigError;
 ///
 /// The default ([`SsrfGuard::strict`]) permits public addresses only, so
 /// loopback, RFC 1918, link-local, CGNAT, cloud metadata and every other
-/// reserved range are refused. The one relaxation is
-/// [`SsrfGuard::permit_loopback_for_tests`], which lets tests run two
-/// servers on `127.0.0.1`; it never unlocks private, link-local or
-/// metadata ranges, and no CLI flag or environment variable reaches it.
+/// reserved range are refused, and plain `http` is refused too: only
+/// `https` is fetched. The one relaxation is `SsrfGuard::permit_loopback_for_tests`,
+/// which exists only when the crate feature `test-loopback` is enabled (or in
+/// this crate's own unit tests) and lets tests run two plain-`http` servers on
+/// `127.0.0.1`; it never unlocks private, link-local or metadata ranges, and
+/// no CLI flag or environment variable reaches it. A release build does not
+/// contain it: dependents enable the feature only from `[dev-dependencies]`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SsrfGuard {
     allow_loopback: bool,
+    allow_http: bool,
 }
 
 impl SsrfGuard {
@@ -46,17 +51,22 @@ impl SsrfGuard {
     pub const fn strict() -> Self {
         Self {
             allow_loopback: false,
+            allow_http: false,
         }
     }
 
-    /// Strict, except that loopback (`127.0.0.0/8`, `::1`) is permitted.
+    /// Strict, except that loopback (`127.0.0.0/8`, `::1`) and plain `http`
+    /// are permitted.
     ///
-    /// For tests that federate two servers on the local machine. Production
-    /// code must not call it; the server binary never does.
+    /// For tests that federate two servers on the local machine. Compiled only
+    /// with the `test-loopback` feature; production code must not enable it
+    /// and the server binary never does.
+    #[cfg(any(test, feature = "test-loopback"))]
     #[must_use]
     pub const fn permit_loopback_for_tests() -> Self {
         Self {
             allow_loopback: true,
+            allow_http: true,
         }
     }
 
@@ -90,7 +100,7 @@ pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
 /// caller can **pin** the outbound connection to that exact IP. Prefer
 /// the async form inside a runtime: this one stalls the thread on DNS.
 pub fn resolve_ssrf_safe(url: &str) -> Result<(String, SocketAddr), SigError> {
-    let (host, port) = split_target(url)?;
+    let (host, port) = split_target(url, SsrfGuard::strict())?;
     let addrs: Vec<SocketAddr> = format!("{host}:{port}")
         .to_socket_addrs()
         .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{host}': {e}")))?
@@ -117,7 +127,7 @@ pub async fn resolve_ssrf_safe_with(
     url: &str,
     guard: SsrfGuard,
 ) -> Result<(String, SocketAddr), SigError> {
-    let (host, port) = split_target(url)?;
+    let (host, port) = split_target(url, guard)?;
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
         .await
         .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{host}': {e}")))?
@@ -125,11 +135,12 @@ pub async fn resolve_ssrf_safe_with(
     check_addrs(&host, addrs, guard)
 }
 
-fn split_target(url: &str) -> Result<(String, u16), SigError> {
+fn split_target(url: &str, guard: SsrfGuard) -> Result<(String, u16), SigError> {
     let parsed = url::Url::parse(url).map_err(|e| SigError::Url(e.to_string()))?;
-    // Only allow http/https schemes (AP-specific restriction).
+    // https only (AP-specific restriction); plain http only for the test guard.
     match parsed.scheme() {
-        "http" | "https" => {}
+        "https" => {}
+        "http" if guard.allow_http => {}
         other => {
             return Err(SigError::SsrfBlocked(format!(
                 "scheme '{other}' is not allowed"
@@ -313,31 +324,31 @@ mod tests {
 
     #[test]
     fn assert_ssrf_safe_rejects_localhost() {
-        let result = assert_ssrf_safe("http://127.0.0.1/latest/meta-data");
+        let result = assert_ssrf_safe("https://127.0.0.1/latest/meta-data");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
     }
 
     #[test]
     fn assert_ssrf_safe_rejects_metadata_endpoint() {
-        let result = assert_ssrf_safe("http://169.254.169.254/latest/meta-data");
+        let result = assert_ssrf_safe("https://169.254.169.254/latest/meta-data");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
     }
 
     #[test]
     fn assert_ssrf_safe_rejects_private_10() {
-        let result = assert_ssrf_safe("http://10.0.0.1/admin");
+        let result = assert_ssrf_safe("https://10.0.0.1/admin");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
     }
 
     #[test]
     fn assert_ssrf_safe_rejects_private_172() {
-        let result = assert_ssrf_safe("http://172.16.0.1/internal");
+        let result = assert_ssrf_safe("https://172.16.0.1/internal");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
     }
 
     #[test]
     fn assert_ssrf_safe_rejects_private_192() {
-        let result = assert_ssrf_safe("http://192.168.1.1/router");
+        let result = assert_ssrf_safe("https://192.168.1.1/router");
         assert!(matches!(result, Err(SigError::SsrfBlocked(_))));
     }
 
@@ -359,15 +370,15 @@ mod tests {
     fn resolve_ssrf_safe_returns_pinned_addr_for_public_ip() {
         // IP-literal host: `to_socket_addrs` parses it without network I/O,
         // so this is deterministic. The pin must carry the scheme port.
-        let (host, addr) = resolve_ssrf_safe("http://8.8.8.8/actor").unwrap();
+        let (host, addr) = resolve_ssrf_safe("https://8.8.8.8/actor").unwrap();
         assert_eq!(host, "8.8.8.8");
-        assert_eq!(addr, "8.8.8.8:80".parse::<SocketAddr>().unwrap());
+        assert_eq!(addr, "8.8.8.8:443".parse::<SocketAddr>().unwrap());
     }
 
     #[test]
     fn resolve_ssrf_safe_rejects_private() {
         assert!(matches!(
-            resolve_ssrf_safe("http://10.0.0.1/actor"),
+            resolve_ssrf_safe("https://10.0.0.1/actor"),
             Err(SigError::SsrfBlocked(_))
         ));
     }
