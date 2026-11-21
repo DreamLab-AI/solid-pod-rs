@@ -127,6 +127,15 @@ mutation is applied on top of pre-existing triples rather than replacing
 them; a body that is neither empty nor parseable N-Triples is refused with
 `409` rather than silently overwritten.
 
+## Container ACL layout (operations)
+
+This server reads a container's ACL only at `<container>.acl`. A pod migrated
+from the reference JavaScript server's layout (`<container>/.acl`) must have its
+container ACLs moved to the sidecar location, because an inner ACL is not read
+and the container then inherits its parent's access. Pods provisioned by
+v0.5.0-alpha.10 to .22 hold both copies; the sidecar is the one that governs. See
+the ADR-2002 note dated 2026-11-21 for why reading both locations was withdrawn.
+
 ## Notifications (`/.notifications`)
 
 `GET /.notifications` upgrades to a WebSocket speaking the `solid-0.1` protocol

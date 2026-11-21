@@ -69,14 +69,30 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > configured an Append-only agent can grow a resource without bound (only the
 > 4 MiB RDF parse cap limits it, indirectly), and the per-resource lock is
 > in-process. Options: require a quota when Append grants exist, or add a size
-> cap for append-only writers. (3) SP-PAR-290, container ACL location: the
-> resolver reads a container's ACL at `<container>.acl`
-> (`crates/solid-pod-rs/src/wac/resolver.rs`, `acl_sidecar_key`), so a JSS-layout
-> `<container>/.acl` is a plain file the walk never reads and the parent's grant
-> applies. Verified 2026-11-21: with a public root ACL, a private `/docs/.acl`
-> leaves `/docs/a.txt` readable. Moving to `<container>/.acl` changes the storage
-> layout and needs a migration and a dual-read period; the decision is whether to
-> migrate or to refuse writes to `<container>/.acl` meanwhile.
+> cap for append-only writers. (3) SP-PAR-290, container ACL location: this server reads a container's ACL
+> only at `<container>.acl` (`crates/solid-pod-rs/src/wac/resolver.rs`,
+> `acl_sidecar_key`). A pod migrated from the reference JavaScript server's
+> layout (`<container>/.acl`) MUST have its container ACLs moved to the sidecar
+> location: an inner ACL is not read, so the container inherits its parent's
+> access (verified 2026-11-21: with a public root ACL, a private `/docs/.acl`
+> leaves `/docs/a.txt` readable). Reading both locations was implemented and
+> withdrawn on 2026-11-21. The requirements a future change must meet: (a) pods
+> provisioned by v0.5.0-alpha.10 to .22 hold both copies (`/_admin/provision`
+> wrote the sidecar and an inner "courtesy" copy) and owners' edits touch only
+> the sidecar, so those pods have differing pairs, and "both present and
+> different" must not deny them on upgrade. (b) An inner ACL could be created
+> without Control in early releases (Append via POST with a Slug before
+> v0.5.0-alpha.4, Write via PUT before v0.4.0-alpha.16), so honouring existing
+> inner files can grant access nobody with Control chose: a migration needs an
+> operator-reviewed list of inner files, not an automatic read. (c) Nothing may
+> be creatable beneath an ACL or meta document (`/docs/.acl/x`), including
+> through the MCP tool paths; a request-path check in the HTTP middleware alone
+> does not cover them. (d) A directory at an ACL key must not read as an error:
+> this is a pre-existing lock-out, still OPEN, where an agent with Write on a
+> parent can create `/docs.acl/x` (a directory at the sidecar key), after which
+> the resolver's read of that key fails and everything under `/docs/` is
+> unavailable with no HTTP repair (remove the directory on disk). Whether inner
+> ACLs are honoured is an owner decision with risk on both sides.
 
 ## Context
 
