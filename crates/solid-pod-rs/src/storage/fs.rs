@@ -235,6 +235,11 @@ impl Storage for FsBackend {
         body: Bytes,
         content_type: &str,
     ) -> Result<ResourceMeta, PodError> {
+        if crate::wac::path_beneath_sidecar(path) {
+            return Err(PodError::BadRequest(format!(
+                "nothing may be created beneath an ACL or meta document: {path}"
+            )));
+        }
         let _guard = self.operations.write().await;
         let data_path = Self::relative(path)?;
         if data_path.as_os_str().is_empty() {
@@ -347,7 +352,22 @@ impl Storage for FsBackend {
             .map_err(|e| PodError::Backend(format!("filesystem exists task failed: {e}")))?
     }
 
+    async fn is_directory(&self, path: &str) -> bool {
+        let Ok(rel) = Self::relative(path) else {
+            return false;
+        };
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || dir.metadata(&rel).is_ok_and(|m| m.is_dir()))
+            .await
+            .unwrap_or(false)
+    }
+
     async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
+        if crate::wac::path_beneath_sidecar(&format!("{}/", path.trim_end_matches('/'))) {
+            return Err(PodError::BadRequest(format!(
+                "nothing may be created beneath an ACL or meta document: {path}"
+            )));
+        }
         let container = if path.ends_with('/') {
             path.to_string()
         } else {

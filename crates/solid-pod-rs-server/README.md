@@ -127,14 +127,37 @@ mutation is applied on top of pre-existing triples rather than replacing
 them; a body that is neither empty nor parseable N-Triples is refused with
 `409` rather than silently overwritten.
 
-## Container ACL layout (operations)
+## Container ACL layout (`--acl-layout`)
 
-This server reads a container's ACL only at `<container>.acl`. A pod migrated
-from the reference JavaScript server's layout (`<container>/.acl`) must have its
-container ACLs moved to the sidecar location, because an inner ACL is not read
-and the container then inherits its parent's access. Pods provisioned by
-v0.5.0-alpha.10 to .22 hold both copies; the sidecar is the one that governs. See
-the ADR-2002 note dated 2026-11-21 for why reading both locations was withdrawn.
+Where a container's ACL document lives is a setting, `--acl-layout
+sidecar|inner|both` (env `JSS_ACL_LAYOUT`). **The default is `sidecar`**, which
+is exactly what earlier releases did: `<container>.acl`, and an inner
+`<container>/.acl` is ignored. Nothing changes on upgrade except two hardenings
+that apply in every layout (see the CHANGELOG): nothing can be created beneath
+an ACL or meta document (`/docs.acl/x`, `/docs/.acl/x`: 400), and a directory
+at an ACL key reads as absent instead of locking the subtree out.
+
+| Layout | Container ACL read at | Written and advertised (`Link rel="acl"`) |
+|---|---|---|
+| `sidecar` (default) | `<container>.acl` | `<container>.acl` |
+| `inner` | `<container>/.acl` only | `<container>/.acl` |
+| `both` | `<container>.acl`, and `<container>/.acl` only if the sidecar is absent | `<container>.acl` |
+
+`inner` is for a data root laid out like the reference JavaScript server's. It
+**drops every sidecar ACL**, so each such container falls back to its parent's
+grant and access widens; `both` is the upgrade path for a root that holds either
+form. Under `both` an unreadable or malformed sidecar denies (it never falls
+back to the inner file) and two present documents never deny merely because both
+exist. Pods provisioned by v0.5.0-alpha.10 to .22 hold both copies.
+
+In early releases an inner ACL could be created without `acl:Control`, so review
+before opting in: `solid-pod-rs-server --acl-layout-report` (read-only) lists
+every container holding an inner ACL, every container holding both forms and
+whether they differ, and every sidecar-only container (the ones `inner` would
+drop), skipping `.git`.
+
+Writing either form of a container's ACL needs `acl:Control` on the container,
+whatever the layout and the method (PUT, PATCH, POST with Slug, COPY, DELETE).
 
 ## Notifications (`/.notifications`)
 

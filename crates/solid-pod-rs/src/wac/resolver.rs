@@ -338,6 +338,107 @@ pub fn acl_sidecar_key(path: &str) -> String {
     }
 }
 
+/// Where a container's ACL document lives (SP-PAR-290).
+///
+/// A resource's ACL is always `<resource>.acl`. A container's is, by default,
+/// the sibling `<container>.acl` (this crate's layout). The reference
+/// JavaScript server keeps it inside the container as `<container>/.acl`. The
+/// pod root is `/.acl` in every layout.
+///
+/// The default is [`AclLayout::Sidecar`], which is exactly the behaviour
+/// before the setting existed, so nothing changes on upgrade.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AclLayout {
+    /// Read only `<container>.acl`; an inner `<container>/.acl` is ignored.
+    #[default]
+    Sidecar,
+    /// Read only `<container>/.acl`; a sibling `<container>.acl` is ignored.
+    /// For data roots laid out like the reference JavaScript server. Switching
+    /// an existing sidecar data root to this layout drops every container ACL
+    /// and widens access to the parent's grant.
+    Inner,
+    /// Read `<container>.acl` first and fall back to `<container>/.acl` only
+    /// when the sidecar is absent. Both existing never denies by itself. The
+    /// upgrade path for a data root that holds either form.
+    Both,
+}
+
+impl AclLayout {
+    /// The command-line / environment spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sidecar => "sidecar",
+            Self::Inner => "inner",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl std::str::FromStr for AclLayout {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "sidecar" => Ok(Self::Sidecar),
+            "inner" => Ok(Self::Inner),
+            "both" => Ok(Self::Both),
+            other => Err(format!(
+                "unknown ACL layout {other:?}: expected sidecar, inner or both"
+            )),
+        }
+    }
+}
+
+/// The storage keys that can hold the ACL of `path` at one level of the walk,
+/// in reading order. `container` says whether this level is a container (the
+/// request path ended in `/`, or it is an ancestor reached by walking up).
+#[must_use]
+pub fn acl_probe_keys(path: &str, container: bool, layout: AclLayout) -> Vec<String> {
+    if path == "/" || path.is_empty() {
+        return vec!["/.acl".to_string()];
+    }
+    let base = path.trim_end_matches('/');
+    if !container {
+        return vec![format!("{base}.acl")];
+    }
+    match layout {
+        AclLayout::Sidecar => vec![format!("{base}.acl")],
+        AclLayout::Inner => vec![format!("{base}/.acl")],
+        AclLayout::Both => vec![format!("{base}.acl"), format!("{base}/.acl")],
+    }
+}
+
+/// The ACL key the server writes and advertises (`Link: rel="acl"`) for
+/// `path`: the inner form for a non-root container under
+/// [`AclLayout::Inner`], the sidecar form otherwise.
+#[must_use]
+pub fn acl_advertised_key(path: &str, layout: AclLayout) -> String {
+    let container = path == "/" || path.ends_with('/');
+    if layout == AclLayout::Inner && container && path != "/" {
+        return format!("{}/.acl", path.trim_end_matches('/'));
+    }
+    acl_sidecar_key(path)
+}
+
+/// True when `path` lies beneath an ACL or meta document: some directory
+/// component (every component of a container key, all but the last of a
+/// resource key) is itself an ACL or meta name (`.acl`, `.meta`, `x.acl`,
+/// `x.meta`, any case). Nothing may be created there: a directory at an ACL
+/// key makes the resolver's read of that key fail and locks the subtree out.
+#[must_use]
+pub fn path_beneath_sidecar(path: &str) -> bool {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let dirs = if path.ends_with('/') {
+        &segs[..]
+    } else {
+        &segs[..segs.len().saturating_sub(1)]
+    };
+    dirs.iter().any(|s| {
+        let l = s.to_ascii_lowercase();
+        l.ends_with(".acl") || l.ends_with(".meta")
+    })
+}
+
 /// The next ancestor to probe after `path`, or `None` once the root has been
 /// probed.
 #[must_use]
@@ -373,52 +474,82 @@ pub async fn resolve_policy_from_storage(
 }
 
 /// As [`resolve_policy_from_storage`], resolving the IRIs inside the found
-/// ACL against the configured pod origin (SP-PAR-288, SP-PAR-289).
-///
-/// With `Some(base)`, absolute and document-relative `acl:accessTo` /
-/// `acl:default` targets on the configured origin match as paths, targets on
-/// any other origin match nothing, and relative `acl:agent` IRIs resolve
-/// against the ACL's own URL (see [`AclBase`](crate::wac::iri::AclBase)). With `None` the document is
-/// returned as parsed, so absolute targets keep failing closed.
+/// ACL against the configured pod origin (SP-PAR-288, SP-PAR-289), with the
+/// default [`AclLayout::Sidecar`].
 #[cfg(feature = "tokio-runtime")]
 pub async fn resolve_policy_from_storage_with_base(
     storage: &dyn Storage,
     resource_path: &str,
     base: Option<&crate::wac::iri::AclBase>,
 ) -> PolicyOutcome {
-    let mut path = resource_path.to_string();
-    // The first iteration probes the resource's OWN `.acl` sidecar (a direct
-    // ACL); every later iteration walks up to an ANCESTOR container, whose ACL
-    // is INHERITED. The evaluator must treat the two differently — inherited
-    // ACLs honour only `acl:default` (WAC §4.2) — so tag the document.
-    let mut inherited = false;
-    loop {
-        let acl_key = acl_sidecar_key(&path);
-        // Keep the read alive for the whole iteration so `PolicyRead::Present`
-        // can borrow the body without an extra copy.
-        let got = storage.get(&acl_key).await;
-        let read = match &got {
-            Ok((body, meta)) => PolicyRead::Present {
-                body,
-                content_type: &meta.content_type,
-            },
-            Err(PodError::NotFound(_)) => PolicyRead::Absent,
-            Err(e) => PolicyRead::Failed(e.to_string()),
-        };
-        match classify_policy_read(&acl_key, read, inherited) {
-            PolicyStep::Settled(PolicyOutcome::Found(doc)) => {
-                return PolicyOutcome::Found(match base {
-                    Some(b) => b.resolve_document(&doc, &acl_key),
-                    None => doc,
-                });
+    resolve_policy_with_layout(storage, resource_path, base, AclLayout::Sidecar).await
+}
+
+/// Read one ACL key. A directory at the key reads as absent, never as an
+/// error (SP-PAR-290 (d)); any other failure, including a permission error,
+/// stays a failure and denies.
+#[cfg(feature = "tokio-runtime")]
+async fn read_acl_key(
+    storage: &dyn Storage,
+    key: &str,
+) -> Result<Option<(bytes::Bytes, String)>, String> {
+    match storage.get(key).await {
+        Ok((body, meta)) => Ok(Some((body, meta.content_type))),
+        Err(PodError::NotFound(_)) => Ok(None),
+        Err(e) => {
+            if storage.is_directory(key).await {
+                Ok(None)
+            } else {
+                Err(e.to_string())
             }
-            PolicyStep::Settled(outcome) => return outcome,
-            PolicyStep::Ascend => {}
+        }
+    }
+}
+
+/// As [`resolve_policy_from_storage_with_base`] under an explicit
+/// [`AclLayout`]. With [`AclLayout::Both`] the sidecar is read first and the
+/// inner key only when the sidecar is absent: an unreadable or malformed
+/// sidecar denies, and two present documents never deny merely because both
+/// exist.
+#[cfg(feature = "tokio-runtime")]
+pub async fn resolve_policy_with_layout(
+    storage: &dyn Storage,
+    resource_path: &str,
+    base: Option<&crate::wac::iri::AclBase>,
+    layout: AclLayout,
+) -> PolicyOutcome {
+    let mut path = resource_path.to_string();
+    // The first iteration probes the resource's OWN ACL (a direct ACL); every
+    // later iteration walks up to an ANCESTOR container, whose ACL is
+    // INHERITED and honours only `acl:default` (WAC section 4.2).
+    let mut inherited = false;
+    let mut container = resource_path.ends_with('/');
+    loop {
+        for acl_key in acl_probe_keys(&path, container, layout) {
+            let got = read_acl_key(storage, &acl_key).await;
+            let read = match &got {
+                Ok(Some((body, ct))) => PolicyRead::Present {
+                    body,
+                    content_type: ct,
+                },
+                Ok(None) => PolicyRead::Absent,
+                Err(e) => PolicyRead::Failed(e.clone()),
+            };
+            match classify_policy_read(&acl_key, read, inherited) {
+                PolicyStep::Settled(PolicyOutcome::Found(doc)) => {
+                    return PolicyOutcome::Found(match base {
+                        Some(b) => b.resolve_document(&doc, &acl_key),
+                        None => doc,
+                    });
+                }
+                PolicyStep::Settled(outcome) => return outcome,
+                PolicyStep::Ascend => {}
+            }
         }
         match parent_container(&path) {
             Some(parent) => {
-                // Every subsequent ACL is resolved from an ancestor.
                 inherited = true;
+                container = true;
                 path = parent;
             }
             None => return PolicyOutcome::Missing,
@@ -461,6 +592,7 @@ pub trait AclResolver: Send + Sync {
 pub struct StorageAclResolver<S: Storage> {
     storage: std::sync::Arc<S>,
     base: Option<crate::wac::iri::AclBase>,
+    layout: AclLayout,
 }
 
 #[cfg(feature = "tokio-runtime")]
@@ -470,7 +602,15 @@ impl<S: Storage> StorageAclResolver<S> {
         Self {
             storage,
             base: None,
+            layout: AclLayout::Sidecar,
         }
+    }
+
+    /// Read container ACLs under `layout` (default [`AclLayout::Sidecar`]).
+    #[must_use]
+    pub fn with_layout(mut self, layout: AclLayout) -> Self {
+        self.layout = layout;
+        self
     }
 
     /// Resolve ACL IRIs against the configured pod origin (see
@@ -498,7 +638,79 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
     }
 
     async fn resolve_policy(&self, resource_path: &str) -> PolicyOutcome {
-        resolve_policy_from_storage_with_base(&*self.storage, resource_path, self.base.as_ref())
-            .await
+        resolve_policy_with_layout(
+            &*self.storage,
+            resource_path,
+            self.base.as_ref(),
+            self.layout,
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn probe_keys_per_layout() {
+        use AclLayout::{Both, Inner, Sidecar};
+        // The root is `/.acl` everywhere; a resource is `<r>.acl` everywhere.
+        for l in [Sidecar, Inner, Both] {
+            assert_eq!(acl_probe_keys("/", true, l), ["/.acl"]);
+            assert_eq!(acl_probe_keys("/a/b.txt", false, l), ["/a/b.txt.acl"]);
+        }
+        assert_eq!(acl_probe_keys("/docs/", true, Sidecar), ["/docs.acl"]);
+        assert_eq!(acl_probe_keys("/docs", true, Inner), ["/docs/.acl"]);
+        assert_eq!(
+            acl_probe_keys("/docs/", true, Both),
+            ["/docs.acl", "/docs/.acl"]
+        );
+    }
+
+    #[test]
+    fn advertised_key_follows_the_layout() {
+        use AclLayout::{Both, Inner, Sidecar};
+        assert_eq!(acl_advertised_key("/docs/", Sidecar), "/docs.acl");
+        assert_eq!(acl_advertised_key("/docs/", Both), "/docs.acl");
+        assert_eq!(acl_advertised_key("/docs/", Inner), "/docs/.acl");
+        assert_eq!(acl_advertised_key("/", Inner), "/.acl");
+        assert_eq!(acl_advertised_key("/docs/a.txt", Inner), "/docs/a.txt.acl");
+    }
+
+    #[test]
+    fn layout_parses_and_defaults_to_sidecar() {
+        assert_eq!(AclLayout::default(), AclLayout::Sidecar);
+        assert_eq!("Inner".parse::<AclLayout>(), Ok(AclLayout::Inner));
+        assert_eq!(" both ".parse::<AclLayout>(), Ok(AclLayout::Both));
+        assert!("nested".parse::<AclLayout>().is_err());
+    }
+
+    #[test]
+    fn beneath_an_acl_or_meta_document() {
+        for p in [
+            "/docs.acl/x",
+            "/docs/.acl/x",
+            "/docs/a.txt.acl/x",
+            "/a.meta/x",
+            "/.meta/x",
+            "/docs.ACL/x",
+            "/docs.acl/",
+            "/x/.acl/y/z",
+        ] {
+            assert!(path_beneath_sidecar(p), "{p}");
+        }
+        for p in [
+            "/docs.acl",
+            "/docs/.acl",
+            "/docs/a.txt.acl",
+            "/docs/a.txt",
+            "/docs/",
+            "/",
+            "/acl/x",
+            "/docs.aclx/x",
+        ] {
+            assert!(!path_beneath_sidecar(p), "{p}");
+        }
     }
 }

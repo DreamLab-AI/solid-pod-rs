@@ -107,6 +107,7 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
+pub mod acl_layout_report;
 #[cfg(feature = "activitypub")]
 pub mod activitypub;
 /// CLI argument definitions (clap derive structs).
@@ -362,6 +363,10 @@ pub struct AppState {
     /// default — keys-on-disk and agent write access are an opt-in
     /// security tradeoff. Configured via `--mcp` / `JSS_MCP` (JSS #490).
     pub mcp_enabled: bool,
+    /// Where a container's ACL document is read, written and advertised
+    /// (SP-PAR-290). Default [`wac::AclLayout::Sidecar`], the behaviour before
+    /// the setting existed. Configured via `--acl-layout` / `JSS_ACL_LAYOUT`.
+    pub acl_layout: wac::AclLayout,
     /// Optional override for the mempool REST base URL used by the MRC20
     /// `/pay/.deposit` anchor verification (provenance-upgrade Phase 3).
     /// `None` ⇒ the handler reads `JSS_PAY_MEMPOOL_URL` (default testnet4).
@@ -538,6 +543,7 @@ impl AppState {
             allowed_origins: Vec::new(),
             admin_key: None,
             mcp_enabled: false,
+            acl_layout: wac::AclLayout::Sidecar,
             mempool_url: None,
             conneg_enabled: false,
             trust_proxy: false,
@@ -1156,6 +1162,33 @@ async fn enforce_write_inner(
     // handler call sites, keyed on the same `protected_resource_for_acl`.
     let (resource, eff_mode) = guarded_acl_target(path, mode);
 
+    // SP-PAR-290: under `inner` and `both` the sidecar form `<c>.acl` of a
+    // container is (or can become) a live container ACL, so writing it needs
+    // `acl:Control` on the container `<c>/` under the active layout as well,
+    // exactly as writing the inner form `<c>/.acl` does. Without it a caller
+    // holding Control only through a parent's `acl:default` could plant a
+    // sidecar that the resolver reads first, overriding an inner ACL that
+    // excludes them. The default layout is untouched. `charge = false`: one
+    // request is billed once.
+    if state.acl_layout != wac::AclLayout::Sidecar
+        && path.ends_with(".acl")
+        && !path.ends_with("/.acl")
+        && path != "/.acl"
+    {
+        if let Some(protected) = protected_resource_for_acl(path) {
+            let container_form = format!("{}/.acl", protected.trim_end_matches('/'));
+            Box::pin(enforce_write_inner(
+                state,
+                &container_form,
+                mode,
+                agent_uri,
+                request_origin,
+                false,
+            ))
+            .await?;
+        }
+    }
+
     // `StorageAclResolver` is generic over a concrete backend. `state`
     // holds an `Arc<dyn Storage>`; `find_effective_acl_dyn` wraps it in a
     // trait-object-friendly adapter so the resolver runs against the
@@ -1163,7 +1196,13 @@ async fn enforce_write_inner(
     // ADR-2005: resolve with typed outcomes. A missing policy inherits (the
     // walk already did that); an invalid or unreadable one denies here and is
     // never allowed to fall through to a broader ancestor grant.
-    let outcome = resolve_policy_dyn(&*state.storage, &resource, state.acl_base().as_ref()).await;
+    let outcome = resolve_policy_dyn(
+        &*state.storage,
+        &resource,
+        state.acl_base().as_ref(),
+        state.acl_layout,
+    )
+    .await;
     if outcome.is_failure() {
         return Err(policy_failure_to_actix(&outcome, &resource));
     }
@@ -1390,7 +1429,13 @@ async fn enforce_read_inner(
     let (resource, eff_mode) = guarded_acl_target(path, AccessMode::Read);
     // ADR-2005: see `enforce_write_ctx` — invalid/unavailable policy denies
     // rather than inheriting an ancestor's broader grant.
-    let outcome = resolve_policy_dyn(&*state.storage, &resource, state.acl_base().as_ref()).await;
+    let outcome = resolve_policy_dyn(
+        &*state.storage,
+        &resource,
+        state.acl_base().as_ref(),
+        state.acl_layout,
+    )
+    .await;
     if outcome.is_failure() {
         return Err(policy_failure_to_actix(&outcome, &resource));
     }
@@ -1496,8 +1541,8 @@ async fn debit_ledger(
 
 /// Set the `Link` headers for `path`, and `Accept-Ranges` (`none` on a
 /// container, `bytes` on a resource, as JSS does on every LDP response).
-fn set_link_headers(rsp: &mut HttpResponse, path: &str) {
-    let links = ldp::link_headers(path).join(", ");
+fn set_link_headers(rsp: &mut HttpResponse, path: &str, layout: wac::AclLayout) {
+    let links = ldp::link_headers_with_layout(path, layout).join(", ");
     if let Ok(value) = header::HeaderValue::from_str(&links) {
         rsp.headers_mut()
             .insert(header::HeaderName::from_static("link"), value);
@@ -1685,7 +1730,7 @@ async fn handle_get(
                 set_cache_policy(&mut rsp, "text/html", index_audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state);
-                set_link_headers(&mut rsp, &path);
+                set_link_headers(&mut rsp, &path, state.acl_layout);
                 return Ok(rsp);
             }
         }
@@ -1718,7 +1763,7 @@ async fn handle_get(
             set_cache_policy(&mut rsp, "text/html", audience);
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state);
-            set_link_headers(&mut rsp, &path);
+            set_link_headers(&mut rsp, &path, state.acl_layout);
             return Ok(rsp);
         }
 
@@ -1730,7 +1775,7 @@ async fn handle_get(
         set_cache_policy(&mut rsp, "application/ld+json", audience);
         set_wac_allow(&mut rsp, &wac_allow);
         set_updates_via(&mut rsp, &state);
-        set_link_headers(&mut rsp, &path);
+        set_link_headers(&mut rsp, &path, state.acl_layout);
         return Ok(rsp);
     }
 
@@ -1767,7 +1812,7 @@ async fn handle_get(
                 set_cache_policy(&mut rsp, "text/html", audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state);
-                set_link_headers(&mut rsp, &path);
+                set_link_headers(&mut rsp, &path, state.acl_layout);
                 return Ok(rsp);
             }
 
@@ -1798,7 +1843,7 @@ async fn handle_get(
                 set_cache_policy(&mut rsp, negotiated_ct, audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state);
-                set_link_headers(&mut rsp, &path);
+                set_link_headers(&mut rsp, &path, state.acl_layout);
                 return Ok(rsp);
             }
 
@@ -1820,7 +1865,7 @@ async fn handle_get(
             set_cache_policy(&mut rsp, &meta.content_type, audience);
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state);
-            set_link_headers(&mut rsp, &path);
+            set_link_headers(&mut rsp, &path, state.acl_layout);
             Ok(rsp)
         }
         Err(PodError::NotFound(_)) => Ok(HttpResponse::NotFound().finish()),
@@ -1900,7 +1945,7 @@ async fn handle_put(
             if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                 rsp.headers_mut().insert(header::ETAG, etag);
             }
-            set_link_headers(&mut rsp, &path);
+            set_link_headers(&mut rsp, &path, state.acl_layout);
             return Ok(rsp);
         }
         return Ok(HttpResponse::MethodNotAllowed().body("cannot PUT to a container"));
@@ -1955,7 +2000,7 @@ async fn handle_put(
         rsp.headers_mut().insert(header::ETAG, etag);
     }
     set_provenance_headers(&mut rsp, &provenance);
-    set_link_headers(&mut rsp, &path);
+    set_link_headers(&mut rsp, &path, state.acl_layout);
     Ok(rsp)
 }
 
@@ -2090,7 +2135,7 @@ async fn handle_post(
         rsp.headers_mut().insert(header::ETAG, etag);
     }
     set_provenance_headers(&mut rsp, &provenance);
-    set_link_headers(&mut rsp, &target);
+    set_link_headers(&mut rsp, &target, state.acl_layout);
     Ok(rsp)
 }
 
@@ -2814,8 +2859,9 @@ pub(crate) async fn find_effective_acl_dyn(
     storage: &dyn Storage,
     resource_path: &str,
     base: Option<&wac::AclBase>,
+    layout: wac::AclLayout,
 ) -> Result<Option<wac::AclDocument>, PodError> {
-    resolve_policy_dyn(storage, resource_path, base)
+    resolve_policy_dyn(storage, resource_path, base, layout)
         .await
         .into_result()
 }
@@ -2828,8 +2874,9 @@ pub(crate) async fn resolve_policy_dyn(
     storage: &dyn Storage,
     resource_path: &str,
     base: Option<&wac::AclBase>,
+    layout: wac::AclLayout,
 ) -> wac::PolicyOutcome {
-    wac::resolve_policy_from_storage_with_base(storage, resource_path, base).await
+    wac::resolve_policy_with_layout(storage, resource_path, base, layout).await
 }
 
 /// Map a failed [`wac::PolicyOutcome`] onto the response the WAC gate must
@@ -3428,8 +3475,9 @@ async fn provisioning_gate(
 /// and append to `inbox/`; `private/` and `settings/` inherit the owner-only
 /// default of the root. Targets are server-root paths, the form the WAC
 /// evaluator matches, and each document sits at the sibling sidecar the
-/// resolver reads (`/alice/profile/` → `/alice/profile.acl`).
-fn named_pod_acls(name: &str, webid: &str) -> Vec<(String, String)> {
+/// resolver reads (`/alice/profile/` → `/alice/profile.acl`), or, under
+/// `--acl-layout inner`, inside the container (`/alice/profile/.acl`).
+fn named_pod_acls(name: &str, webid: &str, layout: wac::AclLayout) -> Vec<(String, String)> {
     const PREFIXES: &str = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
                             @prefix foaf: <http://xmlns.com/foaf/0.1/> .\n";
     let owner = |target: &str| {
@@ -3453,7 +3501,7 @@ fn named_pod_acls(name: &str, webid: &str) -> Vec<(String, String)> {
 
     let root = format!("/{name}/");
     let mut acls = vec![(
-        solid_pod_rs::wac::resolver::acl_sidecar_key(&root),
+        solid_pod_rs::wac::acl_advertised_key(&root, layout),
         format!(
             "{PREFIXES}{}{}",
             owner(&root),
@@ -3467,7 +3515,7 @@ fn named_pod_acls(name: &str, webid: &str) -> Vec<(String, String)> {
     ] {
         let target = format!("/{name}/{container}/");
         acls.push((
-            solid_pod_rs::wac::resolver::acl_sidecar_key(&target),
+            solid_pod_rs::wac::acl_advertised_key(&target, layout),
             format!(
                 "{PREFIXES}{}{}",
                 owner(&target),
@@ -3496,7 +3544,7 @@ async fn provision_named_pod(
     // content, so no resource of the new pod is ever governed by the
     // operator's root ACL (which may grant the public more than an owner
     // would). The pod root's ACL is the first write.
-    for (key, body) in named_pod_acls(name, &webid) {
+    for (key, body) in named_pod_acls(name, &webid, state.acl_layout) {
         state
             .storage
             .put(&key, Bytes::from(body), "text/turtle")
@@ -5315,8 +5363,12 @@ async fn handle_admin_provision(
     // previously wrote ONLY that inner copy, so the owner grant was never
     // resolved and authenticated writes 403'd. Write the authoritative ACL
     // to the sibling location the resolver reads: `data_root/pods/{pk}.acl`.
+    // SP-PAR-290: under `--acl-layout inner` the matching form is the inner
+    // file only; `sidecar` (the default) and `both` write what this endpoint
+    // has always written.
+    let inner_only = state.acl_layout == wac::AclLayout::Inner;
     let sibling_acl_path = pods_root.join(format!("{pubkey}.acl"));
-    if !sibling_acl_path.exists() {
+    if !inner_only && !sibling_acl_path.exists() {
         if let Err(e) = tokio::fs::write(&sibling_acl_path, acl_content.as_bytes()).await {
             tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: write sibling .acl failed");
             return HttpResponse::InternalServerError()
@@ -5333,6 +5385,11 @@ async fn handle_admin_provision(
     let inner_acl_path = pod_dir.join(".acl");
     if !inner_acl_path.exists() {
         if let Err(e) = tokio::fs::write(&inner_acl_path, acl_content.as_bytes()).await {
+            if inner_only {
+                tracing::error!(pubkey = %pubkey, error = %e, "/_admin/provision: write inner .acl failed");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": format!("failed to write .acl: {e}")}));
+            }
             tracing::warn!(pubkey = %pubkey, error = %e, "/_admin/provision: write inner .acl failed (non-fatal; sibling ACL governs)");
         }
     }

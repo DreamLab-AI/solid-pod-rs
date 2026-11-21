@@ -39,6 +39,68 @@ pub async fn call(
     path: &str,
     body: &str,
 ) -> (u16, Option<String>) {
+    call_full(state, who, method, path, body, "text/turtle", &[]).await
+}
+
+pub async fn call_ct(
+    state: AppState,
+    who: Option<&Agent>,
+    method: &str,
+    path: &str,
+    body: &str,
+    ct: &str,
+) -> (u16, Option<String>) {
+    call_full(state, who, method, path, body, ct, &[]).await
+}
+
+/// POST `body` to `container` with a `Slug`.
+pub async fn call_slug(
+    state: AppState,
+    who: Option<&Agent>,
+    container: &str,
+    slug: &str,
+    body: &str,
+) -> (u16, Option<String>) {
+    call_full(
+        state,
+        who,
+        "POST",
+        container,
+        body,
+        "text/turtle",
+        &[("slug", slug)],
+    )
+    .await
+}
+
+/// COPY `from` onto `to` (the `Destination` header).
+pub async fn call_copy(
+    state: AppState,
+    who: Option<&Agent>,
+    from: &str,
+    to: &str,
+) -> (u16, Option<String>) {
+    call_full(
+        state,
+        who,
+        "COPY",
+        from,
+        "",
+        "text/turtle",
+        &[("destination", to)],
+    )
+    .await
+}
+
+pub async fn call_full(
+    state: AppState,
+    who: Option<&Agent>,
+    method: &str,
+    path: &str,
+    body: &str,
+    ct: &str,
+    extra: &[(&str, &str)],
+) -> (u16, Option<String>) {
     let app = test::init_service(build_app(state)).await;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -53,8 +115,11 @@ pub async fn call(
         .method(Method::from_bytes(method.as_bytes()).unwrap())
         .uri(path)
         .insert_header(("host", "pod.example"))
-        .insert_header(("content-type", "text/turtle"))
+        .insert_header(("content-type", ct.to_string()))
         .set_payload(body.to_owned());
+    for (k, v) in extra {
+        req = req.insert_header((k.to_string(), v.to_string()));
+    }
     if let Some(a) = who {
         let token = nip98::mint_with_payload(
             &format!("http://pod.example{path}"),

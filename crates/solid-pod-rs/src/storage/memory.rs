@@ -114,6 +114,11 @@ impl Storage for MemoryBackend {
         body: Bytes,
         content_type: &str,
     ) -> Result<ResourceMeta, PodError> {
+        if crate::wac::path_beneath_sidecar(path) {
+            return Err(PodError::BadRequest(format!(
+                "nothing may be created beneath an ACL or meta document: {path}"
+            )));
+        }
         let path = Self::normalize(path)?;
         let etag = Self::compute_etag(&body);
         let meta = ResourceMeta {
@@ -197,6 +202,11 @@ impl Storage for MemoryBackend {
     }
 
     async fn create_container(&self, path: &str) -> Result<ResourceMeta, PodError> {
+        if crate::wac::path_beneath_sidecar(&format!("{}/", path.trim_end_matches('/'))) {
+            return Err(PodError::BadRequest(format!(
+                "nothing may be created beneath an ACL or meta document: {path}"
+            )));
+        }
         let container = Self::normalize(path)?;
         let container = if container.ends_with('/') {
             container

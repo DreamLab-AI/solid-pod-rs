@@ -113,6 +113,7 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
         &*state.storage,
         &check_path,
         state.acl_base().as_ref(),
+        state.acl_layout,
     )
     .await
     {

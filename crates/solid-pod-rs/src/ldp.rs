@@ -141,6 +141,13 @@ pub fn meta_sidecar_for(path: &str) -> String {
 /// - `<path.meta>; rel="describedby"` for every non-meta resource.
 /// - `</>; rel="http://www.w3.org/ns/pim/space#storage"` for the pod root.
 pub fn link_headers(path: &str) -> Vec<String> {
+    link_headers_with_layout(path, crate::wac::AclLayout::Sidecar)
+}
+
+/// [`link_headers`] advertising the ACL under an explicit container-ACL
+/// layout: the inner `<container>/.acl` for a non-root container under
+/// [`AclLayout::Inner`](crate::wac::AclLayout), the sidecar otherwise.
+pub fn link_headers_with_layout(path: &str, layout: crate::wac::AclLayout) -> Vec<String> {
     let mut out = Vec::new();
     if is_container(path) {
         out.push(format!("<{}>; rel=\"type\"", iri::LDP_BASIC_CONTAINER));
@@ -150,7 +157,7 @@ pub fn link_headers(path: &str) -> Vec<String> {
         out.push(format!("<{}>; rel=\"type\"", iri::LDP_RESOURCE));
     }
     if !is_acl_path(path) {
-        let acl_target = crate::wac::acl_sidecar_key(path);
+        let acl_target = crate::wac::acl_advertised_key(path, layout);
         out.push(format!("<{acl_target}>; rel=\"acl\""));
     }
     if !is_meta_path(path) && !is_acl_path(path) {

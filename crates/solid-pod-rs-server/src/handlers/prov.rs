@@ -95,6 +95,7 @@ pub(crate) async fn resolve_anchor_policy(
         &*state.storage,
         resource_path,
         state.acl_base().as_ref(),
+        state.acl_layout,
     )
     .await
     {

@@ -1,8 +1,10 @@
-//! SP-PAR-290 baseline: two default-mode behaviours that the opt-in layout
-//! change deliberately alters, pinned as they were before it. The "after"
-//! assertions replace these in the same file when the change lands (see the
-//! CHANGELOG upgrade notes): a directory at an ACL key stops locking a
-//! subtree out, and nothing can be created beneath an ACL or meta document.
+//! SP-PAR-290: the two default-mode behaviours the layout change deliberately
+//! alters (named in the CHANGELOG upgrade notes). Before: an agent with Write
+//! could create `/docs.acl/x` (a directory at the sidecar key, answered 201)
+//! after which everything under `/docs/` answered 503 even to the owner, and
+//! `/docs/.acl/x` was accepted (201). After: both are refused with 400 and
+//! the subtree is never locked out; a directory planted at the key reads as
+//! absent.
 
 mod common;
 use common::acl_harness::*;
@@ -31,7 +33,7 @@ async fn fs_state(disk: Disk, o: &Agent, b: &Agent) -> (Arc<FsBackend>, tempfile
 }
 
 #[actix_web::test]
-async fn today_a_directory_at_the_sidecar_key_locks_the_subtree_out() {
+async fn a_directory_at_the_sidecar_key_cannot_be_made_and_does_not_lock_out() {
     let (o, b) = (agent(1), agent(2));
     let (fs, _dir) = fs_state(Disk::None, &o, &b).await;
     let st = || AppState::new(fs.clone());
@@ -43,16 +45,21 @@ async fn today_a_directory_at_the_sidecar_key_locks_the_subtree_out() {
         .await
         .0;
     let after = call(st(), Some(&o), "GET", "/docs/a.txt", "").await.0;
-    println!("TODAY made={made} owner_read_after={after}");
+    assert_eq!(made, 400, "refused: nothing is created beneath an ACL key");
+    assert_eq!(after, 200, "so the subtree is never locked out");
+    // A directory planted on disk (as an earlier release allowed) reads as
+    // absent: the owner still reads, the parent grant applies.
+    std::fs::create_dir_all(_dir.path().join("docs.acl")).unwrap();
+    std::fs::write(_dir.path().join("docs.acl/x"), b"junk").unwrap();
+    let planted = call(st(), Some(&o), "GET", "/docs/a.txt", "").await.0;
     assert_eq!(
-        (made, after),
-        (201, 503),
-        "today: accepted, then the subtree answers 503 to everyone"
+        planted, 200,
+        "a directory at the sidecar key reads as absent"
     );
 }
 
 #[actix_web::test]
-async fn today_a_resource_can_be_created_beneath_an_inner_acl_key() {
+async fn nothing_can_be_created_beneath_an_inner_acl_key() {
     let (o, b) = (agent(1), agent(2));
     let (fs, _dir) = fs_state(Disk::None, &o, &b).await;
     let made = call(
@@ -64,6 +71,5 @@ async fn today_a_resource_can_be_created_beneath_an_inner_acl_key() {
     )
     .await
     .0;
-    println!("TODAY inner beneath={made}");
-    assert_eq!(made, 201, "today: accepted");
+    assert_eq!(made, 400, "refused: nothing is created beneath an ACL key");
 }

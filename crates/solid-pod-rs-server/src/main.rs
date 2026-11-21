@@ -136,6 +136,21 @@ struct Cli {
     #[arg(long, env = "JSS_NOSTR_MAX_EVENTS", default_value_t = 1000)]
     nostr_max_events: usize,
 
+    /// Where a container's ACL document lives: `sidecar` (default: the
+    /// sibling `<container>.acl`, as before), `inner` (`<container>/.acl`, the
+    /// reference JavaScript server's layout) or `both` (sidecar first, inner
+    /// only when the sidecar is absent). `inner` drops every sidecar ACL and
+    /// widens access to the parent's grant: run `--acl-layout-report` first;
+    /// `both` is the upgrade path for a root holding either form.
+    #[arg(long, env = "JSS_ACL_LAYOUT", default_value = "sidecar")]
+    acl_layout: String,
+
+    /// Print a read-only review of every container ACL under the filesystem
+    /// data root (inner files, both forms and whether they differ, sidecar
+    /// only) and exit. Changes nothing.
+    #[arg(long)]
+    acl_layout_report: bool,
+
     /// Content negotiation: accept and advertise `text/n3` request bodies
     /// (JSS `--conneg`, `JSS_CONNEG`).
     #[arg(long, env = "JSS_CONNEG")]
@@ -316,6 +331,19 @@ async fn main() -> anyhow::Result<()> {
     }
     cfg.validate().map_err(anyhow::Error::msg)?;
 
+    if cli.acl_layout_report {
+        let StorageBackendConfig::Fs { root } = &cfg.storage else {
+            anyhow::bail!("--acl-layout-report needs the filesystem storage backend");
+        };
+        let findings =
+            solid_pod_rs_server::acl_layout_report::scan(std::path::Path::new(root.as_str()));
+        print!(
+            "{}",
+            solid_pod_rs_server::acl_layout_report::render(&findings)
+        );
+        return Ok(());
+    }
+
     let host = cfg.server.host.clone();
     let requested_port = cfg.server.port;
     let listener = bind_available(&host, requested_port)?;
@@ -338,6 +366,13 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = AppState::new(storage);
     state.data_root = data_root;
+    state.acl_layout = cli
+        .acl_layout
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!("--acl-layout: {e}"))?;
+    if state.acl_layout != solid_pod_rs::wac::AclLayout::Sidecar {
+        info!(layout = state.acl_layout.as_str(), "container ACL layout");
+    }
 
     // ADR-2007: record which Bitcoin explorer — and therefore which network —
     // this pod will anchor against, once, at startup. The endpoint is chosen

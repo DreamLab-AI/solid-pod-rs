@@ -165,12 +165,14 @@ pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, 
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
 pub use payment::{total_payment_cost, PaymentConditionBody, PaymentConditionEvaluator};
 pub use resolver::{
-    acl_sidecar_key, classify_policy_read, parent_container, AclResolver, InvalidPolicyReason,
-    PolicyOutcome, PolicyRead, PolicyStep,
+    acl_advertised_key, acl_probe_keys, acl_sidecar_key, classify_policy_read, parent_container,
+    path_beneath_sidecar, AclLayout, AclResolver, InvalidPolicyReason, PolicyOutcome, PolicyRead,
+    PolicyStep,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use resolver::{
-    resolve_policy_from_storage, resolve_policy_from_storage_with_base, StorageAclResolver,
+    resolve_policy_from_storage, resolve_policy_from_storage_with_base, resolve_policy_with_layout,
+    StorageAclResolver,
 };
 pub use serializer::serialize_turtle_acl;
 

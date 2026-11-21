@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Upgrade notes
 
+- **Container ACL layout is a setting, `--acl-layout sidecar|inner|both` (`JSS_ACL_LAYOUT`), default `sidecar`** (SP-PAR-290).
+  The default reads and writes exactly what earlier releases did. `inner` reads only `<container>/.acl` (the
+  reference server's layout) and drops every sidecar ACL, widening access to the parent's grant: run
+  `--acl-layout-report` first (read-only; lists inner ACLs, both forms and whether they differ, and sidecar-only
+  containers). `both` reads the sidecar first and the inner file only when the sidecar is absent: the upgrade path.
+- **Two hardenings apply in every layout, including the default**: (1) nothing can be created beneath an ACL or meta
+  document, by HTTP or MCP (`PUT /docs.acl/x`, `/docs/.acl/x`, `/x.meta/y`, and a container at those names: 400;
+  before, the first was accepted and then every request under `/docs/` answered 503 to everyone); DELETE beneath
+  is still allowed so junk can be removed; (2) a directory at an ACL key reads as absent (an unreadable ACL file
+  still denies). `/_admin/provision` writes what it always wrote (`sidecar`, `both`) and only the inner file under
+  `inner`; `POST /.pods` writes each pod's ACLs in the active layout.
+
 - **A JSON-LD ACL with a plain string on a rule predicate** (for example `"acl:mode": "acl:Read"` without an
   `@type: @id` coercion) is now unreadable and denies; before, that one value was silently dropped.
 - **`/.notifications` is on by default** (`--no-notifications` removes it). Its per-peer cap counts the TCP peer

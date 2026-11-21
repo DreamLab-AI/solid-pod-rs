@@ -56,6 +56,21 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > (a relative reference can only name this pod); it is an inconsistency to close
 > by resolving Turtle relative targets the same way or by requiring an origin.
 
+> Note 2026-11-21 (SP-PAR-290, implemented as an opt-in): the container-ACL location is now a setting,
+> `--acl-layout sidecar|inner|both`, default `sidecar` (unchanged behaviour); the four requirements above are met
+> as follows. (a) `both` reads the sidecar first and falls back to the inner file only when the sidecar is
+> absent, so a pod with two differing copies is read as it always was (the sidecar governs). (b) Nothing is honoured
+> automatically: the default ignores inner files, and `--acl-layout-report` lists every inner ACL, both-form
+> container (and whether they differ) and sidecar-only container for operator review before opting in. (c) The
+> refusal to create beneath an ACL or meta document lives in `Storage::put` and `create_container` of the
+> filesystem and memory backends (`wac::path_beneath_sidecar`), so HTTP, MCP and provisioning all pass it;
+> DELETE beneath stays allowed for repair. A `git push` into a pod working tree writes files directly and does not
+> pass `Storage`; it needs the git route's Write grant, not Control, so a pushed `.acl` is not covered by (c).
+> (d) A directory at an ACL key reads as absent (`resolver::read_acl_key`); a read failure that is not a directory,
+> such as a permission error, still denies. Under `inner` and `both`, writing the sidecar form of a container
+> additionally requires Control on the container's inner form (`enforce_write_inner`), because that sidecar is, or
+> can become, the live ACL. Tests: `crates/solid-pod-rs-server/tests/acl_layout_*.rs`.
+
 > Note 2026-11-21: three open decisions recorded here, none changed by code.
 > (1) SP-ACL-REVIEW-02, whether a Web-Ledger fee is for *admission* or for
 > *successful service*. Today it is debited at admission

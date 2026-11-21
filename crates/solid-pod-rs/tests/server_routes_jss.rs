@@ -81,6 +81,7 @@ async fn make_state() -> AppState {
         allowed_origins: Vec::new(),
         admin_key: None,
         mcp_enabled: false,
+        acl_layout: solid_pod_rs::wac::AclLayout::Sidecar,
         mempool_url: None,
         conneg_enabled: false,
         trust_proxy: false,

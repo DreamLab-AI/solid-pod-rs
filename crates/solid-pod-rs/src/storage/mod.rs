@@ -99,6 +99,17 @@ pub trait Storage: Send + Sync + 'static {
     /// Return whether a resource exists.
     async fn exists(&self, path: &str) -> Result<bool, PodError>;
 
+    /// Whether a *directory* (not a resource) sits at exactly `path`.
+    ///
+    /// Only the filesystem backend can have one at a resource key (a resource
+    /// named `x.acl` beside a directory of that name); the default is
+    /// `false`, which makes every other backend fail closed. The WAC resolver
+    /// uses it to read a directory at an ACL key as absent rather than as an
+    /// error, and never for anything else.
+    async fn is_directory(&self, _path: &str) -> bool {
+        false
+    }
+
     /// Create an empty container at `path`.
     ///
     /// JSS parity: `PUT` with `Link: <ldp:BasicContainer>; rel="type"`
