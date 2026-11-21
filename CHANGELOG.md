@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **PATCH and COPY of an unparseable ACL answer 400, like PUT and POST** (SP-PAR-266). The patched result (JSON
+  Patch) or the stored source bytes (COPY) that are not an ACL document no longer share the lockout `409`; a
+  well-formed ACL that would lock the caller out is still `409`.
 - **Access-token `exp` and `nbf` take a configurable leeway, and DPoP `htm` is compared case-sensitively**
   (SP-TOKEN-CLOCK-SKEW). `AccessTokenPolicy::clock_leeway_secs` defaults to the DPoP skew (60 s);
   `with_clock_leeway_secs(0)` restores strict comparison. `htm` follows RFC 9449 (`get` no longer matches `GET`).

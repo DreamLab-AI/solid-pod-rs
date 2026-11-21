@@ -997,6 +997,21 @@ impl AclRefusal {
     }
 }
 
+impl AclRefusal {
+    /// The response for a refusal of ACL bytes the server derived (`PATCH`
+    /// result, `COPY` source). `lockout` is the site's `409` message. An
+    /// unparseable result is `400` here too (SP-PAR-266), as for `PUT`/`POST`.
+    fn derived_response(self, lockout: &'static str) -> HttpResponse {
+        match self {
+            Self::Unparseable => HttpResponse::BadRequest().body(
+                "refused: the resulting ACL is not a parseable ACL document \
+                 (expected JSON-LD or Turtle)",
+            ),
+            Self::WouldLockOut => HttpResponse::Conflict().body(lockout),
+        }
+    }
+}
+
 /// Validate a candidate ACL with the shared bounded parser and evaluate
 /// effective Control on its protected resource before committing the bytes.
 /// Metadata remains Control-protected by admission, but is not an ACL body.
@@ -1056,22 +1071,6 @@ async fn check_proposed_acl(
     .ok_or(AclRefusal::WouldLockOut)
 }
 
-/// `true` when the candidate ACL parses and keeps the caller's Control. Used
-/// by the sites that answer every refusal with the same `409` (`PATCH`, whose
-/// body is a patch rather than an ACL, and `COPY`, whose bytes are stored).
-async fn proposed_acl_keeps_caller_control(
-    state: &AppState,
-    req: &HttpRequest,
-    path: &str,
-    body: &[u8],
-    content_type: &str,
-    caller: Option<&str>,
-) -> bool {
-    check_proposed_acl(state, req, path, body, content_type, caller)
-        .await
-        .is_ok()
-}
-
 /// Origin-unaware convenience wrapper (used where no HTTP `Origin` is
 /// available — internal callers and unit tests). Delegates with
 /// `request_origin = None`; under `acl-origin` this denies only ACLs that
@@ -1127,7 +1126,7 @@ async fn enforce_write_inner(
     // with the read path (`enforce_read_ctx`) and any wasm runtime. For an
     // ordinary resource it returns `(path, mode)` unchanged; for a sidecar
     // it returns `(protected_resource, Control)`. The lockout guard
-    // (`proposed_acl_keeps_caller_control`) still runs at the PUT/POST/PATCH
+    // (`check_proposed_acl`) still runs at the PUT/POST/PATCH
     // handler call sites, keyed on the same `protected_resource_for_acl`.
     let (resource, eff_mode) = guarded_acl_target(path, mode);
 
@@ -2244,7 +2243,7 @@ async fn handle_patch(
                     let bytes = serde_json::to_vec(&json)
                         .map_err(PodError::from)
                         .map_err(to_actix)?;
-                    if !proposed_acl_keeps_caller_control(
+                    if let Err(refusal) = check_proposed_acl(
                         &state,
                         &req,
                         &path,
@@ -2254,7 +2253,7 @@ async fn handle_patch(
                     )
                     .await
                     {
-                        return Ok(HttpResponse::Conflict().body(
+                        return Ok(refusal.derived_response(
                             "refused: the patched ACL would not grant Control to the caller",
                         ));
                     }
@@ -2286,8 +2285,8 @@ async fn handle_patch(
             // never checked against the lockout guard, so a Control holder
             // could strip every principal's Control in one patch. Apply the
             // same guard PUT uses, on the serialised post-patch ACL.
-            if protected_resource_for_acl(&path).is_some()
-                && !proposed_acl_keeps_caller_control(
+            if protected_resource_for_acl(&path).is_some() {
+                if let Err(refusal) = check_proposed_acl(
                     &state,
                     &req,
                     &path,
@@ -2296,11 +2295,12 @@ async fn handle_patch(
                     agent.as_deref(),
                 )
                 .await
-            {
-                return Ok(HttpResponse::Conflict().body(
-                    "refused: the patched ACL would not grant Control to the caller \
-                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
-                ));
+                {
+                    return Ok(refusal.derived_response(
+                        "refused: the patched ACL would not grant Control to the caller \
+                         (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                    ));
+                }
             }
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
@@ -2342,8 +2342,8 @@ async fn handle_patch(
             }
             let serialised = graph_to_turtle(&graph);
             // F7: same lockout guard on the create-via-PATCH `.acl` path.
-            if protected_resource_for_acl(&path).is_some()
-                && !proposed_acl_keeps_caller_control(
+            if protected_resource_for_acl(&path).is_some() {
+                if let Err(refusal) = check_proposed_acl(
                     &state,
                     &req,
                     &path,
@@ -2352,11 +2352,12 @@ async fn handle_patch(
                     agent.as_deref(),
                 )
                 .await
-            {
-                return Ok(HttpResponse::Conflict().body(
-                    "refused: the patched ACL would not grant Control to the caller \
-                     (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
-                ));
+                {
+                    return Ok(refusal.derived_response(
+                        "refused: the patched ACL would not grant Control to the caller \
+                         (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+                    ));
+                }
             }
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
@@ -3566,8 +3567,8 @@ async fn handle_copy(
     };
 
     // Same lockout guard as `handle_put` when the destination is a sidecar.
-    if protected_resource_for_acl(&dest).is_some()
-        && !proposed_acl_keeps_caller_control(
+    if protected_resource_for_acl(&dest).is_some() {
+        if let Err(refusal) = check_proposed_acl(
             &state,
             &req,
             &dest,
@@ -3576,11 +3577,12 @@ async fn handle_copy(
             agent.as_deref(),
         )
         .await
-    {
-        return Ok(HttpResponse::Conflict().body(
-            "refused: the proposed ACL would not grant Control to the caller \
-             (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
-        ));
+        {
+            return Ok(refusal.derived_response(
+                "refused: the proposed ACL would not grant Control to the caller \
+                 (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
+            ));
+        }
     }
 
     {
@@ -3613,7 +3615,7 @@ async fn handle_copy(
             )
             .await
             .is_ok()
-            && proposed_acl_keeps_caller_control(
+            && check_proposed_acl(
                 &state,
                 &req,
                 &dst_acl,
@@ -3621,7 +3623,8 @@ async fn handle_copy(
                 &acl_meta.content_type,
                 agent.as_deref(),
             )
-            .await;
+            .await
+            .is_ok();
         if permitted {
             let _write_guard = lock_resource(&dst_acl).await;
             let quota = reserve_quota_for_size(&state, &dst_acl, acl_body.len() as u64).await?;

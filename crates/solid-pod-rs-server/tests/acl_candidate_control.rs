@@ -205,11 +205,9 @@ async fn post_and_copy_refuse_invalid_acl_bodies_before_storage() {
             f.call(method, POLICY, "", "", &[("source", "/source.json")])
                 .await
         };
-        // A POSTed body is the client's own, so it is a 400 like PUT. COPY
-        // reads stored bytes, so there is no malformed request body to name:
-        // it stays a 409 conflict.
-        let expected = if method == "POST" { 400 } else { 409 };
-        assert_eq!(status, expected, "method {method}");
+        // SP-PAR-266: a body that is not an ACL is a 400 whichever verb
+        // carries it; for COPY the bytes come from the source resource.
+        assert_eq!(status, 400, "method {method}");
         f.unchanged_and_usable(&before).await;
     }
 }
@@ -247,6 +245,44 @@ async fn json_patch_checks_resulting_acl_before_committing_it() {
         204
     );
     assert_eq!(f.call("GET", RESOURCE, "", "", &[]).await, 200);
+}
+
+#[actix_web::test]
+async fn json_patch_to_an_unparseable_acl_is_a_400_and_a_lockout_stays_a_409() {
+    // SP-PAR-266 remainder: PATCH answers 400 when the patched result is not
+    // an ACL document at all, like PUT and POST, and 409 for a lockout.
+    let f = Fixture::new().await;
+    let original = f.json(RESOURCE).to_string();
+    f.storage
+        .put(POLICY, Bytes::from(original.clone()), "application/ld+json")
+        .await
+        .unwrap();
+    let before = Bytes::from(original);
+    for patch in [
+        r#"[{"op":"replace","path":"","value":[]}]"#,
+        r#"[{"op":"replace","path":"","value":"not an ACL"}]"#,
+        r#"[{"op":"replace","path":"","value":42}]"#,
+    ] {
+        assert_eq!(
+            f.call("PATCH", POLICY, "application/json-patch+json", patch, &[])
+                .await,
+            400,
+            "{patch}"
+        );
+        f.unchanged_and_usable(&before).await;
+    }
+    assert_eq!(
+        f.call(
+            "PATCH",
+            POLICY,
+            "application/json-patch+json",
+            r#"[{"op":"remove","path":"/@graph"}]"#,
+            &[]
+        )
+        .await,
+        409
+    );
+    f.unchanged_and_usable(&before).await;
 }
 
 #[actix_web::test]
@@ -344,7 +380,7 @@ async fn copy_checks_turtle_syntax_even_with_a_recognisable_control_rule() {
     assert_eq!(
         f.call("COPY", POLICY, "", "", &[("source", "/source.ttl")])
             .await,
-        409
+        400
     );
     f.unchanged_and_usable(&before).await;
 }
