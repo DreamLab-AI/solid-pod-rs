@@ -246,6 +246,9 @@ fn publish_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Largest inbox or outbox request body accepted (bytes). The app-wide body
 /// cap is far larger and is not what protects these routes.
 pub const MAX_ACTIVITY_BYTES: usize = 256 * 1024;
+/// Longest the inbox waits for a request body to arrive in full (documented
+/// bound: a client that stalls or trickles is answered `408` after this).
+pub const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Inbox requests handled at once; one more is answered `503`.
 pub const MAX_CONCURRENT_INBOX: usize = 16;
 /// Most items a collection or outbox page lists.
@@ -432,8 +435,19 @@ fn plain(status: StatusCode, msg: &str) -> HttpResponse {
     HttpResponse::build(status).body(msg.to_string())
 }
 
-/// Read a request body of at most `cap` bytes, or say why not.
+/// Read a request body of at most `cap` bytes within [`BODY_READ_TIMEOUT`],
+/// or say why not (`408` when the body does not arrive in time).
 async fn read_capped(
+    req: &HttpRequest,
+    payload: web::Payload,
+    cap: usize,
+) -> Result<Vec<u8>, (StatusCode, &'static str)> {
+    tokio::time::timeout(BODY_READ_TIMEOUT, read_capped_inner(req, payload, cap))
+        .await
+        .unwrap_or(Err((StatusCode::REQUEST_TIMEOUT, "request body too slow")))
+}
+
+async fn read_capped_inner(
     req: &HttpRequest,
     mut payload: web::Payload,
     cap: usize,
@@ -507,14 +521,18 @@ pub(crate) async fn handle_inbox_post(
     if !fed.is_our_host(host) {
         return plain(StatusCode::MISDIRECTED_REQUEST, "wrong host");
     }
+    // The body is read first, under a deadline, and only then is a slot taken:
+    // a client that stalls or trickles holds no slot, so it cannot lock out
+    // genuine senders. The slot covers the work that is expensive (key fetch,
+    // signature check, storage), all of which is time-bounded.
+    let body = match read_capped(&req, payload, MAX_ACTIVITY_BYTES).await {
+        Ok(b) => b,
+        Err((status, msg)) => return plain(status, msg),
+    };
     let Ok(_slot) = fed.inbox_slots.try_acquire() else {
         return HttpResponse::ServiceUnavailable()
             .insert_header((header::RETRY_AFTER, "5"))
             .body("inbox busy");
-    };
-    let body = match read_capped(&req, payload, MAX_ACTIVITY_BYTES).await {
-        Ok(b) => b,
-        Err((status, msg)) => return plain(status, msg),
     };
     let mut signed = signed_request(&req, body.clone());
     if state.trust_proxy {

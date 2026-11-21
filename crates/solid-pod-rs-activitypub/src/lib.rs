@@ -61,7 +61,8 @@ pub use discovery::{
 pub use error::{InboxError, OutboxError, SigError};
 pub use http_sig::{
     digest_header, sign_request, verify_request_signature, ActorKeyResolver, HttpActorKeyResolver,
-    OutboundRequest, SignedRequest, VerifiedActor, ACTOR_FETCH_TIMEOUT, MAX_ACTOR_DOC_BYTES,
+    KeyCachePolicy, OutboundRequest, SignedRequest, VerifiedActor, ACTOR_FETCH_TIMEOUT,
+    MAX_ACTOR_DOC_BYTES,
 };
 pub use inbox::{build_accept, handle_inbox, handle_inbox_with, InboxLimits, InboxOutcome};
 pub use outbox::{handle_outbox, handle_outbox_post, OutboundDelivery};

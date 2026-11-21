@@ -452,3 +452,158 @@ async fn legacy_followers_and_queue_get_a_host_column() {
         .unwrap();
     assert_eq!(h, "old.example");
 }
+
+// ---------------------------------------------------------------------------
+// A3: actor key cache
+// ---------------------------------------------------------------------------
+
+use solid_pod_rs_activitypub::{
+    verify_request_signature, HttpActorKeyResolver, KeyCachePolicy, OutboundRequest, SignedRequest,
+};
+use wiremock::matchers::method as http_method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// A signed inbound POST to `inbox_url` from `key_id`, as the server sees it.
+fn inbound(inbox_url: &str, private_pem: &str, key_id: &str) -> SignedRequest {
+    let body = br#"{"type":"Create"}"#.to_vec();
+    let mut out = OutboundRequest {
+        method: "POST".into(),
+        url: inbox_url.into(),
+        headers: vec![("Content-Type".into(), "application/activity+json".into())],
+        body: body.clone(),
+    };
+    solid_pod_rs_activitypub::sign_request(&mut out, private_pem, key_id).unwrap();
+    let url = url::Url::parse(inbox_url).unwrap();
+    let mut req = SignedRequest::new("POST", url.path(), body);
+    for (k, v) in &out.headers {
+        req = req.with_header(k.to_ascii_lowercase(), v.clone());
+    }
+    req
+}
+
+async fn actor_server(public_pem: &str) -> (MockServer, String) {
+    let server = MockServer::start().await;
+    let actor = format!("{}/actor", server.uri());
+    Mock::given(http_method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": actor, "inbox": format!("{actor}/inbox"),
+            "publicKey": {"id": format!("{actor}#main-key"), "owner": actor, "publicKeyPem": public_pem},
+        })))
+        .mount(&server)
+        .await;
+    (server, actor)
+}
+
+fn loopback_resolver() -> HttpActorKeyResolver {
+    HttpActorKeyResolver::default().with_guard(SsrfGuard::permit_loopback_for_tests())
+}
+
+/// Property: a second request from the same actor does not fetch the key again.
+#[tokio::test]
+async fn a_resolved_actor_key_is_cached() {
+    let (private, public) = generate_actor_keypair().unwrap();
+    let (server, actor) = actor_server(&public).await;
+    let resolver = loopback_resolver();
+    let key_id = format!("{actor}#main-key");
+    for _ in 0..3 {
+        let req = inbound("https://pod.example/inbox", &private, &key_id);
+        verify_request_signature(&req, &resolver).await.unwrap();
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// Property: a failed key fetch is remembered briefly, so repeated requests
+/// naming a dead `keyId` cost one fetch.
+#[tokio::test]
+async fn a_failed_key_fetch_is_negatively_cached() {
+    let server = MockServer::start().await;
+    Mock::given(http_method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let (private, _) = generate_actor_keypair().unwrap();
+    let key_id = format!("{}/actor#main-key", server.uri());
+    let resolver = loopback_resolver();
+    for _ in 0..5 {
+        let req = inbound("https://pod.example/inbox", &private, &key_id);
+        assert!(verify_request_signature(&req, &resolver).await.is_err());
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// Property: after a key rotation the first request fails against the cached
+/// key, the key is re-fetched once, and the new signature verifies.
+#[tokio::test]
+async fn a_rotated_key_is_picked_up_by_one_refetch() {
+    let (old_private, old_public) = generate_actor_keypair().unwrap();
+    let (new_private, new_public) = generate_actor_keypair().unwrap();
+    let (server, actor) = actor_server(&old_public).await;
+    let resolver = loopback_resolver().with_cache_policy(KeyCachePolicy {
+        min_refresh: Duration::ZERO,
+        ..KeyCachePolicy::default()
+    });
+    let key_id = format!("{actor}#main-key");
+    verify_request_signature(
+        &inbound("https://pod.example/inbox", &old_private, &key_id),
+        &resolver,
+    )
+    .await
+    .unwrap();
+    server.reset().await;
+    Mock::given(http_method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": actor, "inbox": format!("{actor}/inbox"),
+            "publicKey": {"id": key_id, "owner": actor, "publicKeyPem": new_public},
+        })))
+        .mount(&server)
+        .await;
+    verify_request_signature(
+        &inbound("https://pod.example/inbox", &new_private, &key_id),
+        &resolver,
+    )
+    .await
+    .expect("rotated key accepted");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "exactly one refetch"
+    );
+}
+
+/// Property: bad signatures under a valid `keyId` cannot make the server
+/// refetch the key more than once per refresh interval.
+#[tokio::test]
+async fn bad_signatures_do_not_amplify_into_fetches() {
+    let (_, public) = generate_actor_keypair().unwrap();
+    let (wrong_private, _) = generate_actor_keypair().unwrap();
+    let (server, actor) = actor_server(&public).await;
+    let resolver = loopback_resolver();
+    let key_id = format!("{actor}#main-key");
+    for _ in 0..10 {
+        let req = inbound("https://pod.example/inbox", &wrong_private, &key_id);
+        assert!(verify_request_signature(&req, &resolver).await.is_err());
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// Property: the cache never holds more than its bound.
+#[tokio::test]
+async fn the_key_cache_is_bounded() {
+    let (_, public) = generate_actor_keypair().unwrap();
+    let (server, actor) = actor_server(&public).await;
+    let resolver = loopback_resolver().with_cache_policy(KeyCachePolicy {
+        max_entries: 2,
+        ..KeyCachePolicy::default()
+    });
+    use solid_pod_rs_activitypub::ActorKeyResolver;
+    // Distinct document URLs (query strings) fill and then churn the cache.
+    for n in 0..6 {
+        resolver.resolve(&format!("{actor}?n={n}#k")).await.unwrap();
+    }
+    // The newest is cached (no extra fetch); an evicted early one is fetched again.
+    let before = server.received_requests().await.unwrap().len();
+    resolver.resolve(&format!("{actor}?n=5#k")).await.unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), before);
+    resolver.resolve(&format!("{actor}?n=0#k")).await.unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), before + 1);
+}

@@ -214,3 +214,75 @@ async fn repeated_follows_from_one_actor_leave_every_row_count_constant() {
     let rows = store.recent_outbox(&target.actor(), 5).await.unwrap();
     assert!(rows[0].activity.to_string().len() < 2_048);
 }
+
+// ---------------------------------------------------------------------------
+// A3: slow bodies hold no inbox slot and are cut off
+// ---------------------------------------------------------------------------
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Open a connection that has sent its headers and a few body bytes, then
+/// stops (a trickling client).
+async fn trickler(target: &Node) -> tokio::net::TcpStream {
+    let authority = target.base.trim_start_matches("http://").to_string();
+    let mut s = tokio::net::TcpStream::connect(&authority).await.unwrap();
+    s.write_all(
+        format!(
+            "POST /inbox HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/activity+json\r\n\
+             Content-Length: 1000\r\n\r\n{{\"ty"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    s
+}
+
+#[actix_web::test]
+async fn trickling_clients_do_not_hold_inbox_slots() {
+    // Property: a client that has not finished sending its body holds no
+    // concurrency slot, so MAX_CONCURRENT_INBOX of them cannot lock out a
+    // genuine, signed request.
+    use solid_pod_rs_server::activitypub::MAX_CONCURRENT_INBOX;
+    let sender = node("carol", 0x44, LOOPBACK).await;
+    let target = node("bob", 0x22, LOOPBACK).await;
+    let mut held = Vec::new();
+    for _ in 0..MAX_CONCURRENT_INBOX {
+        held.push(trickler(&target).await);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let follow = json!({
+        "id": format!("{}/follows/1", sender.base),
+        "type": "Follow",
+        "actor": sender.actor(),
+        "object": target.actor(),
+    });
+    let r = send(&signed(&sender, &format!("{}/inbox", target.base), &follow)).await;
+    assert_eq!(
+        r.status().as_u16(),
+        202,
+        "a genuine request was refused while clients trickled"
+    );
+    drop(held);
+}
+
+#[actix_web::test]
+async fn a_trickled_body_is_cut_off() {
+    // Property: the body read has a deadline; a stalled body ends with a
+    // response (408) instead of holding the connection indefinitely.
+    use solid_pod_rs_server::activitypub::BODY_READ_TIMEOUT;
+    let target = node("bob", 0x22, LOOPBACK).await;
+    let mut s = trickler(&target).await;
+    let mut buf = Vec::new();
+    let waited = tokio::time::timeout(
+        BODY_READ_TIMEOUT + Duration::from_secs(4),
+        s.read_to_end(&mut buf),
+    )
+    .await;
+    assert!(waited.is_ok(), "the stalled body was never cut off");
+    assert!(
+        String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 408"),
+        "got {:?}",
+        String::from_utf8_lossy(&buf)
+    );
+}

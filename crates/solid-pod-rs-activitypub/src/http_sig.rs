@@ -88,6 +88,63 @@ pub struct VerifiedActor {
 #[async_trait]
 pub trait ActorKeyResolver: Send + Sync {
     async fn resolve(&self, key_id: &str) -> Result<VerifiedActor, SigError>;
+
+    /// Resolve again, bypassing any cache the resolver keeps, after a
+    /// signature failed against the key [`Self::resolve`] gave (the actor may
+    /// have rotated its key). A resolver that rate-limits this may return the
+    /// same key. The default has no cache and simply resolves.
+    async fn resolve_fresh(&self, key_id: &str) -> Result<VerifiedActor, SigError> {
+        self.resolve(key_id).await
+    }
+}
+
+/// How long a resolved actor key is reused before it is fetched again.
+pub const KEY_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// How long a failed key fetch is remembered, so a sender naming a dead or
+/// hostile `keyId` over and over costs one fetch, not one per request.
+pub const KEY_CACHE_NEGATIVE_TTL: Duration = Duration::from_secs(30);
+
+/// Shortest time between two forced re-fetches of one key
+/// ([`ActorKeyResolver::resolve_fresh`]); bounds the amplification a stream of
+/// bad signatures under a valid `keyId` could otherwise cause.
+pub const KEY_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Most keys (and failures) the resolver remembers; the oldest go first.
+pub const KEY_CACHE_MAX_ENTRIES: usize = 1_024;
+
+/// Cache sizes and lifetimes of an [`HttpActorKeyResolver`].
+#[derive(Debug, Clone, Copy)]
+pub struct KeyCachePolicy {
+    /// Lifetime of a resolved key.
+    pub ttl: Duration,
+    /// Lifetime of a remembered failure.
+    pub negative_ttl: Duration,
+    /// Minimum gap between forced re-fetches of one key.
+    pub min_refresh: Duration,
+    /// Most entries kept.
+    pub max_entries: usize,
+}
+
+impl Default for KeyCachePolicy {
+    fn default() -> Self {
+        Self {
+            ttl: KEY_CACHE_TTL,
+            negative_ttl: KEY_CACHE_NEGATIVE_TTL,
+            min_refresh: KEY_REFRESH_MIN_INTERVAL,
+            max_entries: KEY_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+enum Cached {
+    Key(VerifiedActor),
+    Failed(String),
+}
+
+struct CacheEntry {
+    value: Cached,
+    fetched_at: std::time::Instant,
 }
 
 /// Largest actor document the resolver will read (bytes).
@@ -110,6 +167,8 @@ pub struct HttpActorKeyResolver {
     guard: SsrfGuard,
     max_bytes: usize,
     timeout: Duration,
+    policy: KeyCachePolicy,
+    cache: std::sync::Mutex<std::collections::HashMap<String, CacheEntry>>,
 }
 
 impl Default for HttpActorKeyResolver {
@@ -119,6 +178,8 @@ impl Default for HttpActorKeyResolver {
             guard: SsrfGuard::strict(),
             max_bytes: MAX_ACTOR_DOC_BYTES,
             timeout: ACTOR_FETCH_TIMEOUT,
+            policy: KeyCachePolicy::default(),
+            cache: std::sync::Mutex::default(),
         }
     }
 }
@@ -144,6 +205,73 @@ impl HttpActorKeyResolver {
         self.max_bytes = max_bytes;
         self.timeout = timeout;
         self
+    }
+
+    /// Replace the key-cache lifetimes and size.
+    #[must_use]
+    pub fn with_cache_policy(mut self, policy: KeyCachePolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// The cached outcome for `doc_url`, if it is still within its lifetime
+    /// (or, when `force` is set, within the minimum re-fetch gap).
+    fn cached(
+        &self,
+        doc_url: &str,
+        key_id: &str,
+        force: bool,
+    ) -> Option<Result<VerifiedActor, SigError>> {
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let e = cache.get(doc_url)?;
+        let age = e.fetched_at.elapsed();
+        let limit = match (&e.value, force) {
+            (_, true) => self.policy.min_refresh,
+            (Cached::Key(_), false) => self.policy.ttl,
+            (Cached::Failed(_), false) => self.policy.negative_ttl,
+        };
+        if age >= limit {
+            return None;
+        }
+        Some(match &e.value {
+            Cached::Key(a) => Ok(VerifiedActor {
+                key_id: key_id.to_string(),
+                ..a.clone()
+            }),
+            Cached::Failed(m) => Err(SigError::ActorFetch(
+                doc_url.to_string(),
+                format!("recent failure: {m}"),
+            )),
+        })
+    }
+
+    fn remember(&self, doc_url: &str, outcome: &Result<VerifiedActor, SigError>) {
+        let value = match outcome {
+            Ok(a) => Cached::Key(a.clone()),
+            Err(e) => Cached::Failed(e.to_string()),
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= self.policy.max_entries && !cache.contains_key(doc_url) {
+            let ttl = self.policy.ttl.max(self.policy.negative_ttl);
+            cache.retain(|_, e| e.fetched_at.elapsed() < ttl);
+            while cache.len() >= self.policy.max_entries {
+                let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, e)| e.fetched_at)
+                    .map(|(k, _)| k.clone())
+                else {
+                    break;
+                };
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(
+            doc_url.to_string(),
+            CacheEntry {
+                value,
+                fetched_at: std::time::Instant::now(),
+            },
+        );
     }
 
     /// Fetch and parse the JSON document at `url` under this resolver's
@@ -199,7 +327,34 @@ impl HttpActorKeyResolver {
 
 #[async_trait]
 impl ActorKeyResolver for HttpActorKeyResolver {
+    /// The actor's key, from the cache when it is fresh (positive and negative
+    /// results are both cached, keyed by the `keyId` document URL).
     async fn resolve(&self, key_id: &str) -> Result<VerifiedActor, SigError> {
+        let doc_url = key_id.split('#').next().unwrap_or(key_id).to_string();
+        if let Some(hit) = self.cached(&doc_url, key_id, false) {
+            return hit;
+        }
+        let outcome = self.fetch_actor(key_id).await;
+        self.remember(&doc_url, &outcome);
+        outcome
+    }
+
+    /// Fetch the key again unless it was fetched within
+    /// [`KeyCachePolicy::min_refresh`], in which case the cached outcome is
+    /// returned unchanged.
+    async fn resolve_fresh(&self, key_id: &str) -> Result<VerifiedActor, SigError> {
+        let doc_url = key_id.split('#').next().unwrap_or(key_id).to_string();
+        if let Some(hit) = self.cached(&doc_url, key_id, true) {
+            return hit;
+        }
+        let outcome = self.fetch_actor(key_id).await;
+        self.remember(&doc_url, &outcome);
+        outcome
+    }
+}
+
+impl HttpActorKeyResolver {
+    async fn fetch_actor(&self, key_id: &str) -> Result<VerifiedActor, SigError> {
         let actor_url = key_id
             .split_once('#')
             .map(|(u, _)| u.to_string())
@@ -492,20 +647,36 @@ pub async fn verify_request_signature(
         }
     }
 
-    let actor = resolver.resolve(&parsed.key_id).await?;
-    let pub_key = RsaPublicKey::from_public_key_pem(&actor.public_key_pem)
-        .map_err(|e| SigError::Rsa(e.to_string()))?;
-    let vk = VerifyingKey::<Sha256>::new(pub_key);
-
     let base = build_signature_base(req, &parsed.headers)?;
     let sig_bytes = B64
         .decode(parsed.signature_b64.as_bytes())
         .map_err(|e| SigError::Base64(e.to_string()))?;
     let sig = RsaSignature::try_from(sig_bytes.as_slice())
         .map_err(|e| SigError::MalformedSignature(e.to_string()))?;
-    vk.verify(base.as_bytes(), &sig)
-        .map_err(|e| SigError::VerifyFailed(e.to_string()))?;
-    Ok(actor)
+    let check = |actor: &VerifiedActor| -> Result<(), SigError> {
+        let pub_key = RsaPublicKey::from_public_key_pem(&actor.public_key_pem)
+            .map_err(|e| SigError::Rsa(e.to_string()))?;
+        VerifyingKey::<Sha256>::new(pub_key)
+            .verify(base.as_bytes(), &sig)
+            .map_err(|e| SigError::VerifyFailed(e.to_string()))
+    };
+
+    let actor = resolver.resolve(&parsed.key_id).await?;
+    match check(&actor) {
+        Ok(()) => Ok(actor),
+        // A cached key may be stale after a rotation: ask once for a fresh
+        // one (the resolver rate-limits this) and accept only if it differs
+        // from the key that just failed and verifies.
+        Err(first @ (SigError::VerifyFailed(_) | SigError::Rsa(_))) => {
+            let fresh = resolver.resolve_fresh(&parsed.key_id).await?;
+            if fresh.public_key_pem == actor.public_key_pem {
+                return Err(first);
+            }
+            check(&fresh)?;
+            Ok(fresh)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Sign an outbound AP delivery. The caller provides the pod's PEM
