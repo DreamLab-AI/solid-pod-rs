@@ -2193,6 +2193,8 @@ pub struct Mirror {
     /// Judges the operator's own relay hosts. Defaults to `ssrf`; an operator
     /// allowance for an internal relay goes here and never reaches clones.
     relay_ssrf: Arc<dyn SsrfCheck>,
+    /// Opens the TCP socket to a relay at an address the SSRF check approved.
+    dialer: Arc<dyn RelayDialer>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Newest verified-by-filter event per `(repo, kind)` waiting for a worker.
     /// Bounded by construction: at most two entries per followed repository.
@@ -2331,6 +2333,7 @@ impl Mirror {
             clock,
             relay_ssrf: Arc::clone(&ssrf),
             ssrf,
+            dialer: Arc::new(TcpRelayDialer),
             locks: Mutex::new(HashMap::new()),
             inbox: std::sync::Mutex::new(HashMap::new()),
             busy: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -3220,6 +3223,40 @@ impl Mirror {
         }
     }
 
+    /// Open the relay socket. When the SSRF check returned the address it
+    /// approved (`pinned`), a TCP connection is made to exactly that address
+    /// and port and the WebSocket (and TLS, for `wss`) handshake runs over it,
+    /// with the URL's host kept for SNI and `Host`. The hostname is therefore
+    /// never resolved a second time between the check and the connect (DNS
+    /// rebinding). `pinned == None` means the policy trusts the host (an
+    /// operator-listed relay) and the URL is dialled as given.
+    async fn connect_relay(
+        &self,
+        dial: &str,
+        pinned: Option<std::net::IpAddr>,
+        limits: WebSocketConfig,
+    ) -> Result<RelaySocket, String> {
+        let Some(ip) = pinned else {
+            return tokio_tungstenite::connect_async_with_config(dial, Some(limits), false)
+                .await
+                .map(|(ws, _)| ws)
+                .map_err(|e| e.to_string());
+        };
+        let url = url::Url::parse(dial).map_err(|e| e.to_string())?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "relay URL has no port".to_string())?;
+        let tcp = self
+            .dialer
+            .dial(std::net::SocketAddr::new(ip, port))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio_tungstenite::client_async_tls_with_config(dial, tcp, Some(limits), None)
+            .await
+            .map(|(ws, _)| ws)
+            .map_err(|e| e.to_string())
+    }
+
     async fn relay_session(
         self: &Arc<Self>,
         relay: &str,
@@ -3230,18 +3267,19 @@ impl Mirror {
             Ok(pair) => pair,
             Err(why) => return format!("relay URL refused: {why}"),
         };
-        if let Err(why) = self.relay_host_allowed(&judged).await {
-            return format!("relay host refused: {why}");
-        }
+        let pinned = match self.relay_host_allowed(&judged).await {
+            Ok(ip) => ip,
+            Err(why) => return format!("relay host refused: {why}"),
+        };
         let limits = WebSocketConfig {
             max_message_size: Some(MAX_FRAME_BYTES),
             max_frame_size: Some(MAX_FRAME_BYTES),
             ..WebSocketConfig::default()
         };
-        let connect = tokio_tungstenite::connect_async_with_config(dial, Some(limits), false);
+        let connect = self.connect_relay(&dial, pinned, limits);
         let mut ws = match tokio::time::timeout(Duration::from_secs(15), connect).await {
-            Ok(Ok((ws, _))) => ws,
-            Ok(Err(e)) => return e.to_string(),
+            Ok(Ok(ws)) => ws,
+            Ok(Err(e)) => return e,
             Err(_) => return "connect timed out".into(),
         };
         let mut authors: Vec<&str> = self.cfg.follow.iter().map(|f| f.pubkey.as_str()).collect();
@@ -3302,6 +3340,26 @@ fn relay_endpoints(relay: &str) -> Result<(String, String), String> {
         .set_scheme(twin)
         .map_err(|()| "cannot map the scheme".to_string())?;
     Ok((parsed.into(), judged.into()))
+}
+
+/// The WebSocket the mirror reads from a relay.
+type RelaySocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Opens the TCP connection to a relay at an already-approved address. A seam
+/// so a test can prove which address is dialled without a network.
+#[async_trait]
+trait RelayDialer: Send + Sync {
+    async fn dial(&self, addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpStream>;
+}
+
+struct TcpRelayDialer;
+
+#[async_trait]
+impl RelayDialer for TcpRelayDialer {
+    async fn dial(&self, addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpStream> {
+        tokio::net::TcpStream::connect(addr).await
+    }
 }
 
 /// Owns the relay session tasks started by [`Mirror::start`].
@@ -5829,6 +5887,66 @@ mod tests {
             self.0.lock().unwrap().push(host.to_string());
             Err("recorded".into())
         }
+    }
+
+    /// Records the address it is asked to dial and refuses the connection.
+    struct RecordingDialer(std::sync::Mutex<Vec<std::net::SocketAddr>>);
+
+    #[async_trait]
+    impl RelayDialer for RecordingDialer {
+        async fn dial(&self, addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpStream> {
+            self.0.lock().unwrap().push(addr);
+            Err(std::io::Error::other("recorded"))
+        }
+    }
+
+    /// Approves any host and pins it to a fixed address, as the default policy
+    /// does with the address it resolved.
+    struct PinTo(std::net::IpAddr);
+
+    #[async_trait]
+    impl SsrfCheck for PinTo {
+        async fn verify_host(&self, _host: &str) -> Result<Option<std::net::IpAddr>, String> {
+            Ok(Some(self.0))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_session_dials_the_address_the_check_approved_not_a_second_resolution() {
+        // DNS rebinding: the hostname below does not resolve at all, so any
+        // second resolution would fail with a DNS error. The session must
+        // instead connect to the approved address and the URL's port.
+        let tmp = tempfile::tempdir().unwrap();
+        let approved: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+        let cfg = MirrorConfig {
+            relays: vec!["wss://relay.rebind.invalid:4443".into()],
+            follow: vec![FollowEntry {
+                pubkey: pubhex(&key(11)),
+                name: "x".into(),
+                clone: None,
+            }],
+            min_interval_ms: 0,
+        };
+        let dialer = Arc::new(RecordingDialer(std::sync::Mutex::new(Vec::new())));
+        let mut m = Mirror::new(
+            cfg,
+            MirrorStore::new(tmp.path()),
+            Arc::new(GitCli::new(tmp.path().join("repos"))),
+        )
+        .with_relay_ssrf(Arc::new(PinTo(approved)));
+        m.dialer = dialer.clone();
+        let m = Arc::new(m);
+        let why = session_outcome(&m, "wss://relay.rebind.invalid:4443/").await;
+        assert_eq!(why, "recorded", "{why}");
+        assert_eq!(
+            *dialer.0.lock().unwrap(),
+            [std::net::SocketAddr::new(approved, 4443)]
+        );
+        // `wss` without a port dials 443, `ws` 80.
+        let _ = session_outcome(&m, "wss://relay.rebind.invalid/").await;
+        let _ = session_outcome(&m, "ws://relay.rebind.invalid/").await;
+        let ports: Vec<u16> = dialer.0.lock().unwrap().iter().map(|a| a.port()).collect();
+        assert_eq!(ports, [4443, 443, 80]);
     }
 
     #[tokio::test]
