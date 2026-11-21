@@ -135,7 +135,7 @@ pub fn verify_self_signed_jwt(
             claims.htm
         )));
     }
-    if !htu_eq(&claims.htu, expected_htu) {
+    if !solid_pod_rs::auth::htu::htu_matches(&claims.htu, expected_htu) {
         return Err(DidKeyError::InvalidClaims(format!(
             "htu mismatch: got {}, expected {expected_htu}",
             claims.htu
@@ -165,12 +165,6 @@ pub fn verify_self_signed_jwt(
         exp: claims.exp,
         sub: claims.sub,
     })
-}
-
-fn htu_eq(a: &str, b: &str) -> bool {
-    let na = a.trim_end_matches('/').to_ascii_lowercase();
-    let nb = b.trim_end_matches('/').to_ascii_lowercase();
-    na == nb
 }
 
 fn resolve_key(header: &JwtHeader) -> Result<(DidKeyPubkey, String), DidKeyError> {

@@ -150,6 +150,23 @@ fn reject_wrong_htu() {
 }
 
 #[test]
+fn reject_htu_differing_only_by_trailing_slash() {
+    // RFC 9449: `/r` and `/r/` are different resources (document, container).
+    let now = 1_700_000_000u64;
+    let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, false);
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r/", "GET", now, 60).unwrap_err();
+    assert!(matches!(err, DidKeyError::InvalidClaims(_)), "got {err:?}");
+    let jwt = build_ed25519_jwt("https://pod.example/r/", "GET", now, false);
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60).unwrap_err();
+    assert!(matches!(err, DidKeyError::InvalidClaims(_)), "got {err:?}");
+    // Host case and query are still free (RFC 9449 section 4.3).
+    let jwt = build_ed25519_jwt("https://POD.example/r?a=1", "GET", now, false);
+    verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60).unwrap();
+}
+
+#[test]
 fn reject_wrong_htm() {
     let now = 1_700_000_000u64;
     let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, false);

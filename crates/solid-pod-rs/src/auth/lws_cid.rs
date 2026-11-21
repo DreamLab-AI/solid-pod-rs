@@ -23,6 +23,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use serde::Deserialize;
 
+use crate::auth::htu::htu_matches;
 use crate::auth::self_signed::{
     ProofEnvelope, SelfSignedError, SelfSignedVerifier, VerifiedSubject,
 };
@@ -190,7 +191,7 @@ impl SelfSignedVerifier for LwsCidVerifier {
                 claims.htm, envelope.method
             )));
         }
-        if !htu_eq(&claims.htu, envelope.uri) {
+        if !htu_matches(&claims.htu, envelope.uri) {
             return Err(SelfSignedError::ScopeMismatch(format!(
                 "htu mismatch: got {}, expected {}",
                 claims.htu, envelope.uri
@@ -316,12 +317,6 @@ fn split_jws(jwt: &str) -> Result<(String, String, String), String> {
 fn decode_segment<T: for<'de> Deserialize<'de>>(b64: &str) -> Result<T, String> {
     let bytes = B64URL.decode(b64).map_err(|e| format!("base64: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("json: {e}"))
-}
-
-fn htu_eq(a: &str, b: &str) -> bool {
-    let na = a.trim_end_matches('/').to_ascii_lowercase();
-    let nb = b.trim_end_matches('/').to_ascii_lowercase();
-    na == nb
 }
 
 fn is_url_with_fragment(kid: &str) -> bool {
@@ -930,11 +925,49 @@ mod tests {
         assert!(matches!(err, SelfSignedError::InvalidSignature(_)));
     }
 
+    #[tokio::test]
+    async fn rejects_a_proof_for_the_other_trailing_slash() {
+        let (sk, vk) = make_test_keypair();
+        let jwk = vk_to_jwk(&vk);
+        let webid = "https://pod.example/profile/card#me";
+        let kid = "https://pod.example/profile/card#key-1";
+        let now = 1_700_000_000u64;
+        let header = serde_json::json!({"alg": "ES256K", "kid": kid});
+        let claims = serde_json::json!({
+            "sub": webid, "iss": webid, "htm": "GET",
+            "htu": "https://pod.example/r", "iat": now
+        });
+        let jwt = sign_jwt(&sk, &header, &claims);
+        let fetcher = Arc::new(MockFetcher::new());
+        let profile = test_profile(webid, kid, &jwk);
+        fetcher.add_response(
+            "https://pod.example/profile/card",
+            serde_json::to_vec(&profile).unwrap().as_slice(),
+        );
+        let v = LwsCidVerifier::new(fetcher);
+        let env = ProofEnvelope {
+            proof: &jwt,
+            method: "GET",
+            uri: "https://pod.example/r/",
+            now_unix: now,
+            expected_subject_hint: None,
+        };
+        let err = v.verify(&env).await.unwrap_err();
+        assert!(matches!(err, SelfSignedError::ScopeMismatch(_)), "{err:?}");
+    }
+
     #[test]
-    fn htu_eq_trailing_slash() {
-        assert!(htu_eq("https://a.example/path/", "https://a.example/path"));
-        assert!(htu_eq("https://A.example/path", "https://a.example/path"));
-        assert!(!htu_eq("https://a.example/a", "https://a.example/b"));
+    fn htu_comparison_follows_rfc_9449() {
+        // RFC 9449: a trailing slash names a different resource; host case is free.
+        assert!(!htu_matches(
+            "https://a.example/path/",
+            "https://a.example/path"
+        ));
+        assert!(htu_matches(
+            "https://A.example/path",
+            "https://a.example/path"
+        ));
+        assert!(!htu_matches("https://a.example/a", "https://a.example/b"));
     }
 
     #[test]

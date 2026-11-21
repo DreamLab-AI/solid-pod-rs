@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The LWS-CID and did:key JWT verifiers compare `htu` per RFC 9449** (security review follow-up to
+  SP-OIDC-03): they lower-cased and trimmed the trailing slash, so a proof for `/r` matched `/r/`. All three
+  comparators now share `auth::htu::htu_matches`.
 - **DPoP `htu` is compared per RFC 9449** (SP-OIDC-03): scheme and host case-insensitive, query and fragment
   ignored, path exact. It was lower-cased and trailing-slash-trimmed, so a proof for `/r` or `/Private` was
   accepted for `/r/` or `/private`.

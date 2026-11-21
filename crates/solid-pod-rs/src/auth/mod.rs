@@ -6,6 +6,7 @@
 //! adds [`self_signed`] — the Controlled Identifier verifier abstraction
 //! (row 152) used to fan out across did:key, NIP-98, did:nostr, etc.
 
+pub mod htu;
 pub mod nip98;
 pub mod self_signed;
 
