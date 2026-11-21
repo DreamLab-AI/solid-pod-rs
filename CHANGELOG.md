@@ -12,11 +12,13 @@ ActivityPub (`solid-pod-rs-activitypub` and the server mount):
 
 - **Bounded growth.** A `Follow` from an existing follower is idempotent (no inbox row, no `Accept`, no delivery); the
   `Accept` embeds only the Follow's verified `id`, `actor` and `object`, never the sender's body; activity ids over
-  2 KiB are refused. Inbox rows carry their sender, dedup is on `(sender, id)`, retention is 200 rows per sender (the
-  10 000 global bound stays); server-generated `Accept` rows are trimmed to 5 000; the delivery queue refuses new work
+  2 KiB are refused. Inbox rows carry their sender, dedup is on `(sender, id)`, retention is 200 rows per sender, and the
+  10 000 global backstop trims the sender holding the most rows first (bounds are per actor: one origin minting very
+  many actors is limited only by the global bound, but cannot push another sender's rows out); server-generated `Accept` rows are trimmed to 5 000; the delivery queue refuses new work
   past 20 000 (logged once per episode). An `inbox` table from an older `ap.db` is migrated in place.
 - **Delivery.** A follower's `inbox` and `sharedInbox` must be on the origin of its actor document or the Follow is
-  refused; new followers per remote host are capped (default 50, `InboxLimits`, `Federation::start_with_limits`).
+  refused; new followers per remote host are capped (default 50; `--ap-max-followers-per-host` / `JSS_AP_MAX_FOLLOWERS_PER_HOST`,
+  `InboxLimits`, `Federation::start_with_limits`).
   `DeliveryWorker::run` delivers concurrently (8 at once, 2 per host) with a per-host circuit breaker (5 failures,
   30 s doubling to 1 h), so one stalled host no longer delays the rest. `drain_once` is still one attempt.
 - **Inbox.** The body is read first under a 5 s deadline (`BODY_READ_TIMEOUT`, `408`) and only then is a concurrency
