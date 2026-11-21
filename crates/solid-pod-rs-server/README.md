@@ -53,6 +53,23 @@ actual base URL. `--port 0` requests one operating-system-assigned port.
 WebSocket reload client into served HTML. It is disabled by default and is
 intended only for local development.
 
+### Stored HTML is sandboxed by default
+
+A stored HTML, XHTML, SVG, XML or JavaScript document served over LDP (`GET`
+and `HEAD`, including a container's `index.html` served to a browser) is sent
+with `Content-Security-Policy: default-src 'none'; sandbox`. It still renders,
+but it runs no script, loads no sub-resources and has an opaque origin, so
+whatever a writer stores cannot act as the pod origin. Types that are not
+script-capable are unchanged.
+
+`--serve-active-content` (or `JSS_SERVE_ACTIVE_CONTENT=true`), off by default,
+serves them without that policy, as earlier releases did; use it only when you
+host web apps from pod storage and every writer is trusted. It never applies
+under `/remotestorage/`, whose documents are always sandboxed, `nosniff` and a
+download. `--live-reload` injects a script, so it also needs this flag to take
+effect. Pages the binary generates (the Mashlib wrapper, the forge UI) are not
+pod storage and are unchanged.
+
 The write-path authenticator also accepts JSS's two-part development bearer
 token when `TOKEN_SECRET` is explicitly set to at least 32 bytes. The token is
 base64url payload plus HMAC-SHA256 signature; the payload must contain valid
@@ -239,8 +256,9 @@ module documentation of `remotestorage.rs` for the full authority statement.
   Applications reading with `fetch` are unaffected; a stored PDF or media file
   cannot be viewed directly in a browser tab. LDP `GET`/`HEAD` under
   `/remotestorage/` carries the same headers, whatever the ACL says and whether or
-  not the feature is on. Other LDP responses carry `nosniff` only: the pod serves
-  stored `index.html` pages by design. The names `remotestorage`, `storage` and
+  not the feature is on. Other LDP responses carry `nosniff`, and stored active
+  documents (HTML, XHTML, SVG, XML, JavaScript) also carry the sandbox CSP unless
+  `--serve-active-content` is set (see below), but are not forced to download. The names `remotestorage`, `storage` and
   the other paths this server serves cannot be registered as pod or account names.
 - Deleting a document returns its bytes to the quota. Tokens can only be
   revoked all at once, and the `remotestorage` quota bucket is separate from

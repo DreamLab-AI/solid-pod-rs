@@ -40,10 +40,8 @@ remoteStorage:
 
 - **Stored XSS.** Every `/storage/` response carries `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: default-src 'none'; sandbox`; HTML, XHTML, SVG, XML (`+xml`) and JavaScript documents are
-  also `Content-Disposition: attachment`. LDP responses gain `X-Content-Type-Options: nosniff` app-wide. LDP is not
-  sandboxed: the pod serves stored `index.html` pages and live-reload HTML by design. **Owner decision:** whether
-  stored HTML on the pod origin should be sandboxed on LDP too (options: keep; sandbox unless a pod opts in; serve
-  pod HTML from a separate origin).
+  also `Content-Disposition: attachment`. LDP responses gain `X-Content-Type-Options: nosniff` app-wide. Stored
+  active documents over LDP are now sandboxed by default too (SP-LDP-HTML-SANDBOX, below).
 - **Name guard.** Sidecar names are compared case-folded on the decoded segment and the pod's dotfile policy runs on
   each segment, so `x.ACL`, `x.%41CL`, `X.Meta`, `y.META.JSON` are refused.
 - **Private from LDP.** At mount time `/remotestorage/` gets an owner-only ACL (the agents the root ACL gives Control
@@ -156,6 +154,16 @@ WebRTC:
 - `AppState` gains `ap_federation` (a type-erased `Option<Arc<dyn Any + Send + Sync>>`, always present; set with `AppState::set_ap_federation`), `remotestorage` and `webrtc`: a source break for code that builds `AppState` with a struct literal.
 
 ### Upgrade notes
+
+- **Stored HTML is sandboxed over LDP by default** (SP-LDP-HTML-SANDBOX, owner decision). A `GET` or `HEAD` of a stored
+  resource of an active type (HTML, XHTML, SVG, XML, `+xml`, JavaScript) now carries
+  `Content-Security-Policy: default-src 'none'; sandbox`, without `Content-Disposition: attachment`: the document still
+  renders but runs no script, loads no sub-resources and has an opaque origin. **Effect on the documented feature:** a
+  container's `index.html` served to a browser is sandboxed too, so a pod that serves a static site shows its markup
+  without script, styles or images, and a web app hosted from pod storage stops working; `--live-reload` no longer
+  reloads (its injected script is blocked). Operators who host web apps from pod storage set `--serve-active-content`
+  (`JSS_SERVE_ACTIVE_CONTENT=true`) to restore the earlier headers. The flag never applies under `/remotestorage/`,
+  whose responses stay sandboxed, `nosniff` and a download. Mashlib and forge pages are unchanged.
 
 - **A SPARQL Update that deletes a triple the resource does not hold is now `409` and writes nothing** (row 41),
   as an N3 Patch already was and as JSS is for both dialects. Before, `DELETE DATA` of an absent triple (and an absent

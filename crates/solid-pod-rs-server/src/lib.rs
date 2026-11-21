@@ -488,6 +488,14 @@ pub struct AppState {
     pub mashlib_cdn: Option<String>,
     /// Inject a development-only WebSocket reload client into HTML responses.
     pub live_reload: bool,
+    /// Opt-out of the default sandboxing of active stored documents over LDP
+    /// (`--serve-active-content` / `JSS_SERVE_ACTIVE_CONTENT`). Off by
+    /// default: a stored HTML, XHTML, SVG, XML or JavaScript document is
+    /// served with `Content-Security-Policy: default-src 'none'; sandbox`.
+    /// On, the pod serves them as it did before (web apps hosted from pod
+    /// storage). Never applies under the remoteStorage container, whose
+    /// responses are always hardened.
+    pub serve_active_content: bool,
     /// Payment configuration — drives `/pay/.info` and the `X-Balance` /
     /// `X-Cost` / `X-Pay-Currency` response headers on paid resources.
     pub pay_config: solid_pod_rs::payments::PayConfig,
@@ -715,6 +723,7 @@ impl AppState {
             mashlib: MashlibConfig::default(),
             mashlib_cdn: None,
             live_reload: false,
+            serve_active_content: false,
             pay_config: solid_pod_rs::payments::PayConfig::default(),
             data_root: None,
             quota: None,
@@ -1880,6 +1889,34 @@ fn append_vary(rsp: &mut HttpResponse, field: &str) {
     }
 }
 
+/// Sandbox a response that carries bytes read from pod storage.
+///
+/// Property: unless the operator opted out (`serve_active_content`), a stored
+/// document whose type is script-capable (see
+/// [`remotestorage::is_active_type`]) is never rendered with the pod origin's
+/// authority: the response carries `Content-Security-Policy: default-src
+/// 'none'; sandbox`, which makes the page an opaque-origin, script-less
+/// document that still renders. Called only where stored bytes are sent, so
+/// pages the server generates itself (Mashlib wrapper, forge, IdP) keep their
+/// own headers. The remoteStorage container is hardened separately and
+/// unconditionally by [`remotestorage::harden_ldp`].
+fn sandbox_stored(rsp: &mut HttpResponse, state: &AppState) {
+    if state.serve_active_content {
+        return;
+    }
+    let active = rsp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(remotestorage::is_active_type);
+    if active {
+        rsp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static(remotestorage::STORAGE_CSP),
+        );
+    }
+}
+
 /// `GET`/`HEAD` over LDP. Anything under the remoteStorage container gets the
 /// storage route's protective headers (sandboxing CSP, `nosniff`, download for
 /// active types) whatever the ACL says and whether or not the feature is on:
@@ -1969,6 +2006,7 @@ async fn handle_get_inner(
                 let mut rsp = HttpResponse::Ok()
                     .content_type("text/html; charset=utf-8")
                     .body(inject_live_reload(&body, state.live_reload));
+                sandbox_stored(&mut rsp, &state);
                 set_cache_policy(&mut rsp, "text/html", index_audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state);
@@ -2079,6 +2117,7 @@ async fn handle_get_inner(
                 if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                     rsp.headers_mut().insert(header::ETAG, etag);
                 }
+                sandbox_stored(&mut rsp, &state);
                 set_cache_policy(&mut rsp, negotiated_ct, audience);
                 set_wac_allow(&mut rsp, &wac_allow);
                 set_updates_via(&mut rsp, &state);
@@ -2101,6 +2140,7 @@ async fn handle_get_inner(
             if let Ok(etag) = header::HeaderValue::from_str(&format!("\"{}\"", meta.etag)) {
                 rsp.headers_mut().insert(header::ETAG, etag);
             }
+            sandbox_stored(&mut rsp, &state);
             set_cache_policy(&mut rsp, &meta.content_type, audience);
             set_wac_allow(&mut rsp, &wac_allow);
             set_updates_via(&mut rsp, &state);

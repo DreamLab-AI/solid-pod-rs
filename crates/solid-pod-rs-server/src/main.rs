@@ -71,6 +71,17 @@ struct Cli {
     #[arg(long, env = "JSS_LIVE_RELOAD")]
     live_reload: bool,
 
+    /// Serve stored HTML, XHTML, SVG, XML and JavaScript documents as they
+    /// were before sandboxing became the default (no
+    /// `Content-Security-Policy`), so web apps hosted from pod storage run
+    /// with the pod origin's authority. Off by default: stored active
+    /// documents are sent with `Content-Security-Policy: default-src 'none';
+    /// sandbox` (they render, but run no script and have an opaque origin).
+    /// Has no effect under `/remotestorage/`, which is always hardened. Live
+    /// reload (`--live-reload`) needs this flag to run its injected script.
+    #[arg(long, env = "JSS_SERVE_ACTIVE_CONTENT")]
+    serve_active_content: bool,
+
     /// Optional TLS key PEM path. When set together with
     /// `--ssl-cert`, the server binds via rustls on the chosen port.
     #[cfg(feature = "tls")]
@@ -556,6 +567,7 @@ async fn main() -> anyhow::Result<()> {
     }
     state.mashlib_cdn = cli.mashlib_cdn.clone();
     state.live_reload = cli.live_reload;
+    state.serve_active_content = cli.serve_active_content;
 
     state.conneg_enabled = cli.conneg || cfg.extras.conneg_enabled == Some(true);
     state.trust_proxy = cli.trust_proxy || cfg.extras.trust_proxy == Some(true);

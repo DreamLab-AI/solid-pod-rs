@@ -771,7 +771,7 @@ fn bearer(req: &HttpRequest) -> Option<&str> {
 /// Whether `content_type` (parameters and case ignored) is one a browser may
 /// execute or script when it is shown: HTML, XHTML, SVG, XML in any
 /// `+xml` form, and JavaScript. Such documents are also forced to download.
-fn is_active_type(content_type: &str) -> bool {
+pub(crate) fn is_active_type(content_type: &str) -> bool {
     let essence = content_type
         .split(';')
         .next()
@@ -803,7 +803,7 @@ fn is_active_type(content_type: &str) -> bool {
 /// with `fetch` or XHR (the intended use): CSP governs documents being
 /// rendered, not data being read. The cost is that opening a stored PDF or
 /// media file directly in a browser tab is refused by the sandbox.
-const STORAGE_CSP: &str = "default-src 'none'; sandbox";
+pub(crate) const STORAGE_CSP: &str = "default-src 'none'; sandbox";
 
 /// Mark `rsp` inert: no sniffing, sandboxed, and a download when the stored
 /// type is active. Applied to every response of the storage route.

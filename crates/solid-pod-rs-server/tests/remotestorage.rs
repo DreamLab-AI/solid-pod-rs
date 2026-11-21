@@ -726,9 +726,9 @@ async fn stored_active_content_is_served_inert_on_every_method_and_status() {
 #[actix_web::test]
 async fn ldp_responses_carry_nosniff() {
     // Property: a stored document served over LDP is never content-sniffed
-    // into something else (the writer chose its type). The LDP side is NOT
-    // sandboxed: the pod serves `index.html` pages and live-reload HTML from
-    // storage by design (owner decision recorded in the CHANGELOG).
+    // into something else (the writer chose its type). Sandboxing is not
+    // asserted here: see `tests/ldp_active_content.rs` for the
+    // default sandboxing of active documents and its opt-out.
     let p = pod(true).await;
     p.storage
         .put(
@@ -1055,10 +1055,13 @@ async fn ldp_serves_remotestorage_documents_inert_even_under_a_permissive_acl() 
     // owner's own container ACL is public-read, an LDP GET of a stored HTML
     // document succeeds (the policy is theirs) but is sandboxed, nosniff and a
     // download, exactly as on `/storage/`; this holds whether or not the
-    // feature flag is on (the data may predate it) and only under the
-    // container: other LDP paths are untouched.
-    for mounted in [true, false] {
-        let p = pod(mounted).await;
+    // feature flag is on (the data may predate it) and whether or not the
+    // operator opted out of default sandboxing with `serve_active_content`
+    // (the opt-out never reaches this container). Other LDP paths are
+    // sandboxed by default and follow the opt-out.
+    for (mounted, serve) in [(true, false), (false, false), (true, true), (false, true)] {
+        let mut p = pod(mounted).await;
+        p.state.serve_active_content = serve;
         public_read_root(&p).await;
         let permissive = format!(
             "@prefix acl: <{ACL}> .\n<#p> a acl:Authorization ; \
@@ -1113,10 +1116,15 @@ async fn ldp_serves_remotestorage_documents_inert_even_under_a_permissive_acl() 
                 assert_inert(&h, &format!("{mounted} {method} {uri}"));
             }
         }
-        // Other LDP paths keep their existing headers.
+        // Other LDP paths: sandboxed by default (no forced download), and
+        // exactly as before under the opt-out.
         let (s, h, _) = call(&app, with("GET", "/site/page.html", None)).await;
         assert_eq!(s, StatusCode::OK);
-        assert!(header(&h, "content-security-policy").is_none());
+        assert_eq!(
+            header(&h, "content-security-policy").is_some(),
+            !serve,
+            "{mounted} {serve}"
+        );
         assert!(header(&h, "content-disposition").is_none());
         // A sibling that merely starts with the same letters is not the container.
         let (_, h, _) = call(&app, with("GET", "/remotestorage-x/a.html", None)).await;

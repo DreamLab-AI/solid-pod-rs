@@ -148,6 +148,20 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > limited on its own, and is not limited at all if no quota is configured for that
 > name), or account it to the pod whose owner minted the tokens. An owner decision.
 
+> Note 2026-11-21 (decision taken, SP-LDP-HTML-SANDBOX): the owner chose to sandbox
+> stored HTML on LDP by default, with an opt-out. Implemented in
+> `crates/solid-pod-rs-server/src/lib.rs` (`sandbox_stored`): a stored resource of an
+> active type (`remotestorage::is_active_type`) is served with
+> `Content-Security-Policy: default-src 'none'; sandbox` and is not forced to download,
+> so it still renders, runs no script and has an opaque origin. Applied wherever stored
+> bytes are sent (plain resource, a container's `index.html`, a negotiated
+> representation; GET and HEAD). `--serve-active-content` / `JSS_SERVE_ACTIVE_CONTENT`
+> restores the earlier headers and never applies under `/remotestorage/`
+> (`remotestorage::harden_ldp` stays unconditional). Pages the binary generates or
+> embeds (Mashlib wrapper, forge UI) keep their own headers. Tests:
+> `crates/solid-pod-rs-server/tests/ldp_active_content.rs`. Option (1) above is closed;
+> option (2), the quota bucket, is still open.
+
 ## Context
 
 Solid specifies two mutually-exclusive authorisation systems: Web Access

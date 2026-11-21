@@ -32,7 +32,7 @@ and our status against it.
 
 ## Current state (2026-11-21 — JSS `943fb8d`, package 0.0.231; plugins `63a16cb`)
 
-**306 rows tracked** across 29 functional sections (§29 is the `0.0.224` → `0.0.231` delta). §26 records the `0.0.221` →
+**307 rows tracked** across 29 functional sections (§29 is the `0.0.224` → `0.0.231` delta). §26 records the `0.0.221` →
 `0.0.224` core delta: ACLs read by expanded JSON-LD IRI and refusal of ACLs that
 grant nothing (#631/#632), PATCH applied as quads with Append for insert-only and
 per-resource serialisation (#633), and NIP-11 at the relay URL (#635). §27 records
@@ -49,13 +49,13 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 97.9%** — 280/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 98.6%** (280 + 0.5 × 5 over 286; the earlier 95.8% did not match its own counts) |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 97.9%** — 281/287 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 98.8%** (281 + 0.5 × 5 over 287; the earlier 95.8% did not match its own counts) |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are mounted behind `--ap-federation` (281) |
 
-> **Authoritative figure.** **97.9% strict** over 306 rows, and an **upper
+> **Authoritative figure.** **97.9% strict** over 307 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
@@ -69,14 +69,14 @@ and 104 were reclassified in place. Method and evidence:
 | Status | Count |
 |---|---|
 | present (includes present-by-absence) | 251 |
-| net-new (ours; not in JSS) | 19 |
+| net-new (ours; not in JSS) | 20 |
 | semantic-difference | 10 |
 | partial-parity | 5 |
 | missing | 1 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
-| **Total** | **306** |
+| **Total** | **307** |
 
 Counts are the output of `scripts/parity-check.sh` as of 2026-11-21 (the 2026-11-01 audit set the rows). Core
 comparator: upstream `JavaScriptSolidServer` `gh-pages` at `943fb8d`, package
@@ -827,6 +827,7 @@ workspace is AGPL-3.0 too, and every implementation here is written from the obs
 | 304 | PUT and DELETE are atomic conditional writes (If-Match, If-None-Match under the per-resource queue); a failed conditional write creates no directory | `4f05c44`, `f8fff8a`, `e47d44f`, #600 | Per-resource in-process lock around check and write on every write method | present | `crates/solid-pod-rs-server/tests/jss_0231_delta.rs` (racing If-Match PUTs, racing creates, DELETE vs PUT, no directory left) | The cross-process half is row 275. |
 | 305 | A container listing percent-encodes the names it lists | `9d091a9`, #662 | The store keys a resource by the client's own spelling (`a%20b` stays `a%20b`), so a listing of HTTP-created resources already carries encoded names and round-trips | semantic-difference | `crates/solid-pod-rs-server/src/lib.rs` (handlers use `req.uri().path()` as the key) | JSS keeps decoded names on disk and encodes on output. Matching it means decoding on write and migrating existing data, and would make the dotfile guard depend on decoding; not done. A name stored decoded (written through the storage API, not over HTTP) that contains a space or `#` is listed raw. |
 | 306 | A Turtle document that describes itself (`<>`) is stored and read as `"@id": ""` | `26b0685`, #656 | The body is stored as written and read with the document URL as base | present | `crates/solid-pod-rs-server/tests/jss_0231_delta.rs::self_describing_turtle_document_keeps_its_own_subject` | Characterisation test, no fail-before. |
+| 307 | Stored HTML, XHTML, SVG, XML and JavaScript are served inert over LDP (register row SP-LDP-HTML-SANDBOX) | not in JSS: JSS serves stored HTML as the pod origin | A `GET` or `HEAD` of a stored resource whose type is active (`remotestorage::is_active_type`: `text/html`, `application/xhtml+xml`, `image/svg+xml`, `text/xml`, `application/xml`, `text/xsl`, JavaScript types, any `+xml`) carries `Content-Security-Policy: default-src 'none'; sandbox` (the page renders, runs no script, has an opaque origin) and is not forced to download. Covers a plain resource, a container's `index.html` served to `Accept: text/html`, and a negotiated representation; `nosniff` was already app-wide. Opt-out `--serve-active-content` / `JSS_SERVE_ACTIVE_CONTENT` (default off) restores the old headers for operators who host web apps from pod storage. Never applies under `/remotestorage/`, which stays sandboxed, `nosniff` and a download whatever the flag says. Server-generated and embedded pages (Mashlib wrapper, forge UI) are not stored bytes and keep their own headers | net-new | `crates/solid-pod-rs-server/src/lib.rs` (`sandbox_stored`); `src/main.rs`; tests `crates/solid-pod-rs-server/tests/ldp_active_content.rs`, `tests/remotestorage.rs::ldp_serves_remotestorage_documents_inert_even_under_a_permissive_acl` | Added 2026-11-21 (owner decision recorded in CHANGELOG). Behaviour change on upgrade: a stored `index.html` or app page no longer runs script; live reload needs the flag too. |
 
 ---
 
