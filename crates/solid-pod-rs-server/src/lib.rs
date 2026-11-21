@@ -167,9 +167,7 @@ use solid_pod_rs::{
     auth::{nip98, replay::ReplayStore},
     config::sources::parse_size,
     interop,
-    ldp::{
-        self, cache_control_for_response, LdpContainerOps, PatchCreateOutcome, ResponseAudience,
-    },
+    ldp::{self, cache_control_for_response, PatchCreateOutcome, ResponseAudience},
     mashlib::{self, MashlibConfig},
     provenance::{ProvenanceReceipt, ProvenanceSkip},
     security::DotfileAllowlist,
@@ -1008,6 +1006,46 @@ pub(crate) fn guarded_acl_target(path: &str, mode: AccessMode) -> (String, Acces
     }
 }
 
+/// Whether a stored name may appear in a container listing or a pod export:
+/// the dotfile policy the request guard applies (with the same `.well-known`
+/// exemption) and none of the server's own state (trail secrets, provenance
+/// and payment-ledger documents). The root is listed exactly as any other
+/// container, so `.git/`, `.forge/`, the lock directory and other dotfiles in
+/// the data root are never named.
+pub(crate) fn listing_visible(state: &AppState, path: &str) -> bool {
+    let Some(canon) = canonical_pod_path(path) else {
+        return false;
+    };
+    if trail_store::is_secret_trail_path(&canon)
+        || trail_store::is_prov_state_path(&canon)
+        || trail_store::is_server_state_path(&canon)
+    {
+        return false;
+    }
+    match canon.strip_prefix("/.well-known") {
+        // The discovery container is served; judge only what lies beneath it.
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            state.dotfiles.is_allowed(Path::new(rest))
+        }
+        _ => state.dotfiles.is_allowed(Path::new(&canon)),
+    }
+}
+
+/// `Storage::list` of `container`, without the names [`listing_visible`] hides.
+pub(crate) async fn list_visible(
+    state: &AppState,
+    container: &str,
+) -> Result<Vec<String>, PodError> {
+    let base = if container.ends_with('/') {
+        container.to_string()
+    } else {
+        format!("{container}/")
+    };
+    let mut names = state.storage.list(container).await?;
+    names.retain(|n| listing_visible(state, &format!("{base}{n}")));
+    Ok(names)
+}
+
 /// The one canonical spelling of a pod path, or `None` to reject it.
 ///
 /// Percent-decodes exactly once, rejects `.` and `..` segments, backslashes,
@@ -1778,11 +1816,8 @@ async fn handle_get(
             }
         }
 
-        let v = state
-            .storage
-            .container_representation(&path)
-            .await
-            .map_err(to_actix)?;
+        let children = list_visible(&state, &path).await.map_err(to_actix)?;
+        let v = ldp::render_container(&path, &children);
 
         // Mashlib: serve HTML wrapper for browser navigation.
         let sec_fetch_dest = req
@@ -3292,9 +3327,17 @@ async fn handle_export_all(
     let pod_base = format!("{}/", scheme::request_origin(&req));
 
     let options = solid_pod_rs::ExportOptions { include_private };
-    let bundle = solid_pod_rs::export::export_pod_jsonld(&*state.storage, &pod_base, options)
-        .await
-        .map_err(to_actix)?;
+    // The walk skips the same names a container listing hides: dotfiles the
+    // guard refuses and the server's own state (ledgers, trail secrets).
+    let visible = |p: &str| listing_visible(&state, p);
+    let bundle = solid_pod_rs::export::export_pod_jsonld_filtered(
+        &*state.storage,
+        &pod_base,
+        options,
+        &visible,
+    )
+    .await
+    .map_err(to_actix)?;
 
     let body = serde_json::to_vec(&bundle).map_err(|e| {
         actix_web::error::ErrorInternalServerError(format!("export serialise: {e}"))

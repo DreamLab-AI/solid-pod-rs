@@ -119,9 +119,17 @@ fn join(parent: &str, child: &str) -> String {
     joined
 }
 
+/// The walk's built-in filter, always applied: the dotfile guard's path rule
+/// ([`crate::security::dotfile::is_path_allowed`]), the same names the server
+/// refuses to serve.
+fn default_visible(path: &str) -> bool {
+    crate::security::dotfile::is_path_allowed(path).is_ok()
+}
+
 async fn walk_resources<S: Storage + ?Sized>(
     storage: &S,
     include_private: bool,
+    visible: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<Vec<String>, PodError> {
     let mut stack: Vec<String> = vec!["/".to_string()];
     let mut resources: Vec<String> = Vec::new();
@@ -140,6 +148,11 @@ async fn walk_resources<S: Storage + ?Sized>(
         for child in children {
             let abs = join(&container, &child);
             if !include_private && abs.starts_with(PRIVATE_CONTAINER_PREFIX) {
+                continue;
+            }
+            // Never walk or export a name the guard (or the caller) hides:
+            // `.git/`, `.forge/`, the lock directory, other tenants' dotfiles.
+            if !default_visible(&abs) || !visible(&abs) {
                 continue;
             }
             if abs.ends_with('/') {
@@ -181,7 +194,25 @@ pub async fn export_pod_jsonld<S: Storage + ?Sized>(
     pod_base: &str,
     options: ExportOptions,
 ) -> Result<PodExportBundle, PodError> {
-    let paths = walk_resources(storage, options.include_private).await?;
+    export_pod_jsonld_filtered(storage, pod_base, options, &|_: &str| true).await
+}
+
+/// [`export_pod_jsonld`] with a further visibility rule of the caller's, applied
+/// in addition to the default dotfile rule. `visible` receives each absolute path (a container
+/// ends in `/`) and returns `false` to leave it, and everything beneath it,
+/// out of the bundle. The server passes its dotfile policy plus the names of
+/// its own state (payment ledgers, trail secrets).
+///
+/// # Errors
+///
+/// As [`export_pod_jsonld`].
+pub async fn export_pod_jsonld_filtered<S: Storage + ?Sized>(
+    storage: &S,
+    pod_base: &str,
+    options: ExportOptions,
+    visible: &(dyn Fn(&str) -> bool + Send + Sync),
+) -> Result<PodExportBundle, PodError> {
+    let paths = walk_resources(storage, options.include_private, visible).await?;
 
     let mut entries: Vec<PodExportEntry> = Vec::with_capacity(paths.len());
     for path in paths {

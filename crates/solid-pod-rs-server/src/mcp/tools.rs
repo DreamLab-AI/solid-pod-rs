@@ -214,7 +214,7 @@ async fn list_resources_with(args: &Value, state: &AppState, ctx: &McpCtx, rt: &
     if !state.storage.exists(path).await.unwrap_or(false) {
         return tool_error(format!("not found: {path}"));
     }
-    let entries = match state.storage.list(path).await {
+    let entries = match crate::list_visible(state, path).await {
         Ok(e) => e,
         Err(e) => return tool_error(format!("list failed: {e}")),
     };
@@ -329,7 +329,7 @@ async fn propose_operation_with(
     if !wac_check(state, ctx, container, AccessMode::Read).await {
         return tool_error(format!("access denied: read {container}"));
     }
-    let entries = match state.storage.list(container).await {
+    let entries = match crate::list_visible(state, container).await {
         Ok(e) => e,
         Err(_) => return tool_error(format!("not found: {container}")),
     };
@@ -1995,6 +1995,50 @@ mod acl_tool_layout_tests {
             assert!(!s.exists("/docs.acl").await.unwrap(), "{layout:?}");
             let inner = text(&s, "/docs/.acl").await.unwrap();
             assert!(inner.contains("b.example"), "{layout:?}: inner ACL intact");
+        }
+    }
+}
+
+/// `list_resources` of the root hides what a container listing hides
+/// (dotfiles the guard refuses, server state), as the HTTP listing does.
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use solid_pod_rs::storage::fs::FsBackend;
+    use solid_pod_rs::storage::Storage;
+    use std::sync::Arc;
+
+    #[actix_web::test]
+    async fn the_root_listing_names_no_guarded_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = FsBackend::new(dir.path()).await.unwrap();
+        let acl = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n<#r> a acl:Authorization ; acl:agentClass foaf:Agent ; acl:accessTo </> ; acl:default </> ; acl:mode acl:Read .\n";
+        for (p, b) in [
+            ("/.acl", acl),
+            ("/public.txt", "p"),
+            ("/.well-known/webledgers/state.json", "{}"),
+        ] {
+            fs.put(p, Bytes::from(b), "text/plain").await.unwrap();
+        }
+        for p in [".git/config", ".forge/r/x", ".env"] {
+            let f = dir.path().join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, "x").unwrap();
+        }
+        let mut st = AppState::new(Arc::new(fs));
+        st.mcp_enabled = true;
+        let ctx = McpCtx {
+            web_id: None,
+            origin: "http://localhost:8080".into(),
+            federation_depth: 0,
+            request_origin: None,
+        };
+        let out = call_tool("list_resources", &json!({"path": "/"}), &st, &ctx).await;
+        assert!(!out["isError"].as_bool().unwrap_or(false), "{out}");
+        let text = out.to_string();
+        assert!(text.contains("public.txt"), "{text}");
+        for g in [".git", ".forge", ".env", "webledgers"] {
+            assert!(!text.contains(g), "root listing names {g}: {text}");
         }
     }
 }

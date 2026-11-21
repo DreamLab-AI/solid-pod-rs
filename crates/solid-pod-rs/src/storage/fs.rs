@@ -365,7 +365,11 @@ impl Storage for FsBackend {
 
     async fn exists(&self, path: &str) -> Result<bool, PodError> {
         let _guard = self.operations.read().await;
-        let data_path = Self::relative(path)?;
+        let mut data_path = Self::relative(path)?;
+        // The root is the empty relative path, which `exists` reports absent.
+        if data_path.as_os_str().is_empty() {
+            data_path = PathBuf::from(".");
+        }
         let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || Ok(dir.exists(data_path)))
             .await

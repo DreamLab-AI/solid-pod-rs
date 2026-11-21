@@ -136,6 +136,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `enforce_read_ctx` on the key the active layout reads (under `both`: the sidecar if present, else the inner form); a
   path without a trailing slash that names a container is that container.
 
+- **Container listings and `GET /api/exports/all` hide the names the dotfile guard refuses and the server's own state.**
+  Listing the filesystem root now works (see the lock entry), which would otherwise have named `.git/`, `.forge/`,
+  `.solid-pod-locks/`, other dotfiles and `/.well-known/{webledgers,token,gitmark,prov}` in `GET /` and MCP
+  `list_resources("/")` and walked all of them in the export. Every container listing (the root included) and the export
+  walk now drop those names (`listing_visible`); `/.well-known/` itself stays listed. The core
+  `export::export_pod_jsonld` applies the dotfile guard's path rule by default, and the new
+  `export::export_pod_jsonld_filtered` takes a further caller predicate. `FsBackend::exists("/")` is now true (it was
+  false for the root, so MCP `list_resources("/")` answered "not found").
+
 - **Cross-process resource lock** (SP-PAR-275, ER-29): two server processes sharing one filesystem data root can no longer
   interleave a read-modify-write. `Storage::lock_exclusive` (new, defaulted) is taken by `FsBackend` as an OS `flock` on
   one of 256 stripe files under `.solid-pod-locks/` (hidden from listings), inside the in-process lock, for every write.
