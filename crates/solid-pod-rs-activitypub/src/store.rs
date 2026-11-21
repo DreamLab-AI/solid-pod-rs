@@ -754,18 +754,38 @@ impl Store {
             .collect())
     }
 
-    /// Delete the oldest inbox rows beyond `keep`, so a remote that keeps
-    /// sending validly signed activities cannot grow the table without
-    /// bound. Returns the rows removed.
+    /// Bring the inbox down to at most `keep` rows, so a remote that keeps
+    /// sending validly signed activities cannot grow the table without bound.
+    /// Returns the rows removed.
+    ///
+    /// Rows are taken from the sender that holds the most (the oldest of its
+    /// rows first), never simply the oldest overall: a hostile server can mint
+    /// any number of actors, and evicting the oldest rows would let it push
+    /// every other sender's rows out. A sender with few rows is evicted only
+    /// when everyone holds as few.
     pub async fn trim_inbox(&self, keep: i64) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "DELETE FROM inbox WHERE rowid IN ( \
-               SELECT rowid FROM inbox ORDER BY received_at DESC, rowid DESC LIMIT -1 OFFSET ?1)",
-        )
-        .bind(keep.max(0))
-        .execute(&self.pool)
-        .await?;
-        Ok(res.rows_affected())
+        let keep = keep.max(0);
+        let mut removed = 0;
+        loop {
+            let excess = self.inbox_count().await? - keep;
+            if excess <= 0 {
+                return Ok(removed);
+            }
+            let res = sqlx::query(
+                "DELETE FROM inbox WHERE rowid IN ( \
+                   SELECT rowid FROM inbox WHERE sender = ( \
+                     SELECT sender FROM inbox GROUP BY sender \
+                     ORDER BY COUNT(*) DESC, MAX(received_at) DESC LIMIT 1) \
+                   ORDER BY received_at ASC, rowid ASC LIMIT ?1)",
+            )
+            .bind(excess)
+            .execute(&self.pool)
+            .await?;
+            if res.rows_affected() == 0 {
+                return Ok(removed);
+            }
+            removed += res.rows_affected();
+        }
     }
 
     /// Delete the oldest inbox rows of `sender` beyond `keep`, leaving every

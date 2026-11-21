@@ -725,3 +725,40 @@ async fn wal_and_shm_inherit_the_database_files_mode() {
         assert_eq!(m, 0o600, "{name}");
     }
 }
+
+/// Property: the global backstop evicts from the sender holding the most rows,
+/// so a hostile server minting many actors cannot push another sender's rows
+/// out (evicting the oldest overall, as it once did, removed the victim first).
+#[tokio::test]
+async fn the_global_backstop_evicts_the_heaviest_sender_not_the_victim() {
+    let (store, _dir) = file_store().await;
+    let victim = "https://victim.example/actor";
+    let act = |who: &str, n: usize| serde_json::json!({"id": format!("{who}/n/{n}"), "type": "Create", "actor": who});
+    // The victim's row is the OLDEST in the table.
+    store
+        .record_inbox_from(ME, victim, &act(victim, 0))
+        .await
+        .unwrap();
+    // One hostile origin, many actors, three rows each.
+    for actor in 0..40 {
+        let who = format!("https://evil.example/users/{actor}");
+        for n in 0..3 {
+            store
+                .record_inbox_from(ME, &who, &act(&who, n))
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(store.inbox_count().await.unwrap(), 121);
+    let removed = store.trim_inbox(100).await.unwrap();
+    assert_eq!(removed, 21);
+    assert_eq!(store.inbox_count().await.unwrap(), 100);
+    assert!(
+        store
+            .get_inbox(&format!("{victim}/n/0"))
+            .await
+            .unwrap()
+            .is_some(),
+        "the victim's row was evicted"
+    );
+}
