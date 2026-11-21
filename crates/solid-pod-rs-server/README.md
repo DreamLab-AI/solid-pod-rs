@@ -138,6 +138,20 @@ a change the subscriber cannot read is never announced. The route, the
 `Updates-Via` response header and the `/.well-known/solid` gateway are on
 together and off together with `--no-notifications` (`JSS_NO_NOTIFICATIONS`).
 
+Limits: 1024 sockets in total and 16 per remote (TCP peer) address (behind a
+reverse proxy every client shares the proxy's address; raise the per-peer cap
+with `NotifyHub::with_limits`), a ping every 30 s and a close after 90 s
+without any inbound frame so dead sockets free their slot, 100 subscriptions
+per socket, 2 KiB per URL and 4 KiB per inbound frame.
+
+**Origin policy.** With `allowed_origins` set, a handshake whose `Origin`
+header is not on the list is refused. With it **empty (the default) any origin
+may connect.** That is safe only while the sole credential this route honours
+is the NIP-98 `Authorization` header: a browser cannot attach one to a
+`WebSocket` and a foreign page cannot obtain one, so a cross-site page connects
+as an anonymous caller and sees only what the public may read. If a cookie or
+other ambient credential is ever added, set `allowed_origins` first.
+
 ## Nostr relay (`--nostr`)
 
 Off by default. `--nostr` mounts the embedded relay (NIP-01/11/16) at

@@ -27,6 +27,29 @@
 //! The caller is anonymous unless the upgrade request carries a valid NIP-98
 //! `Authorization` header (browsers cannot set one on a `WebSocket`).
 //!
+//! # Resource limits
+//!
+//! At most [`MAX_CONNECTIONS`] sockets in total and
+//! [`MAX_CONNECTIONS_PER_PEER`] per remote (TCP peer) address; a socket is
+//! pinged every [`HEARTBEAT`] and closed after [`IDLE_TIMEOUT`] without any
+//! inbound frame, so dead sockets give their slot back. Per socket: 100
+//! subscriptions (the library session's cap), 2 KiB per URL, 4 KiB per inbound
+//! frame. Behind a reverse proxy every client shares the proxy's address, so
+//! raise the per-peer cap with [`NotifyHub::with_limits`].
+//!
+//! # Origin policy (read this before relying on it)
+//!
+//! When `allowed_origins` is non-empty, a handshake carrying an `Origin`
+//! header that is not on the list is refused (fail closed). When it is
+//! **empty (the default) any browser origin may open the socket**. That is
+//! safe only because the sole credential this route honours is the NIP-98
+//! `Authorization` header, which a browser cannot attach to a `WebSocket` and
+//! which a foreign page cannot obtain: there is no cookie or other ambient
+//! credential for a cross-site page to ride, so such a page connects as an
+//! anonymous caller and sees only what the public may read. If a cookie or
+//! other ambient credential is ever added to this server, set
+//! `allowed_origins` first.
+//!
 //! # Events
 //!
 //! One shared [`NotifyHub`] watches the storage root once and fans each
@@ -51,10 +74,14 @@ use crate::{agent_uri, enforce_read_inner, extract_pubkey, req_origin, scheme, A
 
 /// Most simultaneous notification sockets one server accepts.
 pub const MAX_CONNECTIONS: usize = 1024;
+/// Most simultaneous notification sockets one remote address may hold.
+pub const MAX_CONNECTIONS_PER_PEER: usize = 16;
+/// A socket that sends nothing (not even a pong) for this long is closed.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Largest inbound frame: `unsub ` plus the 2 KiB URL cap, with headroom.
 const MAX_FRAME_BYTES: usize = 4096;
 /// Idle keep-alive interval (WebSocket ping).
-const HEARTBEAT: Duration = Duration::from_secs(30);
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Events buffered per connection before the slowest are dropped.
 const EVENT_BUFFER: usize = 256;
 
@@ -64,16 +91,71 @@ pub struct NotifyHub {
     tx: broadcast::Sender<StorageEvent>,
     started: OnceCell<()>,
     connections: AtomicUsize,
+    /// Open sockets per remote address.
+    peers: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
+    max_total: usize,
+    max_per_peer: usize,
+    heartbeat: Duration,
+    idle_timeout: Duration,
 }
 
 impl NotifyHub {
-    /// A hub with no watcher yet; the first connection starts it.
+    /// A hub with the default limits ([`MAX_CONNECTIONS`],
+    /// [`MAX_CONNECTIONS_PER_PEER`], [`HEARTBEAT`], [`IDLE_TIMEOUT`]) and no
+    /// watcher yet; the first connection starts it.
     #[must_use]
     pub fn new() -> Arc<Self> {
+        Self::with_limits(
+            MAX_CONNECTIONS,
+            MAX_CONNECTIONS_PER_PEER,
+            HEARTBEAT,
+            IDLE_TIMEOUT,
+        )
+    }
+
+    /// A hub with explicit limits: total sockets, sockets per remote address
+    /// (the TCP peer, not a forwarded header: behind a reverse proxy every
+    /// client shares the proxy's address, so size this for that), the ping
+    /// interval, and how long a socket may stay silent (no frame of any kind,
+    /// pongs included) before it is closed and its slot freed.
+    #[must_use]
+    pub fn with_limits(
+        max_total: usize,
+        max_per_peer: usize,
+        heartbeat: Duration,
+        idle_timeout: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             tx: broadcast::channel(EVENT_BUFFER).0,
             started: OnceCell::new(),
             connections: AtomicUsize::new(0),
+            peers: std::sync::Mutex::new(std::collections::HashMap::new()),
+            max_total,
+            max_per_peer,
+            heartbeat,
+            idle_timeout,
+        })
+    }
+
+    /// Take a slot for `peer`, or `None` when a limit is reached.
+    fn admit(self: &Arc<Self>, peer: Option<std::net::IpAddr>) -> Option<Slot> {
+        if self.connections.fetch_add(1, Ordering::Relaxed) >= self.max_total {
+            self.connections.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        if let Some(ip) = peer {
+            let mut peers = self.peers.lock().expect("peer table lock");
+            let n = peers.entry(ip).or_insert(0);
+            if *n >= self.max_per_peer {
+                drop(peers);
+                self.connections.fetch_sub(1, Ordering::Relaxed);
+                return None;
+            }
+            *n += 1;
+        }
+        Some(Slot {
+            hub: self.clone(),
+            peer,
         })
     }
 
@@ -106,10 +188,22 @@ impl NotifyHub {
 }
 
 /// Releases a connection slot on every exit path.
-struct Slot(Arc<NotifyHub>);
+struct Slot {
+    hub: Arc<NotifyHub>,
+    peer: Option<std::net::IpAddr>,
+}
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.connections.fetch_sub(1, Ordering::Relaxed);
+        self.hub.connections.fetch_sub(1, Ordering::Relaxed);
+        if let Some(ip) = self.peer {
+            let mut peers = self.hub.peers.lock().expect("peer table lock");
+            if let Some(n) = peers.get_mut(&ip) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    peers.remove(&ip);
+                }
+            }
+        }
     }
 }
 
@@ -209,11 +303,9 @@ pub(crate) async fn handle_notifications(
             return Ok(HttpResponse::Forbidden().body("origin not allowed"));
         }
     }
-    if hub.connections.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
-        hub.connections.fetch_sub(1, Ordering::Relaxed);
+    let Some(slot) = hub.admit(req.peer_addr().map(|a| a.ip())) else {
         return Ok(HttpResponse::ServiceUnavailable().body("too many notification connections"));
-    }
-    let slot = Slot(hub.clone());
+    };
     if hub.ensure_started(&state.storage).await.is_err() {
         return Ok(HttpResponse::ServiceUnavailable().body("notifications unavailable"));
     }
@@ -238,14 +330,19 @@ pub(crate) async fn handle_notifications(
         let _slot = slot;
         let mut proto = LegacyWebSocketSession::new(wac, agent);
         let mut events = events;
-        let mut tick = tokio::time::interval(HEARTBEAT);
+        let (heartbeat, idle_timeout) = (hub.heartbeat, hub.idle_timeout);
+        let mut tick = tokio::time::interval(heartbeat);
         tick.tick().await;
+        let mut last_seen = tokio::time::Instant::now();
         if session.text(PROTOCOL_GREETING).await.is_err() {
             return;
         }
         loop {
             tokio::select! {
-                msg = stream.next() => match msg {
+                msg = stream.next() => {
+                    // Any inbound frame (a pong included) proves liveness.
+                    last_seen = tokio::time::Instant::now();
+                    match msg {
                     Some(Ok(Message::Text(text))) => {
                         for frame in proto.handle_message(&text).await.frames {
                             if session.text(frame.to_wire()).await.is_err() {
@@ -264,6 +361,7 @@ pub(crate) async fn handle_notifications(
                     }
                     Some(Ok(_)) => {}
                     Some(Err(_)) | None => return,
+                    }
                 },
                 ev = events.recv() => match ev {
                     Ok(ev) => {
@@ -289,6 +387,13 @@ pub(crate) async fn handle_notifications(
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
                 _ = tick.tick() => {
+                    // A peer that has sent nothing for the idle timeout (it
+                    // answers pings with pongs if it is alive) is dead or
+                    // hostile: close it and free its slot.
+                    if last_seen.elapsed() >= idle_timeout {
+                        let _ = session.close(Some(actix_ws::CloseCode::Away.into())).await;
+                        return;
+                    }
                     if session.ping(b"").await.is_err() {
                         return;
                     }

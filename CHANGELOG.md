@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **`/.notifications` is bounded per peer and reaps dead sockets** (SP-PAR-279 follow-up): 16 sockets per remote
+  address beside the global 1024, a ping every 30 s, a close after 90 s of silence, a 100-subscription and 4 KiB
+  frame cap per socket. The empty-`allowed_origins` policy is now documented plainly (module doc and README).
 - **A literal on an ACL rule predicate is a parse error, in JSON-LD and Turtle** (SP-PAR-265 follow-up). The
   JSON-LD reader dropped a non-IRI object on `acl:agent`, `agentClass`, `agentGroup`, `origin`, `accessTo`,
   `default` or `mode`; for `acl:origin` that would have turned a restricted rule into an unrestricted grant. The

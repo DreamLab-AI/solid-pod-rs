@@ -323,3 +323,153 @@ async fn a_browser_origin_outside_the_allow_list_cannot_upgrade() {
         Some("protocol solid-0.1")
     );
 }
+
+#[actix_web::test]
+async fn one_remote_address_cannot_hold_more_than_its_cap_and_slots_are_returned() {
+    use solid_pod_rs_server::notifications_ws::NotifyHub;
+    let s = Server::start(|st| {
+        st.notifications = Some(NotifyHub::with_limits(
+            100,
+            2,
+            Duration::from_secs(30),
+            Duration::from_secs(90),
+        ));
+    })
+    .await;
+    let a = s.connect(None).await.expect("first");
+    let b = s.connect(None).await.expect("second");
+    assert!(
+        s.connect(None).await.is_err(),
+        "third from the same address is refused"
+    );
+    drop(a);
+    // The slot comes back once the server notices the close.
+    let mut again = None;
+    for _ in 0..40 {
+        if let Ok(ws) = s.connect(None).await {
+            again = Some(ws);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(again.is_some(), "a freed slot must be reusable");
+    drop(b);
+}
+
+#[actix_web::test]
+async fn the_global_cap_refuses_beyond_the_total() {
+    use solid_pod_rs_server::notifications_ws::NotifyHub;
+    let s = Server::start(|st| {
+        st.notifications = Some(NotifyHub::with_limits(
+            1,
+            16,
+            Duration::from_secs(30),
+            Duration::from_secs(90),
+        ));
+    })
+    .await;
+    let _a = s.connect(None).await.expect("first");
+    assert!(s.connect(None).await.is_err());
+}
+
+#[actix_web::test]
+async fn a_silent_socket_is_closed_and_frees_its_slot() {
+    use solid_pod_rs_server::notifications_ws::NotifyHub;
+    let hub = NotifyHub::with_limits(
+        10,
+        10,
+        Duration::from_millis(100),
+        Duration::from_millis(300),
+    );
+    let probe = hub.clone();
+    let s = Server::start(move |st| st.notifications = Some(hub)).await;
+    // Connect and then never read: the client library only answers pings
+    // while it is being polled, so this peer is silent as far as the server
+    // can tell.
+    let _silent = s.connect(None).await.expect("upgrade");
+    assert_eq!(probe.connections(), 1);
+    let mut freed = false;
+    for _ in 0..60 {
+        if probe.connections() == 0 {
+            freed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(freed, "an idle socket must be closed and release its slot");
+}
+
+#[actix_web::test]
+async fn a_live_socket_survives_the_idle_timeout_by_answering_pings() {
+    use solid_pod_rs_server::notifications_ws::NotifyHub;
+    let hub = NotifyHub::with_limits(
+        10,
+        10,
+        Duration::from_millis(100),
+        Duration::from_millis(400),
+    );
+    let s = Server::start(move |st| st.notifications = Some(hub)).await;
+    let mut ws = s.connect(None).await.unwrap();
+    // Reading polls the client, which answers each ping with a pong.
+    let until = tokio::time::Instant::now() + Duration::from_millis(1200);
+    while tokio::time::Instant::now() < until {
+        let _ = tokio::time::timeout(Duration::from_millis(100), ws.next()).await;
+    }
+    let url = s.url("/pub/a.txt");
+    say(&mut ws, &format!("sub {url}")).await;
+    let mut got = None;
+    for _ in 0..10 {
+        if let Some(t) = text(&mut ws, 500).await {
+            if t.starts_with("ack") {
+                got = Some(t);
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        got,
+        Some(format!("ack {url}")),
+        "a live socket must not be closed"
+    );
+}
+
+#[actix_web::test]
+async fn an_oversized_frame_is_not_accepted() {
+    let s = Server::start(|_| {}).await;
+    let mut ws = s.connect(None).await.unwrap();
+    text(&mut ws, 2000).await;
+    ws.send(Message::text("x".repeat(64 * 1024))).await.unwrap();
+    // The server drops the connection rather than buffering the frame.
+    let mut closed = false;
+    for _ in 0..10 {
+        match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => {
+                closed = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        closed,
+        "an inbound frame over the cap must close the socket"
+    );
+}
+
+#[actix_web::test]
+async fn a_socket_cannot_hold_more_than_the_subscription_cap() {
+    let s = Server::start(|_| {}).await;
+    let mut ws = s.connect(None).await.unwrap();
+    text(&mut ws, 2000).await;
+    for i in 0..100 {
+        let url = s.url(&format!("/pub/n{i}"));
+        say(&mut ws, &format!("sub {url}")).await;
+        assert_eq!(text(&mut ws, 2000).await, Some(format!("ack {url}")), "{i}");
+    }
+    say(&mut ws, &format!("sub {}", s.url("/pub/one-too-many"))).await;
+    assert_eq!(
+        text(&mut ws, 2000).await.as_deref(),
+        Some("err subscription limit reached")
+    );
+}
