@@ -189,7 +189,8 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > Note 2026-11-21 (decision taken, SP-LDP-HTML-SANDBOX): the owner chose to sandbox
 > stored HTML on LDP by default, with an opt-out. Implemented in
 > `crates/solid-pod-rs-server/src/lib.rs` (`sandbox_stored`): a stored resource of an
-> active type (`remotestorage::is_active_type`) is served with
+> type that is not on the passive allowlist (`remotestorage::is_passive_type`, replacing
+> the deny-list `is_active_type`: multi-valued, missing and unlisted types are sandboxed) is served with
 > `Content-Security-Policy: default-src 'none'; sandbox` and is not forced to download,
 > so it still renders, runs no script and has an opaque origin. Applied wherever stored
 > bytes are sent (plain resource, a container's `index.html`, a negotiated

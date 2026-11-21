@@ -214,3 +214,98 @@ async fn the_embedded_forge_ui_keeps_its_own_headers() {
     }
     assert!(saw_page, "the forge root served no HTML page");
 }
+
+// ---------------------------------------------------------------------------
+// Passive allowlist (review item 1): the sandbox is skipped only for a
+// Content-Type that is exactly one passive MIME type. Everything else
+// (multi-valued, unparseable, missing, unlisted) is sandboxed.
+// ---------------------------------------------------------------------------
+
+/// Stored types a browser may render actively although the old deny-list
+/// did not name them (or could not see them).
+const HOSTILE: [(&str, &str); 9] = [
+    ("/h/comma.txt", "text/plain, text/html"),
+    ("/h/comma2.png", "image/png,text/html"),
+    ("/h/mixed.bin", "multipart/x-mixed-replace; boundary=x"),
+    ("/h/none.bin", ""),
+    ("/h/junk.bin", "not a mime type"),
+    ("/h/pdf.pdf", "application/pdf"),
+    ("/h/unlisted.bin", "application/x-unlisted"),
+    ("/h/quoted.txt", "text/plain; x=\"a,b\""),
+    ("/h/svg.svg", "image/svg+xml"),
+];
+
+const PASSIVE: [(&str, &str); 12] = [
+    ("/p/a.txt", "text/plain"),
+    ("/p/b.ttl", "text/turtle"),
+    ("/p/c.jsonld", "application/ld+json"),
+    ("/p/d.json", "application/json"),
+    ("/p/e.nt", "application/n-triples"),
+    ("/p/f.png", "image/png"),
+    ("/p/g.jpg", "image/jpeg"),
+    ("/p/h.gif", "image/gif"),
+    ("/p/i.webp", "image/webp"),
+    ("/p/j.mp3", "audio/mpeg"),
+    ("/p/k.mp4", "video/mp4"),
+    ("/p/l.bin", "application/octet-stream"),
+];
+
+async fn typed_state(serve_active_content: bool) -> AppState {
+    let storage = Arc::new(MemoryBackend::new());
+    storage
+        .put("/.acl", Bytes::from(PUBLIC_READ), "text/turtle")
+        .await
+        .unwrap();
+    for (k, ct) in HOSTILE.iter().chain(PASSIVE.iter()) {
+        storage.put(k, Bytes::from("x"), ct).await.unwrap();
+    }
+    storage
+        .put("/p/odd.txt", Bytes::from("x"), "TEXT/Plain ; Charset=UTF-8")
+        .await
+        .unwrap();
+    let mut st = AppState::new(storage);
+    st.serve_active_content = serve_active_content;
+    st
+}
+
+#[actix_web::test]
+async fn multi_valued_unparseable_missing_and_unlisted_types_are_sandboxed() {
+    let app = test::init_service(build_app(typed_state(false).await)).await;
+    for (uri, ct) in HOSTILE {
+        for method in ["GET", "HEAD"] {
+            let (s, hd) = fetch(&app, method, uri, None).await;
+            assert_eq!(s, 200, "{method} {uri}");
+            assert_eq!(
+                h(&hd, "content-security-policy"),
+                Some(CSP),
+                "{method} {uri} stored as {ct:?} must be sandboxed"
+            );
+        }
+    }
+}
+
+#[actix_web::test]
+async fn each_passive_type_is_served_without_the_sandbox() {
+    let app = test::init_service(build_app(typed_state(false).await)).await;
+    for (uri, ct) in PASSIVE.iter().chain(&[("/p/odd.txt", "odd casing")]) {
+        for method in ["GET", "HEAD"] {
+            let (s, hd) = fetch(&app, method, uri, None).await;
+            assert_eq!(s, 200, "{method} {uri}");
+            assert!(
+                h(&hd, "content-security-policy").is_none(),
+                "{method} {uri} ({ct}) is passive and must not be sandboxed"
+            );
+            assert_eq!(h(&hd, "x-content-type-options"), Some("nosniff"));
+        }
+    }
+}
+
+#[actix_web::test]
+async fn the_flag_still_restores_the_old_headers_for_hostile_types() {
+    let app = test::init_service(build_app(typed_state(true).await)).await;
+    for (uri, _) in HOSTILE {
+        let (s, hd) = fetch(&app, "GET", uri, None).await;
+        assert_eq!(s, 200, "{uri}");
+        assert!(h(&hd, "content-security-policy").is_none(), "{uri}");
+    }
+}

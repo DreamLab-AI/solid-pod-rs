@@ -39,8 +39,8 @@ ActivityPub (`solid-pod-rs-activitypub` and the server mount):
 remoteStorage:
 
 - **Stored XSS.** Every `/storage/` response carries `X-Content-Type-Options: nosniff` and
-  `Content-Security-Policy: default-src 'none'; sandbox`; HTML, XHTML, SVG, XML (`+xml`) and JavaScript documents are
-  also `Content-Disposition: attachment`. LDP responses gain `X-Content-Type-Options: nosniff` app-wide. Stored
+  `Content-Security-Policy: default-src 'none'; sandbox`; every stored type that is not exactly one passive MIME type
+  (see the upgrade note on the passive allowlist) is also `Content-Disposition: attachment`. LDP responses gain `X-Content-Type-Options: nosniff` app-wide. Stored
   active documents over LDP are now sandboxed by default too (SP-LDP-HTML-SANDBOX, below).
 - **Name guard.** Sidecar names are compared case-folded on the decoded segment and the pod's dotfile policy runs on
   each segment, so `x.ACL`, `x.%41CL`, `X.Meta`, `y.META.JSON` are refused.
@@ -61,7 +61,7 @@ WebRTC:
 
 - **Stored XSS no longer depends on an ACL being written.** LDP `GET`/`HEAD` of anything under `/remotestorage/` (also
   percent-encoded, case-varied and dot-segment spellings, and refusals) now carries the `/storage/` headers:
-  `Content-Security-Policy: default-src 'none'; sandbox`, `X-Content-Type-Options: nosniff` and, for active types,
+  `Content-Security-Policy: default-src 'none'; sandbox`, `X-Content-Type-Options: nosniff` and, for every type that is not passive,
   `Content-Disposition: attachment`; with the feature flag on or off, since the data may predate it. Other LDP paths are
   unchanged. When the root ACL names no `acl:agent` with Control (Control only through `acl:agentGroup` or
   `acl:agentClass`, to nobody, or no root ACL) the mount step now writes an ACL with no authorisations for
@@ -181,7 +181,7 @@ WebRTC:
 ### Upgrade notes
 
 - **Stored HTML is sandboxed over LDP by default** (SP-LDP-HTML-SANDBOX, owner decision). A `GET` or `HEAD` of a stored
-  resource of an active type (HTML, XHTML, SVG, XML, `+xml`, JavaScript) now carries
+  resource now carries
   `Content-Security-Policy: default-src 'none'; sandbox`, without `Content-Disposition: attachment`: the document still
   renders but runs no script, loads no sub-resources and has an opaque origin. **Effect on the documented feature:** a
   container's `index.html` served to a browser is sandboxed too, so a pod that serves a static site shows its markup
@@ -191,6 +191,15 @@ WebRTC:
   whose responses stay sandboxed, `nosniff` and a download. Mashlib and forge pages are unchanged. Apps that a git push
   deploys to `/public/apps/` (the `/.well-known/apps` feature) are stored resources like any other, so their HTML
   entry points are sandboxed too and they need the flag to run.
+  **Allowlist, not deny-list (review fix).** The sandbox is skipped only when the stored `Content-Type` parses as
+  exactly one MIME type on a passive allowlist: `text/plain`, `text/turtle`, `application/ld+json`,
+  `application/json`, `application/n-triples`, `application/octet-stream`, `image/png`, `image/jpeg`, `image/gif`,
+  `image/webp`, `audio/*`, `video/*` (parameters and case ignored). Anything else is sandboxed: HTML, XHTML, SVG, XML,
+  JavaScript, a value with a comma (browsers take the last entry, so `text/plain, text/html` renders as HTML),
+  `multipart/*`, an unparseable, empty or missing type, and any unlisted type. PDF is deliberately sandboxed (browsers
+  open it in their own viewer; the sandbox only removes that inline viewer, and `fetch` and downloads are unaffected).
+  Under `/remotestorage/` the same allowlist decides `Content-Disposition: attachment`, with or without
+  `--serve-active-content`. The opt-out flag restores the earlier headers for LDP only.
 
 - **A SPARQL Update that deletes a triple the resource does not hold is now `409` and writes nothing** (row 41),
   as an N3 Patch already was and as JSS is for both dialects. Before, `DELETE DATA` of an absent triple (and an absent

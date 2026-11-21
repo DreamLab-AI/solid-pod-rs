@@ -768,30 +768,53 @@ fn bearer(req: &HttpRequest) -> Option<&str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Whether `content_type` (parameters and case ignored) is one a browser may
-/// execute or script when it is shown: HTML, XHTML, SVG, XML in any
-/// `+xml` form, and JavaScript. Such documents are also forced to download.
-pub(crate) fn is_active_type(content_type: &str) -> bool {
+/// Whether `content_type` is exactly one MIME type that a browser shows as
+/// inert data: the stored-document sandbox is skipped ONLY for these.
+///
+/// Property (fail closed): a missing, empty or unparseable value, any value
+/// containing a comma (browsers take the LAST entry of a comma-separated
+/// `Content-Type`, so `text/plain, text/html` renders as HTML), and every type
+/// not on this allowlist is NOT passive. Parameters and case are ignored.
+/// `image/svg+xml`, `text/xml`, `application/xhtml+xml`, `multipart/*` and
+/// anything unlisted are therefore sandboxed. PDF is deliberately not
+/// passive: browsers open it in their own viewer, and a sandboxed PDF only
+/// loses that inline viewer (the bytes still download and `fetch` is
+/// unaffected).
+pub(crate) fn is_passive_type(content_type: &str) -> bool {
+    if content_type.contains(',') {
+        return false;
+    }
     let essence = content_type
         .split(';')
         .next()
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
+    let Some((ty, sub)) = essence.split_once('/') else {
+        return false;
+    };
+    let token = |t: &str| {
+        !t.is_empty()
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    };
+    if !token(ty) || !token(sub) {
+        return false;
+    }
     matches!(
         essence.as_str(),
-        "text/html"
-            | "application/xhtml+xml"
-            | "image/svg+xml"
-            | "text/xml"
-            | "application/xml"
-            | "text/xsl"
-            | "text/javascript"
-            | "application/javascript"
-            | "application/x-javascript"
-            | "text/ecmascript"
-            | "application/ecmascript"
-    ) || essence.ends_with("+xml")
+        "text/plain"
+            | "text/turtle"
+            | "application/ld+json"
+            | "application/json"
+            | "application/n-triples"
+            | "application/octet-stream"
+            | "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+    ) || ty == "audio"
+        || ty == "video"
 }
 
 /// The Content-Security-Policy of every storage response.
@@ -817,11 +840,11 @@ fn harden(mut rsp: HttpResponse) -> HttpResponse {
         header::CONTENT_SECURITY_POLICY,
         header::HeaderValue::from_static(STORAGE_CSP),
     );
-    let active = h
+    let passive = h
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(is_active_type);
-    if active {
+        .is_some_and(is_passive_type);
+    if !passive {
         h.insert(
             header::CONTENT_DISPOSITION,
             header::HeaderValue::from_static("attachment"),
@@ -1282,27 +1305,47 @@ mod tests {
     }
 
     #[test]
-    fn active_types_are_recognised_whatever_the_spelling() {
+    fn passive_types_are_an_allowlist_that_fails_closed() {
         for yes in [
-            "text/html",
-            "TEXT/HTML; charset=utf-8",
-            " application/xhtml+xml ",
-            "image/svg+xml",
-            "application/xml",
-            "text/xml;charset=x",
-            "application/rss+xml",
-            "application/javascript",
-        ] {
-            assert!(is_active_type(yes), "{yes}");
-        }
-        for no in [
-            "application/json",
             "text/plain",
+            "TEXT/Plain; charset=utf-8",
+            " application/json ",
+            "application/ld+json;profile=\"x\"",
+            "text/turtle",
+            "application/n-triples",
             "image/png",
-            "",
+            "Image/JPEG",
+            "image/gif",
+            "image/webp",
+            "audio/mpeg",
+            "video/mp4; codecs=avc1",
             "application/octet-stream",
         ] {
-            assert!(!is_active_type(no), "{no}");
+            assert!(is_passive_type(yes), "{yes}");
+        }
+        for no in [
+            "",
+            "   ",
+            "text/plain, text/html",
+            "image/png,text/html",
+            "text/html, text/plain",
+            "text/plain; x=\"a,b\"",
+            "multipart/x-mixed-replace",
+            "multipart/x-mixed-replace; boundary=x",
+            "text/html",
+            "image/svg+xml",
+            "text/xml",
+            "application/xhtml+xml",
+            "application/rss+xml",
+            "application/javascript",
+            "application/pdf",
+            "audio/",
+            "video",
+            "audio/a b",
+            "text/plain/extra",
+            "image/x-unknown",
+        ] {
+            assert!(!is_passive_type(no), "{no:?}");
         }
     }
 

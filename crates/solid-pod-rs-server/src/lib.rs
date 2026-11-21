@@ -1892,8 +1892,9 @@ fn append_vary(rsp: &mut HttpResponse, field: &str) {
 /// Sandbox a response that carries bytes read from pod storage.
 ///
 /// Property: unless the operator opted out (`serve_active_content`), a stored
-/// document whose type is script-capable (see
-/// [`remotestorage::is_active_type`]) is never rendered with the pod origin's
+/// document is sandboxed unless its `Content-Type` is exactly one MIME type on
+/// the passive allowlist (see [`remotestorage::is_passive_type`]; missing,
+/// multi-valued, unparseable and unlisted types are sandboxed), so it is never rendered with the pod origin's
 /// authority: the response carries `Content-Security-Policy: default-src
 /// 'none'; sandbox`, which makes the page an opaque-origin, script-less
 /// document that still renders. Called only where stored bytes are sent, so
@@ -1904,12 +1905,12 @@ fn sandbox_stored(rsp: &mut HttpResponse, state: &AppState) {
     if state.serve_active_content {
         return;
     }
-    let active = rsp
+    let passive = rsp
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(remotestorage::is_active_type);
-    if active {
+        .is_some_and(remotestorage::is_passive_type);
+    if !passive {
         rsp.headers_mut().insert(
             header::CONTENT_SECURITY_POLICY,
             header::HeaderValue::from_static(remotestorage::STORAGE_CSP),

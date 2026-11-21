@@ -621,7 +621,7 @@ fn assert_inert(h: &actix_web::http::header::HeaderMap, what: &str) {
 async fn stored_active_content_is_served_inert_on_every_method_and_status() {
     // Property: whatever a token holder stores, the pod origin never executes
     // it: every storage response (GET, HEAD, 304, PUT, DELETE, OPTIONS, and
-    // 401/403/404/412 bodies) is nosniff and sandboxed, and script-capable
+    // 401/403/404/412 bodies) is nosniff and sandboxed, and non-passive
     // types are additionally forced to download.
     let p = pod(true).await;
     let app = test::init_service(build_app(p.state)).await;
@@ -721,6 +721,48 @@ async fn stored_active_content_is_served_inert_on_every_method_and_status() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_inert(&h, "DELETE");
+}
+
+#[actix_web::test]
+async fn multi_valued_and_unlisted_stored_types_are_downloads_even_with_the_opt_out() {
+    // Property: remoteStorage forces a download for every stored type that is
+    // not exactly one passive MIME type (a deny-list would miss
+    // `text/plain, text/html`, which browsers read as HTML), and the LDP
+    // opt-out `serve_active_content` never relaxes that.
+    for serve in [false, true] {
+        let mut p = pod(true).await;
+        p.state.serve_active_content = serve;
+        let app = test::init_service(build_app(p.state)).await;
+        let rw = mint(&app, "m:rw", None).await;
+        for (name, ct, download) in [
+            ("a.txt", "text/plain, text/html", true),
+            ("b.png", "image/png,text/html", true),
+            ("c.bin", "multipart/x-mixed-replace; boundary=x", true),
+            ("d.pdf", "application/pdf", true),
+            ("e.txt", "text/plain", false),
+            ("f.json", "Application/JSON; charset=utf-8", false),
+        ] {
+            let uri = format!("/storage/me/public/m/{name}");
+            let (s, _, _) = call(
+                &app,
+                with("PUT", &uri, Some(&rw))
+                    .insert_header(("content-type", ct))
+                    .set_payload("x"),
+            )
+            .await;
+            assert_eq!(s, StatusCode::CREATED, "{uri}");
+            for method in ["GET", "HEAD"] {
+                let (s, h, _) = call(&app, with(method, &uri, None)).await;
+                assert_eq!(s, StatusCode::OK, "{method} {uri} serve={serve}");
+                assert_inert(&h, &format!("{method} {name} serve={serve}"));
+                assert_eq!(
+                    header(&h, "content-disposition"),
+                    download.then_some("attachment"),
+                    "{method} {name} ({ct}) serve={serve}"
+                );
+            }
+        }
+    }
 }
 
 #[actix_web::test]

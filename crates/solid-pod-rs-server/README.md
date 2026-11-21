@@ -55,12 +55,15 @@ intended only for local development.
 
 ### Stored HTML is sandboxed by default
 
-A stored HTML, XHTML, SVG, XML or JavaScript document served over LDP (`GET`
+A stored document served over LDP (`GET`
 and `HEAD`, including a container's `index.html` served to a browser) is sent
 with `Content-Security-Policy: default-src 'none'; sandbox`. It still renders,
 but it runs no script, loads no sub-resources and has an opaque origin, so
-whatever a writer stores cannot act as the pod origin. Types that are not
-script-capable are unchanged.
+whatever a writer stores cannot act as the pod origin. Only a `Content-Type`
+that is exactly one passive type (`text/plain`, `text/turtle`, JSON, JSON-LD,
+N-Triples, `application/octet-stream`, PNG, JPEG, GIF, WebP, `audio/*`,
+`video/*`) is served without it; HTML, SVG, XML, PDF, multi-valued, missing
+and unlisted types are sandboxed.
 
 `--serve-active-content` (or `JSS_SERVE_ACTIVE_CONTENT=true`), off by default,
 serves them without that policy, as earlier releases did; use it only when you
