@@ -6,8 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Two container ACL locations (SP-PAR-290).** The resolver now reads `<container>.acl` and `<container>/.acl`.
+  One present governs; both present and byte-identical, the sidecar governs (pods provisioned by
+  v0.5.0-alpha.10 to .22 have an identical pair, so their access does not change); both present and different,
+  everyone is denied with no HTTP repair: remove the wrong copy on disk (boot logs these as a warning). A path
+  beneath an ACL or meta document is refused with 403.
+- **A JSON-LD ACL with a plain string on a rule predicate** (for example `"acl:mode": "acl:Read"` without an
+  `@type: @id` coercion) is now unreadable and denies; before, that one value was silently dropped.
+- **`/.notifications` is on by default** (`--no-notifications` removes it). Its per-peer cap counts the TCP peer
+  address, so behind a reverse proxy the cap is 16 sockets in total unless raised with `NotifyHub::with_limits`.
+
 ### Security
 
+- **Nothing may be addressed beneath an ACL or meta document, and a directory at an ACL key is absent**
+  (SP-PAR-290 follow-up). A Write holder could PUT `/docs/.acl/x`, creating a directory where the resolver reads
+  `docs/.acl`, which made the container unavailable to everyone with no HTTP repair. Such paths are refused 403 in
+  the dotfile guard (every method, a COPY `Source` too), and the resolver treats a directory at an ACL key as absent.
+- **Git subprocesses run with `maintenance.auto=false` and `gc.auto=0`**, so no detached maintenance writes into a
+  repository after a command returns (fixes a flaky mirror test).
 - **The forge token key is created `0600` atomically** (`create_new` with mode `0600`), instead of written and then
   chmodded, which left a window under a permissive umask. An existing key is never overwritten.
 - **Only `GET /.notifications` passes the dotfile guard** (SP-PAR-279 follow-up). The carve-out ignored the
@@ -22,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   also stripped only as an exact host and may not be spelled out in a document.
 - **A container ACL stored as `<container>/.acl` is no longer ignored** (SP-PAR-290). The resolver read only
   `<container>.acl`, so with a public-read root ACL a private `/docs/.acl` left `/docs/a.txt` readable. It now
-  probes both forms at each container level: one present governs, none ascends, both deny everyone, a read error
+  probes both forms at each container level: one present governs, none ascends, both with identical bytes the sidecar governs, both with different bytes deny everyone, a read error
   on either is unavailable (no ascent). Writes that would create the second form are refused with 409; boot warns
   about containers that already have both. Where the server writes ACLs (`<container>.acl`) is unchanged.
 - **The Nostr relay can be mounted: `--nostr`, `--nostr-path`, `--nostr-max-events`, off by default**

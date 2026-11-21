@@ -1023,13 +1023,29 @@ impl AclRefusal {
     }
 }
 
+/// Result of [`dual_form_acl_containers`]: pod paths of containers whose ACL
+/// exists in both storage forms, split by whether the two copies are
+/// byte-identical, and whether the scan stopped at its bound.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DualFormScan {
+    /// Both forms present with the same bytes. Governed by the sidecar
+    /// (`<c>.acl`), exactly as before both forms were read: harmless.
+    pub identical: Vec<String>,
+    /// Both forms present with different bytes. Denied to everyone until one
+    /// copy is removed on disk (there is no HTTP repair: every request under
+    /// the container is denied, and the second form cannot be written).
+    pub differing: Vec<String>,
+    /// The scan stopped at `max_entries` directory entries.
+    pub truncated: bool,
+}
+
 /// Containers under `root` whose ACL exists in both storage forms
-/// (`<c>.acl` and `<c>/.acl`), as pod paths, and whether the scan stopped at
-/// `max_entries` directory entries. Run once at boot as a warning: the
-/// resolver denies such a container, so the operator should remove one form.
-/// Bounded, so a huge pod cannot stall boot.
-pub fn dual_form_acl_containers(root: &std::path::Path, max_entries: usize) -> (Vec<String>, bool) {
-    let mut found = Vec::new();
+/// (`<c>.acl` and `<c>/.acl`). Run once at boot, for logging only: it never
+/// deletes or rewrites anything. Bounded by `max_entries` directory entries,
+/// and it does not descend into `.git` directories (a pod's repository would
+/// otherwise use up the bound before the ACLs are reached).
+pub fn dual_form_acl_containers(root: &std::path::Path, max_entries: usize) -> DualFormScan {
+    let mut out = DualFormScan::default();
     let mut seen = 0usize;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1039,32 +1055,42 @@ pub fn dual_form_acl_containers(root: &std::path::Path, max_entries: usize) -> (
         for entry in entries.flatten() {
             seen += 1;
             if seen > max_entries {
-                return (found, true);
+                out.truncated = true;
+                return out;
             }
             let path = entry.path();
             let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                // `<c>/.acl` inside this directory, and `<c>.acl` beside it.
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let inside = path.join(".acl").is_file();
-                let sidecar = dir.join(format!("{name}.acl")).is_file();
-                if inside && sidecar {
-                    if let Ok(rel) = path.strip_prefix(root) {
-                        found.push(format!("/{}/", rel.to_string_lossy()));
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            // `<c>/.acl` inside this directory, and `<c>.acl` beside it.
+            let inside = path.join(".acl");
+            let sidecar = dir.join(format!("{name}.acl"));
+            if inside.is_file() && sidecar.is_file() {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    let pod_path = format!("/{}/", rel.to_string_lossy());
+                    match (std::fs::read(&inside), std::fs::read(&sidecar)) {
+                        (Ok(a), Ok(b)) if a == b => out.identical.push(pod_path),
+                        _ => out.differing.push(pod_path),
                     }
                 }
-                stack.push(path);
             }
+            stack.push(path);
         }
     }
-    found.sort();
-    (found, false)
+    out.identical.sort();
+    out.differing.sort();
+    out
 }
 
 /// Body of the `409` for [`AclRefusal::TwinForm`].
 const TWIN_FORM_REFUSED: &str = "refused: this container already has its ACL in the other \
-     storage form (<container>.acl vs <container>/.acl); a container with both is denied \
-     to everyone, so edit the existing one or delete it first";
+     storage form (<container>.acl vs <container>/.acl); edit the existing one or delete it \
+     first";
 
 impl AclRefusal {
     /// The response for a refusal of ACL bytes the server derived (`PATCH`
@@ -7015,22 +7041,36 @@ mod dual_form_scan_tests {
     use super::dual_form_acl_containers;
 
     #[test]
-    fn lists_only_containers_with_both_forms() {
+    fn splits_identical_from_differing_twins_and_skips_git() {
         let t = tempfile::tempdir().unwrap();
         let r = t.path();
-        for d in ["both", "inside_only", "sidecar_only", "both/deep"] {
+        for d in ["same", "diff", "inside_only", "sidecar_only", "same/deep"] {
             std::fs::create_dir_all(r.join(d)).unwrap();
         }
-        std::fs::write(r.join("both.acl"), "x").unwrap();
-        std::fs::write(r.join("both/.acl"), "x").unwrap();
+        std::fs::write(r.join("same.acl"), "x").unwrap();
+        std::fs::write(r.join("same/.acl"), "x").unwrap();
+        std::fs::write(r.join("diff.acl"), "x").unwrap();
+        std::fs::write(r.join("diff/.acl"), "y").unwrap();
         std::fs::write(r.join("inside_only/.acl"), "x").unwrap();
         std::fs::write(r.join("sidecar_only.acl"), "x").unwrap();
         std::fs::write(r.join(".acl"), "x").unwrap();
-        let (found, truncated) = dual_form_acl_containers(r, 1000);
-        assert_eq!(found, vec!["/both/".to_string()]);
-        assert!(!truncated);
-        let (_, truncated) = dual_form_acl_containers(r, 2);
-        assert!(truncated, "the scan is bounded");
+        // A repository with twins inside `.git` and enough entries to exhaust
+        // a small bound: it must be skipped, not walked.
+        std::fs::create_dir_all(r.join("same/.git/objects/ab")).unwrap();
+        std::fs::create_dir_all(r.join("same/.git/twin")).unwrap();
+        std::fs::write(r.join("same/.git/twin.acl"), "x").unwrap();
+        std::fs::write(r.join("same/.git/twin/.acl"), "y").unwrap();
+        for i in 0..50 {
+            std::fs::write(r.join(format!("same/.git/objects/ab/{i}")), "o").unwrap();
+        }
+        let scan = dual_form_acl_containers(r, 100);
+        assert_eq!(scan.identical, vec!["/same/".to_string()]);
+        assert_eq!(scan.differing, vec!["/diff/".to_string()]);
+        assert!(!scan.truncated, ".git must not consume the bound");
+        assert!(
+            dual_form_acl_containers(r, 2).truncated,
+            "the scan is bounded"
+        );
     }
 }
 

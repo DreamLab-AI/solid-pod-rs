@@ -362,17 +362,26 @@ async fn main() -> anyhow::Result<()> {
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
     // baked-in env value can be overridden at the command line.
     state.mcp_enabled = cli.mcp && !cli.no_mcp;
-    // Warn about containers whose ACL exists in both storage forms: the
-    // resolver denies them. Bounded scan (200 000 entries), so boot is not held.
+    // Report containers whose ACL exists in both storage forms. Identical
+    // copies are governed by the sidecar and harmless (info). Differing copies
+    // deny everyone: remove whichever copy is wrong ON DISK (no file is changed
+    // here, and there is no HTTP repair). Bounded scan, `.git` skipped.
     if let Some(root) = &state.data_root {
-        let (dual, truncated) = solid_pod_rs_server::dual_form_acl_containers(root, 200_000);
-        if !dual.is_empty() {
-            warn!(
-                containers = ?dual,
-                "containers with both `<c>.acl` and `<c>/.acl`: access is denied until one is removed"
+        let scan = solid_pod_rs_server::dual_form_acl_containers(root, 200_000);
+        if !scan.identical.is_empty() {
+            info!(
+                containers = ?scan.identical,
+                "containers with identical `<c>.acl` and `<c>/.acl`: the sidecar governs"
             );
         }
-        if truncated {
+        if !scan.differing.is_empty() {
+            warn!(
+                containers = ?scan.differing,
+                "containers whose `<c>.acl` and `<c>/.acl` DIFFER: access is denied to everyone; \
+                 delete whichever copy is wrong from the data directory (there is no HTTP repair)"
+            );
+        }
+        if scan.truncated {
             warn!("ACL layout scan stopped at 200000 entries; some containers were not checked");
         }
     }
