@@ -498,10 +498,18 @@ async fn main() -> anyhow::Result<()> {
         server_handle.stop(true).await;
     });
 
-    server.await.context("HTTP server exited with error")?;
+    // The forge mirror's relay sessions are closed on both paths: a server
+    // that exits with an error must not leave them to be cut when the runtime
+    // drops. The signal task only waits for a signal, so abort rather than
+    // await it on the error path.
+    let served = server.await.context("HTTP server exited with error");
+    if served.is_err() {
+        shutdown.abort();
+    }
     let _ = shutdown.await;
     #[cfg(feature = "forge")]
     solid_pod_rs_server::stop_forge(&state).await;
+    served?;
     info!("solid-pod-rs-server stopped cleanly");
     Ok(())
 }

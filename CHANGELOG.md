@@ -31,6 +31,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The NIP-98 replay TTL is never below the freshness window** (SP-ID-02): `from_env` raises
   `SOLID_POD_NIP98_REPLAY_TTL_SECS` to `MIN_TTL_SECS` (122 s). The default is now 122 s (was 120 s).
 
+### Changed
+
+- **An insert-only PATCH needs only `acl:Append`** (SP-PAR-273). This widens what an Append holder can do: an
+  agent with `acl:Append` and no `acl:Write` can now PATCH a resource when the patch provably only inserts (an N3
+  Patch with no `solid:deletes` and no `solid:where`, or a SPARQL Update of `INSERT DATA` only). Any delete,
+  `where`, `INSERT ... WHERE`, JSON Patch or unparseable body still needs `acl:Write`; `.acl` and `.meta`
+  sidecars and server-state paths still need `acl:Control`. For such a caller the server only appends: the
+  inserted triples are added to the end of the stored bytes as N-Triples with absolute IRIs, every existing byte
+  and the content type are left alone, and only a stored `text/turtle` or `application/n-triples` body is
+  accepted (anything else is refused 409 with one generic message). Inserted blank nodes are renamed so they
+  cannot merge with stored ones, and a relative IRI in an N3 insert is refused (400) unless `public_base_url` is
+  set, because otherwise the request's `Host` would choose the IRI space. An absent resource is still created.
+  A caller who also holds `acl:Write` is unchanged. New `ldp::sparql_update_is_insert_only`.
+
 ### Fixed
 
 - **A stored JSON-LD document, `@graph` included, is served as Turtle or N-Triples on request** (SP-PAR-277).
@@ -43,9 +57,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The dotfile guard defers to the `/forge` plugin mount** (SP-PAR-291), so a dot segment under it reaches
   the forge instead of a 403 from the guard. Whole-segment match, forge feature only, never for a path with a
   `.` or `..` segment.
-- **An insert-only PATCH needs only `acl:Append`** (SP-PAR-273): an N3 Patch with no `solid:deletes` and no
-  `solid:where`, or a SPARQL Update of `INSERT DATA` only, no longer needs `acl:Write`. Any delete, `where`,
-  `INSERT ... WHERE`, JSON Patch or unparseable body still does. New `ldp::sparql_update_is_insert_only`.
 - **The forge mirror admits the operator's loopback relay** (AW1-01) through `Mirror::with_relay_ssrf`,
   built from `FORGE_MIRROR_RELAYS`; clone URLs keep the default SSRF policy. `OperatorRelays` moves to
   `solid_pod_rs_forge::operator_relays` (still re-exported from `publish`).
