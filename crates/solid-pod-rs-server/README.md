@@ -190,6 +190,29 @@ is the NIP-98 `Authorization` header: a browser cannot attach one to a
 as an anonymous caller and sees only what the public may read. If a cookie or
 other ambient credential is ever added, set `allowed_origins` first.
 
+## ActivityPub federation (`--ap-federation`)
+
+Off by default, behind the `activitypub` cargo feature. `--activitypub` alone
+serves only the actor document at `/profile/card.jsonld`. `--ap-federation`
+(`JSS_AP_FEDERATION`) also mounts `POST /inbox` and
+`POST /profile/card.jsonld/inbox`, `GET`/`POST /profile/card.jsonld/outbox`, and
+`GET /profile/card.jsonld/followers` and `/following`, adds the actor's `self`
+link to WebFinger, and starts a delivery worker. It requires `--activitypub` and
+`--public-base-url`: every id is minted from that origin.
+
+- **Inbox**: a request is stored only when it is HTTP-signed (host, date, digest,
+  request target), its digest matches the body, its `Date` is fresh, it is
+  addressed to this host, and its `actor` is the signer. Bodies are capped at
+  256 KiB; 16 requests run at once.
+- **Outbox**: only the pod owner (a NIP-98 token bound to the body, signer holds
+  `acl:Control` on `/`). `Note`, `Create`, `Follow`, `Update`, `Delete`,
+  `Announce` and `Like` are accepted; a `Follow` target's inbox is read from the
+  target's actor document, not from the request.
+- **Outbound**: actor documents (256 KiB, 10 s) and deliveries (10 s connect,
+  30 s total, no redirects, queue with backoff) go through a resolve-and-pin
+  check that refuses any non-public address.
+- State is in `<data root>/.ap/` (`keys.json`, `ap.db`); neither is served.
+
 ## Nostr relay (`--nostr`)
 
 Off by default. `--nostr` mounts the embedded relay (NIP-01/11/16) at

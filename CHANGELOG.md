@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (ActivityPub federation, SP-PAR-281)
+
+- **`--ap-federation` (`JSS_AP_FEDERATION`) mounts the ActivityPub inbox, outbox, collections and signed delivery.**
+  Off by default and separate from `--activitypub`, which still serves only the actor document, so existing
+  deployments gain no inbound surface. It needs `--activitypub` and an explicit `--public-base-url`: the actor, key and
+  collection ids come from that origin, never from `Host`. Routes: `POST /inbox`, `POST /profile/card.jsonld/inbox`,
+  `GET`/`POST /profile/card.jsonld/outbox`, `GET /profile/card.jsonld/followers` and `/following`; WebFinger gains the
+  actor's `self` link. A pod resource stored at one of these exact paths is shadowed while federation is on.
+  State lives in `<data root>/.ap/` (`keys.json`, `ap.db`), which the dotfile guard keeps off HTTP and MCP.
+  Inbound requests must carry a valid HTTP Signature over host, date, digest and request target, a body that matches
+  the digest, a fresh `Date`, and an `actor` equal to the signer (JSS logs a bad signature and accepts anyway).
+  The outbox takes only a NIP-98 token bound to the body whose signer holds `acl:Control` on `/` (JSS needs none).
+  Bounds: 256 KiB bodies, 16 concurrent inbox requests, 5 000 followers, 10 000 inbox rows, actor documents of at most
+  256 KiB fetched in 10 s, deliveries with 10 s connect and 30 s total limits and no redirects.
+  Every outbound fetch resolves with the AP crate's check (all addresses must be public) and pins the connection to the
+  address it checked.
+- **AP crate (library) changes**: `SsrfGuard` (strict by default; `permit_loopback_for_tests()` for tests only),
+  `HttpActorKeyResolver::with_guard` / `with_limits` / `fetch_document`, `DeliveryWorker::with_guard`, a non-blocking
+  `resolve_ssrf_safe_with`, `Store` listing methods and `trim_inbox`, `InboxError::Limit` (a new variant: exhaustive
+  matches need an arm). **`sign_request` now signs `Host` with a non-default port** (RFC 9110 section 7.2); before, the
+  signed value differed from the one sent, so no verifier could accept a delivery to a non-default port. The outbox now
+  replaces a caller's `actor`, ignores a caller `id` outside the actor's origin, never stores `targetInbox`, and records
+  an outbound `Follow` so the target's `Accept` can be acknowledged. The resolver takes the actor id from the fetched
+  document's `id` only when it names the fetched document (so `.../card.jsonld#me` actors verify).
+- `AppState` gains `ap_federation` (feature `activitypub`): a source break for code that builds it with a struct literal.
+
 ### Upgrade notes
 
 - **A SPARQL Update that deletes a triple the resource does not hold is now `409` and writes nothing** (row 41),

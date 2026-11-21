@@ -194,6 +194,16 @@ struct Cli {
     #[arg(long, env = "JSS_ACTIVITYPUB")]
     activitypub: bool,
 
+    /// Mount the ActivityPub federation routes: inbox, outbox, followers and
+    /// following collections, and signed delivery (SP-PAR-281). Off by
+    /// default and separate from `--activitypub`, which alone serves only the
+    /// actor document. Needs `--activitypub` and `--public-base-url` (every
+    /// id the server mints comes from it, never from a request's `Host`).
+    /// Inbound requests must be HTTP-signed; the outbox takes the pod owner
+    /// only; outbound fetches refuse non-public addresses.
+    #[arg(long, env = "JSS_AP_FEDERATION")]
+    ap_federation: bool,
+
     /// ActivityPub username (default: me).
     #[arg(long, env = "JSS_AP_USERNAME")]
     ap_username: Option<String>,
@@ -515,8 +525,8 @@ async fn main() -> anyhow::Result<()> {
     let ap_requested = cli.activitypub || cfg.extras.activitypub_enabled == Some(true);
     #[cfg(feature = "activitypub")]
     if ap_requested {
-        let pem =
-            solid_pod_rs_server::activitypub::load_or_create_public_key(state.data_root.as_deref())
+        let (private_pem, pem) =
+            solid_pod_rs_server::activitypub::load_or_create_keypair(state.data_root.as_deref())
                 .map_err(anyhow::Error::msg)
                 .context("ActivityPub keypair")?;
         let pick = |c: &Option<String>, e: &Option<String>| c.clone().or_else(|| e.clone());
@@ -529,7 +539,48 @@ async fn main() -> anyhow::Result<()> {
         )
         .map_err(anyhow::Error::msg)?;
         info!(username = %ap.username, "ActivityPub actor route enabled");
+        if cli.ap_federation {
+            let Some(origin) = state.public_origin() else {
+                anyhow::bail!(
+                    "--ap-federation needs --public-base-url (a bare scheme://host): the actor, \
+                     key and collection ids are minted from it"
+                );
+            };
+            let store_url = match state.data_root.as_deref() {
+                Some(root) => {
+                    let dir = root.join(".ap");
+                    std::fs::create_dir_all(&dir).context("create .ap")?;
+                    format!("sqlite://{}?mode=rwc", dir.join("ap.db").display())
+                }
+                None => "sqlite::memory:?cache=shared".to_string(),
+            };
+            let store = solid_pod_rs_activitypub::Store::connect(&store_url)
+                .await
+                .context("ActivityPub store")?;
+            let fed = solid_pod_rs_server::activitypub::Federation::start(
+                &ap,
+                private_pem,
+                &origin,
+                store,
+                solid_pod_rs_activitypub::SsrfGuard::strict(),
+                solid_pod_rs_server::activitypub::DELIVERY_TICK,
+            )
+            .map_err(anyhow::Error::msg)?;
+            info!(
+                actor = fed.actor_id(),
+                "ActivityPub federation routes enabled"
+            );
+            state.ap_federation = Some(fed);
+        }
         state.activitypub = Some(Arc::new(ap));
+    }
+    #[cfg(feature = "activitypub")]
+    if cli.ap_federation && !ap_requested {
+        anyhow::bail!("--ap-federation needs --activitypub");
+    }
+    #[cfg(not(feature = "activitypub"))]
+    if cli.ap_federation {
+        anyhow::bail!("--ap-federation needs a build with the `activitypub` cargo feature");
     }
     #[cfg(not(feature = "activitypub"))]
     if ap_requested {

@@ -554,6 +554,12 @@ pub struct AppState {
     /// The embedded Nostr relay (SP-PAR-278, SP-PAR-280). `None` (the default)
     /// mounts nothing; `--nostr` sets it.
     pub nostr: Option<nostr_mount::NostrMount>,
+    /// ActivityPub federation routes (SP-PAR-281): inbox, outbox, collections
+    /// and signed delivery. `None` (the default) mounts none of them; the
+    /// binary sets it only for `--ap-federation`, which also needs
+    /// `--activitypub` and an explicit `public_base_url`.
+    #[cfg(feature = "activitypub")]
+    pub ap_federation: Option<Arc<activitypub::Federation>>,
 }
 
 /// Source of the ActivityPub actor document served at
@@ -705,6 +711,8 @@ impl AppState {
             activitypub: None,
             notifications: Some(notifications_ws::NotifyHub::new()),
             nostr: None,
+            #[cfg(feature = "activitypub")]
+            ap_federation: None,
         }
     }
 }
@@ -3215,10 +3223,26 @@ async fn handle_well_known_webfinger(
         "{}/profile/card#me",
         state.nodeinfo.base_url.trim_end_matches('/')
     );
+    // With federation on, the JRD also carries the ActivityPub `self` link a
+    // remote needs to follow this actor, and answers only for this actor.
+    #[cfg(feature = "activitypub")]
+    let actor_link = match state.ap_federation.as_ref() {
+        Some(fed) => match fed.webfinger_actor_link(&resource) {
+            Some(link) => Some(link),
+            None => return HttpResponse::NotFound().finish(),
+        },
+        None => None,
+    };
     match interop::webfinger_response(&resource, &state.nodeinfo.base_url, &webid) {
-        Some(jrd) => HttpResponse::Ok()
-            .content_type("application/jrd+json")
-            .json(jrd),
+        Some(mut jrd) => {
+            #[cfg(feature = "activitypub")]
+            if let Some(link) = actor_link {
+                jrd.links.push(link);
+            }
+            HttpResponse::Ok()
+                .content_type("application/jrd+json")
+                .json(jrd)
+        }
         None => HttpResponse::NotFound().finish(),
     }
 }
@@ -6420,6 +6444,38 @@ pub fn build_app(
                 &info,
                 web::method(actix_web::http::Method::OPTIONS)
                     .to(nostr_mount::handle_relay_preflight),
+            );
+    }
+
+    // ActivityPub federation (SP-PAR-281; off unless `--ap-federation`). Exact
+    // paths, registered ahead of the pod handlers: `POST /inbox` (the actor's
+    // `sharedInbox`), the actor's own inbox and outbox, and the two
+    // collections. A pod resource stored at one of these paths is shadowed
+    // while federation is mounted; `/inbox/` (the Solid inbox container) is a
+    // different path and stays under WAC.
+    #[cfg(feature = "activitypub")]
+    if state.ap_federation.is_some() {
+        app = app
+            .route("/inbox", web::post().to(activitypub::handle_inbox_post))
+            .route(
+                "/profile/card.jsonld/inbox",
+                web::post().to(activitypub::handle_inbox_post),
+            )
+            .route(
+                "/profile/card.jsonld/outbox",
+                web::post().to(activitypub::handle_outbox_post),
+            )
+            .route(
+                "/profile/card.jsonld/outbox",
+                web::get().to(activitypub::handle_outbox_get),
+            )
+            .route(
+                "/profile/card.jsonld/followers",
+                web::get().to(activitypub::handle_followers),
+            )
+            .route(
+                "/profile/card.jsonld/following",
+                web::get().to(activitypub::handle_following),
             );
     }
 

@@ -205,6 +205,15 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .map(|(u, _)| u.to_string())
             .unwrap_or_else(|| key_id.to_string());
         let doc = self.fetch_document(&actor_url).await?;
+        // The actor's id is the document's `id`, which JSS-style actors give
+        // with a fragment (`.../card.jsonld#me`) while the key is fetched
+        // from the document URL. It is taken only when it names the very
+        // document that was fetched; an `id` pointing anywhere else is
+        // ignored, so a host can never present itself as another actor.
+        let actor_url = match doc.get("id").and_then(|v| v.as_str()) {
+            Some(id) if id.split('#').next() == Some(actor_url.as_str()) => id.to_string(),
+            _ => actor_url,
+        };
         let pem = doc
             .get("publicKey")
             .and_then(|k| k.get("publicKeyPem"))

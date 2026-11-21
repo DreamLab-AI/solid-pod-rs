@@ -54,6 +54,37 @@ async fn the_loopback_allowance_is_explicit_and_fetches() {
 }
 
 #[tokio::test]
+async fn the_actor_id_is_the_documents_id_only_when_it_names_the_fetched_document() {
+    let server = MockServer::start().await;
+    let own = format!("{}/actor#me", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/actor"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": own, "inbox": "http://x/inbox", "publicKey": {"publicKeyPem": "PEM"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/liar"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "https://victim.example/actor", "publicKey": {"publicKeyPem": "PEM"}
+        })))
+        .mount(&server)
+        .await;
+    let r = HttpActorKeyResolver::default().with_guard(SsrfGuard::permit_loopback_for_tests());
+    let ok = r
+        .resolve(&format!("{}/actor#main-key", server.uri()))
+        .await
+        .unwrap();
+    assert_eq!(ok.actor_url, own);
+    let liar = r
+        .resolve(&format!("{}/liar#main-key", server.uri()))
+        .await
+        .unwrap();
+    assert_eq!(liar.actor_url, format!("{}/liar", server.uri()));
+}
+
+#[tokio::test]
 async fn the_loopback_allowance_does_not_unlock_private_or_metadata_ranges() {
     let r = HttpActorKeyResolver::default().with_guard(SsrfGuard::permit_loopback_for_tests());
     for url in [
