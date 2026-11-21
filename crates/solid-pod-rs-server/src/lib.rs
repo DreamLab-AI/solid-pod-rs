@@ -1102,6 +1102,21 @@ async fn enforce_write_ctx(
     agent_uri: Option<&str>,
     request_origin: Option<&str>,
 ) -> Result<(), ActixError> {
+    enforce_write_inner(state, path, mode, agent_uri, request_origin, true).await
+}
+
+/// [`enforce_write_ctx`] with the payment debit switchable: `charge = false`
+/// answers "would this be granted" without billing the caller, so a handler
+/// can ask whether a caller holds a stronger mode than the one it is about to
+/// charge for.
+async fn enforce_write_inner(
+    state: &AppState,
+    path: &str,
+    mode: AccessMode,
+    agent_uri: Option<&str>,
+    request_origin: Option<&str>,
+    charge: bool,
+) -> Result<(), ActixError> {
     let origin = request_origin.and_then(wac::Origin::parse);
     // P0-2 / P0-4: an `.acl`/`.meta` sidecar governs *another* resource's
     // permissions. Authorising its mutation as plain `Write`/`Append` on
@@ -1159,7 +1174,7 @@ async fn enforce_write_ctx(
     // write, matching the pre-unification behaviour where the Control
     // pre-check returned `Ok` without a Web-Ledger debit. `resource ==
     // path` iff `effective_acl_target` did NOT elevate a sidecar.
-    if resource.as_str() == path {
+    if charge && resource.as_str() == path {
         // A granted write whose authorising rule carried an
         // `acl:PaymentCondition` debits the caller's Web Ledger by the
         // matched rule's cost. The WAC gate above already proved `balance
@@ -2118,6 +2133,20 @@ async fn handle_patch(
         req_origin(&req),
     )
     .await?;
+    // Append without Write: the caller may only add. Probed without charging;
+    // a sidecar or server-state path is elevated to Control by the same
+    // function, so those never take the append-only route.
+    let append_only = insert_only
+        && enforce_write_inner(
+            &state,
+            &path,
+            AccessMode::Write,
+            agent.as_deref(),
+            req_origin(&req),
+            false,
+        )
+        .await
+        .is_err();
 
     let Some(dialect) = dialect else {
         return Ok(HttpResponse::UnsupportedMediaType()
@@ -2125,6 +2154,15 @@ async fn handle_patch(
     };
     let Ok(body_str) = body_str else {
         return Ok(HttpResponse::BadRequest().body("patch body is not valid UTF-8"));
+    };
+    // An Append-only caller must not be able to choose the IRI space its
+    // insert lands in. `base_iri` comes from the request's `Host` unless a
+    // public origin is configured, so without one the patch is read with no
+    // base and a relative IRI is refused. Done before the existence check so
+    // the answer does not depend on what the resource holds.
+    let n3_parsed = match (&n3_parsed, append_only, state.public_origin()) {
+        (Some(_), true, None) => Some(ldp::N3Patch::parse(&body_str, None)),
+        _ => n3_parsed,
     };
     let n3_patch = match n3_parsed {
         Some(parsed) => Some(parsed.map_err(patch_parse_err)?),
@@ -2142,6 +2180,34 @@ async fn handle_patch(
     // Existing resource?
     let existing = state.storage.get(&path).await;
     match existing {
+        Ok((current_body, meta)) if append_only => {
+            let inserted = match (&n3_patch, dialect) {
+                (Some(p), _) => p.apply(ldp::Graph::new()),
+                (None, ldp::PatchDialect::SparqlUpdate) => {
+                    ldp::apply_sparql_patch(ldp::Graph::new(), &body_str)
+                }
+                _ => Err(PodError::Unsupported(
+                    "unexpected dialect for an append-only patch".into(),
+                )),
+            }
+            .map_err(patch_parse_err)?
+            .graph;
+            let Some(bytes) = append_to_stored(&current_body, &meta.content_type, &inserted)?
+            else {
+                return Ok(HttpResponse::NoContent().finish());
+            };
+            let quota = reserve_quota_for_size(&state, &path, bytes.len() as u64).await?;
+            let write = state
+                .storage
+                .put(&path, Bytes::from(bytes), &meta.content_type)
+                .await;
+            finish_quota_reservation(&state, quota, write.is_ok()).await;
+            let _ = write.map_err(to_actix)?;
+            let provenance = git_mark_write(&state, &path, agent.as_deref(), "PATCH").await;
+            let mut rsp = HttpResponse::NoContent().finish();
+            set_provenance_headers(&mut rsp, &provenance);
+            Ok(rsp)
+        }
         Ok((current_body, meta)) => {
             // Seed the working graph from the EXISTING resource body so the
             // mutation lands on top of the triples already stored, rather
@@ -2424,6 +2490,66 @@ fn rdf_content_negotiate(
         // The hand-rolled graph has no RDF/XML serialiser; decline.
         ldp::RdfFormat::RdfXml => None,
     }
+}
+
+/// The one refusal an Append-only PATCH gives for a stored body it cannot
+/// extend. Generic on purpose: an agent without Read must not learn whether
+/// the body is RDF, UTF-8 or neither.
+const APPEND_UNSUPPORTED: &str = "existing resource cannot be appended to";
+
+/// Extend a stored Turtle or N-Triples body with `inserted`, for a caller
+/// holding `acl:Append` only. Every stored byte is kept and the content type
+/// is the caller's to leave alone: the triples go on the end as N-Triples
+/// with absolute IRIs (valid Turtle), after a newline if the body does not
+/// end in one. Blank nodes are renamed to labels that occur nowhere in the
+/// stored text, so they cannot merge with stored ones. `Ok(None)` means there
+/// is nothing to add. Anything but a UTF-8 Turtle or N-Triples body is
+/// refused with [`APPEND_UNSUPPORTED`] (409, as the Write path does).
+fn append_to_stored(
+    current_body: &[u8],
+    stored_content_type: &str,
+    inserted: &ldp::Graph,
+) -> Result<Option<Vec<u8>>, ActixError> {
+    let refuse = || actix_web::error::ErrorConflict(APPEND_UNSUPPORTED);
+    if !matches!(
+        ldp::RdfFormat::from_mime(stored_content_type),
+        Some(ldp::RdfFormat::Turtle | ldp::RdfFormat::NTriples)
+    ) {
+        return Err(refuse());
+    }
+    let text = std::str::from_utf8(current_body).map_err(|_| refuse())?;
+    if inserted.is_empty() {
+        return Ok(None);
+    }
+    let mut k = 0usize;
+    while text.contains(&format!("_:ap{k}_")) {
+        k += 1;
+    }
+    let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut rename = |t: &ldp::Term| match t {
+        ldp::Term::BlankNode(b) => {
+            let next = labels.len();
+            let fresh = labels
+                .entry(b.clone())
+                .or_insert_with(|| format!("ap{k}_{next}"));
+            ldp::Term::BlankNode(fresh.clone())
+        }
+        other => other.clone(),
+    };
+    let mut fresh = ldp::Graph::new();
+    for t in inserted.triples() {
+        fresh.insert(ldp::Triple::new(
+            rename(&t.subject),
+            t.predicate.clone(),
+            rename(&t.object),
+        ));
+    }
+    let mut out = current_body.to_vec();
+    if !out.is_empty() && !out.ends_with(b"\n") {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(fresh.to_ntriples().as_bytes());
+    Ok(Some(out))
 }
 
 /// Seed the PATCH working graph from the existing resource body so an
