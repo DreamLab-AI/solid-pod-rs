@@ -48,7 +48,7 @@ use crate::error::PodError;
 #[cfg(feature = "tokio-runtime")]
 use crate::storage::Storage;
 use crate::wac::document::AclDocument;
-use crate::wac::parse_jsonld_acl;
+use crate::wac::parse_jsonld_acl_at;
 use crate::wac::parser::parse_turtle_acl;
 
 // ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ pub fn classify_policy_read(
     // JSON-LD first, through the bounded parser. Bound violations are
     // terminal in their own right — an oversized or depth-bombed ACL must
     // never fall through to the ancestor.
-    match parse_jsonld_acl(body) {
+    match parse_jsonld_acl_at(body, policy_path) {
         Ok(mut doc) => {
             doc.inherited = inherited;
             return PolicyStep::Settled(PolicyOutcome::Found(doc));

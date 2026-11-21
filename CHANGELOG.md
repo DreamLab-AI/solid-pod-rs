@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **JSON-LD ACLs are read by expanded IRI** (SP-PAR-265). `parse_jsonld_acl*` now expands the document with
+  `oxjsonld` instead of reading literal `acl:` keys, so `@context` with any prefix, `@vocab`, a context array, the
+  expanded form, a single node and an array `@type` all read as written. A remote `@context` is never fetched and
+  makes the ACL unreadable, which denies. New `wac::parse_jsonld_acl_at` anchors relative IRIs to the ACL's path.
+  A rebound `acl` prefix grants nothing; named-graph quads add no rule; an `acl:condition` that cannot be read
+  voids the document instead of dropping the restriction.
 - **`acl:accessTo` / `acl:default` as absolute or relative IRIs now match, and relative `acl:agent` IRIs resolve
   against the ACL document** (SP-PAR-288, SP-PAR-289). New `wac::AclBase` and
   `wac::resolve_policy_from_storage_with_base`; the server builds the base from `public_base_url` only (never a

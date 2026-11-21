@@ -76,6 +76,17 @@ fn check_json_depth(body: &[u8], max: usize) -> Result<(), PodError> {
 /// fuzzed or malicious ACLs are rejected before `serde_json` is invoked.
 /// To supply explicit limits, use [`parse_jsonld_acl_with_limits`].
 pub fn parse_jsonld_acl(body: &[u8]) -> Result<AclDocument, PodError> {
+    parse_jsonld_acl_at(body, "/")
+}
+
+/// [`parse_jsonld_acl`] for an ACL stored at `doc_path`, which anchors the
+/// relative IRIs inside it (`./b`, `../c`, `#me`).
+///
+/// The document is read by expanded IRI through a JSON-LD processor
+/// (SP-PAR-265): see the module docs of `wac::jsonld_acl` for the policy,
+/// including that remote contexts are never fetched and make the ACL
+/// unreadable.
+pub fn parse_jsonld_acl_at(body: &[u8], doc_path: &str) -> Result<AclDocument, PodError> {
     let limit = std::env::var("JSS_MAX_ACL_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -84,7 +95,7 @@ pub fn parse_jsonld_acl(body: &[u8]) -> Result<AclDocument, PodError> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(MAX_ACL_JSON_DEPTH);
-    parse_jsonld_acl_with_limits(body, limit, depth_limit)
+    parse_jsonld_acl_with_limits_at(body, doc_path, limit, depth_limit)
 }
 
 /// Parse a JSON-LD ACL body with caller-supplied byte and depth limits.
@@ -98,14 +109,23 @@ pub fn parse_jsonld_acl_with_limits(
     max_bytes: usize,
     max_depth: usize,
 ) -> Result<AclDocument, PodError> {
+    parse_jsonld_acl_with_limits_at(body, "/", max_bytes, max_depth)
+}
+
+/// [`parse_jsonld_acl_with_limits`] for an ACL stored at `doc_path`.
+pub fn parse_jsonld_acl_with_limits_at(
+    body: &[u8],
+    doc_path: &str,
+    max_bytes: usize,
+    max_depth: usize,
+) -> Result<AclDocument, PodError> {
     if body.len() > max_bytes {
         return Err(PodError::PayloadTooLarge(format!(
             "ACL body exceeds {max_bytes} bytes"
         )));
     }
     check_json_depth(body, max_depth)?;
-    serde_json::from_slice::<AclDocument>(body)
-        .map_err(|e| PodError::AclParse(format!("JSON-LD ACL parse: {e}")))
+    jsonld_acl::parse_expanded(body, doc_path)
 }
 
 // Sub-modules — each kept under 500 LOC.
@@ -116,6 +136,7 @@ pub mod document;
 pub mod evaluator;
 pub mod iri;
 pub mod issuer;
+mod jsonld_acl;
 pub mod origin;
 pub mod parser;
 pub mod payment;

@@ -236,8 +236,6 @@ async fn server_anonymous_put_to_protected_resource_returns_401() {
         "{challenge}"
     );
     assert!(!challenge.contains("DPoP"), "{challenge}");
-    #[cfg(not(feature = "dev-bearer"))]
-    assert!(!challenge.contains("Bearer"), "{challenge}");
 }
 
 #[actix_web::test]

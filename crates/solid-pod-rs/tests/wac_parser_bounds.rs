@@ -46,10 +46,12 @@ fn wac_turtle_acl_oversize_rejected() {
 
 #[test]
 fn wac_acl_depth_within_limit_succeeds() {
-    // A flat JSON-LD ACL with typical nesting.
+    // A flat JSON-LD ACL with typical nesting. Its context is inline: a remote
+    // context is never fetched and makes the ACL unreadable (SP-PAR-265), see
+    // `wac_acl_remote_context_is_unreadable`.
     let body: &[u8] = br##"
         {
-          "@context": "http://www.w3.org/ns/auth/acl",
+          "@context": { "acl": "http://www.w3.org/ns/auth/acl#" },
           "@graph": [
             {
               "@id": "#owner",
@@ -63,6 +65,19 @@ fn wac_acl_depth_within_limit_succeeds() {
     let doc = parse_jsonld_acl(body).unwrap();
     let g = doc.graph.as_ref().unwrap();
     assert_eq!(g.len(), 1);
+}
+
+#[test]
+fn wac_acl_remote_context_is_unreadable() {
+    // SP-PAR-265: no remote @context is ever fetched, so an ACL that needs one
+    // cannot be read and the resolver denies.
+    let body: &[u8] = br##"{
+          "@context": "http://www.w3.org/ns/auth/acl",
+          "@graph": [{ "@id": "#owner", "@type": "acl:Authorization",
+            "acl:agent": { "@id": "https://alice.example/card#me" },
+            "acl:mode": { "@id": "acl:Read" } }]
+        }"##;
+    assert!(parse_jsonld_acl(body).is_err());
 }
 
 #[test]
