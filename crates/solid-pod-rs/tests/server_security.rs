@@ -49,6 +49,7 @@ async fn public_read_state() -> AppState {
 
     AppState {
         live_reload: false,
+        serve_active_content: false,
         quota: None,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
@@ -103,6 +104,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
 
     AppState {
         live_reload: false,
+        serve_active_content: false,
         quota: None,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
@@ -281,6 +283,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
 
     let state = AppState {
         live_reload: false,
+        serve_active_content: false,
         quota: None,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),

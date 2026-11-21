@@ -60,6 +60,7 @@ async fn make_state() -> AppState {
 
     let mut state = AppState {
         live_reload: false,
+        serve_active_content: false,
         quota: None,
         storage: backend,
         dotfiles: Arc::new(DotfileAllowlist::with_defaults()),
