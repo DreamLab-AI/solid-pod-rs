@@ -737,6 +737,79 @@ impl Graph {
         out
     }
 
+    /// Serialise to N-Triples with the `oxrdf` serialiser, validating every
+    /// term first, so escaping and well-formedness do not depend on how the
+    /// triples got into the graph. Unlike [`Self::to_ntriples`], an IRI that
+    /// is not a valid absolute IRI (a relative reference, or one holding a
+    /// space or `>`), a bad blank-node label or a bad language tag is an
+    /// error rather than being written raw.
+    ///
+    /// ```
+    /// use solid_pod_rs::ldp::{Graph, Term, Triple};
+    ///
+    /// let mut g = Graph::new();
+    /// g.insert(Triple::new(
+    ///     Term::iri("http://e/s"),
+    ///     Term::iri("http://e/p"),
+    ///     Term::literal("a \"b\""),
+    /// ));
+    /// assert_eq!(g.to_ntriples_checked().unwrap(), "<http://e/s> <http://e/p> \"a \\\"b\\\"\" .\n");
+    ///
+    /// let mut bad = Graph::new();
+    /// bad.insert(Triple::new(Term::iri("#x"), Term::iri("http://e/p"), Term::literal("v")));
+    /// assert!(bad.to_ntriples_checked().is_err());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`PodError::BadRequest`] naming the kind of term that failed.
+    pub fn to_ntriples_checked(&self) -> Result<String, PodError> {
+        use oxrdf::Triple as OxTriple;
+        use oxrdf::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term as OxTerm};
+        let bad =
+            |what: &str| PodError::BadRequest(format!("cannot serialise {what} as N-Triples"));
+        let node = |t: &Term| -> Result<NamedOrBlankNode, PodError> {
+            match t {
+                Term::Iri(i) => NamedNode::new(i.as_str())
+                    .map(NamedOrBlankNode::from)
+                    .map_err(|_| bad("an IRI")),
+                Term::BlankNode(b) => BlankNode::new(b.as_str())
+                    .map(NamedOrBlankNode::from)
+                    .map_err(|_| bad("a blank node label")),
+                Term::Literal { .. } => Err(bad("a literal subject")),
+            }
+        };
+        let mut out = String::new();
+        for t in &self.triples {
+            let predicate = match &t.predicate {
+                Term::Iri(i) => NamedNode::new(i.as_str()).map_err(|_| bad("an IRI"))?,
+                _ => return Err(bad("a non-IRI predicate")),
+            };
+            let object = match &t.object {
+                Term::Literal {
+                    value,
+                    datatype,
+                    language,
+                } => match (language, datatype) {
+                    (Some(l), _) => {
+                        Literal::new_language_tagged_literal(value.as_str(), l.as_str())
+                            .map(OxTerm::from)
+                            .map_err(|_| bad("a language tag"))?
+                    }
+                    (None, Some(d)) => OxTerm::from(Literal::new_typed_literal(
+                        value.as_str(),
+                        NamedNode::new(d.as_str()).map_err(|_| bad("a datatype IRI"))?,
+                    )),
+                    (None, None) => OxTerm::from(Literal::new_simple_literal(value.as_str())),
+                },
+                other => OxTerm::from(node(other)?),
+            };
+            let triple = OxTriple::new(node(&t.subject)?, predicate, object);
+            let _ = writeln!(out, "{triple} .");
+        }
+        Ok(out)
+    }
+
     /// Serialise to JSON-LD expanded form: a JSON array of node objects,
     /// one per subject. IRIs and blank nodes become `{"@id": ...}`
     /// references; literals become `{"@value": ...}` with `@language` or

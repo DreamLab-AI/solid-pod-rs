@@ -2497,14 +2497,66 @@ fn rdf_content_negotiate(
 /// the body is RDF, UTF-8 or neither.
 const APPEND_UNSUPPORTED: &str = "existing resource cannot be appended to";
 
+/// Base IRI for the two parses `append_to_stored` compares. A constant, never
+/// derived from the request, used identically for both so relative IRIs in
+/// the stored body resolve the same way in each.
+const APPEND_CHECK_BASE: &str = "http://append-check.invalid/r/x";
+
+/// Replace every blank node with one placeholder, so graphs can be compared
+/// without depending on blank-node identity (the parser invents labels for
+/// anonymous nodes).
+fn blank_agnostic(g: &ldp::Graph) -> std::collections::BTreeMap<ldp::Triple, usize> {
+    let norm = |t: &ldp::Term| match t {
+        ldp::Term::BlankNode(_) => ldp::Term::BlankNode("_".into()),
+        other => other.clone(),
+    };
+    let mut m = std::collections::BTreeMap::new();
+    for t in g.triples() {
+        let n = ldp::Triple::new(norm(&t.subject), t.predicate.clone(), norm(&t.object));
+        *m.entry(n).or_insert(0) += 1;
+    }
+    m
+}
+
+/// A blank-node label prefix that occurs nowhere in `text`: time and a process
+/// counter make a clash practically impossible, and the one scan checks it.
+fn fresh_blank_prefix(text: &str) -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prefix = format!("ap{n}x{nonce:x}_");
+        if !text.contains(&format!("_:{prefix}")) {
+            return prefix;
+        }
+    }
+}
+
 /// Extend a stored Turtle or N-Triples body with `inserted`, for a caller
 /// holding `acl:Append` only. Every stored byte is kept and the content type
 /// is the caller's to leave alone: the triples go on the end as N-Triples
 /// with absolute IRIs (valid Turtle), after a newline if the body does not
 /// end in one. Blank nodes are renamed to labels that occur nowhere in the
 /// stored text, so they cannot merge with stored ones. `Ok(None)` means there
-/// is nothing to add. Anything but a UTF-8 Turtle or N-Triples body is
-/// refused with [`APPEND_UNSUPPORTED`] (409, as the Write path does).
+/// is nothing to add.
+///
+/// The property "stored graph plus exactly the inserted triples" is checked,
+/// not assumed. The stored body must parse as Turtle (N-Triples is a subset)
+/// under a fixed base, which also refuses a body truncated inside a long
+/// string where appended text would be absorbed; the combined bytes are then
+/// parsed again and compared with the stored graph plus the inserted triples
+/// (ground triples as a set, triples with blank nodes as a multiset with
+/// blank nodes folded together, and equal totals). Both parses are bounded by
+/// `rdf_input::MAX_RDF_INPUT_BYTES` (4 MiB) and `MAX_RDF_TRIPLES`, so a
+/// resource past that size can no longer be appended to.
+///
+/// Anything that is not a UTF-8, well-formed Turtle or N-Triples body, and
+/// any combined result that fails the check, is refused with
+/// [`APPEND_UNSUPPORTED`] (409, as the Write path does for an unreadable
+/// body); nothing is written.
 fn append_to_stored(
     current_body: &[u8],
     stored_content_type: &str,
@@ -2518,20 +2570,23 @@ fn append_to_stored(
         return Err(refuse());
     }
     let text = std::str::from_utf8(current_body).map_err(|_| refuse())?;
+    let stored = if text.trim().is_empty() {
+        ldp::Graph::new()
+    } else {
+        solid_pod_rs::rdf_input::parse_turtle(current_body, APPEND_CHECK_BASE)
+            .map_err(|_| refuse())?
+    };
     if inserted.is_empty() {
         return Ok(None);
     }
-    let mut k = 0usize;
-    while text.contains(&format!("_:ap{k}_")) {
-        k += 1;
-    }
+    let prefix = fresh_blank_prefix(text);
     let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut rename = |t: &ldp::Term| match t {
         ldp::Term::BlankNode(b) => {
             let next = labels.len();
             let fresh = labels
                 .entry(b.clone())
-                .or_insert_with(|| format!("ap{k}_{next}"));
+                .or_insert_with(|| format!("{prefix}{next}"));
             ldp::Term::BlankNode(fresh.clone())
         }
         other => other.clone(),
@@ -2544,12 +2599,51 @@ fn append_to_stored(
             rename(&t.object),
         ));
     }
+    let appended = fresh.to_ntriples_checked().map_err(|_| refuse())?;
     let mut out = current_body.to_vec();
     if !out.is_empty() && !out.ends_with(b"\n") {
         out.push(b'\n');
     }
-    out.extend_from_slice(fresh.to_ntriples().as_bytes());
+    out.extend_from_slice(appended.as_bytes());
+
+    let combined =
+        solid_pod_rs::rdf_input::parse_turtle(&out, APPEND_CHECK_BASE).map_err(|_| refuse())?;
+    let mut expected = blank_agnostic(&stored);
+    for (t, n) in blank_agnostic(&fresh) {
+        *expected.entry(t).or_insert(0) += n;
+    }
+    let is_ground = |t: &ldp::Triple| {
+        !matches!(t.subject, ldp::Term::BlankNode(_))
+            && !matches!(t.object, ldp::Term::BlankNode(_))
+    };
+    let mut expected_ground: std::collections::BTreeSet<&ldp::Triple> =
+        stored.triples().filter(|t| is_ground(t)).collect();
+    expected_ground.extend(fresh.triples().filter(|t| is_ground(t)));
+    let got_ground: std::collections::BTreeSet<&ldp::Triple> =
+        combined.triples().filter(|t| is_ground(t)).collect();
+    let blank_count = |g: &ldp::Graph| g.triples().filter(|t| !is_ground(t)).count();
+    let expected_len = expected_ground.len() + blank_count(&stored) + blank_count(&fresh);
+    // Ground triples compare as a set (a re-sent triple is not a new one);
+    // blank-node triples are all distinct, so the folded multiset must match
+    // exactly. Folding merges only blank-node triples, so a multiset equal
+    // on the folded form and equal in total size has the same literals and IRIs.
+    let got_blank: std::collections::BTreeMap<_, _> = blank_agnostic(&combined)
+        .into_iter()
+        .filter(|(t, _)| is_blank_placeholder(t))
+        .collect();
+    let want_blank: std::collections::BTreeMap<_, _> = expected
+        .into_iter()
+        .filter(|(t, _)| is_blank_placeholder(t))
+        .collect();
+    if got_ground != expected_ground || got_blank != want_blank || combined.len() != expected_len {
+        return Err(refuse());
+    }
     Ok(Some(out))
+}
+
+/// True for a triple that `blank_agnostic` folded a blank node into.
+fn is_blank_placeholder(t: &ldp::Triple) -> bool {
+    matches!(&t.subject, ldp::Term::BlankNode(_)) || matches!(&t.object, ldp::Term::BlankNode(_))
 }
 
 /// Seed the PATCH working graph from the existing resource body so an

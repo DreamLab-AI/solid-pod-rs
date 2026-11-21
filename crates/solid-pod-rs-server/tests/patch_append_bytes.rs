@@ -295,3 +295,82 @@ async fn an_agent_with_write_keeps_the_rewriting_behaviour() {
     assert!(now.contains("<http://pod.example/inbox/log#me>"), "{now}");
     assert!(!now.contains("# owner notes"));
 }
+
+// --- third-round review: the result must be the stored graph plus exactly
+// the inserted triples, whatever the stored body looks like.
+
+async fn assert_refused_and_unchanged(stored_body: &str, update: &str) {
+    let storage = pod(APPEND_ONLY_ACL, stored_body.as_bytes(), "text/turtle").await;
+    let (status, msg) = sparql(&storage, "pod.example", update).await;
+    assert_eq!(status, 409, "{update}");
+    assert_eq!(msg, "existing resource cannot be appended to");
+    assert_eq!(
+        stored(&storage).await,
+        (stored_body.to_string(), "text/turtle".to_string())
+    );
+}
+
+#[actix_web::test]
+async fn a_body_truncated_inside_a_long_string_cannot_absorb_the_insert() {
+    let open_single = "<http://e/s> <http://e/p> '''owner text";
+    let open_double = "<http://e/s> <http://e/p> \"\"\"owner text";
+    // Literal holding the closing delimiter, then ` .` and a comment marker.
+    let lit = "INSERT DATA { <http://example.org/a> <http://example.org/p> \"x''' . #\" }";
+    let iri = "INSERT DATA { <http://example.org/a'''.#x> <http://example.org/p> \"v\" }";
+    let dq = "INSERT DATA { <http://example.org/a> <http://example.org/p> \"x\\\"\\\"\\\" . #\" }";
+    for update in [
+        lit,
+        iri,
+        dq,
+        "INSERT DATA { <http://example.org/a> <http://example.org/p> \"v\" }",
+    ] {
+        assert_refused_and_unchanged(open_single, update).await;
+        assert_refused_and_unchanged(open_double, update).await;
+    }
+}
+
+#[actix_web::test]
+async fn an_otherwise_invalid_stored_turtle_body_is_refused() {
+    for body in ["this is not turtle {{{", "<http://e/s> <http://e/p> ."] {
+        assert_refused_and_unchanged(
+            body,
+            "INSERT DATA { <http://example.org/a> <http://example.org/p> \"v\" }",
+        )
+        .await;
+    }
+}
+
+#[actix_web::test]
+async fn an_insert_holding_quote_characters_round_trips_exactly() {
+    let storage = pod(APPEND_ONLY_ACL, OWNER_TURTLE.as_bytes(), "text/turtle").await;
+    let (status, _) = sparql(
+        &storage,
+        "pod.example",
+        "INSERT DATA { <http://example.org/a> <http://example.org/p> \"it's '''q''' \\\" \\\\ end\" }",
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (now, _) = stored(&storage).await;
+    assert!(now.starts_with(OWNER_TURTLE));
+    let g = parse_turtle(now.as_bytes(), "http://pod.example/x").unwrap();
+    assert_eq!(g.len(), 2, "{now}");
+}
+
+#[actix_web::test]
+async fn appended_blank_node_labels_are_fresh_and_do_not_grow_the_scan() {
+    let storage = pod(APPEND_ONLY_ACL, b"", "text/turtle").await;
+    for _ in 0..3 {
+        let (status, _) = sparql(
+            &storage,
+            "pod.example",
+            "INSERT DATA { _:b <http://example.org/p> \"v\" }",
+        )
+        .await;
+        assert_eq!(status, 204);
+    }
+    let (now, _) = stored(&storage).await;
+    let g = parse_turtle(now.as_bytes(), "http://pod.example/x").unwrap();
+    let subjects: std::collections::BTreeSet<_> =
+        g.triples().map(|t| format!("{:?}", t.subject)).collect();
+    assert_eq!(subjects.len(), 3, "{now}");
+}
