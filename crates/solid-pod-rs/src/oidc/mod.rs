@@ -1470,8 +1470,10 @@ mod tests {
         assert!(run(1_200, u64::MAX).is_ok(), "nbf - 300 accepted");
         assert!(run(1_199, u64::MAX).is_err(), "nbf - 301 refused");
         // A public field set past the maximum is clamped at the comparison.
-        let mut raw = AccessTokenPolicy::default();
-        raw.clock_leeway_secs = u64::MAX;
+        let raw = AccessTokenPolicy {
+            clock_leeway_secs: u64::MAX,
+            ..AccessTokenPolicy::default()
+        };
         assert!(
             verify_access_token_with_policy(&token, &ks, "https://op", "T", 2_300, &raw).is_err()
         );
