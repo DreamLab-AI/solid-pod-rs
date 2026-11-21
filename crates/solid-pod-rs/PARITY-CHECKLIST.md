@@ -49,36 +49,36 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 91.4%** — 256/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 93.2%** |
-| Spec-normative surface | **partial** — ACL IRI resolution (288), JSON-LD ACL reading (265) and JSON-LD PATCH (276) are open |
-| Protocol-visible surface | **partial** — `/.notifications` advertised but not served (279) |
-| JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — relay and AP inbox/outbox are not mounted by the server (278, 281) |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 93.9%** — 263/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 95.9%** |
+| Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of an HTML data island (276) is open, and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
+| Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
+| JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
-> **Authoritative figure.** **91.4% strict** over 300 rows, and an **upper
+> **Authoritative figure.** **93.9% strict** over 300 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
 > in its scope (§26–§28 and the eleven rows it reclassified). The remaining
 > `present` rows have not been re-audited for server wiring, and some may be
 > library-only in the same way. The `0.0.224` delta adds 14 rows (§26); §27
-> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%.
+> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%; the 2026-11-21 second wave (rows 265, 266, 276 in part, 278, 279, 280, 288, 289 and the challenge of row 73) moved it to 93.9%.
 
 ### By status
 
 | Status | Count |
 |---|---|
-| present (includes present-by-absence) | 226 |
+| present (includes present-by-absence) | 235 |
 | net-new (ours; not in JSS) | 19 |
-| semantic-difference | 6 |
-| partial-parity | 14 |
-| missing | 15 |
+| semantic-difference | 9 |
+| partial-parity | 11 |
+| missing | 6 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
 | **Total** | **300** |
 
-Counts are the output of `scripts/parity-check.sh` at the 2026-11-01 audit. Core
+Counts are the output of `scripts/parity-check.sh` as of 2026-11-21 (the 2026-11-01 audit set the rows). Core
 comparator: upstream `JavaScriptSolidServer` `gh-pages` at `7c9b0de`, package
 `0.0.224`, 2026-10-22. Plugins comparator: `plugins` at `63a16cb`, 2026-10-19.
 
