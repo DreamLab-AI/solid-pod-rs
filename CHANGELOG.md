@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security (review of the ActivityPub, remoteStorage and WebRTC additions)
+
+ActivityPub (`solid-pod-rs-activitypub` and the server mount):
+
+- **Bounded growth.** A `Follow` from an existing follower is idempotent (no inbox row, no `Accept`, no delivery); the
+  `Accept` embeds only the Follow's verified `id`, `actor` and `object`, never the sender's body; activity ids over
+  2 KiB are refused. Inbox rows carry their sender, dedup is on `(sender, id)`, retention is 200 rows per sender (the
+  10 000 global bound stays); server-generated `Accept` rows are trimmed to 5 000; the delivery queue refuses new work
+  past 20 000 (logged once per episode). An `inbox` table from an older `ap.db` is migrated in place.
+- **Delivery.** A follower's `inbox` and `sharedInbox` must be on the origin of its actor document or the Follow is
+  refused; new followers per remote host are capped (default 50, `InboxLimits`, `Federation::start_with_limits`).
+  `DeliveryWorker::run` delivers concurrently (8 at once, 2 per host) with a per-host circuit breaker (5 failures,
+  30 s doubling to 1 h), so one stalled host no longer delays the rest. `drain_once` is still one attempt.
+- **Inbox.** The body is read first under a 5 s deadline (`BODY_READ_TIMEOUT`, `408`) and only then is a concurrency
+  slot taken, so trickling clients cannot lock out senders. Resolved actor keys are cached (5 min; failures 30 s;
+  1024 entries) by `keyId` document URL; a failed signature triggers one re-fetch (at most one per key per 60 s) to
+  allow key rotation.
+- **No proxy bypass of address pinning.** reqwest honours `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` by default, and a
+  proxy connects for the client, so a pinned address was not the one used. Every guarded client now calls
+  `.no_proxy()`: AP actor fetch and delivery, did:nostr (core interop), OIDC JWKS/discovery, the WebID resolver, the IdP
+  client-document fetch, the MCP federation call and the server outbound proxy; the forge mirror's `git fetch` from an
+  untrusted remote passes `-c http.proxy=`. Not changed (operator-configured or loopback): jev, mempool, the forge
+  loopback fetch. The core notifications webhook client has no SSRF guard at all (pre-existing, reported).
+- **Hardening.** `SsrfGuard::permit_loopback_for_tests` exists only under the new feature `test-loopback`, enabled only
+  from dev-dependencies, so a release build cannot reach loopback; `SsrfGuard::strict()` now refuses plain `http`
+  (https only); an inbound activity's `id` must share its actor's origin; `.ap/ap.db` is created 0600 (so `-wal` and
+  `-shm` are too) and an existing `keys.json` is tightened to 0600 at start.
+
+remoteStorage:
+
+- **Stored XSS.** Every `/storage/` response carries `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'; sandbox`; HTML, XHTML, SVG, XML (`+xml`) and JavaScript documents are
+  also `Content-Disposition: attachment`. LDP responses gain `X-Content-Type-Options: nosniff` app-wide. LDP is not
+  sandboxed: the pod serves stored `index.html` pages and live-reload HTML by design. **Owner decision:** whether
+  stored HTML on the pod origin should be sandboxed on LDP too (options: keep; sandbox unless a pod opts in; serve
+  pod HTML from a separate origin).
+- **Name guard.** Sidecar names are compared case-folded on the decoded segment and the pod's dotfile policy runs on
+  each segment, so `x.ACL`, `x.%41CL`, `X.Meta`, `y.META.JSON` are refused.
+- **Private from LDP.** At mount time `/remotestorage/` gets an owner-only ACL (the agents the root ACL gives Control
+  on `/`), in the form `--acl-layout` reads, so a public-read root no longer exposes remoteStorage documents; an
+  existing ACL is never overwritten.
+- **Quota.** `DELETE` now returns the document's bytes to the quota. Still open: tokens can only be revoked all at
+  once; the `remotestorage` quota bucket is separate from the pod's own.
+
+WebRTC:
+
+- A well-formed message to an absent, present, busy or over-budget peer gets no reply, so the relay no longer reveals
+  whether a pubkey is online (the module documentation said it did not). At most 8 sockets per peer address (the
+  proxy's address behind a reverse proxy), a 1 h session limit, every frame type counts against the rate limit, and one
+  sender may hold at most 8 of a recipient's 32 queue slots.
+
+### Changed (source breaks and behaviour)
+
+- `AppState` gained the fields `ap_federation`, `remotestorage` and `webrtc` (earlier in this release): code that
+  builds `AppState` with a struct literal must add them (`AppState::new` sets them to `None`).
+- `solid_pod_rs_server::webrtc_mount::Limits` gained `max_per_ip`, `max_session` and `per_sender_queue`; literals
+  need `..Limits::default()`.
+- `solid-pod-rs-activitypub`: `SsrfGuard::permit_loopback_for_tests` needs the `test-loopback` feature, and
+  `SsrfGuard::strict()` refuses `http`, so deliveries to plain-http inboxes are dropped; `ActorKeyResolver` gained a
+  default method `resolve_fresh`; the `inbox`, `followers` and `delivery_queue` tables gained `sender`/`host` columns
+  (migrated automatically); `Store` gained `record_inbox_from`, `trim_inbox_for_sender`, `trim_outbox_kind`,
+  `try_enqueue_delivery`, `delivery_queue_len`, `follower_count_for_host`, `next_due_delivery_excluding`;
+  `handle_inbox_with`/`InboxLimits`, `HttpActorKeyResolver::with_cache_policy`/`KeyCachePolicy`,
+  `solid_pod_rs_server::activitypub::{open_store, BODY_READ_TIMEOUT}` and
+  `solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl}` are new.
+- The `Accept` returned by `build_accept` no longer carries the Follow's other fields.
+- An `ap.db` created by an earlier build keeps its old file mode until the server starts once with this version.
+
 ### Added (WebRTC signalling, SP-PAR-282)
 
 - **`--webrtc` (`JSS_WEBRTC`, `--webrtc-path`, default `/webrtc`) mounts a bounded WebSocket relay of WebRTC
