@@ -231,7 +231,10 @@ async fn server_anonymous_put_to_protected_resource_returns_401() {
         .unwrap_or("");
     // SP-OIDC-02: only the schemes admission honours are advertised.
     assert_eq!(challenge, solid_pod_rs_server::RESOURCE_AUTH_CHALLENGE);
-    assert!(challenge.starts_with("Nostr realm=\"Solid\""), "{challenge}");
+    assert!(
+        challenge.starts_with("Nostr realm=\"Solid\""),
+        "{challenge}"
+    );
     assert!(!challenge.contains("DPoP"), "{challenge}");
     #[cfg(not(feature = "dev-bearer"))]
     assert!(!challenge.contains("Bearer"), "{challenge}");
