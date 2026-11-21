@@ -225,6 +225,11 @@ struct Cli {
     #[arg(long, env = "JSS_WEBRTC_PATH", default_value = "/webrtc")]
     webrtc_path: String,
 
+    /// Most followers one remote host (by hostname, any port) may have
+    /// (default 50). A further new follower from that host is refused.
+    #[arg(long, env = "JSS_AP_MAX_FOLLOWERS_PER_HOST")]
+    ap_max_followers_per_host: Option<i64>,
+
     /// ActivityPub username (default: me).
     #[arg(long, env = "JSS_AP_USERNAME")]
     ap_username: Option<String>,
@@ -610,13 +615,21 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .map_err(anyhow::Error::msg)
                 .context("ActivityPub store")?;
-            let fed = solid_pod_rs_server::activitypub::Federation::start(
+            let mut limits = solid_pod_rs_activitypub::InboxLimits::default();
+            if let Some(n) = cli.ap_max_followers_per_host {
+                if n < 1 {
+                    anyhow::bail!("--ap-max-followers-per-host must be at least 1");
+                }
+                limits.max_followers_per_host = n;
+            }
+            let fed = solid_pod_rs_server::activitypub::Federation::start_with_limits(
                 &ap,
                 private_pem,
                 &origin,
                 store,
                 solid_pod_rs_activitypub::SsrfGuard::strict(),
                 solid_pod_rs_server::activitypub::DELIVERY_TICK,
+                limits,
             )
             .map_err(anyhow::Error::msg)?;
             info!(
