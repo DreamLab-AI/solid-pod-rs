@@ -3226,10 +3226,11 @@ impl Mirror {
         attempt: &mut u32,
         stop: &mut watch::Receiver<bool>,
     ) -> String {
-        if let Err(why) = self
-            .relay_host_allowed(&relay.replacen("ws", "http", 1))
-            .await
-        {
+        let (dial, judged) = match relay_endpoints(relay) {
+            Ok(pair) => pair,
+            Err(why) => return format!("relay URL refused: {why}"),
+        };
+        if let Err(why) = self.relay_host_allowed(&judged).await {
             return format!("relay host refused: {why}");
         }
         let limits = WebSocketConfig {
@@ -3237,7 +3238,7 @@ impl Mirror {
             max_frame_size: Some(MAX_FRAME_BYTES),
             ..WebSocketConfig::default()
         };
-        let connect = tokio_tungstenite::connect_async_with_config(relay, Some(limits), false);
+        let connect = tokio_tungstenite::connect_async_with_config(dial, Some(limits), false);
         let mut ws = match tokio::time::timeout(Duration::from_secs(15), connect).await {
             Ok(Ok((ws, _))) => ws,
             Ok(Err(e)) => return e.to_string(),
@@ -3277,6 +3278,30 @@ impl Mirror {
             }
         }
     }
+}
+
+/// Parse a relay URL once and derive from that one parse both the URL to
+/// dial and the `http`/`https` twin the SSRF policy judges.
+///
+/// Returns `(dial, judged)`. Both come from the same [`url::Url`], so the host
+/// the policy sees is the host the socket is opened to. Only `ws` and `wss`
+/// are accepted (the parser lower-cases the scheme, so `WSS://` is `wss://`);
+/// anything else is refused rather than guessed at.
+fn relay_endpoints(relay: &str) -> Result<(String, String), String> {
+    let parsed = url::Url::parse(relay).map_err(|e| format!("bad URL: {e}"))?;
+    let twin = match parsed.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        other => return Err(format!("scheme `{other}` is not ws or wss")),
+    };
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("URL has no host".into());
+    }
+    let mut judged = parsed.clone();
+    judged
+        .set_scheme(twin)
+        .map_err(|()| "cannot map the scheme".to_string())?;
+    Ok((parsed.into(), judged.into()))
 }
 
 /// Owns the relay session tasks started by [`Mirror::start`].
@@ -5756,6 +5781,75 @@ mod tests {
         // A private-network address the operator did not list.
         let private = session_outcome(&m, "ws://10.1.2.3:7777").await;
         assert!(private.contains("relay host refused"), "{private}");
+    }
+
+    #[test]
+    fn the_judged_url_names_the_dialled_host() {
+        // SP-MIRROR-WS-REWRITE: `replacen("ws", "http", 1)` hit the first `ws`
+        // anywhere, so an upper-case scheme left the scheme alone and rewrote
+        // the host: `WSS://ws.example/` was judged as `WSS://http.example/`.
+        for (relay, dial, judged) in [
+            (
+                "WSS://ws.example/",
+                "wss://ws.example/",
+                "https://ws.example/",
+            ),
+            (
+                "ws://a.example:7777/x",
+                "ws://a.example:7777/x",
+                "http://a.example:7777/x",
+            ),
+            ("wss://ws.ws/ws", "wss://ws.ws/ws", "https://ws.ws/ws"),
+            (
+                "Ws://user@WS.Example:80/",
+                "ws://user@ws.example/",
+                "http://user@ws.example/",
+            ),
+        ] {
+            let (d, j) = relay_endpoints(relay).unwrap();
+            assert_eq!((d.as_str(), j.as_str()), (dial, judged), "{relay}");
+            let (dh, jh) = (
+                url::Url::parse(&d).unwrap().host_str().map(str::to_owned),
+                url::Url::parse(&j).unwrap().host_str().map(str::to_owned),
+            );
+            assert_eq!(dh, jh, "{relay}");
+        }
+        for bad in ["http://x/", "https://x/", "ftp://x/", "x.example", "ws://"] {
+            assert!(relay_endpoints(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_relay_host_judged_is_the_host_dialled_whatever_the_scheme_spelling() {
+        // SP-MIRROR-WS-REWRITE. Each spelling names loopback once parsed as a
+        // ws/wss URL. The old `replacen("ws", "http", 1)` turned `wss` into
+        // the non-special scheme `httpss`, whose opaque host is not
+        // normalised (`127.1` stayed a name), and left an upper-case scheme
+        // untouched. The refusal must name the blocked class either way.
+        let (m, _tmp, _pk) = engine_with_relay("ws://127.0.0.1:1", false);
+        for relay in [
+            "wss://127.1:1/",
+            "WSS://127.1:1/",
+            "WS://127.1:1/",
+            "Ws://0x7f.1:1/",
+            "wss://2130706433:1/",
+        ] {
+            let why = session_outcome(&m, relay).await;
+            assert!(why.contains("relay host refused"), "{relay}: {why}");
+            assert!(
+                !why.to_ascii_lowercase().contains("dns"),
+                "{relay} must be judged as the loopback address it is: {why}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_relay_url_that_is_not_ws_or_wss_is_refused_before_any_dial() {
+        let (m, _tmp, _pk) = engine_with_relay("ws://127.0.0.1:1", false);
+        for relay in ["http://example.com/", "ftp://example.com/", "example.com"] {
+            let why = session_outcome(&m, relay).await;
+            assert!(why.contains("relay URL refused"), "{relay}: {why}");
+        }
     }
 
     #[tokio::test]
