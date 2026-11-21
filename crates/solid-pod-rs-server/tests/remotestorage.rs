@@ -594,3 +594,203 @@ async fn webfinger_uses_the_public_origin_not_the_bind_address() {
         .unwrap();
     assert_eq!(link["href"], format!("{BASE}/storage/me/"));
 }
+
+// ---------------------------------------------------------------------------
+// Review B1/B2: documents are served inert; guarded names in any spelling
+// ---------------------------------------------------------------------------
+
+fn header<'a>(h: &'a actix_web::http::header::HeaderMap, name: &str) -> Option<&'a str> {
+    h.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Every response of the storage route must carry these two.
+fn assert_inert(h: &actix_web::http::header::HeaderMap, what: &str) {
+    assert_eq!(
+        header(h, "x-content-type-options"),
+        Some("nosniff"),
+        "{what}: nosniff"
+    );
+    let csp = header(h, "content-security-policy").unwrap_or("");
+    assert!(
+        csp.contains("sandbox") && csp.contains("default-src 'none'"),
+        "{what}: CSP was {csp:?}"
+    );
+}
+
+#[actix_web::test]
+async fn stored_active_content_is_served_inert_on_every_method_and_status() {
+    // Property: whatever a token holder stores, the pod origin never executes
+    // it: every storage response (GET, HEAD, 304, PUT, DELETE, OPTIONS, and
+    // 401/403/404/412 bodies) is nosniff and sandboxed, and script-capable
+    // types are additionally forced to download.
+    let p = pod(true).await;
+    let app = test::init_service(build_app(p.state)).await;
+    let rw = mint(&app, "m:rw", None).await;
+    let ro = mint(&app, "other:r", None).await;
+
+    let active = [
+        ("page.html", "text/html"),
+        ("page2.html", "TEXT/HTML; charset=utf-8"),
+        ("x.xhtml", "application/xhtml+xml"),
+        ("img.svg", "image/svg+xml"),
+        ("d.xml", "application/xml"),
+        ("e.xml", "text/xml"),
+        ("f.atom", "application/atom+xml"),
+        ("s.js", "text/javascript"),
+    ];
+    for (name, ct) in active {
+        let uri = format!("/storage/me/public/m/{name}");
+        let (s, h, _) = call(
+            &app,
+            with("PUT", &uri, Some(&rw))
+                .insert_header(("content-type", ct))
+                .set_payload("<script>alert(1)</script>"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{uri}");
+        assert_inert(&h, &format!("PUT {name}"));
+
+        // Anonymous GET and HEAD of the public document.
+        for method in ["GET", "HEAD"] {
+            let (s, h, _) = call(&app, with(method, &uri, None)).await;
+            assert_eq!(s, StatusCode::OK, "{method} {uri}");
+            assert_inert(&h, &format!("{method} {name}"));
+            assert_eq!(
+                header(&h, "content-disposition"),
+                Some("attachment"),
+                "{method} {name} must download, not render"
+            );
+        }
+        // 304 on a matching ETag.
+        let (_, h, _) = call(&app, with("GET", &uri, None)).await;
+        let etag = header(&h, "etag").unwrap().to_string();
+        let (s, h, _) = call(
+            &app,
+            with("GET", &uri, None).insert_header(("if-none-match", etag)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_MODIFIED);
+        assert_inert(&h, &format!("304 {name}"));
+    }
+
+    // Inert types are not forced to download.
+    let (s, _, _) = call(
+        &app,
+        with("PUT", "/storage/me/public/m/data.json", Some(&rw))
+            .insert_header(("content-type", "application/json"))
+            .set_payload("{}"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (_, h, _) = call(&app, with("GET", "/storage/me/public/m/data.json", None)).await;
+    assert_inert(&h, "json");
+    assert_eq!(header(&h, "content-disposition"), None);
+
+    // Error bodies, authorisation failures, preflight, folder listings, DELETE.
+    let (s, h, _) = call(&app, with("GET", "/storage/me/public/m/none", None)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_inert(&h, "404");
+    let (s, h, _) = call(&app, with("GET", "/storage/me/m/x", None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_inert(&h, "401");
+    let (s, h, _) = call(
+        &app,
+        with("PUT", "/storage/me/m/x", Some(&ro)).set_payload("x"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_inert(&h, "403");
+    let (s, h, _) = call(
+        &app,
+        with("PUT", "/storage/me/m/x", Some(&rw))
+            .insert_header(("if-match", "\"nope\""))
+            .set_payload("x"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::PRECONDITION_FAILED);
+    assert_inert(&h, "412");
+    let (s, h, _) = call(&app, with("GET", "/storage/me/m/", Some(&rw))).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_inert(&h, "folder listing");
+    let (_, h, _) = call(&app, with("OPTIONS", "/storage/me/m/x", None)).await;
+    assert_inert(&h, "OPTIONS");
+    let (s, h, _) = call(
+        &app,
+        with("DELETE", "/storage/me/public/m/page.html", Some(&rw)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_inert(&h, "DELETE");
+}
+
+#[actix_web::test]
+async fn ldp_responses_carry_nosniff() {
+    // Property: a stored document served over LDP is never content-sniffed
+    // into something else (the writer chose its type). The LDP side is NOT
+    // sandboxed: the pod serves `index.html` pages and live-reload HTML from
+    // storage by design (owner decision recorded in the CHANGELOG).
+    let p = pod(true).await;
+    p.storage
+        .put(
+            "/.acl",
+            Bytes::from(format!(
+                "@prefix acl: <{ACL}> .\n<#o> a acl:Authorization ; acl:agent <{}> ; \
+                 acl:accessTo </> ; acl:default </> ; acl:mode acl:Read, acl:Write, acl:Control .\n\
+                 <#p> a acl:Authorization ; acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; \
+                 acl:accessTo </> ; acl:default </> ; acl:mode acl:Read .\n",
+                did_of(OWNER)
+            )),
+            "text/turtle",
+        )
+        .await
+        .unwrap();
+    p.storage
+        .put("/site/page.html", Bytes::from("<p>hi</p>"), "text/html")
+        .await
+        .unwrap();
+    p.storage
+        .put("/site/notes.txt", Bytes::from("hi"), "text/plain")
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(p.state)).await;
+    for uri in [
+        "/site/page.html",
+        "/site/notes.txt",
+        "/site/",
+        "/site/missing",
+    ] {
+        for method in ["GET", "HEAD"] {
+            let (_, h, _) = call(&app, with(method, uri, None)).await;
+            assert_eq!(
+                header(&h, "x-content-type-options"),
+                Some("nosniff"),
+                "{method} {uri}"
+            );
+        }
+    }
+}
+
+#[actix_web::test]
+async fn guarded_names_are_refused_in_every_spelling_over_http() {
+    // Property (review B2): over the wire, no spelling of a sidecar name is
+    // writable by a token, and nothing is created.
+    let p = pod(true).await;
+    let dir = p.dir.path().to_path_buf();
+    let app = test::init_service(build_app(p.state)).await;
+    let all = mint(&app, "*:rw", None).await;
+    for uri in [
+        "/storage/me/m/x.ACL",
+        "/storage/me/m/x.%41CL",
+        "/storage/me/m/X.Meta",
+        "/storage/me/m/y.META.JSON",
+        "/storage/me/m/y.meta.j%C5%BFon",
+    ] {
+        let (s, _, _) = call(&app, with("PUT", uri, Some(&all)).set_payload("x")).await;
+        assert!(
+            s.is_client_error() && s != StatusCode::CREATED,
+            "{uri}: {s}"
+        );
+    }
+    let entries = std::fs::read_dir(dir.join("remotestorage/m")).map_or(0, Iterator::count);
+    assert_eq!(entries, 0, "something was written under the module");
+}

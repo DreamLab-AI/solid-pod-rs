@@ -557,8 +557,74 @@ fn bearer(req: &HttpRequest) -> Option<&str> {
         .filter(|t| !t.is_empty())
 }
 
+/// Whether `content_type` (parameters and case ignored) is one a browser may
+/// execute or script when it is shown: HTML, XHTML, SVG, XML in any
+/// `+xml` form, and JavaScript. Such documents are also forced to download.
+fn is_active_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "text/xml"
+            | "application/xml"
+            | "text/xsl"
+            | "text/javascript"
+            | "application/javascript"
+            | "application/x-javascript"
+            | "text/ecmascript"
+            | "application/ecmascript"
+    ) || essence.ends_with("+xml")
+}
+
+/// The Content-Security-Policy of every storage response.
+///
+/// `sandbox` (no `allow-*` tokens) makes a document that is opened in the
+/// browser a unique, script-less origin, so nothing a token holder stores can
+/// act as the pod origin; `default-src 'none'` additionally blocks any
+/// sub-resource it names. Neither affects an application reading a document
+/// with `fetch` or XHR (the intended use): CSP governs documents being
+/// rendered, not data being read. The cost is that opening a stored PDF or
+/// media file directly in a browser tab is refused by the sandbox.
+const STORAGE_CSP: &str = "default-src 'none'; sandbox";
+
+/// Mark `rsp` inert: no sniffing, sandboxed, and a download when the stored
+/// type is active. Applied to every response of the storage route.
+fn harden(mut rsp: HttpResponse) -> HttpResponse {
+    let h = rsp.headers_mut();
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(STORAGE_CSP),
+    );
+    let active = h
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_active_type);
+    if active {
+        h.insert(
+            header::CONTENT_DISPOSITION,
+            header::HeaderValue::from_static("attachment"),
+        );
+    }
+    rsp
+}
+
 /// `OPTIONS /storage/U/...`: the CORS preflight.
 pub(crate) async fn handle_options() -> HttpResponse {
+    harden(options_response())
+}
+
+fn options_response() -> HttpResponse {
     HttpResponse::NoContent()
         .insert_header(("access-control-allow-origin", "*"))
         .insert_header((
@@ -573,8 +639,17 @@ pub(crate) async fn handle_options() -> HttpResponse {
         .finish()
 }
 
-/// `GET|HEAD|PUT|DELETE /storage/U/<path>`.
+/// `GET|HEAD|PUT|DELETE /storage/U/<path>`. Every response, success or error,
+/// goes through [`harden`].
 pub(crate) async fn handle_storage(
+    req: HttpRequest,
+    payload: web::Payload,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    harden(handle_storage_inner(req, payload, state).await)
+}
+
+async fn handle_storage_inner(
     req: HttpRequest,
     payload: web::Payload,
     state: web::Data<AppState>,
@@ -983,6 +1058,31 @@ mod tests {
             "/a/b.jsonld",
         ] {
             assert!(parse_path(ok).is_ok(), "{ok} was refused");
+        }
+    }
+
+    #[test]
+    fn active_types_are_recognised_whatever_the_spelling() {
+        for yes in [
+            "text/html",
+            "TEXT/HTML; charset=utf-8",
+            " application/xhtml+xml ",
+            "image/svg+xml",
+            "application/xml",
+            "text/xml;charset=x",
+            "application/rss+xml",
+            "application/javascript",
+        ] {
+            assert!(is_active_type(yes), "{yes}");
+        }
+        for no in [
+            "application/json",
+            "text/plain",
+            "image/png",
+            "",
+            "application/octet-stream",
+        ] {
+            assert!(!is_active_type(no), "{no}");
         }
     }
 

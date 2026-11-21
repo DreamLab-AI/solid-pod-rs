@@ -4598,6 +4598,15 @@ where
         Box::pin(async move {
             let mut resp = fut.await?;
             add_cors_headers(resp.headers_mut(), origin.as_deref(), &allowed);
+            // Never let a browser second-guess the type a writer stored: a
+            // text/plain upload that sniffs as HTML would run as the pod
+            // origin. Applied to every response of the app.
+            if !resp.headers().contains_key(header::X_CONTENT_TYPE_OPTIONS) {
+                resp.headers_mut().insert(
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    header::HeaderValue::from_static("nosniff"),
+                );
+            }
             Ok(resp)
         })
     }
