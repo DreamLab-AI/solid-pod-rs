@@ -1880,7 +1880,27 @@ fn append_vary(rsp: &mut HttpResponse, field: &str) {
     }
 }
 
+/// `GET`/`HEAD` over LDP. Anything under the remoteStorage container gets the
+/// storage route's protective headers (sandboxing CSP, `nosniff`, download for
+/// active types) whatever the ACL says and whether or not the feature is on:
+/// the documents are written by token holders, not by the pod owner.
 async fn handle_get(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<HttpResponse, ActixError> {
+    let path = req.uri().path().to_string();
+    match handle_get_inner(req, state).await {
+        Ok(rsp) => Ok(remotestorage::harden_ldp(&path, rsp)),
+        // A refusal under the container is hardened too; elsewhere the error
+        // goes through the normal error pipeline unchanged.
+        Err(e) if remotestorage::under_container(&path) => {
+            Ok(remotestorage::harden_ldp(&path, e.error_response()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn handle_get_inner(
     req: HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<HttpResponse, ActixError> {

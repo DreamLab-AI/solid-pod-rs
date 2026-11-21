@@ -967,30 +967,222 @@ async fn the_acl_is_written_in_the_form_the_active_layout_reads() {
     );
 }
 
-#[actix_web::test]
-async fn with_no_owner_in_the_root_acl_nothing_is_written() {
-    use solid_pod_rs::wac::AclLayout;
-    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
-    // Property: no owner is invented. A root ACL with no Control agent leaves
-    // /remotestorage/ without an ACL of its own.
-    let p = pod(true).await;
+/// A root that is public-read and grants Control only through
+/// `acl:agentClass acl:AuthenticatedAgent`: no `acl:agent` names a controller,
+/// so `secure_container` finds no owner.
+async fn class_control_root(p: &Pod) {
     p.storage
         .put(
             "/.acl",
             Bytes::from(format!(
-                "@prefix acl: <{ACL}> .\n<#p> a acl:Authorization ; \
+                "@prefix acl: <{ACL}> .\n\
+                 <#p> a acl:Authorization ; \
                  acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; \
-                 acl:accessTo </> ; acl:default </> ; acl:mode acl:Read .\n"
+                 acl:accessTo </> ; acl:default </> ; acl:mode acl:Read .\n\
+                 <#c> a acl:Authorization ; acl:agentClass acl:AuthenticatedAgent ; \
+                 acl:accessTo </> ; acl:default </> ; \
+                 acl:mode acl:Read, acl:Write, acl:Control .\n"
             )),
             "text/turtle",
         )
         .await
         .unwrap();
+}
+
+#[actix_web::test]
+async fn with_no_owner_in_the_root_acl_the_container_is_denied_over_ldp() {
+    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
+    // Property: stored XSS must not depend on an ACL being written. When the
+    // root ACL names no `acl:agent` with Control (here Control is granted only
+    // through `acl:agentClass`), no owner is invented, but the container still
+    // gets an ACL with no authorisations, so a public-read root cannot expose
+    // an app's uploaded HTML over LDP. The token route is not WAC-gated, so
+    // remoteStorage itself keeps working.
+    let p = pod(true).await;
+    class_control_root(&p).await;
+    let storage = p.storage.clone();
+    let layout = p.state.acl_layout;
+    let app = test::init_service(build_app(p.state)).await;
+    let rw = mint(&app, "notes:rw", None).await;
+    let (s, _, _) = call(
+        &app,
+        with("PUT", "/storage/me/public/notes/page.html", Some(&rw))
+            .insert_header(("content-type", "text/html"))
+            .set_payload("<script>alert(1)</script>"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+
     assert_eq!(
-        secure_container(&*p.storage, AclLayout::Sidecar)
+        secure_container(&*storage, layout).await.unwrap(),
+        ContainerAcl::NoOwner
+    );
+    assert!(
+        storage.exists("/remotestorage.acl").await.unwrap(),
+        "a deny-all ACL is written for the container"
+    );
+    for uri in [
+        "/remotestorage/public/notes/page.html",
+        "/remotestorage/public/notes/",
+        "/remotestorage/",
+    ] {
+        let (s, _, body) = call(&app, with("GET", uri, None)).await;
+        assert!(matches!(s.as_u16(), 401 | 403), "{uri}: {s}");
+        assert!(!String::from_utf8_lossy(&body).contains("alert(1)"));
+    }
+    // The token route is unaffected.
+    let (s, _, body) = call(
+        &app,
+        with("GET", "/storage/me/public/notes/page.html", None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body, b"<script>alert(1)</script>");
+    // The rest of the pod is unchanged.
+    let (s, _, _) = call(&app, with("GET", "/", None)).await;
+    assert_eq!(s, StatusCode::OK);
+    // Idempotent, and never overwrites.
+    assert_eq!(
+        secure_container(&*storage, layout).await.unwrap(),
+        ContainerAcl::Existing
+    );
+}
+
+#[actix_web::test]
+async fn ldp_serves_remotestorage_documents_inert_even_under_a_permissive_acl() {
+    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
+    // Property: stored XSS must not depend on an ACL being written. When the
+    // owner's own container ACL is public-read, an LDP GET of a stored HTML
+    // document succeeds (the policy is theirs) but is sandboxed, nosniff and a
+    // download, exactly as on `/storage/`; this holds whether or not the
+    // feature flag is on (the data may predate it) and only under the
+    // container: other LDP paths are untouched.
+    for mounted in [true, false] {
+        let p = pod(mounted).await;
+        public_read_root(&p).await;
+        let permissive = format!(
+            "@prefix acl: <{ACL}> .\n<#p> a acl:Authorization ; \
+             acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; \
+             acl:accessTo </remotestorage/> ; acl:default </remotestorage/> ; \
+             acl:mode acl:Read .\n"
+        );
+        p.storage
+            .put("/remotestorage.acl", Bytes::from(permissive), "text/turtle")
+            .await
+            .unwrap();
+        let storage = p.storage.clone();
+        let layout = p.state.acl_layout;
+        for (k, ct) in [
+            ("/remotestorage/public/notes/page.html", "text/html"),
+            ("/remotestorage/public/notes/pic.svg", "image/svg+xml"),
+            ("/remotestorage/public/notes/plain.txt", "text/plain"),
+        ] {
+            storage
+                .put(k, Bytes::from("<script>alert(1)</script>"), ct)
+                .await
+                .unwrap();
+        }
+        storage
+            .put("/site/page.html", Bytes::from("<p>hi</p>"), "text/html")
+            .await
+            .unwrap();
+        // The existing ACL is kept, and reported as permissive so the caller warns.
+        assert_eq!(
+            secure_container(&*storage, layout).await.unwrap(),
+            ContainerAcl::ExistingPermissive
+        );
+        let app = test::init_service(build_app(p.state)).await;
+        for method in ["GET", "HEAD"] {
+            for (uri, active) in [
+                ("/remotestorage/public/notes/page.html", true),
+                ("/remotestorage/public/notes/pic.svg", true),
+                ("/remotestorage/public/notes/plain.txt", false),
+                // a percent-encoded spelling of the container (the store may
+                // not resolve it, but whatever answers must be protective)
+                ("/remot%65storage/public/notes/page.html", true),
+            ] {
+                let (s, h, _) = call(&app, with(method, uri, None)).await;
+                if !uri.contains('%') {
+                    assert_eq!(s, StatusCode::OK, "{mounted} {method} {uri}");
+                    assert_eq!(
+                        header(&h, "content-disposition"),
+                        active.then_some("attachment"),
+                        "{mounted} {method} {uri}"
+                    );
+                }
+                assert_inert(&h, &format!("{mounted} {method} {uri}"));
+            }
+        }
+        // Other LDP paths keep their existing headers.
+        let (s, h, _) = call(&app, with("GET", "/site/page.html", None)).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(header(&h, "content-security-policy").is_none());
+        assert!(header(&h, "content-disposition").is_none());
+        // A sibling that merely starts with the same letters is not the container.
+        let (_, h, _) = call(&app, with("GET", "/remotestorage-x/a.html", None)).await;
+        assert!(header(&h, "content-security-policy").is_none());
+    }
+}
+
+#[actix_web::test]
+async fn with_no_acl_at_all_the_container_is_still_denied() {
+    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
+    // Property: an absent root ACL is treated like one with no controller.
+    let p = pod(true).await;
+    p.storage.delete("/.acl").await.unwrap();
+    assert_eq!(
+        secure_container(&*p.storage, solid_pod_rs::wac::AclLayout::Sidecar)
             .await
             .unwrap(),
         ContainerAcl::NoOwner
     );
-    assert!(!p.storage.exists("/remotestorage.acl").await.unwrap());
+    assert!(p.storage.exists("/remotestorage.acl").await.unwrap());
+}
+
+#[actix_web::test]
+async fn an_existing_acl_is_reported_permissive_only_when_it_grants_read_broadly() {
+    use solid_pod_rs::wac::AclLayout;
+    use solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl};
+    // Property: the start-up warning fires for public and for authenticated
+    // Read (through `acl:default`, as the documents are children), and not for
+    // an owner-only ACL; the ACL is never rewritten either way.
+    for (grant, expected) in [
+        (
+            "acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; acl:default </remotestorage/>",
+            ContainerAcl::ExistingPermissive,
+        ),
+        (
+            "acl:agentClass acl:AuthenticatedAgent ; acl:default </remotestorage/>",
+            ContainerAcl::ExistingPermissive,
+        ),
+        (
+            "acl:agent <did:nostr:aa> ; acl:default </remotestorage/>",
+            ContainerAcl::Existing,
+        ),
+    ] {
+        let p = pod(true).await;
+        let acl = format!(
+            "@prefix acl: <{ACL}> .\n<#r> a acl:Authorization ; {grant} ; \
+             acl:accessTo </remotestorage/> ; acl:mode acl:Read .\n"
+        );
+        p.storage
+            .put(
+                "/remotestorage.acl",
+                Bytes::from(acl.clone()),
+                "text/turtle",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            secure_container(&*p.storage, AclLayout::Sidecar)
+                .await
+                .unwrap(),
+            expected,
+            "{grant}"
+        );
+        assert_eq!(
+            p.storage.get("/remotestorage.acl").await.unwrap().0,
+            Bytes::from(acl)
+        );
+    }
 }

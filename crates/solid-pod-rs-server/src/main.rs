@@ -489,8 +489,14 @@ async fn main() -> anyhow::Result<()> {
                 "wrote an owner-only ACL for /remotestorage/ (the root ACL no longer governs it)"
             ),
             Ok(solid_pod_rs_server::remotestorage::ContainerAcl::Existing) => {}
+            Ok(solid_pod_rs_server::remotestorage::ContainerAcl::ExistingPermissive) => tracing::warn!(
+                "the existing ACL for /remotestorage/ grants Read to the public or to authenticated agents: \
+                 every stored document is readable over LDP on the pod origin (responses are sandboxed, \
+                 but the data is not private)"
+            ),
             Ok(solid_pod_rs_server::remotestorage::ContainerAcl::NoOwner) => tracing::warn!(
-                "the root ACL names no agent with Control: /remotestorage/ was given no ACL of its own"
+                "the root ACL names no acl:agent with Control: wrote an ACL with no authorisations for \
+                 /remotestorage/ (denied over LDP; tokens still work)"
             ),
             Err(e) => anyhow::bail!("--remotestorage: could not secure /remotestorage/: {e}"),
         }

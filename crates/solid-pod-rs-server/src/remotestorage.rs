@@ -315,9 +315,18 @@ pub enum ContainerAcl {
     Created,
     /// An ACL the active layout reads already exists; it was left untouched.
     Existing,
-    /// The root ACL names no agent with `acl:Control` on `/`, so there is no
-    /// owner to grant; nothing was written (the container then inherits the
-    /// root ACL, which grants nothing to anyone).
+    /// As [`Existing`](Self::Existing), and that ACL grants Read on the
+    /// container's documents to the public or to any authenticated agent. It
+    /// was left untouched (it is the owner's policy), but the caller should
+    /// warn: whatever is stored is readable over LDP on the pod origin. LDP
+    /// responses under the container are still sandboxed.
+    ExistingPermissive,
+    /// The root ACL names no `acl:agent` with `acl:Control` on `/` (it grants
+    /// Control through `acl:agentGroup` or `acl:agentClass`, or to nobody, or
+    /// there is no root ACL), so there is no owner to name. An ACL with no
+    /// authorisations was written instead: over LDP nobody can read or write
+    /// the container, so a public-read root cannot expose it. The token route
+    /// is not WAC-gated and is unaffected.
     NoOwner,
 }
 
@@ -386,8 +395,12 @@ async fn root_controllers(
 /// Write and Control to the agents the root ACL gives Control on `/` (the
 /// pod owners, the same gate that mints tokens), and nobody else.
 ///
-/// An existing ACL is never overwritten or merged, so an owner who has shaped
-/// this container keeps their policy. Call it at mount time, before serving.
+/// When the root ACL names no `acl:agent` with Control, an ACL with no
+/// authorisations is written instead (deny-all over LDP; see
+/// [`ContainerAcl::NoOwner`]). An existing ACL is never overwritten or merged,
+/// so an owner who has shaped this container keeps their policy; if it grants
+/// Read to the public or to authenticated agents the result is
+/// [`ContainerAcl::ExistingPermissive`]. Call it at mount time, before serving.
 ///
 /// # Errors
 ///
@@ -407,11 +420,22 @@ pub async fn secure_container(
     };
     for key in read {
         if storage.exists(key).await.map_err(|e| e.to_string())? {
-            return Ok(ContainerAcl::Existing);
+            return Ok(if existing_is_permissive(storage, layout).await {
+                ContainerAcl::ExistingPermissive
+            } else {
+                ContainerAcl::Existing
+            });
         }
     }
+    let key = solid_pod_rs::wac::acl_advertised_key(&container, layout);
     let owners = root_controllers(storage, layout).await?;
     if owners.is_empty() {
+        let doc = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+                   # No authorisations: nobody is granted access over LDP.\n";
+        storage
+            .put(&key, Bytes::from(doc), "text/turtle")
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(ContainerAcl::NoOwner);
     }
     let agents = owners
@@ -425,12 +449,70 @@ pub async fn secure_container(
          acl:accessTo <{container}> ;\n    acl:default <{container}> ;\n    \
          acl:mode acl:Read, acl:Write, acl:Control .\n"
     );
-    let key = solid_pod_rs::wac::acl_advertised_key(&container, layout);
     storage
         .put(&key, Bytes::from(doc), "text/turtle")
         .await
         .map_err(|e| e.to_string())?;
     Ok(ContainerAcl::Created)
+}
+
+/// Whether the ACL governing a document under `/remotestorage/` grants Read to
+/// an anonymous agent or to an authenticated one, asked of the WAC evaluator
+/// itself (so `acl:default`, agent classes and every spelling count). An ACL
+/// that cannot be read or parsed denies, so it is not permissive.
+async fn existing_is_permissive(
+    storage: &dyn solid_pod_rs::storage::Storage,
+    layout: solid_pod_rs::wac::AclLayout,
+) -> bool {
+    use solid_pod_rs::wac::{evaluate_access, AccessMode, PolicyOutcome};
+    let probe = format!("{ROOT}/probe");
+    let PolicyOutcome::Found(doc) =
+        solid_pod_rs::wac::resolve_policy_with_layout(storage, &probe, None, layout).await
+    else {
+        return false;
+    };
+    [None, Some("did:nostr:probe-authenticated-agent")]
+        .into_iter()
+        .any(|agent| evaluate_access(Some(&doc), agent, &probe, AccessMode::Read, None))
+}
+
+/// Whether `path` (a request path, as received) lies under the remoteStorage
+/// container. Decided on the decoded, dot-resolved, case-folded segments so
+/// `/remot%65storage/x`, `/RemoteStorage/x` and `/a/../remotestorage/x` all
+/// count, while `/remotestorage-x/` does not. Over-matching only adds headers.
+pub(crate) fn under_container(path: &str) -> bool {
+    let mut decoded = path.to_string();
+    // Twice, as the rest of the server does, so a double-encoded spelling
+    // cannot slip past.
+    for _ in 0..2 {
+        decoded = percent_encoding::percent_decode_str(&decoded)
+            .decode_utf8_lossy()
+            .into_owned();
+    }
+    let mut segments: Vec<String> = Vec::new();
+    for seg in decoded.replace('\\', "/").split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other.to_ascii_lowercase()),
+        }
+    }
+    let name = ROOT.trim_start_matches('/');
+    segments.first().is_some_and(|f| f == name)
+}
+
+/// [`harden`] for the LDP route: apply the storage route's protective headers
+/// to `rsp` when `path` lies under the remoteStorage container, and leave
+/// every other path untouched. Independent of the feature flag, because the
+/// documents may predate it.
+pub(crate) fn harden_ldp(path: &str, rsp: HttpResponse) -> HttpResponse {
+    if under_container(path) {
+        harden(rsp)
+    } else {
+        rsp
+    }
 }
 
 // ---------------------------------------------------------------------------
