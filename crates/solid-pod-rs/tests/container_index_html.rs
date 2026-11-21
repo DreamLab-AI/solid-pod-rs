@@ -87,6 +87,9 @@ async fn make_state() -> AppState {
         activitypub: None,
         notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
         nostr: None,
+        remotestorage: None,
+        ap_federation: None,
+        webrtc: None,
     }
 }
 

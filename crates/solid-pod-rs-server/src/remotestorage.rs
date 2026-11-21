@@ -356,6 +356,7 @@ fn valid_segment(s: &str) -> bool {
         && !s.contains(['/', '\\', '\0'])
         && !s.chars().any(char::is_control)
         && !s.contains(".solid-pod-tmp-")
+        && !s.ends_with(".meta.json")
         && solid_pod_rs::wac::protected_resource_for_acl(&format!("/{s}")).is_none()
 }
 

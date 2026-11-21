@@ -104,7 +104,7 @@ async fn node(user: &str, owner_sk: u8, guard: SsrfGuard) -> Node {
     let mut state = AppState::new(storage);
     state.public_base_url = Some(base.clone());
     state.activitypub = Some(Arc::new(cfg));
-    state.ap_federation = Some(fed.clone());
+    state.set_ap_federation(fed.clone());
     let server = HttpServer::new(move || build_app(state.clone()))
         .workers(1)
         .listen(listener)
@@ -380,7 +380,15 @@ async fn webfinger_links_the_actor_only_for_this_actor() {
     ))
     .await
     .unwrap();
-    assert_eq!(other.status().as_u16(), 404);
+    // Another account still gets the ordinary Solid WebFinger, without the
+    // ActivityPub link.
+    assert_eq!(other.status().as_u16(), 200);
+    let other: Value = other.json().await.unwrap();
+    assert!(!other["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["rel"] == "self"));
 }
 
 #[actix_web::test]
@@ -473,7 +481,7 @@ async fn the_key_and_the_store_under_dot_ap_are_never_served() {
     let mut st = AppState::new(storage);
     st.data_root = Some(dir.path().to_path_buf());
     st.public_base_url = Some("http://localhost:8080".into());
-    st.ap_federation = Some(fed);
+    st.set_ap_federation(fed);
     let app = test::init_service(build_app(st)).await;
 
     for (method, path) in [

@@ -321,6 +321,7 @@ async fn a_token_cannot_reach_acls_dotfiles_parents_or_other_subtrees() {
     for uri in [
         "/storage/me/notes/x.acl",
         "/storage/me/notes/x.meta",
+        "/storage/me/notes/a.txt.meta.json",
         "/storage/me/.acl",
         "/storage/me/notes/.hidden",
         "/storage/me/notes/../../.acl",
@@ -333,6 +334,10 @@ async fn a_token_cannot_reach_acls_dotfiles_parents_or_other_subtrees() {
         assert_ne!(s, StatusCode::CREATED, "{uri}");
     }
     assert_eq!(storage.get("/.acl").await.unwrap().0, acl_before);
+    assert!(!storage
+        .exists("/remotestorage/notes/a.txt.meta.json")
+        .await
+        .unwrap());
     assert!(!storage.exists("/notes/x.acl").await.unwrap());
     assert!(!storage.exists("/remotestorage/notes/x.acl").await.unwrap());
     // A folder cannot be written, and writing under a document is a conflict.
@@ -567,4 +572,25 @@ async fn expired_and_revoked_tokens_stop_working_and_webfinger_links_the_storage
     assert_eq!(s, StatusCode::OK);
     let (s, _, _) = call(&app, with("GET", "/storage/me/notes/a", Some(&t))).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[actix_web::test]
+async fn webfinger_uses_the_public_origin_not_the_bind_address() {
+    let mut p = pod(true).await;
+    p.state.nodeinfo.base_url = "http://0.0.0.0:9".into();
+    let app = test::init_service(build_app(p.state)).await;
+    let (s, _, w) = call(
+        &app,
+        test::TestRequest::get().uri("/.well-known/webfinger?resource=acct:me@localhost:8080"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let jrd: Value = serde_json::from_slice(&w).unwrap();
+    let link = jrd["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["rel"] == "http://tools.ietf.org/id/draft-dejong-remotestorage")
+        .unwrap();
+    assert_eq!(link["href"], format!("{BASE}/storage/me/"));
 }

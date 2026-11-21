@@ -117,6 +117,7 @@ pub mod nostr_mount;
 pub mod notifications_ws;
 pub mod remotestorage;
 pub mod scheme;
+pub mod webrtc_mount;
 
 pub(crate) mod hardened_git;
 
@@ -559,13 +560,21 @@ pub struct AppState {
     /// and signed delivery. `None` (the default) mounts none of them; the
     /// binary sets it only for `--ap-federation`, which also needs
     /// `--activitypub` and an explicit `public_base_url`.
-    #[cfg(feature = "activitypub")]
-    pub ap_federation: Option<Arc<activitypub::Federation>>,
+    ///
+    /// Held type-erased so the field exists in every build (and every struct
+    /// literal stays valid whatever features are on); the `activitypub`
+    /// feature's `activitypub::Federation` is what it holds, set through
+    /// [`AppState::set_ap_federation`].
+    pub ap_federation: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// remoteStorage (SP-PAR-283): `GET|HEAD|PUT|DELETE /storage/<user>/...`
     /// over the pod subtree `/remotestorage/`, authorised by owner-minted
     /// scoped bearer tokens. `None` (the default) mounts nothing;
     /// `--remotestorage` sets it.
     pub remotestorage: Option<Arc<remotestorage::RemoteStorage>>,
+    /// WebRTC signalling relay (SP-PAR-282): a bounded WebSocket relay of
+    /// offers, answers and candidates between authenticated peers, with no
+    /// storage access. `None` (the default) mounts nothing; `--webrtc` sets it.
+    pub webrtc: Option<Arc<webrtc_mount::WebRtcMount>>,
 }
 
 /// Source of the ActivityPub actor document served at
@@ -674,6 +683,12 @@ pub fn body_cap_from_env() -> usize {
 }
 
 impl AppState {
+    /// Mount ActivityPub federation (SP-PAR-281).
+    #[cfg(feature = "activitypub")]
+    pub fn set_ap_federation(&mut self, federation: Arc<activitypub::Federation>) {
+        self.ap_federation = Some(federation);
+    }
+
     /// The pod origin ACL IRIs resolve against (SP-PAR-288, SP-PAR-289),
     /// from `public_base_url` only: never a request `Host` or a forwarding
     /// header. `None` (unset, or not a bare `scheme://authority`) keeps the
@@ -717,9 +732,9 @@ impl AppState {
             activitypub: None,
             notifications: Some(notifications_ws::NotifyHub::new()),
             nostr: None,
-            #[cfg(feature = "activitypub")]
             ap_federation: None,
             remotestorage: None,
+            webrtc: None,
         }
     }
 }
@@ -3235,21 +3250,21 @@ async fn handle_well_known_webfinger(
     // alone), and the remoteStorage link for the storage user.
     let mut extra: Vec<serde_json::Value> = Vec::new();
     #[cfg(feature = "activitypub")]
-    if let Some(fed) = state.ap_federation.as_ref() {
-        match fed.webfinger_actor_link(&resource) {
-            Some(link) => extra.push(serde_json::to_value(link).unwrap_or_default()),
-            None => return HttpResponse::NotFound().finish(),
+    if let Some(fed) = activitypub::federation(&state) {
+        if let Some(link) = fed.webfinger_actor_link(&resource) {
+            extra.push(serde_json::to_value(link).unwrap_or_default());
         }
     }
     if let Some(rs) = state.remotestorage.as_ref() {
-        let host = state
-            .nodeinfo
-            .base_url
+        // The configured public origin, else the advertised base URL.
+        let origin = state
+            .public_origin()
+            .unwrap_or_else(|| state.nodeinfo.base_url.trim_end_matches('/').to_string());
+        let host = origin
             .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .trim_end_matches('/');
+            .trim_start_matches("https://");
         if resource.eq_ignore_ascii_case(&format!("acct:{}@{host}", rs.user())) {
-            extra.push(rs.webfinger_link(&state.nodeinfo.base_url));
+            extra.push(rs.webfinger_link(&origin));
         }
     }
     match interop::webfinger_response(&resource, &state.nodeinfo.base_url, &webid) {
@@ -6498,11 +6513,17 @@ pub fn build_app(
             );
     }
 
+    // WebRTC signalling (SP-PAR-282; off unless `--webrtc`): exactly one path.
+    if let Some(mount) = &state.webrtc {
+        app = app.route(mount.path(), web::get().to(webrtc_mount::handle_webrtc));
+    }
+
     // remoteStorage (SP-PAR-283; off unless `--remotestorage`). The token
     // routes and `/storage/<user>/...` only; the owner-gated minting route is
     // registered here, ahead of the pod handlers, so it is never a pod path.
     if let Some(rs) = &state.remotestorage {
-        let pattern = format!("/storage/{}{{tail:.*}}", rs.user());
+        let base = format!("/storage/{}", rs.user());
+        let pattern = format!("{base}{{tail:(/.*)?}}");
         app = app
             .route(
                 "/remotestorage/tokens",

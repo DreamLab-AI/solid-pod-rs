@@ -256,6 +256,14 @@ const AS_CONTEXT: &str = "https://www.w3.org/ns/activitystreams";
 const AS_PUBLIC: &str = "https://www.w3.org/ns/activitystreams#Public";
 const AP_TYPE: &str = "application/activity+json";
 
+/// The federation mounted on `state`, if any.
+pub(crate) fn federation(state: &crate::AppState) -> Option<Arc<Federation>> {
+    state
+        .ap_federation
+        .clone()
+        .and_then(|any| any.downcast::<Federation>().ok())
+}
+
 /// The mounted federation: the actor, its store, the key that signs
 /// deliveries, and the bounded outbound machinery.
 ///
@@ -455,7 +463,7 @@ pub(crate) async fn handle_inbox_post(
     payload: web::Payload,
     state: web::Data<crate::AppState>,
 ) -> HttpResponse {
-    let Some(fed) = state.ap_federation.clone() else {
+    let Some(fed) = federation(&state) else {
         return HttpResponse::NotFound().finish();
     };
     let host = if state.trust_proxy {
@@ -547,7 +555,7 @@ pub(crate) async fn handle_outbox_post(
     payload: web::Payload,
     state: web::Data<crate::AppState>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let Some(fed) = state.ap_federation.clone() else {
+    let Some(fed) = federation(&state) else {
         return Ok(HttpResponse::NotFound().finish());
     };
     let body = match read_capped(&req, payload, MAX_ACTIVITY_BYTES).await {
@@ -633,7 +641,7 @@ pub(crate) async fn handle_outbox_post(
 
 /// `GET /profile/card.jsonld/outbox`: the newest public `Create` activities.
 pub(crate) async fn handle_outbox_get(state: web::Data<crate::AppState>) -> HttpResponse {
-    let Some(fed) = state.ap_federation.clone() else {
+    let Some(fed) = federation(&state) else {
         return HttpResponse::NotFound().finish();
     };
     let rows = match fed.store.recent_outbox(&fed.actor.id, 200).await {
@@ -670,7 +678,7 @@ pub(crate) async fn handle_collection(
     state: web::Data<crate::AppState>,
     followers: bool,
 ) -> HttpResponse {
-    let Some(fed) = state.ap_federation.clone() else {
+    let Some(fed) = federation(&state) else {
         return HttpResponse::NotFound().finish();
     };
     let id = &fed.actor.id;

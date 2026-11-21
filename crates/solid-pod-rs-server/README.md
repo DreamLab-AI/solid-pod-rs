@@ -190,6 +190,14 @@ is the NIP-98 `Authorization` header: a browser cannot attach one to a
 as an anonymous caller and sees only what the public may read. If a cookie or
 other ambient credential is ever added, set `allowed_origins` first.
 
+## WebRTC signalling (`--webrtc`)
+
+Off by default. `GET /webrtc` (`--webrtc-path`) upgrades to a WebSocket for an
+authenticated peer (NIP-98 `Authorization` header; native clients only).
+Send `{"type":"offer|answer|candidate|hangup","to":"did:nostr:...","sdp":...}`;
+the target receives it with `from` set to your authenticated identity. Bounded:
+128 sockets, 64 KiB frames, 120 s idle, 60 messages per 10 s. No storage access.
+
 ## remoteStorage (`--remotestorage`)
 
 Off by default. Serves `/storage/<user>/` (default user `me`) over the pod

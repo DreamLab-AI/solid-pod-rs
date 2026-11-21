@@ -215,6 +215,16 @@ struct Cli {
     #[arg(long, env = "JSS_REMOTESTORAGE_USER", default_value = "me")]
     remotestorage_user: String,
 
+    /// Mount the WebRTC signalling relay (SP-PAR-282): a bounded WebSocket
+    /// relay of offers, answers and ICE candidates between authenticated
+    /// peers, with no access to pod storage. Off by default.
+    #[arg(long, env = "JSS_WEBRTC")]
+    webrtc: bool,
+
+    /// Where the signalling relay is mounted (default `/webrtc`).
+    #[arg(long, env = "JSS_WEBRTC_PATH", default_value = "/webrtc")]
+    webrtc_path: String,
+
     /// ActivityPub username (default: me).
     #[arg(long, env = "JSS_AP_USERNAME")]
     ap_username: Option<String>,
@@ -442,6 +452,18 @@ async fn main() -> anyhow::Result<()> {
         );
         state.nostr = Some(mount);
     }
+    if cli.webrtc
+        && cli.nostr
+        && cli.webrtc_path.trim_end_matches('/') == cli.nostr_path.trim_end_matches('/')
+    {
+        anyhow::bail!("--webrtc-path and --nostr-path must differ");
+    }
+    if cli.webrtc {
+        let mount = solid_pod_rs_server::webrtc_mount::WebRtcMount::new(&cli.webrtc_path)
+            .map_err(|e| anyhow::anyhow!("--webrtc-path: {e}"))?;
+        info!(path = mount.path(), "WebRTC signalling relay mounted");
+        state.webrtc = Some(mount);
+    }
     if cli.remotestorage {
         let rs = solid_pod_rs_server::remotestorage::RemoteStorage::new(
             &cli.remotestorage_user,
@@ -593,7 +615,7 @@ async fn main() -> anyhow::Result<()> {
                 actor = fed.actor_id(),
                 "ActivityPub federation routes enabled"
             );
-            state.ap_federation = Some(fed);
+            state.set_ap_federation(fed);
         }
         state.activitypub = Some(Arc::new(ap));
     }

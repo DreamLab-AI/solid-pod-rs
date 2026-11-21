@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (WebRTC signalling, SP-PAR-282)
+
+- **`--webrtc` (`JSS_WEBRTC`, `--webrtc-path`, default `/webrtc`) mounts a bounded WebSocket relay of WebRTC
+  offers, answers, ICE candidates and hang-ups between authenticated peers.** Off by default; no storage access.
+  A peer is its `did:nostr`, proved by a NIP-98 `Authorization` header on the upgrade (so browsers cannot connect);
+  the relayed `from` is always the authenticated sender. Bounds: 128 sockets, one per identity (a new connection
+  replaces the old), 64 KiB frames, 120 s idle close, 60 messages per 10 s, 32 queued per peer. Unlike JSS there is
+  no anonymous announce/tracker relay and no peer list or join/leave broadcast.
+
 ### Added (remoteStorage, SP-PAR-283)
 
 - **`--remotestorage` (`JSS_REMOTESTORAGE`, `--remotestorage-user`, default `me`) serves remoteStorage
@@ -18,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/<module>/` and `/public/<module>/` only. Documents under `/public/` are readable without a token; their folder
   listings are not. ACL and metadata names, dotfiles and `..` are refused. Not provided: the OAuth authorisation
   endpoint, `.notifications` events, `Last-Modified`. New dependency: `rand` (already in the lock file) for token
-  entropy. `AppState` gains `remotestorage`: a source break for struct-literal construction.
+  entropy. 
 
 ### Added (ActivityPub federation, SP-PAR-281)
 
@@ -44,7 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   replaces a caller's `actor`, ignores a caller `id` outside the actor's origin, never stores `targetInbox`, and records
   an outbound `Follow` so the target's `Accept` can be acknowledged. The resolver takes the actor id from the fetched
   document's `id` only when it names the fetched document (so `.../card.jsonld#me` actors verify).
-- `AppState` gains `ap_federation` (feature `activitypub`): a source break for code that builds it with a struct literal.
+- `AppState` gains `ap_federation` (a type-erased `Option<Arc<dyn Any + Send + Sync>>`, always present; set with `AppState::set_ap_federation`), `remotestorage` and `webrtc`: a source break for code that builds `AppState` with a struct literal.
 
 ### Upgrade notes
 
