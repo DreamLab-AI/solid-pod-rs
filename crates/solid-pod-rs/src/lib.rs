@@ -142,6 +142,7 @@ pub mod config;
 pub mod error;
 pub mod html_island;
 pub mod interop;
+pub mod jsonld_patch;
 pub mod ldp;
 pub mod mashlib;
 pub mod metrics;

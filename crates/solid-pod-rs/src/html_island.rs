@@ -200,17 +200,18 @@ impl SoleIsland {
     /// Replace the island's text with `new_text` in `html` (the same document
     /// [`sole_jsonld_island`] read), leaving every other byte as it was.
     ///
-    /// `new_text` must not be able to end the element early or start a new
-    /// one: it must contain no `<`.
+    /// A `new_text` that could end the element early or open another one
+    /// (`</script>`, `<script`) is caught by the whole-tree comparison below
+    /// and refused; callers that write JSON should escape `<` as `\u003c`
+    /// anyway.
     ///
     /// # Errors
     ///
-    /// [`IslandError::Altered`] when `new_text` contains `<`, when the island
-    /// text is not found exactly once in a position that verifies, or when the
-    /// re-parsed result is not the original tree with only the island's text
+    /// [`IslandError::Altered`] when the island text is not found exactly once
+    /// in a position that verifies, or when the re-parsed result is not the original tree with only the island's text
     /// changed.
     pub fn replace(&self, html: &str, new_text: &str) -> Result<String, IslandError> {
-        if new_text.contains('<') || self.text.is_empty() {
+        if self.text.is_empty() {
             return Err(IslandError::Altered);
         }
         let old_dom = parse(html)?;
@@ -402,9 +403,19 @@ mod tests {
     #[test]
     fn a_replacement_that_could_open_markup_is_refused() {
         let isl = sole_jsonld_island(DOC).unwrap();
-        for bad in ["</script><script>x</script>", "<!--", "{\"a\":\"<\"}"] {
+        for bad in [
+            "</script><script>x</script>",
+            "x</script><p>y</p><script>",
+            "</SCRIPT ><b>",
+        ] {
             assert_eq!(isl.replace(DOC, bad), Err(IslandError::Altered), "{bad}");
         }
+        // Markup-looking text that stays inside the element is fine.
+        let ok = isl.replace(DOC, "{\"a\": \"<b>&amp;</b>\"}").unwrap();
+        assert_eq!(
+            sole_jsonld_island(&ok).unwrap().text,
+            "{\"a\": \"<b>&amp;</b>\"}"
+        );
     }
 
     #[test]
@@ -419,16 +430,5 @@ mod tests {
             "<!-- {} --><p title=\"{}\">{}</p>\
              <script type=\"application/ld+json\">{\"a\": 1}</script>"
         );
-    }
-
-    #[test]
-    fn a_document_whose_replacement_would_change_the_tree_is_refused() {
-        // `{}` occurs once, but the markup after the script is only a tree
-        // that the island's own text happens to terminate: replacing it with
-        // text that parses differently (here: contains `>` is fine, `<` is
-        // not) must be refused rather than guessed at.
-        let isl = sole_jsonld_island(DOC).unwrap();
-        assert!(isl.replace(DOC, "\n{\"@id\": \"a>b\"}\n").is_ok());
-        assert_eq!(isl.replace(DOC, "a</b"), Err(IslandError::Altered));
     }
 }
