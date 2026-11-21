@@ -17,6 +17,19 @@ lineage: Distils archived ADR-057 (LWS10 OIDC delta, ten port tickets, partial-p
 
 # ADR-2003 — Hold the OIDC wire at Solid-OIDC 0.1 and defer the LWS10 delta
 
+> Note 2026-11-21 (SP-OIDC-06): `extract_webid` (`crates/solid-pod-rs/src/oidc/mod.rs`)
+> no longer skips a `webid` claim that is present but not an `http(s)` URL: the
+> published Solid-OIDC text (section 8.1, "the WebID claim MUST be the user's
+> WebID") makes that an invalid token, so it is refused
+> (`webid claim is present but is not an http(s) URL`; matrix entry D2). Still
+> open, as a compatibility decision rather than an engineering one: an *absent*
+> (or null) `webid` claim falls back to a URL-shaped `sub`. The spec requires the
+> claim, so a strict verifier would refuse that too; the fallback exists for
+> WebID-OIDC predecessor tokens and JSS parity, and the issuer binding
+> (`verify_webid_issuer_binding`) still applies to whatever WebID results. Options:
+> keep the fallback (today), or refuse it and drop the predecessor
+> compatibility. Tests: `d2_*`, `d2b_*`, `d3b_*` in `tests/oidc_compat_matrix.rs`.
+
 > Note 2026-11-21 (SP-OIDC-02): the resource server does not dispatch OIDC/DPoP
 > access tokens. `extract_pubkey_with_body` (`crates/solid-pod-rs-server/src/lib.rs`)
 > treats every `Authorization: Bearer` as unauthenticated (honouring only the

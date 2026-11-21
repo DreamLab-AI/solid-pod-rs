@@ -492,21 +492,39 @@ fn d1_missing_webid_claim_with_non_url_sub_is_refused() {
 }
 
 #[test]
-fn d2_blank_webid_claim_falls_back_to_a_url_shaped_sub() {
-    // Documented actual behaviour (and a mild surprise): a blank or
-    // otherwise non-URL `webid` claim is NOT an error — it is skipped,
-    // and `sub` is consulted instead. Only when BOTH fail the
-    // `http://` / `https://` prefix test is the token refused.
-    for blank in ["", "   ", "not-a-url"] {
+fn d2_a_present_but_malformed_webid_claim_is_refused_not_skipped() {
+    // SP-OIDC-06: Solid-OIDC says the `webid` claim MUST be the user's WebID.
+    // A claim that is present but is not an http(s) URL is an invalid token;
+    // it must not be skipped in favour of a URL-shaped `sub`.
+    for bad in [
+        "",
+        "   ",
+        "not-a-url",
+        "did:nostr:abc",
+        "HTTPS://me.example/p#me",
+    ] {
         let mut claims = base_claims("JKT-D2", NOW + 3600);
-        claims["webid"] = json!(blank);
+        claims["webid"] = json!(bad);
+        let token = mint_hs256(&claims);
+        let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-D2", NOW)
+            .expect_err("a malformed webid claim must be refused even with a URL-shaped sub");
+        expect_nip98(err, "webid claim is present but is not an http(s) URL");
+    }
+}
+
+#[test]
+fn d2b_an_absent_webid_claim_still_falls_back_to_a_url_shaped_sub() {
+    // The documented WebID-OIDC predecessor compatibility: only an ABSENT
+    // (or null) claim falls back. ADR-2003 records the open decision.
+    for claim in [None, Some(serde_json::Value::Null)] {
+        let mut claims = base_claims("JKT-D2", NOW + 3600);
+        if let Some(v) = claim {
+            claims["webid"] = v;
+        }
         let token = mint_hs256(&claims);
         let verified = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-D2", NOW)
-            .unwrap_or_else(|e| panic!("webid {blank:?} should fall back to sub, got: {e}"));
-        assert_eq!(
-            verified.webid, WEBID,
-            "fallback must yield the URL-shaped sub"
-        );
+            .expect("absent webid claim falls back to a URL-shaped sub");
+        assert_eq!(verified.webid, WEBID);
     }
 }
 
@@ -520,6 +538,19 @@ fn d3_blank_webid_and_non_url_sub_is_refused() {
 
     let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-D3", NOW)
         .expect_err("blank webid + opaque sub has no WebID");
+    // The present-but-malformed claim is the reason now (SP-OIDC-06).
+    expect_nip98(err, "webid claim is present but is not an http(s) URL");
+}
+
+#[test]
+fn d3b_absent_webid_and_non_url_sub_is_refused_with_the_no_webid_message() {
+    let mut claims = base_claims("JKT-D3", NOW + 3600);
+    let obj = claims.as_object_mut().expect("object");
+    obj.remove("webid");
+    obj.insert("sub".into(), json!("0xabc"));
+    let token = mint_hs256(&claims);
+    let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-D3", NOW)
+        .expect_err("no webid claim and an opaque sub has no WebID");
     expect_nip98(err, "neither webid claim nor url-shaped sub");
 }
 
@@ -551,6 +582,15 @@ fn d4_non_http_identity_schemes_are_not_webids() {
             Ok(w) => panic!("{scheme:?} must not be accepted as a WebID, got {w:?}"),
             Err(e) => e,
         };
+        // The `webid` member is present and malformed here, so that is why.
+        expect_nip98(err, "webid claim is present but is not an http(s) URL");
+        // The same shapes in `sub` alone, with no `webid` claim, give the
+        // no-WebID message.
+        let sub_only = SolidOidcClaims {
+            webid: None,
+            ..claims.clone()
+        };
+        let err = extract_webid(&sub_only).expect_err("sub alone is no WebID either");
         expect_nip98(err, "no WebID present in access token");
     }
 }

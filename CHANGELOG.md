@@ -76,8 +76,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **DPoP `htu` is compared per RFC 9449** (SP-OIDC-03): scheme and host case-insensitive, query and fragment
   ignored, path exact. It was lower-cased and trailing-slash-trimmed, so a proof for `/r` or `/Private` was
   accepted for `/r/` or `/private`.
-- **Access tokens are refused at `exp == now` and before `nbf`** (SP-OIDC-06). The non-URL `webid` claim
-  fallback to `sub` is unchanged (documented in the compatibility matrix).
+- **Access tokens are refused at `exp == now` and before `nbf`** (SP-OIDC-06; both now take the leeway of
+  SP-TOKEN-CLOCK-SKEW).
+- **A present but malformed `webid` claim is refused instead of falling back to `sub`** (SP-OIDC-06 remainder).
+  Solid-OIDC says the `webid` claim MUST be the user's WebID, so `""`, `"not-a-url"` or a `did:` there is an
+  invalid token. An absent (or null) claim still falls back to a URL-shaped `sub`, the documented WebID-OIDC
+  predecessor convention; ADR-2003 records that as the open compatibility decision. Compatibility matrix D2
+  updated (new error `webid claim is present but is not an http(s) URL`).
 - **The DPoP `jti` caches refuse a new proof at capacity instead of evicting a live one** (AW1-05),
   matching the NIP-98 policy of ADR-2006. `oidc::ReplayError` gains `CapacityExhausted`.
 - **The NIP-98 replay TTL is never below the freshness window** (SP-ID-02): `from_env` raises

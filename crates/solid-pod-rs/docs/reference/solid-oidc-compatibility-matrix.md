@@ -25,7 +25,7 @@ these surfaces exist.
 
 | Specification | Implemented here | Deliberately not implemented | Carrier |
 |---|---|---|---|
-| **Solid-OIDC 0.1** (`solidproject.org/TR/solid-oidc`) | DPoP-bound access tokens; `cnf.jkt` ⇄ DPoP-key binding; `webid` claim with URL-shaped `sub` fallback; `solid_oidc_supported` in discovery; `webid` scope advertised | LWS 1.0 delta (see *Deferred: LWS-10*); `cnf.webid`; client-ID-document (`application_type`) fetch and validation — the field is parsed but never dereferenced | `oidc::verify_access_token`, `oidc::extract_webid`, `oidc::discovery_for`, `oidc::CnfClaim` |
+| **Solid-OIDC 0.1** (`solidproject.org/TR/solid-oidc`) | DPoP-bound access tokens; `cnf.jkt` ⇄ DPoP-key binding; `webid` claim (a present claim must be an `http(s)` URL; an absent one falls back to a URL-shaped `sub`); `solid_oidc_supported` in discovery; `webid` scope advertised | LWS 1.0 delta (see *Deferred: LWS-10*); `cnf.webid`; client-ID-document (`application_type`) fetch and validation — the field is parsed but never dereferenced | `oidc::verify_access_token`, `oidc::extract_webid`, `oidc::discovery_for`, `oidc::CnfClaim` |
 | **OpenID Connect Core 1.0** | Discovery-document *shape* for the subset a Solid client needs; `iss`/`sub`/`aud`/`exp`/`iat` claim parsing; issuer fixation on fetched discovery documents | No ID-token verification, no `nonce`/`at_hash`/`c_hash` checks, no UserInfo client, no authorization-code or session management, no `acr`/`amr`. `userinfo_endpoint` is *advertised*, not *served* by this crate | `oidc::DiscoveryDocument`, `oidc::discovery_for`, `oidc::jwks::fetch_oidc_config` |
 | **OAuth 2.0 — RFC 6749** | Grant/response/auth-method metadata advertised in discovery | No authorization server: no `/authorize`, `/token`, or refresh implementation lives in this crate. The endpoints in the discovery document are URL strings an embedding server must actually serve | `oidc::discovery_for` |
 | **OAuth 2.0 Token Introspection — RFC 7662** | Response *body* builder for active and inactive tokens (`active`, `webid`, `client_id`, `exp`, `iss`, `scope`, `cnf`) | No introspection *endpoint*, no client authentication for it, no `token_type_hint` handling, no `nbf`/`jti`/`username`/`aud` members | `oidc::IntrospectionResponse::{from_verified, inactive}` |
@@ -146,15 +146,15 @@ without it, they are synchronous and take no cache argument.
 
 `extract_webid` accepts a string only if it starts with the literal
 `http://` or `https://` — a case-sensitive prefix test, not URL parsing.
-It prefers `webid`, then falls back to `sub`.
+A `webid` claim, when present, must itself be such a URL (Solid-OIDC: the claim MUST be the user's WebID); only an *absent* `webid` falls back to `sub`.
 
 | Shape | Result | Error |
 |---|---|---|
 | `webid` is a `http(s)` URL | Accepted | — |
 | `webid` absent, `sub` is a `http(s)` URL | Accepted (WebID-OIDC compatibility) | — |
-| **`webid` blank or non-URL, `sub` is a `http(s)` URL** | **Accepted — silently falls back to `sub`.** A malformed `webid` claim is *skipped*, not rejected. Applies to `""`, `"   "`, `"not-a-url"`, `"did:…"` alike | — |
+| **`webid` present but blank or non-URL (`sub` is a `http(s)` URL)** | **Rejected** (changed 2026-11-21, SP-OIDC-06): a present claim that is not an `http(s)` URL is an invalid token and is not skipped. Applies to `""`, `"   "`, `"not-a-url"`, `"did:…"`, `HTTPS://…` alike | `Nip98("webid claim is present but is not an http(s) URL")` |
 | `webid` absent **and** `sub` non-URL (e.g. an opaque `0xabc`) | Rejected | `Nip98("no WebID present in access token (neither webid claim nor url-shaped sub)")` |
-| `webid` blank **and** `sub` non-URL | Rejected | same as above |
+| `webid` blank **and** `sub` non-URL | Rejected | `Nip98("webid claim is present but is not an http(s) URL")` |
 | `did:nostr:…`, `did:web:…`, `urn:uuid:…`, `mailto:…` in either member | Rejected — these are not WebIDs at this layer | same as above |
 | Scheme-relative `//me.example/profile#me` | Rejected | same as above |
 | Upper-case scheme `HTTPS://me.example/…` | Rejected — the prefix test is case-sensitive | same as above |

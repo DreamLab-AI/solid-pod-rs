@@ -1107,15 +1107,26 @@ pub fn verify_access_token_hs256(
     verify_access_token(token, &ks, expected_issuer, dpop_jkt, now)
 }
 
-/// Extract a WebID from an access-token claim set. Prefers the
-/// explicit `webid` claim; falls back to a URL-shaped `sub`.
+/// Extract a WebID from an access-token claim set.
+///
+/// Solid-OIDC makes the `webid` claim the user's WebID, so a `webid` claim
+/// that is **present** must be an `http(s)` URL: a present-but-malformed claim
+/// (`""`, `"not-a-url"`, a `did:`) is an invalid token and is refused, never
+/// skipped in favour of `sub` (SP-OIDC-06). Only an **absent** (or `null`)
+/// claim falls back to a URL-shaped `sub`, the WebID-OIDC predecessor
+/// convention this crate documents (compatibility matrix, ADR-2003).
 pub fn extract_webid(claims: &SolidOidcClaims) -> Result<String, PodError> {
-    if let Some(w) = &claims.webid {
-        if w.starts_with("http://") || w.starts_with("https://") {
-            return Ok(w.clone());
+    let is_http = |s: &str| s.starts_with("http://") || s.starts_with("https://");
+    match &claims.webid {
+        Some(w) if is_http(w) => return Ok(w.clone()),
+        Some(_) => {
+            return Err(PodError::Nip98(
+                "webid claim is present but is not an http(s) URL".into(),
+            ))
         }
+        None => {}
     }
-    if claims.sub.starts_with("http://") || claims.sub.starts_with("https://") {
+    if is_http(&claims.sub) {
         return Ok(claims.sub.clone());
     }
     Err(PodError::Nip98(
@@ -1123,8 +1134,6 @@ pub fn extract_webid(claims: &SolidOidcClaims) -> Result<String, PodError> {
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Introspection (RFC 7662)
 // ---------------------------------------------------------------------------
 
 /// Response body for a successful introspection call.
@@ -1267,6 +1276,30 @@ mod tests {
             scope: None,
         };
         assert_eq!(extract_webid(&c).unwrap(), "https://me.example/profile#me");
+    }
+
+    #[test]
+    fn extract_webid_refuses_a_present_but_malformed_webid_claim() {
+        for bad in [
+            "",
+            " ",
+            "not-a-url",
+            "did:nostr:abc",
+            "HTTPS://me.example/p",
+        ] {
+            let c = SolidOidcClaims {
+                iss: "https://op".into(),
+                sub: "https://me.example/profile#me".into(),
+                aud: serde_json::json!("solid"),
+                exp: 0,
+                iat: 0,
+                webid: Some(bad.into()),
+                client_id: None,
+                cnf: None,
+                scope: None,
+            };
+            assert!(extract_webid(&c).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
