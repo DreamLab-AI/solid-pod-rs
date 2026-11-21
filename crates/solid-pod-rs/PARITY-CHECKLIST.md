@@ -49,13 +49,13 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 94.8%** — 271/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 95.1%** — 272/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
 | Half-credit (partial-parity counted 0.5) | **≤ 95.8%** |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
-> **Authoritative figure.** **94.8% strict** over 306 rows, and an **upper
+> **Authoritative figure.** **95.1% strict** over 306 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
@@ -68,10 +68,10 @@ and 104 were reclassified in place. Method and evidence:
 
 | Status | Count |
 |---|---|
-| present (includes present-by-absence) | 243 |
+| present (includes present-by-absence) | 244 |
 | net-new (ours; not in JSS) | 19 |
 | semantic-difference | 9 |
-| partial-parity | 8 |
+| partial-parity | 7 |
 | missing | 7 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
@@ -184,7 +184,7 @@ so this tracker does not freeze a number that immediately becomes stale.
 |---|---|---|---|---|---|---|
 | 39 | N3 Patch (Solid Protocol §8.2) with `solid:inserts` / `solid:deletes` / simplified `where` | `src/patch/n3-patch.js:22-120` | `ldp::apply_n3_patch` | present | `src/ldp.rs:789` | 2026-11-01: the server reads each block as line-wise N-Triples, so prefixed N3 gets 400; see row 269. Evidence moved to `src/ldp.rs:1149-1194`. Fixed 2026-11-01: `ldp::N3Patch` parses with `oxttl` (row 269). |
 | 40 | N3 Patch `where` precondition failure | `n3-patch.js` never invokes `validatePatch`, silently drops missing deletes | `evaluate_preconditions` → 412 | present | `src/ldp.rs:1143` | JSS is silently non-conformant; we return 412. 2026-11-01: reversed by JSS `a6834e8`: JSS now binds `where` and answers 409; we answer 412 and do not bind variables (row 270). Fixed 2026-11-01: a `where` miss is now 409, as in JSS (row 270). |
-| 41 | SPARQL-Update (INSERT DATA, DELETE DATA, DELETE+INSERT+WHERE, DELETE WHERE, standalone INSERT WHERE) | `src/patch/sparql-update.js:22-82` (regex) | `ldp::apply_sparql_patch` via `spargebra` | partial-parity | `src/ldp.rs:885` | We accept full SPARQL 1.1 algebra. 2026-11-01: `apply_sparql_patch` is at `src/ldp.rs:1276`; patterns with variables are a 204 no-op (§27 defects), so "full algebra" is overstated. |
+| 41 | SPARQL-Update (INSERT DATA, DELETE DATA, DELETE+INSERT+WHERE, DELETE WHERE, standalone INSERT WHERE) | `src/patch/sparql-update.js:22-82` (regexes; the `WHERE` body is ignored, so `DELETE { ?s ?p ?o } WHERE {...}` deletes nothing and a variable template parses to nothing) | `ldp::apply_sparql_patch` via `spargebra`: the five forms are applied, a `WHERE` basic graph pattern is evaluated with the N3 patch's bounded join and the templates are instantiated per solution (SPARQL semantics: evaluate, delete all, insert all; unbound template triples skipped; fresh blank nodes per solution) | present | `src/ldp.rs` (`apply_sparql_patch`, `sparql_update_inspects`); `src/n3_patch.rs` (`apply_sparql_where`); tests `tests/sparql_update_where.rs` (11), server `tests/sparql_patch_where.rs` (4) | Fixed 2026-11-21; better than JSS, which does not evaluate `WHERE`. A `WHERE` clause needs `acl:Read` as well as `acl:Write` over HTTP (it is evaluated against the resource and can copy bound values), so a write-only or append-only agent cannot probe or copy; `INSERT DATA` and `DELETE DATA` are unchanged. Refused with an error, never ignored: GRAPH, WITH, USING, FILTER, OPTIONAL, UNION, BIND, MINUS, sub-select, property paths, LOAD, CLEAR and quoted triples (before, a variable pattern and a named-graph quad were silently dropped under a 204). A deliberate difference: `DELETE` of an absent triple in `INSERT DATA`/`DELETE DATA` is still ignored, as in JSS and in SPARQL. |
 | 42 | JSON Patch (RFC 6902) | **not implemented** | `ldp::apply_json_patch` (add/remove/replace/test/copy/move) | net-new | `src/ldp.rs:1363` | Non-normative Solid extension. |
 | 43 | PATCH dispatch on `Content-Type` | inline in `src/handlers/resource.js` | `ldp::patch_dialect_from_mime` → `PatchDialect::{N3,Sparql,JsonPatch}` | present | `src/ldp.rs:1552,1558` | |
 

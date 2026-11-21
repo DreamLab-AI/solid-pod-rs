@@ -206,7 +206,7 @@ impl N3Patch {
         let bindings = if self.where_clause.is_empty() {
             Vec::new()
         } else {
-            let found = solutions(&self.where_clause, &target)?;
+            let found = solutions(&self.where_clause, &target, 2)?;
             match found.as_slice() {
                 [only] => only
                     .iter()
@@ -345,7 +345,9 @@ fn extend(p: &[Slot; 3], t: &[u32; 3], b: &[u32]) -> Option<Vec<u32>> {
 }
 
 /// The bindings of the `where` patterns against the document, stopping at
-/// two: the caller accepts exactly one, so a second already decides.
+/// `stop_at` solutions: an N3 Patch accepts exactly one, so passes 2 and a
+/// second already decides; a SPARQL Update wants every solution and passes
+/// `usize::MAX`, bounded by [`MAX_PARTIAL_BINDINGS`].
 ///
 /// Every document term is interned to an integer id once (hashing, linear in
 /// the document's size), so the join compares ids in constant time. Each
@@ -363,6 +365,7 @@ fn extend(p: &[Slot; 3], t: &[u32; 3], b: &[u32]) -> Option<Vec<u32>> {
 fn solutions<'a>(
     patterns: &'a [PatchTriple],
     g: &'a Graph,
+    stop_at: usize,
 ) -> Result<Vec<BorrowedBindings<'a>>, PodError> {
     let too_broad = || PodError::Conflict("the patch where clause is too broad to evaluate".into());
 
@@ -438,7 +441,7 @@ fn solutions<'a>(
                 }
                 if let Some(nb) = extend(&p, t, b) {
                     next.push(nb);
-                    if last && next.len() > 1 {
+                    if last && next.len() >= stop_at {
                         break 'extend;
                     }
                     if next.len() > MAX_PARTIAL_BINDINGS {
@@ -505,4 +508,77 @@ fn substitute(t: &PatchTriple, b: &Bindings, fresh: &mut FreshBlanks) -> Result<
         ));
     }
     Ok(Triple::new(subject, predicate, object))
+}
+
+/// Evaluate a SPARQL Update's basic-graph-pattern `WHERE` over `target` and
+/// apply the `DELETE` and `INSERT` templates once per solution.
+///
+/// SPARQL semantics: the pattern is evaluated against the graph as it stood
+/// before the operation; all deletions are then applied, then all insertions.
+/// A template triple that a solution leaves unbound, or that would put a
+/// literal in subject position or a non-IRI in predicate position, is skipped.
+/// A blank node in the insert template is fresh for every solution. Deleting
+/// a triple that is absent is not an error. The join is bounded exactly as an
+/// N3 `solid:where` is (see [`MAX_PARTIAL_BINDINGS`], [`MAX_MATCH_STEPS`]);
+/// a pattern over budget is refused with a conflict, never truncated.
+///
+/// Returns the new graph and the counts of triples really inserted and
+/// deleted.
+pub(crate) fn apply_sparql_where(
+    target: Graph,
+    where_clause: &[PatchTriple],
+    deletes: &[PatchTriple],
+    inserts: &[PatchTriple],
+) -> Result<PatchOutcome, PodError> {
+    let mut removal = Graph::new();
+    let mut addition = Graph::new();
+    {
+        let found = solutions(where_clause, &target, usize::MAX)?;
+        for solution in &found {
+            let bindings: Bindings = solution
+                .iter()
+                .map(|(name, term)| ((*name).to_string(), (*term).clone()))
+                .collect();
+            let mut fresh = FreshBlanks::default();
+            for t in deletes {
+                if let Some(tr) = instantiate(t, &bindings, &mut fresh) {
+                    removal.insert(tr);
+                }
+            }
+            for t in inserts {
+                if let Some(tr) = instantiate(t, &bindings, &mut fresh) {
+                    addition.insert(tr);
+                }
+            }
+        }
+    }
+    let deleted = removal.triples().filter(|t| target.contains(t)).count();
+    let mut graph = target;
+    graph.subtract(&removal);
+    let inserted = addition.triples().filter(|t| !graph.contains(t)).count();
+    graph.extend(&addition);
+    Ok(PatchOutcome {
+        graph,
+        inserted,
+        deleted,
+    })
+}
+
+/// Instantiate a template triple under one solution, or `None` when the
+/// solution leaves a variable unbound or the result is not a valid triple.
+fn instantiate(t: &PatchTriple, b: &Bindings, fresh: &mut FreshBlanks) -> Option<Triple> {
+    let mut term = |p: &PatchTerm| -> Option<Term> {
+        match p {
+            PatchTerm::Variable(name) => bound(b, name).cloned(),
+            PatchTerm::Term(Term::BlankNode(label)) => Some(fresh.get(label)),
+            PatchTerm::Term(t) => Some(t.clone()),
+        }
+    };
+    let subject = term(&t.subject)?;
+    let predicate = term(&t.predicate)?;
+    let object = term(&t.object)?;
+    if matches!(subject, Term::Literal { .. }) || !matches!(predicate, Term::Iri(_)) {
+        return None;
+    }
+    Some(Triple::new(subject, predicate, object))
 }

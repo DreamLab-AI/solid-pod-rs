@@ -102,6 +102,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **SPARQL Update `WHERE` is evaluated** (row 41). `DELETE/INSERT ... WHERE`, `DELETE WHERE` and `INSERT ... WHERE`
+  with variables now apply per solution of a basic graph pattern, with the same join bounds as an N3 `solid:where`;
+  before, a variable pattern was dropped and the PATCH answered 204 having done nothing. Named-graph quads,
+  `WITH`, `USING`, `FILTER`, `OPTIONAL`, `UNION` and the other forms the evaluator cannot honour are now refused
+  instead of silently ignored. A PATCH with a `WHERE` clause now needs `acl:Read` as well as `acl:Write`
+  (`ldp::sparql_update_inspects`), so a write-only agent cannot copy or probe content through it.
+
 - **`Accept-Ranges` is sent on GET, HEAD and write responses** (`bytes` on a resource, `none` on a container, as JSS
   does); before, only OPTIONS carried it (SP-PAR row 23).
 - **POST refuses a `Slug` that would mint a name the dotfile guard refuses** (`.git`, `.env`, `x.meta.json`): 400.

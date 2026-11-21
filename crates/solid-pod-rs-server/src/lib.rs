@@ -2149,16 +2149,23 @@ async fn handle_patch(
     };
     // A patch whose outcome depends on what the resource holds inspects it,
     // so it needs Read as well as Write (Solid Protocol §5.3.1): an N3 Patch
-    // with deletes or a `where` clause (204 vs 409), and any JSON Patch
+    // with deletes or a `where` clause (204 vs 409), any JSON Patch
     // (`test`, `remove`, `replace`, `move` and `copy` all fail on absent
-    // content). SPARQL Update here ignores `WHERE` and absent deletes, so its
-    // outcome reveals no triple values. Checked without charging, so a paid
-    // Read refuses rather than billing the PATCH twice.
+    // content), and any SPARQL Update with a `WHERE` clause. `INSERT DATA` and
+    // `DELETE DATA` do not inspect the resource: absent deletes are ignored.
+    // Checked without charging, so a paid Read refuses rather than billing
+    // the PATCH twice.
     let inspects = match dialect {
         Some(ldp::PatchDialect::N3) => {
             matches!(&n3_parsed, Some(Ok(p)) if !p.is_insert_only())
         }
         Some(ldp::PatchDialect::JsonPatch) => body_str.is_ok(),
+        // A SPARQL Update with a `WHERE` clause is evaluated against the
+        // resource (and may copy bound values into new triples), so it
+        // reads it: Read as well as Write.
+        Some(ldp::PatchDialect::SparqlUpdate) => {
+            matches!(&body_str, Ok(text) if ldp::sparql_update_inspects(text))
+        }
         _ => false,
     };
     if inspects {

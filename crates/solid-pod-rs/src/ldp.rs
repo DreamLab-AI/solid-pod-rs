@@ -1303,8 +1303,37 @@ pub fn sparql_update_is_insert_only(update: &str) -> bool {
         })
 }
 
-/// Apply a SPARQL 1.1 Update document (`INSERT DATA`, `DELETE DATA`,
-/// `DELETE WHERE`) to `target` using `spargebra` for parsing.
+/// True when applying `update` depends on what the resource holds: any
+/// `DELETE/INSERT ... WHERE`, `DELETE WHERE` or `INSERT ... WHERE`. Such a
+/// PATCH needs `acl:Read` as well as `acl:Write`, because its outcome (and
+/// what a `WHERE` copies into new triples) reveals the resource's content.
+/// `INSERT DATA` and `DELETE DATA` do not inspect it. A body that does not
+/// parse, or is over [`SPARQL_UPDATE_MAX_BYTES`], is `false`: it is refused
+/// by [`apply_sparql_patch`] and reveals nothing.
+#[must_use]
+pub fn sparql_update_inspects(update: &str) -> bool {
+    use spargebra::{GraphUpdateOperation, Update};
+    if update.len() > SPARQL_UPDATE_MAX_BYTES {
+        return false;
+    }
+    let Ok(parsed) = Update::parse(update, None) else {
+        return false;
+    };
+    parsed.operations.iter().any(|op| {
+        !matches!(
+            op,
+            GraphUpdateOperation::InsertData { .. } | GraphUpdateOperation::DeleteData { .. }
+        )
+    })
+}
+
+/// Apply a SPARQL 1.1 Update document to `target` using `spargebra` for
+/// parsing: `INSERT DATA`, `DELETE DATA`, and the pattern forms
+/// `DELETE/INSERT ... WHERE`, `DELETE WHERE` and `INSERT ... WHERE`, whose
+/// `WHERE` clause is evaluated as a basic graph pattern with the same bounded
+/// join an N3 `solid:where` uses. Anything else (named graphs, `WITH`,
+/// `USING`, `FILTER`, `OPTIONAL`, `UNION`, `LOAD`, `CLEAR`, ...) is refused
+/// with an error, never silently ignored.
 ///
 /// Rejects inputs exceeding [`SPARQL_UPDATE_MAX_BYTES`] before parsing.
 pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, PodError> {
@@ -1316,9 +1345,11 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
         )));
     }
 
+    use spargebra::algebra::GraphPattern;
     use spargebra::term::{
         GraphName, GraphNamePattern, GroundQuad, GroundQuadPattern, GroundSubject, GroundTerm,
-        GroundTermPattern, NamedNodePattern, Quad, Subject, Term as SpTerm,
+        GroundTermPattern, NamedNodePattern, Quad, QuadPattern, Subject, Term as SpTerm,
+        TermPattern,
     };
     use spargebra::{GraphUpdateOperation, Update};
 
@@ -1394,25 +1425,6 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
             _ => None,
         }
     }
-    fn map_ground_term_pattern(t: &GroundTermPattern) -> Option<Term> {
-        match t {
-            GroundTermPattern::NamedNode(n) => Some(Term::Iri(n.as_str().to_string())),
-            GroundTermPattern::Literal(lit) => {
-                let value = lit.value().to_string();
-                if let Some(lang) = lit.language() {
-                    Some(build_literal(value, None, Some(lang.to_string())))
-                } else {
-                    Some(build_literal(
-                        value,
-                        Some(lit.datatype().as_str().to_string()),
-                        None,
-                    ))
-                }
-            }
-            _ => None,
-        }
-    }
-
     fn quad_to_triple(q: &Quad) -> Option<Triple> {
         if !matches!(q.graph_name, GraphName::DefaultGraph) {
             return None;
@@ -1433,19 +1445,103 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
             map_ground_term(&q.object)?,
         ))
     }
-    fn ground_quad_pattern_to_triple(q: &GroundQuadPattern) -> Option<Triple> {
-        if !matches!(q.graph_name, GraphNamePattern::DefaultGraph) {
-            return None;
+    fn unsupported_graph_form() -> PodError {
+        PodError::Unsupported(
+            "SPARQL Update in a PATCH is limited to the default graph: GRAPH, WITH, USING \
+             and quoted triples are not supported"
+                .into(),
+        )
+    }
+
+    use crate::n3_patch::{PatchTerm, PatchTriple};
+
+    fn term_pattern(t: &TermPattern, in_where: bool) -> Result<PatchTerm, PodError> {
+        Ok(match t {
+            TermPattern::NamedNode(n) => PatchTerm::Term(Term::Iri(n.as_str().to_string())),
+            TermPattern::Literal(l) => PatchTerm::Term(build_literal(
+                l.value().to_string(),
+                if l.language().is_some() {
+                    None
+                } else {
+                    Some(l.datatype().as_str().to_string())
+                },
+                l.language().map(str::to_string),
+            )),
+            TermPattern::Variable(v) => PatchTerm::Variable(v.as_str().to_string()),
+            // In a WHERE clause a blank node is an anonymous variable; in an
+            // insert template it is a fresh node per solution.
+            TermPattern::BlankNode(b) if in_where => {
+                PatchTerm::Variable(format!("_:{}", b.as_str()))
+            }
+            TermPattern::BlankNode(b) => PatchTerm::Term(Term::BlankNode(b.as_str().to_string())),
+            #[allow(unreachable_patterns)]
+            _ => return Err(unsupported_graph_form()),
+        })
+    }
+    fn predicate_pattern(p: &NamedNodePattern) -> PatchTerm {
+        match p {
+            NamedNodePattern::NamedNode(n) => PatchTerm::Term(Term::Iri(n.as_str().to_string())),
+            NamedNodePattern::Variable(v) => PatchTerm::Variable(v.as_str().to_string()),
         }
-        let predicate = match &q.predicate {
-            NamedNodePattern::NamedNode(n) => Term::Iri(n.as_str().to_string()),
-            NamedNodePattern::Variable(_) => return None,
-        };
-        Some(Triple::new(
-            map_ground_term_pattern(&q.subject)?,
-            predicate,
-            map_ground_term_pattern(&q.object)?,
-        ))
+    }
+    fn ground_term_pattern(t: &GroundTermPattern) -> Result<PatchTerm, PodError> {
+        Ok(match t {
+            GroundTermPattern::NamedNode(n) => PatchTerm::Term(Term::Iri(n.as_str().to_string())),
+            GroundTermPattern::Literal(l) => PatchTerm::Term(build_literal(
+                l.value().to_string(),
+                if l.language().is_some() {
+                    None
+                } else {
+                    Some(l.datatype().as_str().to_string())
+                },
+                l.language().map(str::to_string),
+            )),
+            GroundTermPattern::Variable(v) => PatchTerm::Variable(v.as_str().to_string()),
+            #[allow(unreachable_patterns)]
+            _ => return Err(unsupported_graph_form()),
+        })
+    }
+    fn ground_quad_pattern_to_patch(q: &GroundQuadPattern) -> Result<PatchTriple, PodError> {
+        if !matches!(q.graph_name, GraphNamePattern::DefaultGraph) {
+            return Err(unsupported_graph_form());
+        }
+        Ok(PatchTriple {
+            subject: ground_term_pattern(&q.subject)?,
+            predicate: predicate_pattern(&q.predicate),
+            object: ground_term_pattern(&q.object)?,
+        })
+    }
+    fn quad_pattern_to_patch(q: &QuadPattern) -> Result<PatchTriple, PodError> {
+        if !matches!(q.graph_name, GraphNamePattern::DefaultGraph) {
+            return Err(unsupported_graph_form());
+        }
+        Ok(PatchTriple {
+            subject: term_pattern(&q.subject, false)?,
+            predicate: predicate_pattern(&q.predicate),
+            object: term_pattern(&q.object, false)?,
+        })
+    }
+    /// A `WHERE` clause is honoured only as a basic graph pattern; FILTER,
+    /// OPTIONAL, UNION, GRAPH, BIND, MINUS, sub-queries and property paths
+    /// are refused rather than ignored.
+    fn where_to_patch_triples(p: &GraphPattern) -> Result<Vec<PatchTriple>, PodError> {
+        match p {
+            GraphPattern::Bgp { patterns } => patterns
+                .iter()
+                .map(|t| {
+                    Ok(PatchTriple {
+                        subject: term_pattern(&t.subject, true)?,
+                        predicate: predicate_pattern(&t.predicate),
+                        object: term_pattern(&t.object, true)?,
+                    })
+                })
+                .collect(),
+            _ => Err(PodError::Unsupported(
+                "a SPARQL Update WHERE clause in a PATCH must be a plain basic graph pattern \
+                 (no FILTER, OPTIONAL, UNION, GRAPH, BIND, MINUS, sub-select or property path)"
+                    .into(),
+            )),
+        }
     }
 
     let mut graph = target;
@@ -1456,47 +1552,48 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
         match op {
             GraphUpdateOperation::InsertData { data } => {
                 for q in data {
-                    if let Some(tr) = quad_to_triple(q) {
-                        if !graph.contains(&tr) {
-                            graph.insert(tr);
-                            inserted += 1;
-                        }
+                    let tr = quad_to_triple(q).ok_or_else(unsupported_graph_form)?;
+                    if !graph.contains(&tr) {
+                        graph.insert(tr);
+                        inserted += 1;
                     }
                 }
             }
             GraphUpdateOperation::DeleteData { data } => {
                 for q in data {
-                    if let Some(tr) = ground_quad_to_triple(q) {
-                        if graph.remove(&tr) {
-                            deleted += 1;
-                        }
+                    let tr = ground_quad_to_triple(q).ok_or_else(unsupported_graph_form)?;
+                    if graph.remove(&tr) {
+                        deleted += 1;
                     }
                 }
             }
-            GraphUpdateOperation::DeleteInsert { delete, insert, .. } => {
-                for q in delete {
-                    if let Some(tr) = ground_quad_pattern_to_triple(q) {
-                        if graph.remove(&tr) {
-                            deleted += 1;
-                        }
-                    }
+            GraphUpdateOperation::DeleteInsert {
+                delete,
+                insert,
+                using,
+                pattern,
+            } => {
+                if using.is_some() {
+                    return Err(unsupported_graph_form());
                 }
-                for q in insert {
-                    // Only insert triples whose template is fully
-                    // ground (no variable bindings). Templates with
-                    // variables require WHERE-clause resolution,
-                    // which the pod does not implement for PATCH.
-                    let gqp = match convert_quad_pattern_to_ground(q) {
-                        Some(g) => g,
-                        None => continue,
-                    };
-                    if let Some(tr) = ground_quad_pattern_to_triple(&gqp) {
-                        if !graph.contains(&tr) {
-                            graph.insert(tr);
-                            inserted += 1;
-                        }
-                    }
-                }
+                let where_clause = where_to_patch_triples(pattern)?;
+                let deletes = delete
+                    .iter()
+                    .map(ground_quad_pattern_to_patch)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let inserts = insert
+                    .iter()
+                    .map(quad_pattern_to_patch)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let out = crate::n3_patch::apply_sparql_where(
+                    std::mem::replace(&mut graph, Graph::new()),
+                    &where_clause,
+                    &deletes,
+                    &inserts,
+                )?;
+                graph = out.graph;
+                inserted += out.inserted;
+                deleted += out.deleted;
             }
             _ => {
                 return Err(PodError::Unsupported(format!(
@@ -1510,40 +1607,6 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
         graph,
         inserted,
         deleted,
-    })
-}
-
-fn convert_quad_pattern_to_ground(
-    q: &spargebra::term::QuadPattern,
-) -> Option<spargebra::term::GroundQuadPattern> {
-    use spargebra::term::{
-        GraphNamePattern, GroundQuadPattern, GroundTermPattern, NamedNodePattern, TermPattern,
-    };
-
-    let subject = match &q.subject {
-        TermPattern::NamedNode(n) => GroundTermPattern::NamedNode(n.clone()),
-        TermPattern::Literal(l) => GroundTermPattern::Literal(l.clone()),
-        _ => return None,
-    };
-    let predicate = match &q.predicate {
-        NamedNodePattern::NamedNode(n) => NamedNodePattern::NamedNode(n.clone()),
-        NamedNodePattern::Variable(_) => return None,
-    };
-    let object = match &q.object {
-        TermPattern::NamedNode(n) => GroundTermPattern::NamedNode(n.clone()),
-        TermPattern::Literal(l) => GroundTermPattern::Literal(l.clone()),
-        _ => return None,
-    };
-    let graph_name = match &q.graph_name {
-        GraphNamePattern::DefaultGraph => GraphNamePattern::DefaultGraph,
-        GraphNamePattern::NamedNode(n) => GraphNamePattern::NamedNode(n.clone()),
-        GraphNamePattern::Variable(_) => return None,
-    };
-    Some(GroundQuadPattern {
-        subject,
-        predicate,
-        object,
-        graph_name,
     })
 }
 

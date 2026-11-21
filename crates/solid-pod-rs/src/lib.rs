@@ -226,11 +226,11 @@ pub use ldp::{
     apply_json_patch, apply_n3_patch, apply_patch_to_absent, apply_sparql_patch, cache_control_for,
     cache_control_for_response, evaluate_preconditions, is_rdf_content_type, link_headers,
     negotiate_format, not_found_headers, options_for, parse_range_header, parse_range_header_v2,
-    patch_dialect_from_mime, server_managed_triples, slice_range, vary_header, ByteRange,
-    ConditionalOutcome, ContainerRepresentation, Graph, N3Patch, OptionsResponse,
-    PatchCreateOutcome, PatchDialect, PatchOutcome, PatchTerm, PatchTriple, PreferHeader,
-    RangeOutcome, RdfFormat, ResponseAudience, Term, Triple, ACCEPT_PATCH, ACCEPT_POST,
-    CACHE_CONTROL_PRIVATE, CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
+    patch_dialect_from_mime, server_managed_triples, slice_range, sparql_update_inspects,
+    vary_header, ByteRange, ConditionalOutcome, ContainerRepresentation, Graph, N3Patch,
+    OptionsResponse, PatchCreateOutcome, PatchDialect, PatchOutcome, PatchTerm, PatchTriple,
+    PreferHeader, RangeOutcome, RdfFormat, ResponseAudience, Term, Triple, ACCEPT_PATCH,
+    ACCEPT_POST, CACHE_CONTROL_PRIVATE, CACHE_CONTROL_RDF, SPARQL_UPDATE_MAX_BYTES,
 };
 pub use mashlib::{MashlibConfig, MashlibMode, DATA_ISLAND_MAX_BYTES};
 pub use metrics::SecurityMetrics;
