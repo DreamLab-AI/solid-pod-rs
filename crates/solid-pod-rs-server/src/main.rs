@@ -225,6 +225,18 @@ struct Cli {
     #[arg(long, env = "JSS_WEBRTC_PATH", default_value = "/webrtc")]
     webrtc_path: String,
 
+    /// Most signalling sockets one client address may hold (default 8). The
+    /// address is the socket peer; with `--trust-proxy` it is the one the
+    /// reverse proxy forwarded, so clients behind one proxy get a budget each.
+    /// Without `--trust-proxy` every client behind a proxy shares the proxy's.
+    #[arg(
+        long,
+        env = "JSS_WEBRTC_MAX_PER_IP",
+        default_value = "8",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    webrtc_max_per_ip: u32,
+
     /// Most followers one remote host (by hostname, any port) may have
     /// (default 50). A further new follower from that host is refused.
     #[arg(long, env = "JSS_AP_MAX_FOLLOWERS_PER_HOST")]
@@ -464,8 +476,14 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("--webrtc-path and --nostr-path must differ");
     }
     if cli.webrtc {
-        let mount = solid_pod_rs_server::webrtc_mount::WebRtcMount::new(&cli.webrtc_path)
-            .map_err(|e| anyhow::anyhow!("--webrtc-path: {e}"))?;
+        let limits = solid_pod_rs_server::webrtc_mount::Limits {
+            max_per_ip: usize::try_from(cli.webrtc_max_per_ip)
+                .map_err(|e| anyhow::anyhow!("--webrtc-max-per-ip: {e}"))?,
+            ..Default::default()
+        };
+        let mount =
+            solid_pod_rs_server::webrtc_mount::WebRtcMount::with_limits(&cli.webrtc_path, limits)
+                .map_err(|e| anyhow::anyhow!("--webrtc-path: {e}"))?;
         info!(path = mount.path(), "WebRTC signalling relay mounted");
         state.webrtc = Some(mount);
     }

@@ -91,6 +91,50 @@ pub fn effective_scheme(req: &HttpRequest) -> &'static str {
     effective_scheme_with(req, trust)
 }
 
+/// Parse the address a forwarding header names: a bare IPv4 or IPv6 address,
+/// or one with a port (`1.2.3.4:5`, `[::1]:5`). Anything else (an obfuscated
+/// identifier, a hostname, junk) is `None`.
+fn parse_forwarded_ip(raw: &str) -> Option<std::net::IpAddr> {
+    let raw = raw.trim();
+    raw.parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| raw.parse::<std::net::SocketAddr>().ok().map(|a| a.ip()))
+}
+
+/// The address of the client that made the request.
+///
+/// With `trust_proxy` off this is the socket peer, and every forwarding header
+/// is ignored. With it on, the address the proxy forwarded (the first
+/// `Forwarded: for=` or `X-Forwarded-For` entry, as actix-web's
+/// [`ConnectionInfo::realip_remote_addr`](actix_web::dev::ConnectionInfo::realip_remote_addr)
+/// reads it) is used, so clients behind one reverse proxy are told apart. A
+/// forwarded value that is not an IP address falls back to the socket peer,
+/// never to "no address", so a malformed header cannot dodge a per-address
+/// limit. Like [`effective_scheme_with`], this is only sound behind a proxy
+/// that overwrites the forwarding headers it receives.
+///
+/// ```
+/// use actix_web::test::TestRequest;
+/// use solid_pod_rs_server::scheme::client_ip_with;
+///
+/// let req = TestRequest::get()
+///     .peer_addr("10.0.0.1:4000".parse().unwrap())
+///     .insert_header(("x-forwarded-for", "203.0.113.7"))
+///     .to_http_request();
+/// assert_eq!(client_ip_with(&req, true), Some("203.0.113.7".parse().unwrap()));
+/// assert_eq!(client_ip_with(&req, false), Some("10.0.0.1".parse().unwrap()));
+/// ```
+pub fn client_ip_with(req: &HttpRequest, trust_proxy: bool) -> Option<std::net::IpAddr> {
+    let peer = req.peer_addr().map(|a| a.ip());
+    if !trust_proxy {
+        return peer;
+    }
+    let info = req.connection_info();
+    info.realip_remote_addr()
+        .and_then(parse_forwarded_ip)
+        .or(peer)
+}
+
 /// Reduce a configured public base URL to its origin (`scheme://authority`,
 /// no path, no trailing slash). `None` when it is not an `http(s)` URL with a
 /// usable authority.

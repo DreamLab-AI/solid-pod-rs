@@ -27,9 +27,10 @@
 //!
 //! # Bounds
 //!
-//! At most [`MAX_CONNECTIONS`] sockets in all, [`MAX_PER_IP`] per peer address
-//! (behind a reverse proxy the peer address is the proxy's, so the cap then
-//! applies to the proxy as a whole) and one per identity (a new connection
+//! At most [`MAX_CONNECTIONS`] sockets in all, [`MAX_PER_IP`] per client
+//! address (configurable with `--webrtc-max-per-ip`; the socket peer, or with
+//! `--trust-proxy` the address the reverse proxy forwarded, see
+//! [`client_ip_with`](crate::scheme::client_ip_with)) and one per identity (a new connection
 //! replaces the old one); frames of at most [`MAX_FRAME_BYTES`]; a socket that
 //! sends nothing for [`IDLE_TIMEOUT`] is closed, and no socket lives longer than
 //! [`MAX_SESSION`] however active (a client's pings reset the idle timer but not
@@ -73,9 +74,10 @@ pub const RATE_MESSAGES: usize = 60;
 pub const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Messages queued for one peer.
 pub const QUEUE_DEPTH: usize = 32;
-/// Sockets one peer address may hold. Behind a reverse proxy the peer address
-/// is the proxy's, so this then limits the proxy as a whole: raise it, or
-/// enforce the per-client limit at the proxy.
+/// Default for the sockets one client address may hold
+/// (`--webrtc-max-per-ip`). The address is the socket peer, or with
+/// `--trust-proxy` the one the reverse proxy forwarded; without the flag every
+/// client behind a proxy shares the proxy's single budget.
 pub const MAX_PER_IP: usize = 8;
 /// Longest a socket lives, however busy: a client that keeps pinging cannot
 /// hold a slot for ever.
@@ -96,7 +98,7 @@ pub struct Limits {
     pub idle: Duration,
     /// Frames (of any kind) per window.
     pub rate_messages: usize,
-    /// Most sockets from one peer address.
+    /// Most sockets from one client address.
     pub max_per_ip: usize,
     /// Longest a socket lives, however active.
     pub max_session: Duration,
@@ -254,7 +256,7 @@ pub(crate) async fn handle_webrtc(
     }
     // The per-address count is taken while holding the global slot, so both
     // are returned together when the socket ends.
-    let ip = req.peer_addr().map(|a| a.ip());
+    let ip = crate::scheme::client_ip_with(&req, state.trust_proxy);
     if let Some(ip) = ip {
         let mut map = mount
             .per_ip

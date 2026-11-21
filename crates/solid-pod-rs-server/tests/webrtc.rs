@@ -48,10 +48,15 @@ struct Server {
 }
 
 async fn serve(limits: Limits) -> Server {
+    serve_with(limits, false).await
+}
+
+async fn serve_with(limits: Limits, trust_proxy: bool) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let mut state = AppState::new(Arc::new(MemoryBackend::new()));
     state.public_base_url = Some(format!("http://127.0.0.1:{port}"));
+    state.trust_proxy = trust_proxy;
     state.webrtc = Some(WebRtcMount::with_limits("/webrtc", limits).unwrap());
     let server = HttpServer::new(move || build_app(state.clone()))
         .workers(1)
@@ -66,6 +71,16 @@ type Ws =
 
 #[allow(clippy::result_large_err)]
 async fn connect(s: &Server, sk: Option<u8>) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
+    connect_via(s, sk, None).await
+}
+
+/// Connect as a client a reverse proxy forwarded for `forwarded_for`.
+#[allow(clippy::result_large_err)]
+async fn connect_via(
+    s: &Server,
+    sk: Option<u8>,
+    forwarded_for: Option<&str>,
+) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
     let mut req = format!("ws://127.0.0.1:{}/webrtc", s.port)
         .into_client_request()
         .unwrap();
@@ -73,6 +88,10 @@ async fn connect(s: &Server, sk: Option<u8>) -> Result<Ws, tokio_tungstenite::tu
         let url = format!("http://127.0.0.1:{}/webrtc", s.port);
         req.headers_mut()
             .insert("authorization", token(&url, sk).parse().unwrap());
+    }
+    if let Some(xff) = forwarded_for {
+        req.headers_mut()
+            .insert("x-forwarded-for", xff.parse().unwrap());
     }
     tokio_tungstenite::connect_async(req)
         .await
@@ -298,6 +317,64 @@ async fn one_address_cannot_take_every_slot() {
     drop(_a);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(connect(&s, Some(0x44)).await.is_ok());
+}
+
+#[actix_web::test]
+async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_budget() {
+    // Property: with `trust_proxy` on, the per-address cap is per client (the
+    // address the proxy forwarded), so one proxy in front does not collapse
+    // every client onto a single budget. Every socket here comes from
+    // 127.0.0.1; only the forwarded address differs.
+    let s = serve_with(
+        Limits {
+            max_per_ip: 1,
+            ..Limits::default()
+        },
+        true,
+    )
+    .await;
+    let _a = connect_via(&s, Some(0x11), Some("198.51.100.1"))
+        .await
+        .unwrap();
+    let _b = connect_via(&s, Some(0x22), Some("198.51.100.2"))
+        .await
+        .unwrap();
+    // The same forwarded client is still held to its own cap.
+    let err = connect_via(&s, Some(0x33), Some("198.51.100.1"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("503"), "{err}");
+    // An unusable forwarded value falls back to the peer address (which is
+    // not yet at its cap, since nothing was counted against 127.0.0.1), and
+    // that fallback is itself capped rather than uncapped.
+    let _c = connect_via(&s, Some(0x44), Some("not-an-address"))
+        .await
+        .unwrap();
+    let err = connect_via(&s, Some(0x55), Some("also-not-an-address"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("503"), "{err}");
+}
+
+#[actix_web::test]
+async fn without_trust_proxy_the_forwarded_address_is_ignored() {
+    // Property: a client cannot mint itself a fresh budget with a header the
+    // operator did not vouch for.
+    let s = serve_with(
+        Limits {
+            max_per_ip: 1,
+            ..Limits::default()
+        },
+        false,
+    )
+    .await;
+    let _a = connect_via(&s, Some(0x11), Some("198.51.100.1"))
+        .await
+        .unwrap();
+    let err = connect_via(&s, Some(0x22), Some("198.51.100.2"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("503"), "{err}");
 }
 
 #[actix_web::test]
