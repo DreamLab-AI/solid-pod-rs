@@ -120,3 +120,25 @@ Sprint 12 additions (JSS v0.0.60–v0.0.71 delta):
 ## Licence
 
 AGPL-3.0-only.
+
+## Limits and features
+
+- Everything a remote sender can make the store hold is bounded: 200 inbox rows
+  per sender (and 10 000 in all, trimmed from the sender holding the most), 5 000
+  `Accept` rows, 20 000 queued deliveries, 50 followers per remote host
+  (`InboxLimits`). A repeated `Follow` is idempotent; the `Accept` carries only
+  the verified `id`, `actor` and `object`.
+- A follower's `inbox` and `sharedInbox` must be on the origin of its actor
+  document. An activity's `id` must be on its actor's origin. Inbox dedup is on
+  `(sender, id)`.
+- Outbound fetches and deliveries are `https` only, to public addresses, pinned
+  to the checked address, never through an environment proxy, and delivered
+  concurrently (8 at once, 2 per host, with a per-host circuit breaker).
+- Resolved actor keys are cached in memory (5 minutes; failures 30 seconds;
+  1024 entries) by `keyId` document URL, with one rate-limited re-fetch when a
+  signature fails (key rotation). The `actors` table of the store is not used
+  for this: a cache that survives restarts would need its own expiry and a
+  bound, and nothing else reads it.
+- Cargo feature `test-loopback` compiles `SsrfGuard::permit_loopback_for_tests`
+  (loopback and plain `http`). Enable it only from `[dev-dependencies]`; a
+  release build then cannot reach loopback.

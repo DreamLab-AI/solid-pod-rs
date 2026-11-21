@@ -244,16 +244,29 @@ link to WebFinger, and starts a delivery worker. It requires `--activitypub` and
 
 - **Inbox**: a request is stored only when it is HTTP-signed (host, date, digest,
   request target), its digest matches the body, its `Date` is fresh, it is
-  addressed to this host, and its `actor` is the signer. Bodies are capped at
-  256 KiB; 16 requests run at once.
+  addressed to this host, its `actor` is the signer, and its `id` is on the
+  actor's origin. Bodies are capped at 256 KiB and must arrive within 5 s (`408`
+  otherwise; a client still sending holds no slot); 16 verifications run at once.
+  A follower's `inbox` and `sharedInbox` must be on its actor's origin or the
+  Follow is refused, and each remote host may hold at most 50 followers
+  (`--ap-max-followers-per-host`, `JSS_AP_MAX_FOLLOWERS_PER_HOST`). A repeated
+  Follow from an existing follower changes nothing and gets no second `Accept`.
+  Stored rows are bounded: 200 inbox rows per sender, 10 000 in all (the sender
+  holding the most is trimmed first), 5 000 `Accept`s, 20 000 queued deliveries.
+  Remote keys are cached for 5 minutes (failures 30 s) and re-fetched once, at
+  most once a minute, when a signature fails.
 - **Outbox**: only the pod owner (a NIP-98 token bound to the body, signer holds
   `acl:Control` on `/`). `Note`, `Create`, `Follow`, `Update`, `Delete`,
   `Announce` and `Like` are accepted; a `Follow` target's inbox is read from the
   target's actor document, not from the request.
 - **Outbound**: actor documents (256 KiB, 10 s) and deliveries (10 s connect,
   30 s total, no redirects, queue with backoff) go through a resolve-and-pin
-  check that refuses any non-public address.
-- State is in `<data root>/.ap/` (`keys.json`, `ap.db`); neither is served.
+  check that refuses any non-public address, and are `https` only. They never
+  use an environment proxy (a proxy would bypass the pin). Deliveries run
+  concurrently (8 at once, 2 per host) with a per-host circuit breaker, so a
+  stalled host delays only its own queue.
+- State is in `<data root>/.ap/` (`keys.json`, `ap.db`, all mode 0600); none is
+  served.
 
 ## Nostr relay (`--nostr`)
 
