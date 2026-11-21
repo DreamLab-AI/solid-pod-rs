@@ -378,7 +378,7 @@ pub async fn resolve_policy_from_storage(
 /// With `Some(base)`, absolute and document-relative `acl:accessTo` /
 /// `acl:default` targets on the configured origin match as paths, targets on
 /// any other origin match nothing, and relative `acl:agent` IRIs resolve
-/// against the ACL's own URL (see [`AclBase`]). With `None` the document is
+/// against the ACL's own URL (see [`AclBase`](crate::wac::iri::AclBase)). With `None` the document is
 /// returned as parsed, so absolute targets keep failing closed.
 #[cfg(feature = "tokio-runtime")]
 pub async fn resolve_policy_from_storage_with_base(

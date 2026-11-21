@@ -285,8 +285,8 @@ pub fn parse_jsonld(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
 ///
 /// # Errors
 ///
-/// [`PodError::BadRequest`] for a term oxrdf rejects, a blank-node predicate or
-/// a predicate under `base_iri`; [`PodError::Internal`] if serialisation fails.
+/// [`PodError::BadRequest`] for a term oxrdf rejects, a blank-node predicate,
+/// a predicate under `base_iri`, or a failed serialisation.
 ///
 /// # Example
 ///
