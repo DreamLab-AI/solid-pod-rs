@@ -4172,6 +4172,31 @@ fn format_error_chain(e: &actix_web::Error) -> String {
 // Dotfile allowlist middleware
 // ---------------------------------------------------------------------------
 
+/// The mount prefixes of compiled-in app plugins, which own every path
+/// beneath them (no pod resource lives there).
+#[cfg(feature = "forge")]
+const PLUGIN_PREFIXES: &[&str] = &["/forge"];
+#[cfg(not(feature = "forge"))]
+const PLUGIN_PREFIXES: &[&str] = &[];
+
+/// True when `path` is the mount of a compiled-in app plugin or lies under
+/// it, so the [`DotfileGuard`] defers to the plugin (SP-PAR-291).
+///
+/// The match is on a whole path segment (`/forge` or `/forge/...`, never
+/// `/forgery`), on the raw request path, and a path with a `.` or `..`
+/// segment (also percent-encoded, also double-encoded) never qualifies, so a
+/// plugin prefix cannot be used to walk out to a protected dotfile such as
+/// `/forge/../.env`.
+fn plugin_prefix_owns(path: &str) -> bool {
+    if path_is_traversal(path) {
+        return false;
+    }
+    PLUGIN_PREFIXES.iter().any(|p| {
+        path.strip_prefix(p)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
 /// Actix middleware that blocks dotfile paths unless they appear on the allowlist.
 pub struct DotfileGuard {
     allow: Arc<DotfileAllowlist>,
@@ -4260,8 +4285,13 @@ where
         // surface (`.info`, `.balance`, `.deposit`, `.offers`, `.sell`,
         // `.swap`, `.pool`) is dot-prefixed protocol endpoints, not pod
         // dotfiles, so the dotfile allowlist must not shadow them.
-        let allow_system_route =
-            path.starts_with("/.well-known/") || path == "/.pods" || path.starts_with("/pay/");
+        // An app-plugin mount (`/forge`) owns its whole prefix: its routes are
+        // registered ahead of the pod handlers, so the plugin, not the pod
+        // store, answers and applies its own dot-segment rules (JSS `#206`).
+        let allow_system_route = path.starts_with("/.well-known/")
+            || path == "/.pods"
+            || path.starts_with("/pay/")
+            || plugin_prefix_owns(&path);
         if !allow_system_route {
             let pb = PathBuf::from(&path);
             if !self.allow.is_allowed(Path::new(&pb)) {

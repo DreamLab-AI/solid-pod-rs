@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The dotfile guard defers to the `/forge` plugin mount** (SP-PAR-291), so a dot segment under it reaches
+  the forge instead of a 403 from the guard. Whole-segment match, forge feature only, never for a path with a
+  `.` or `..` segment.
 - **An insert-only PATCH needs only `acl:Append`** (SP-PAR-273): an N3 Patch with no `solid:deletes` and no
   `solid:where`, or a SPARQL Update of `INSERT DATA` only, no longer needs `acl:Write`. Any delete, `where`,
   `INSERT ... WHERE`, JSON Patch or unparseable body still does. New `ldp::sparql_update_is_insert_only`.
