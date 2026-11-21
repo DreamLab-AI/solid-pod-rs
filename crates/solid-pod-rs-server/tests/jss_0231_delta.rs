@@ -241,3 +241,37 @@ async fn failed_if_match_put_into_a_missing_container_creates_nothing() {
     assert_eq!(resp.status().as_u16(), 404);
     assert!(!exists_on_disk(&dir, "public/nodir2"));
 }
+
+/// A stored Turtle document whose subject is itself (`<>`) reads back, in a
+/// negotiated JSON-LD representation, as that document and not as its
+/// container (JSS #656 stored it as `"@id": "."`, which moved the triples).
+#[actix_web::test]
+async fn self_describing_turtle_document_keeps_its_own_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = fs_storage(&dir).await;
+    storage
+        .put(
+            "/pub/doc.ttl",
+            Bytes::from("<> <http://purl.org/dc/terms/title> \"t\" .\n"),
+            "text/turtle",
+        )
+        .await
+        .unwrap();
+    let app = test::init_service(build_app(AppState::new(storage))).await;
+    for accept in ["application/ld+json", "application/n-triples"] {
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/pub/doc.ttl")
+                .insert_header(("accept", accept))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status().as_u16(), 200, "{accept}");
+        let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        assert!(body.contains("/pub/doc.ttl"), "{accept}: {body}");
+        assert!(!body.contains("\"@id\":\".\""), "{accept}: {body}");
+        assert!(!body.contains("\"@id\":\"/pub/\""), "{accept}: {body}");
+        assert!(!body.contains("<http://localhost:8080/pub/> "), "{accept}: {body}");
+    }
+}
