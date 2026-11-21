@@ -633,6 +633,63 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn public_type_index_acl_grants_on_the_request_path_given_the_pod_origin() {
+            // SP-PAR-288: the ACL above names an absolute IRI, and the server
+            // evaluates the request PATH. The test above evaluates the IRI
+            // itself, which hides that an absolute target only grants once the
+            // pod origin is known.
+            let (pod, outcome) = provision_default_pod().await;
+            let (body, _) = pod.get(PUBLIC_TYPE_INDEX_ACL_PATH).await.unwrap();
+            let doc = parse_turtle_acl(std::str::from_utf8(&body).unwrap()).unwrap();
+            let pod_root = url::Url::parse(&outcome.pod_root).expect("pod root is absolute");
+            let request_path = format!(
+                "{}{}",
+                pod_root.path().trim_end_matches('/'),
+                PUBLIC_TYPE_INDEX_PATH
+            );
+            let origin = format!(
+                "{}://{}",
+                pod_root.scheme(),
+                pod_root.host_str().expect("pod root has a host")
+            );
+            // Without a configured origin the absolute target fails closed.
+            assert!(!evaluate_access(
+                Some(&doc),
+                None,
+                &request_path,
+                AccessMode::Read,
+                None
+            ));
+            // With it, anonymous read is granted on the request path, write is not.
+            let base = crate::wac::AclBase::new(&origin).expect("usable origin");
+            let resolved = base.resolve_document(&doc, PUBLIC_TYPE_INDEX_ACL_PATH);
+            assert!(evaluate_access(
+                Some(&resolved),
+                None,
+                &request_path,
+                AccessMode::Read,
+                None
+            ));
+            assert!(!evaluate_access(
+                Some(&resolved),
+                None,
+                &request_path,
+                AccessMode::Write,
+                None
+            ));
+            // Another origin's base never grants the same document.
+            let other = crate::wac::AclBase::new("https://other.example").unwrap();
+            let foreign = other.resolve_document(&doc, PUBLIC_TYPE_INDEX_ACL_PATH);
+            assert!(!evaluate_access(
+                Some(&foreign),
+                None,
+                &request_path,
+                AccessMode::Read,
+                None
+            ));
+        }
+
+        #[tokio::test]
         async fn private_type_index_has_no_sibling_acl() {
             let (pod, _) = provision_default_pod().await;
             let missing = "/settings/privateTypeIndex.jsonld.acl";

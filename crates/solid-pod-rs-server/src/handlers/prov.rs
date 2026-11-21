@@ -91,7 +91,13 @@ pub(crate) async fn resolve_anchor_policy(
     state: &AppState,
     resource_path: &str,
 ) -> (AnchorPolicy, Option<String>) {
-    let acl = match crate::find_effective_acl_dyn(&*state.storage, resource_path).await {
+    let acl = match crate::find_effective_acl_dyn(
+        &*state.storage,
+        resource_path,
+        state.acl_base().as_ref(),
+    )
+    .await
+    {
         Ok(Some(doc)) => doc,
         _ => return (AnchorPolicy::Never, None),
     };

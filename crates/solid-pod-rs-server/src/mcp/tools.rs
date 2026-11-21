@@ -109,7 +109,13 @@ async fn wac_check(state: &AppState, ctx: &McpCtx, path: &str, mode: AccessMode)
         return false;
     };
     let (check_path, effective_mode) = crate::guarded_acl_target(&path, mode);
-    let acl_doc = match crate::find_effective_acl_dyn(&*state.storage, &check_path).await {
+    let acl_doc = match crate::find_effective_acl_dyn(
+        &*state.storage,
+        &check_path,
+        state.acl_base().as_ref(),
+    )
+    .await
+    {
         Ok(doc) => doc,
         Err(_) => return false,
     };

@@ -495,6 +495,14 @@ pub fn body_cap_from_env() -> usize {
 }
 
 impl AppState {
+    /// The pod origin ACL IRIs resolve against (SP-PAR-288, SP-PAR-289),
+    /// from `public_base_url` only: never a request `Host` or a forwarding
+    /// header. `None` (unset, or not a bare `scheme://authority`) keeps the
+    /// evaluator fail-closed for absolute and relative targets.
+    pub fn acl_base(&self) -> Option<wac::AclBase> {
+        self.public_base_url.as_deref().and_then(wac::AclBase::new)
+    }
+
     /// The configured public origin (`scheme://authority`), if any.
     pub fn public_origin(&self) -> Option<String> {
         self.public_base_url
@@ -1037,6 +1045,12 @@ async fn check_proposed_acl(
     if wac::validate_acl_document(&doc).is_err() {
         return Err(AclRefusal::WouldLockOut);
     }
+    // Judge the candidate exactly as admission will read it: with the
+    // configured origin its absolute and relative IRIs resolve (SP-PAR-288).
+    let doc = match state.acl_base() {
+        Some(base) => base.resolve_document(&doc, path),
+        None => doc,
+    };
     // The historical Turtle policy reader is lenient. Check its syntax with
     // the existing RDF parser as well, including COPY (which has no generic
     // request-body validation). The parsed graph is not used as a new policy
@@ -1137,7 +1151,7 @@ async fn enforce_write_inner(
     // ADR-2005: resolve with typed outcomes. A missing policy inherits (the
     // walk already did that); an invalid or unreadable one denies here and is
     // never allowed to fall through to a broader ancestor grant.
-    let outcome = resolve_policy_dyn(&*state.storage, &resource).await;
+    let outcome = resolve_policy_dyn(&*state.storage, &resource, state.acl_base().as_ref()).await;
     if outcome.is_failure() {
         return Err(policy_failure_to_actix(&outcome, &resource));
     }
@@ -1364,7 +1378,7 @@ async fn enforce_read_inner(
     let (resource, eff_mode) = guarded_acl_target(path, AccessMode::Read);
     // ADR-2005: see `enforce_write_ctx` — invalid/unavailable policy denies
     // rather than inheriting an ancestor's broader grant.
-    let outcome = resolve_policy_dyn(&*state.storage, &resource).await;
+    let outcome = resolve_policy_dyn(&*state.storage, &resource, state.acl_base().as_ref()).await;
     if outcome.is_failure() {
         return Err(policy_failure_to_actix(&outcome, &resource));
     }
@@ -2749,8 +2763,9 @@ fn acl_targets_as_paths(graph: ldp::Graph, origin: &str) -> ldp::Graph {
 pub(crate) async fn find_effective_acl_dyn(
     storage: &dyn Storage,
     resource_path: &str,
+    base: Option<&wac::AclBase>,
 ) -> Result<Option<wac::AclDocument>, PodError> {
-    resolve_policy_dyn(storage, resource_path)
+    resolve_policy_dyn(storage, resource_path, base)
         .await
         .into_result()
 }
@@ -2762,8 +2777,9 @@ pub(crate) async fn find_effective_acl_dyn(
 pub(crate) async fn resolve_policy_dyn(
     storage: &dyn Storage,
     resource_path: &str,
+    base: Option<&wac::AclBase>,
 ) -> wac::PolicyOutcome {
-    wac::resolve_policy_from_storage(storage, resource_path).await
+    wac::resolve_policy_from_storage_with_base(storage, resource_path, base).await
 }
 
 /// Map a failed [`wac::PolicyOutcome`] onto the response the WAC gate must

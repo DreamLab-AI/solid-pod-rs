@@ -369,6 +369,23 @@ pub async fn resolve_policy_from_storage(
     storage: &dyn Storage,
     resource_path: &str,
 ) -> PolicyOutcome {
+    resolve_policy_from_storage_with_base(storage, resource_path, None).await
+}
+
+/// As [`resolve_policy_from_storage`], resolving the IRIs inside the found
+/// ACL against the configured pod origin (SP-PAR-288, SP-PAR-289).
+///
+/// With `Some(base)`, absolute and document-relative `acl:accessTo` /
+/// `acl:default` targets on the configured origin match as paths, targets on
+/// any other origin match nothing, and relative `acl:agent` IRIs resolve
+/// against the ACL's own URL (see [`AclBase`]). With `None` the document is
+/// returned as parsed, so absolute targets keep failing closed.
+#[cfg(feature = "tokio-runtime")]
+pub async fn resolve_policy_from_storage_with_base(
+    storage: &dyn Storage,
+    resource_path: &str,
+    base: Option<&crate::wac::iri::AclBase>,
+) -> PolicyOutcome {
     let mut path = resource_path.to_string();
     // The first iteration probes the resource's OWN `.acl` sidecar (a direct
     // ACL); every later iteration walks up to an ANCESTOR container, whose ACL
@@ -389,6 +406,12 @@ pub async fn resolve_policy_from_storage(
             Err(e) => PolicyRead::Failed(e.to_string()),
         };
         match classify_policy_read(&acl_key, read, inherited) {
+            PolicyStep::Settled(PolicyOutcome::Found(doc)) => {
+                return PolicyOutcome::Found(match base {
+                    Some(b) => b.resolve_document(&doc, &acl_key),
+                    None => doc,
+                });
+            }
             PolicyStep::Settled(outcome) => return outcome,
             PolicyStep::Ascend => {}
         }
@@ -437,13 +460,26 @@ pub trait AclResolver: Send + Sync {
 #[cfg(feature = "tokio-runtime")]
 pub struct StorageAclResolver<S: Storage> {
     storage: std::sync::Arc<S>,
+    base: Option<crate::wac::iri::AclBase>,
 }
 
 #[cfg(feature = "tokio-runtime")]
 impl<S: Storage> StorageAclResolver<S> {
     /// Wrap a shared storage handle in a resolver.
     pub fn new(storage: std::sync::Arc<S>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            base: None,
+        }
+    }
+
+    /// Resolve ACL IRIs against the configured pod origin (see
+    /// [`AclBase`](crate::wac::iri::AclBase)). Without it absolute targets
+    /// fail closed.
+    #[must_use]
+    pub fn with_base(mut self, base: Option<crate::wac::iri::AclBase>) -> Self {
+        self.base = base;
+        self
     }
 }
 
@@ -462,6 +498,7 @@ impl<S: Storage> AclResolver for StorageAclResolver<S> {
     }
 
     async fn resolve_policy(&self, resource_path: &str) -> PolicyOutcome {
-        resolve_policy_from_storage(&*self.storage, resource_path).await
+        resolve_policy_from_storage_with_base(&*self.storage, resource_path, self.base.as_ref())
+            .await
     }
 }

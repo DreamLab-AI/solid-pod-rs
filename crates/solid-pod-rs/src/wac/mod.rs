@@ -114,6 +114,7 @@ pub mod client;
 pub mod conditions;
 pub mod document;
 pub mod evaluator;
+pub mod iri;
 pub mod issuer;
 pub mod origin;
 pub mod parser;
@@ -137,6 +138,7 @@ pub use evaluator::{
     evaluate_access, evaluate_access_ctx, evaluate_access_ctx_with_registry,
     evaluate_access_with_groups, granted_payment_cost, GroupMembership, StaticGroupMembership,
 };
+pub use iri::AclBase;
 pub use issuer::{IssuerConditionBody, IssuerConditionEvaluator};
 pub use origin::{check_origin, extract_origin_patterns, Origin, OriginDecision, OriginPattern};
 pub use parser::{parse_turtle_acl, parse_turtle_acl_with_limit};
@@ -146,7 +148,9 @@ pub use resolver::{
     PolicyOutcome, PolicyRead, PolicyStep,
 };
 #[cfg(feature = "tokio-runtime")]
-pub use resolver::{resolve_policy_from_storage, StorageAclResolver};
+pub use resolver::{
+    resolve_policy_from_storage, resolve_policy_from_storage_with_base, StorageAclResolver,
+};
 pub use serializer::serialize_turtle_acl;
 
 /// Access modes defined by WAC.
