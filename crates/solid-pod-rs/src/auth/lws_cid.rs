@@ -402,16 +402,12 @@ fn parse_profile(data: &[u8]) -> Result<ProfileData, String> {
 }
 
 fn extract_json_ld_from_html(html: &str) -> Result<serde_json::Value, String> {
-    let start = html
-        .find("application/ld+json")
+    // The shared locator (`crate::html_island`): the first
+    // `<script type="application/ld+json">` element an HTML parser sees.
+    let island = crate::html_island::first_jsonld_island(html)
+        .map_err(|e| e.to_string())?
         .ok_or("no JSON-LD data island in HTML profile")?;
-    let tag_end = html[start..].find('>').ok_or("malformed script tag")?;
-    let json_start = start + tag_end + 1;
-    let script_end = html[json_start..]
-        .find("</script>")
-        .ok_or("unclosed script tag")?;
-    let json_str = html[json_start..json_start + script_end].trim();
-    serde_json::from_str(json_str).map_err(|e| format!("JSON-LD parse: {e}"))
+    serde_json::from_str(island.trim()).map_err(|e| format!("JSON-LD parse: {e}"))
 }
 
 fn parse_verification_methods(doc: &serde_json::Value) -> Vec<VmEntry> {

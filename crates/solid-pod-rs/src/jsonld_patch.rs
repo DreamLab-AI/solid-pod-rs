@@ -305,9 +305,13 @@ struct TermDef {
     simple: bool,
 }
 
+/// Most terms a patchable context may define.
+const MAX_CONTEXT_TERMS: usize = 1_000;
+
 #[derive(Debug, Default)]
 struct Ctx {
     terms: Vec<TermDef>,
+    index: HashMap<String, usize>,
 }
 
 fn is_absolute(s: &str) -> bool {
@@ -339,7 +343,7 @@ struct RawDef {
 
 impl Ctx {
     fn term(&self, name: &str) -> Option<&TermDef> {
-        self.terms.iter().find(|t| t.name == name)
+        self.index.get(name).map(|&i| &self.terms[i])
     }
 
     fn from_value(v: Option<&Val>) -> R<Ctx> {
@@ -349,6 +353,9 @@ impl Ctx {
         let Kind::Obj(members) = &v.kind else {
             return no("@context is not one inline object");
         };
+        if members.len() > MAX_CONTEXT_TERMS {
+            return no("the @context defines too many terms");
+        }
         let mut raw: Vec<(String, RawDef)> = Vec::new();
         for m in members {
             if m.key.starts_with('@') || m.key.is_empty() || m.key.contains(':') {
@@ -402,6 +409,7 @@ impl Ctx {
                     None => return no("a datatype does not expand to an IRI"),
                 },
             };
+            ctx.index.insert(name.clone(), ctx.terms.len());
             ctx.terms.push(TermDef {
                 name: name.clone(),
                 iri,
@@ -581,6 +589,9 @@ impl Reader<'_> {
                     id = Some(self.resolve(s)?);
                 }
                 "@type" => {
+                    if matches!(&m.val.kind, Kind::Arr(a) if a.is_empty()) {
+                        return no("an empty array");
+                    }
                     let items: Vec<&Val> = match &m.val.kind {
                         Kind::Arr(a) => a.iter().collect(),
                         _ => vec![&m.val],
@@ -616,6 +627,9 @@ impl Reader<'_> {
                     };
                     let def = def.cloned();
                     let was_array = matches!(m.val.kind, Kind::Arr(_));
+                    if matches!(&m.val.kind, Kind::Arr(a) if a.is_empty()) {
+                        return no("an empty array");
+                    }
                     let items: Vec<(usize, &Val)> = match &m.val.kind {
                         Kind::Arr(a) => a.iter().enumerate().collect(),
                         _ => vec![(0, &m.val)],
@@ -1002,13 +1016,17 @@ fn apply_edits(text: &str, mut edits: Vec<Edit>) -> R<String> {
             return no("two edits overlap");
         }
     }
-    let mut out = text.to_string();
-    for e in edits.iter().rev() {
-        if !(out.is_char_boundary(e.start) && out.is_char_boundary(e.end)) {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for e in &edits {
+        if !(text.is_char_boundary(e.start) && text.is_char_boundary(e.end)) || e.end > text.len() {
             return no("internal: edit off a character boundary");
         }
-        out.replace_range(e.start..e.end, &e.text);
+        out.push_str(&text[at..e.start]);
+        out.push_str(&e.text);
+        at = e.end;
     }
+    out.push_str(&text[at..]);
     Ok(out)
 }
 
@@ -1688,6 +1706,7 @@ mod tests {
             ("duplicate key", format!("{{{ctx}, \"@id\": \"#a\", \"foaf:name\": \"x\", \"foaf:name\": \"y\"}}")),
             ("no id", format!("{{{ctx}, \"foaf:name\": \"x\"}}")),
             ("top-level array", "[{\"@id\": \"http://e/a\"}]".to_string()),
+            ("empty array", format!("{{{ctx}, \"@id\": \"#a\", \"foaf:knows\": []}}")),
             ("scoped context", "{\"@context\": {\"p\": {\"@id\": \"http://e/p\", \"@context\": {}}}, \"@id\": \"#a\"}".to_string()),
             ("nested @graph", format!("{{{ctx}, \"@id\": \"#a\", \"foaf:knows\": {{\"@id\": \"#b\", \"@graph\": []}}}}")),
         ] {
@@ -1780,6 +1799,18 @@ mod tests {
             crate::webid::extract_cid_openid_provider(html.as_bytes())
         );
         crate::oidc::check_profile_declares_issuer(new.as_bytes(), "https://op.example").unwrap();
+    }
+
+    #[test]
+    fn an_oversized_context_is_refused_before_it_costs_anything() {
+        let terms: Vec<String> = (0..=MAX_CONTEXT_TERMS)
+            .map(|i| format!("\"t{i}\": \"http://e/p{i}\""))
+            .collect();
+        let doc = format!(
+            "{{\"@context\": {{{}}}, \"@id\": \"#a\", \"t1\": \"x\"}}",
+            terms.join(", ")
+        );
+        assert!(StoredDocument::open(doc.as_bytes(), "application/ld+json", BASE).is_err());
     }
 
     #[test]

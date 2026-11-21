@@ -79,6 +79,10 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > path (`a_delete_that_names_an_absent_triple_is_409_in_both_dialects_and_writes_nothing`). (5) *The island is found by a
 > real HTML parser, and by the readers' locator*: `html_island` (html5ever) is the one locator; `webid.rs` reads through
 > `first_jsonld_island`, the writer through `sole_jsonld_island` (exactly one element; zero or several is 409). The
+> other server-side readers of a WebID profile island were string searches too and now go through the same function:
+> `auth/lws_cid.rs`, `auth/nip98.rs` (`try_elevate`) and `solid-pod-rs-nostr/src/resolver.rs`; there is no conneg reader of
+> HTML islands (`rdf_content_negotiate` reads stored JSON-LD, not HTML). The one remaining string search is the
+> provisioning-time writer `key_provisioning::patch_webid_with_nostr_pubkey`, which runs on a card the server generated. The
 > parser gives no source offsets, so the writer splices the new text where the parsed text occurs and accepts the result
 > only if the re-parsed page is the original tree with that one text node changed (doctype, comments, attributes,
 > template contents, all other text). Written JSON escapes `<` and U+2028/2029. (6) *Base no caller can name*: the base is

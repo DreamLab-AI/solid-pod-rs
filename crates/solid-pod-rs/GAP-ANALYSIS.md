@@ -938,7 +938,8 @@ solid-pod-rs has **at most 89.6% strict parity** (251/280 classified in-scope ro
 derived from [`PARITY-CHECKLIST.md`](./PARITY-CHECKLIST.md)) as of the 2026-11-01
 JSS `7c9b0de` (`0.0.224`) / plugins `63a16cb` audit. The spec-normative surface is
 not complete: ACL IRI resolution, JSON-LD ACL reading and JSON-LD PATCH are open
-(checklist §26–§27). Six net-new features push us **ahead** of
+(checklist §26–§27; 2026-11-21: the first two are done, and JSON-LD PATCH is
+`partial-parity` in a narrow shape, row 276). Six net-new features push us **ahead** of
 JSS: `Prefer` header composition, JSON Patch dialect, `acl:agentGroup`
 enforcement, `acl:origin` enforcement, WAC 2.0 fail-closed unknown
 conditions (with 422-on-PUT stricter surface), and Turtle ACL

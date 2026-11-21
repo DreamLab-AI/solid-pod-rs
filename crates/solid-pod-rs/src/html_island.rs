@@ -48,6 +48,10 @@ use markup5ever_rcdom::{Handle, NodeData, RcDom};
 /// RDF at that size is not parsed as HTML either.
 pub const MAX_HTML_BYTES: usize = crate::rdf_input::MAX_RDF_INPUT_BYTES;
 
+/// Most places the island's text may occur as a script element's whole
+/// content before [`SoleIsland::replace`] refuses (each costs a full parse).
+const MAX_SPLICE_CANDIDATES: usize = 8;
+
 /// Why an island could not be located or replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IslandError {
@@ -226,7 +230,10 @@ impl SoleIsland {
 
         let bytes = html.as_bytes();
         let t = self.text.as_bytes();
-        let mut accepted: Option<String> = None;
+        // Every place the parsed text sits between a `>` and a `</script`.
+        // Each candidate costs one full parse, so a page that offers more
+        // than a handful is refused rather than tried.
+        let mut candidates: Vec<usize> = Vec::new();
         let mut from = 0;
         while let Some(rel) = html[from..].find(self.text.as_str()) {
             let at = from + rel;
@@ -238,9 +245,16 @@ impl SoleIsland {
             let closes = bytes
                 .get(end..end + 8)
                 .is_some_and(|b| b.eq_ignore_ascii_case(b"</script"));
-            if at == 0 || bytes[at - 1] != b'>' || !closes {
-                continue;
+            if at > 0 && bytes[at - 1] == b'>' && closes {
+                candidates.push(at);
+                if candidates.len() > MAX_SPLICE_CANDIDATES {
+                    return Err(IslandError::Altered);
+                }
             }
+        }
+        let mut accepted: Option<String> = None;
+        for at in candidates {
+            let end = at + t.len();
             let mut out = String::with_capacity(html.len() - t.len() + new_text.len());
             out.push_str(&html[..at]);
             out.push_str(new_text);
@@ -416,6 +430,14 @@ mod tests {
             sole_jsonld_island(&ok).unwrap().text,
             "{\"a\": \"<b>&amp;</b>\"}"
         );
+    }
+
+    #[test]
+    fn many_look_alike_scripts_are_refused_not_parsed_one_by_one() {
+        let decoys = "<script type=\"text/plain\">{}</script>".repeat(50);
+        let h = format!("{decoys}<script type=\"application/ld+json\">{{}}</script>");
+        let isl = sole_jsonld_island(&h).unwrap();
+        assert_eq!(isl.replace(&h, "{\"a\": 1}"), Err(IslandError::Altered));
     }
 
     #[test]

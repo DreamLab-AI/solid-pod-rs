@@ -402,17 +402,12 @@ fn scan_text_for_did_nostr(body: &str) -> Option<NostrPubkey> {
 }
 
 fn extract_json_ld_island(html: &str) -> Option<String> {
-    // Find `<script type="application/ld+json">…</script>`. Case-insensitive
-    // attribute match, tolerant of single/double quotes and whitespace.
-    let lower = html.to_ascii_lowercase();
-    let marker_ix = lower.find("application/ld+json")?;
-    // Walk forward to the closing '>' of the opening tag.
-    let after_marker = &html[marker_ix..];
-    let open_end = after_marker.find('>')?;
-    let body_start = marker_ix + open_end + 1;
-    let after_open = &lower[body_start..];
-    let close_ix = after_open.find("</script>")?;
-    Some(html[body_start..body_start + close_ix].to_string())
+    // The first `<script type="application/ld+json">` element as an HTML
+    // parser sees it: the one locator the WebID readers and the PATCH writer
+    // share (`solid_pod_rs::html_island`).
+    solid_pod_rs::html_island::first_jsonld_island(html)
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
