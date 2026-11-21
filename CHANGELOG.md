@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Only `GET /.notifications` passes the dotfile guard** (SP-PAR-279 follow-up). The carve-out ignored the
+  method, so a PUT by a root Write holder created a `/.notifications` dotfile the guard otherwise refuses.
 - **`/.notifications` is bounded per peer and reaps dead sockets** (SP-PAR-279 follow-up): 16 sockets per remote
   address beside the global 1024, a ping every 30 s, a close after 90 s of silence, a 100-subscription and 4 KiB
   frame cap per socket. The empty-`allowed_origins` policy is now documented plainly (module doc and README).

@@ -473,3 +473,54 @@ async fn a_socket_cannot_hold_more_than_the_subscription_cap() {
         Some("err subscription limit reached")
     );
 }
+
+/// Only the GET upgrade is carved out of the dotfile guard: any other method
+/// on `/.notifications` is the refused dotfile it always was, so a Write
+/// holder cannot use the carve-out to create a dotfile in the pod root.
+#[actix_web::test]
+async fn only_get_passes_the_dotfile_guard_on_the_notifications_path() {
+    use actix_web::http::Method;
+    use actix_web::test::{call_service, init_service, TestRequest};
+    let storage = Arc::new(MemoryBackend::new());
+    // Everyone may do everything: only the dotfile guard can refuse.
+    put(
+        &storage,
+        "/.acl",
+        &format!(
+            "{ACL}<#a> a acl:Authorization ; acl:agentClass foaf:Agent ; acl:accessTo </> ; acl:default </> ; acl:mode acl:Read, acl:Write, acl:Control .\n"
+        ),
+    )
+    .await;
+    let app = init_service(build_app(AppState::new(storage.clone()))).await;
+    for m in [
+        Method::PUT,
+        Method::DELETE,
+        Method::HEAD,
+        Method::POST,
+        Method::PATCH,
+        Method::OPTIONS,
+    ] {
+        let rsp = call_service(
+            &app,
+            TestRequest::default()
+                .method(m.clone())
+                .uri("/.notifications")
+                .insert_header(("content-type", "text/plain"))
+                .set_payload("x")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            rsp.status().as_u16(),
+            403,
+            "{m} must be refused by the dotfile guard"
+        );
+    }
+    assert!(
+        !storage.exists("/.notifications").await.unwrap(),
+        "no dotfile was created"
+    );
+    // GET reaches the route (a non-upgrade GET is a 400 from the upgrade, not 403).
+    let rsp = call_service(&app, TestRequest::get().uri("/.notifications").to_request()).await;
+    assert_ne!(rsp.status().as_u16(), 403);
+}

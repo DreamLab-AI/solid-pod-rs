@@ -4578,7 +4578,8 @@ impl DotfileGuard {
         }
     }
 
-    /// Let the exact path `/.notifications` through: set only when the
+    /// Let `GET /.notifications` (the WebSocket upgrade, and nothing else: no
+    /// other method) through: set only when the
     /// notification route is mounted, so with it off the name stays a refused
     /// dotfile like any other (SP-PAR-279).
     pub fn with_notifications_route(mut self, mounted: bool) -> Self {
@@ -4658,7 +4659,9 @@ where
         let allow_system_route = path.starts_with("/.well-known/")
             || path == "/.pods"
             || path.starts_with("/pay/")
-            || (self.notifications && path == "/.notifications")
+            || (self.notifications
+                && path == "/.notifications"
+                && req.method() == actix_web::http::Method::GET)
             || plugin_prefix_owns(&path);
         if !allow_system_route {
             let pb = PathBuf::from(&path);
