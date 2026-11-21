@@ -418,22 +418,57 @@ pub async fn verify_dpop_proof_with_ath(
     // F5: replay check after signature/claim validation so we never
     // admit a tampered proof into the cache.
     if let Some(cache) = replay_cache {
-        if let Err(e) = cache.check_and_record(&verified.jti).await {
-            match e {
-                ReplayError::Replayed { .. } => {
-                    DPOP_REPLAY_REJECTED_TOTAL.increment();
-                    return Err(PodError::Nip98(format!("DPoP jti replay detected: {e}")));
-                }
-                // Fail closed: admitting a proof we cannot record would let it
-                // be replayed.
-                ReplayError::CapacityExhausted { .. } => {
-                    return Err(PodError::Nip98(format!("DPoP proof refused: {e}")));
-                }
-            }
-        }
+        record_dpop_jti(cache, &verified.jti).await?;
     }
 
     Ok(verified)
+}
+
+/// The one client-facing message for a DPoP proof refused by the replay
+/// cache, whether the `jti` was replayed or the cache is full. The two must
+/// not be distinguishable from outside (a full cache must not reveal its
+/// size or lifetime); the detail goes to the server log only.
+pub const DPOP_REPLAY_REFUSED_MESSAGE: &str = "DPoP proof rejected";
+
+/// Verify a DPoP proof (signature, `typ`, `htu`, `htm`, `iat` window) WITHOUT
+/// touching any replay cache.
+///
+/// For callers that must finish their own authorisation before the `jti` is
+/// spent (the IdP token endpoint: an unauthenticated client invents the proof
+/// key, so recording at this point would let it fill the cache with valid
+/// proofs). Such a caller MUST then call [`record_dpop_jti`], and issue
+/// nothing if that fails.
+pub fn verify_dpop_proof_unrecorded(
+    proof: &str,
+    expected_htu: &str,
+    expected_htm: &str,
+    now: u64,
+    skew: u64,
+) -> Result<DpopVerified, PodError> {
+    verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew, None)
+}
+
+/// Record a verified proof's `jti` in `cache`, refusing a replay.
+///
+/// A replayed `jti` and a full cache both fail closed with the same
+/// [`DPOP_REPLAY_REFUSED_MESSAGE`]; the specific reason is logged only.
+///
+/// # Errors
+///
+/// [`PodError::Nip98`] when the `jti` was already seen inside the cache's
+/// lifetime, or the cache has no room for a live entry.
+#[cfg(feature = "dpop-replay-cache")]
+pub async fn record_dpop_jti(cache: &DpopReplayCache, jti: &str) -> Result<(), PodError> {
+    match cache.check_and_record(jti).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if matches!(e, ReplayError::Replayed { .. }) {
+                DPOP_REPLAY_REJECTED_TOTAL.increment();
+            }
+            tracing::warn!("DPoP proof refused by the replay cache: {e}");
+            Err(PodError::Nip98(DPOP_REPLAY_REFUSED_MESSAGE.into()))
+        }
+    }
 }
 
 /// Pre-F5 synchronous signature, retained when the replay-cache

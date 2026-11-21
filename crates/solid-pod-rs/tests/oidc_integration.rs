@@ -347,7 +347,7 @@ async fn oidc_dpop_proof_replay_cache_blocks_second_use() {
     let err = verify_dpop_proof(&proof, htu, "GET", now, 60, Some(&cache))
         .await
         .expect_err("replay must be blocked");
-    assert!(format!("{err}").to_lowercase().contains("replay"));
+    assert!(format!("{err}").contains("DPoP proof rejected"), "{err}");
 
     // Backwards-compat guarantee: same proof with `None` cache is
     // accepted (replay detection is strictly opt-in).

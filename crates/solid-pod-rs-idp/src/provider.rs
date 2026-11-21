@@ -34,7 +34,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use solid_pod_rs::oidc::{verify_dpop_proof, DpopReplayCache};
+use solid_pod_rs::oidc::{record_dpop_jti, verify_dpop_proof_unrecorded, DpopReplayCache};
 
 use crate::error::ProviderError;
 use crate::jwks::Jwks;
@@ -107,6 +107,14 @@ impl Provider {
             jwks,
             dpop_replay: DpopReplayCache::from_env(),
         }
+    }
+
+    /// Replace the DPoP `jti` replay cache (the default is built from the
+    /// environment). For deployments sizing the cache themselves, and tests.
+    #[must_use]
+    pub fn with_dpop_replay_cache(mut self, cache: DpopReplayCache) -> Self {
+        self.dpop_replay = cache;
+        self
     }
 
     /// Access the JWKS (for serving `/.well-known/jwks.json`).
@@ -238,15 +246,19 @@ impl Provider {
             .ok_or_else(|| ProviderError::InvalidDpop("missing DPoP header".into()))?;
 
         let expected_htu = format!("{}/idp/token", self.config.issuer.trim_end_matches('/'));
-        let verified = verify_dpop_proof(
+        // Verify WITHOUT recording the `jti`: the proof is signed by a key the
+        // client invents, so anyone can mint valid ones, and recording here
+        // would let an unauthenticated caller fill the (global, bounded)
+        // replay cache and lock out every real code exchange. The `jti` is
+        // recorded below, once the authorisation code has been accepted, so
+        // insertions are bounded by valid codes.
+        let verified = verify_dpop_proof_unrecorded(
             dpop_proof,
             &expected_htu,
             "POST",
             req.now_unix,
             self.config.dpop_skew_secs,
-            Some(&self.dpop_replay),
         )
-        .await
         .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?;
         let jkt = verified.jkt;
 
@@ -285,6 +297,16 @@ impl Provider {
             .await
             .map_err(|e| ProviderError::UserStore(e.to_string()))?
             .ok_or_else(|| ProviderError::InvalidGrant("account not found".into()))?;
+
+        // Every grant check has passed: spend the proof's `jti` now. A replayed
+        // `jti` (or a full cache) fails the exchange and issues no token. The
+        // code was consumed above and stays consumed, so a replayed proof
+        // cannot be paired with a fresh code to get a token, and the client
+        // must restart the authorisation. Both refusals share one generic
+        // message; the cause is in the server log.
+        record_dpop_jti(&self.dpop_replay, &verified.jti)
+            .await
+            .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?;
 
         // Sign the access token.
         let key = self.jwks.active_key();
@@ -770,11 +792,19 @@ mod tests {
         );
 
         // The proof itself is single-use, independently of the one-time
-        // authorization code. Replay is rejected before code processing.
+        // authorization code. Replaying it with a FRESH valid code is refused
+        // once the grant checks pass (the jti is recorded last).
+        let fresh = p.session_store().issue_code(
+            &client.client_id,
+            "acct-1",
+            "https://app.example/cb",
+            Some(s256(&verifier)),
+            None,
+        );
         let replay_err = p
             .token(TokenRequest {
                 grant_type: "authorization_code".into(),
-                code: &code,
+                code: &fresh.code,
                 redirect_uri: "https://app.example/cb".into(),
                 client_id: client.client_id.clone(),
                 code_verifier: Some(&verifier),

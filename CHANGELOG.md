@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The IdP token endpoint records a DPoP `jti` only after the authorisation code is accepted** (AW1-05
+  follow-up). It recorded first, so an unauthenticated client holding any key could fill the global replay cache
+  with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded` and
+  `oidc::record_dpop_jti`; a replayed `jti` after the code is consumed fails the exchange (the code stays
+  spent) and issues no token. `Provider::with_dpop_replay_cache` added.
+- **A full DPoP replay cache and a replayed proof give the same generic client message** (`DPoP proof rejected`);
+  the capacity and lifetime stay in the server log.
+- **The DPoP `jti` lifetime covers the whole `iat` window** (same class as SP-ID-02): default and floor are
+  `replay::MIN_TTL_SECS` (122 s, `2 * skew + 2`; the default was 60 s, inside the +/-60 s window), and
+  `DpopReplayCache::from_env` no longer accepts a shorter or zero lifetime.
 - **The LWS-CID and did:key JWT verifiers compare `htu` per RFC 9449** (security review follow-up to
   SP-OIDC-03): they lower-cased and trimmed the trailing slash, so a proof for `/r` matched `/r/`. All three
   comparators now share `auth::htu::htu_matches`.
