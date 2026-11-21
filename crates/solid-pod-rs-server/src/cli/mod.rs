@@ -5,7 +5,7 @@
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|
 //! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::QuotaPolicy::reconcile`] |
-//! | `account create/delete/list/export`  | JSS #292 (`d9e56d8`)   | [`FileUserStore`] (`<root>/.server/accounts.json`) |
+//! | `account create/delete/list/export`  | JSS #292 (`d9e56d8`)   | `FileUserStore` (`<root>/.server/accounts.json`) |
 //! | `invite create -u N [--expires-in]`  | JSS #304 (`6578ab9`)   | [`solid_pod_rs_idp::InviteStore`]  |
 //!
 //! Every runner is async and takes an already-constructed store so
