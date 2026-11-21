@@ -121,6 +121,21 @@ struct Cli {
     #[arg(long, env = "JSS_NO_NOTIFICATIONS")]
     no_notifications: bool,
 
+    /// Mount the embedded Nostr relay (NIP-01/11/16) on the pod server. OFF by
+    /// default: it is a public, open relay. WebSocket at `--nostr-path`,
+    /// NIP-11 information at the same URL with `Accept: application/nostr+json`.
+    #[arg(long, env = "JSS_NOSTR")]
+    nostr: bool,
+
+    /// Where the relay is mounted (JSS `--nostr-path`). Only this exact path
+    /// and `<path>/info` belong to the relay; everything else stays a pod path.
+    #[arg(long, env = "JSS_NOSTR_PATH", default_value = "/relay")]
+    nostr_path: String,
+
+    /// Most events the relay keeps in memory (JSS `--nostr-max-events`).
+    #[arg(long, env = "JSS_NOSTR_MAX_EVENTS", default_value_t = 1000)]
+    nostr_max_events: usize,
+
     /// Content negotiation: accept and advertise `text/n3` request bodies
     /// (JSS `--conneg`, `JSS_CONNEG`).
     #[arg(long, env = "JSS_CONNEG")]
@@ -347,6 +362,19 @@ async fn main() -> anyhow::Result<()> {
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
     // baked-in env value can be overridden at the command line.
     state.mcp_enabled = cli.mcp && !cli.no_mcp;
+    if cli.nostr {
+        let mount = solid_pod_rs_server::nostr_mount::NostrMount::new(
+            &cli.nostr_path,
+            cli.nostr_max_events,
+        )
+        .map_err(|e| anyhow::anyhow!("--nostr-path: {e}"))?;
+        info!(
+            path = mount.path(),
+            max_events = cli.nostr_max_events,
+            "Nostr relay mounted"
+        );
+        state.nostr = Some(mount);
+    }
     if cli.no_notifications {
         state.notifications = None;
         info!(

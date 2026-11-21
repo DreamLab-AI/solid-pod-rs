@@ -122,6 +122,7 @@ solid-pod-rs-forge = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-forge
 # Gated by `activitypub` (default-off); pulls the AP crate and its SQLite stack.
 solid-pod-rs-activitypub = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-activitypub", optional = true }
 actix-ws = "0.3"
+solid-pod-rs-nostr = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-nostr" }
 
 [features]
 # Feature umbrella toggles for the server binary.

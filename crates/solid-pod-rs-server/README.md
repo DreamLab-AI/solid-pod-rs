@@ -146,6 +146,17 @@ a change the subscriber cannot read is never announced. The route, the
 `Updates-Via` response header and the `/.well-known/solid` gateway are on
 together and off together with `--no-notifications` (`JSS_NO_NOTIFICATIONS`).
 
+## Nostr relay (`--nostr`)
+
+Off by default. `--nostr` mounts the embedded relay (NIP-01/11/16) at
+`--nostr-path` (default `/relay`, `JSS_NOSTR_PATH`), keeping at most
+`--nostr-max-events` events in memory. `GET <path>` with `Accept:
+application/nostr+json` returns the NIP-11 document; a WebSocket upgrade on the
+same URL speaks NIP-01; a plain GET is `404`. Only `<path>` and `<path>/info`
+belong to the relay (whole path segments, outside WAC); `/relayx` or
+`/relay/other` remain ordinary pod paths under WAC, and a pod resource stored at
+the relay path is shadowed. The relay is open: anyone may publish and subscribe.
+
 ## Agent write path (NIP-98)
 
 Write verbs (`PUT` / `POST` / `PATCH` / `DELETE` / `COPY`) authenticate the

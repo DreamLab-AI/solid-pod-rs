@@ -112,6 +112,7 @@ pub mod activitypub;
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 pub mod cross_identity;
+pub mod nostr_mount;
 pub mod notifications_ws;
 pub mod scheme;
 
@@ -393,6 +394,9 @@ pub struct AppState {
     /// (SP-PAR-279); `None` mounts nothing and advertises nothing. On by
     /// default; `--no-notifications` clears it.
     pub notifications: Option<Arc<notifications_ws::NotifyHub>>,
+    /// The embedded Nostr relay (SP-PAR-278, SP-PAR-280). `None` (the default)
+    /// mounts nothing; `--nostr` sets it.
+    pub nostr: Option<nostr_mount::NostrMount>,
 }
 
 /// Source of the ActivityPub actor document served at
@@ -542,6 +546,7 @@ impl AppState {
             cross_identity: None,
             activitypub: None,
             notifications: Some(notifications_ws::NotifyHub::new()),
+            nostr: None,
         }
     }
 }
@@ -6174,6 +6179,27 @@ pub fn build_app(
             "/.notifications",
             web::get().to(notifications_ws::handle_notifications),
         );
+    }
+
+    // Embedded Nostr relay (off unless `--nostr`). Exactly two paths are the
+    // relay's, registered ahead of the pod handlers: whole segments, never a
+    // prefix, so `/relayx` and `/relay/other` stay ordinary WAC-governed pod
+    // paths.
+    if let Some(mount) = &state.nostr {
+        let info = format!("{}/info", mount.path());
+        app = app
+            .route(mount.path(), web::get().to(nostr_mount::handle_relay))
+            .route(
+                mount.path(),
+                web::method(actix_web::http::Method::OPTIONS)
+                    .to(nostr_mount::handle_relay_preflight),
+            )
+            .route(&info, web::get().to(nostr_mount::handle_relay_info))
+            .route(
+                &info,
+                web::method(actix_web::http::Method::OPTIONS)
+                    .to(nostr_mount::handle_relay_preflight),
+            );
     }
 
     // App discovery endpoint (JSS #464 Phase 2 — public, no auth required).

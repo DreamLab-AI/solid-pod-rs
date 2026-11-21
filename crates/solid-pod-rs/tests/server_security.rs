@@ -70,6 +70,7 @@ async fn public_read_state() -> AppState {
         cross_identity: None,
         activitypub: None,
         notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
+        nostr: None,
     }
 }
 
@@ -119,6 +120,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         cross_identity: None,
         activitypub: None,
         notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
+        nostr: None,
     }
 }
 
@@ -292,6 +294,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         cross_identity: None,
         activitypub: None,
         notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
+        nostr: None,
     };
     let app = test::init_service(build_app(state)).await;
 

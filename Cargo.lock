@@ -4359,6 +4359,7 @@ dependencies = [
  "solid-pod-rs-forge",
  "solid-pod-rs-git",
  "solid-pod-rs-idp",
+ "solid-pod-rs-nostr",
  "subtle",
  "tempfile",
  "tokio",

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The Nostr relay can be mounted: `--nostr`, `--nostr-path`, `--nostr-max-events`, off by default**
+  (SP-PAR-278, SP-PAR-280). `solid-pod-rs-server` now depends on `solid-pod-rs-nostr`. The relay answers the NIP-11
+  information document at its URL (`Accept: application/nostr+json`) and speaks NIP-01 over a WebSocket. Only its
+  two exact paths (`<path>`, `<path>/info`) are exempt from WAC, matched as whole segments; `/relayx` and
+  `/relay/other` remain pod paths. It is an open relay, bounded by the max-events cap, the relay's frame limits and
+  a 256-socket cap.
 - **A PATCH never rebases stored IRIs onto the request `Host`** (SP-PATCH-WRITE-REBASE). The Write path read the
   stored body and the patch against `Host` (unless `public_base_url` was set) and re-serialised every relative IRI
   as an absolute one on that origin, so a Write holder with a hostile `Host` could rewrite the stored document. It
