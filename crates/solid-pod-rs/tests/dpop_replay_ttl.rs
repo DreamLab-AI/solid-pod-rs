@@ -21,12 +21,12 @@ use solid_pod_rs::oidc::DpopReplayCache;
 fn the_floor_covers_the_whole_acceptance_window() {
     // A proof minted `skew` seconds in the future is first seen at `iat - skew`
     // and is still acceptable at `iat + skew`: 2 * skew later.
-    assert!(MIN_TTL_SECS > 2 * DPOP_DEFAULT_SKEW_SECS);
+    const { assert!(MIN_TTL_SECS > 2 * DPOP_DEFAULT_SKEW_SECS) };
     assert_eq!(MIN_TTL_SECS, 122);
     assert_eq!(DEFAULT_TTL_SECS, MIN_TTL_SECS);
     assert_eq!(min_ttl_for_skew(120), 242);
     // The old 60 s default was inside the window, which is the defect.
-    assert!(60 < 2 * DPOP_DEFAULT_SKEW_SECS);
+    const { assert!(60 < 2 * DPOP_DEFAULT_SKEW_SECS) };
 }
 
 #[tokio::test]
