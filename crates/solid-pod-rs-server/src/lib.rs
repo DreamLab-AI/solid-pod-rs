@@ -998,11 +998,6 @@ enum AclRefusal {
     /// protected resource, or that carries an unsupported condition: a
     /// conflict with the lockout guard, `409`.
     WouldLockOut,
-    /// The write would create the second storage form of a container's ACL
-    /// (`<c>.acl` beside `<c>/.acl`, or the reverse) while the first exists:
-    /// the resolver denies a container with both, so the write is refused
-    /// (`409`).
-    TwinForm,
 }
 
 impl AclRefusal {
@@ -1018,53 +1013,9 @@ impl AclRefusal {
                 "refused: the proposed ACL would not grant Control to the caller \
                  (use an absolute WebID, foaf:Agent, or acl:AuthenticatedAgent)",
             ),
-            Self::TwinForm => HttpResponse::Conflict().body(TWIN_FORM_REFUSED),
         }
     }
 }
-
-/// Containers under `root` whose ACL exists in both storage forms
-/// (`<c>.acl` and `<c>/.acl`), as pod paths, and whether the scan stopped at
-/// `max_entries` directory entries. Run once at boot as a warning: the
-/// resolver denies such a container, so the operator should remove one form.
-/// Bounded, so a huge pod cannot stall boot.
-pub fn dual_form_acl_containers(root: &std::path::Path, max_entries: usize) -> (Vec<String>, bool) {
-    let mut found = Vec::new();
-    let mut seen = 0usize;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            seen += 1;
-            if seen > max_entries {
-                return (found, true);
-            }
-            let path = entry.path();
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                // `<c>/.acl` inside this directory, and `<c>.acl` beside it.
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let inside = path.join(".acl").is_file();
-                let sidecar = dir.join(format!("{name}.acl")).is_file();
-                if inside && sidecar {
-                    if let Ok(rel) = path.strip_prefix(root) {
-                        found.push(format!("/{}/", rel.to_string_lossy()));
-                    }
-                }
-                stack.push(path);
-            }
-        }
-    }
-    found.sort();
-    (found, false)
-}
-
-/// Body of the `409` for [`AclRefusal::TwinForm`].
-const TWIN_FORM_REFUSED: &str = "refused: this container already has its ACL in the other \
-     storage form (<container>.acl vs <container>/.acl); a container with both is denied \
-     to everyone, so edit the existing one or delete it first";
 
 impl AclRefusal {
     /// The response for a refusal of ACL bytes the server derived (`PATCH`
@@ -1077,7 +1028,6 @@ impl AclRefusal {
                  (expected JSON-LD or Turtle)",
             ),
             Self::WouldLockOut => HttpResponse::Conflict().body(lockout),
-            Self::TwinForm => HttpResponse::Conflict().body(TWIN_FORM_REFUSED),
         }
     }
 }
@@ -1099,15 +1049,6 @@ async fn check_proposed_acl(
     let Some(resource) = protected_resource_for_acl(path) else {
         return Err(AclRefusal::WouldLockOut);
     };
-    // Creating the second storage form of a container's ACL would leave the
-    // container with both, which the resolver denies. Rewriting the form that
-    // exists is allowed. A failed existence check refuses (fail closed).
-    if let Some(twin) = wac::acl_twin_key(path) {
-        let creating = !state.storage.exists(path).await.unwrap_or(true);
-        if creating && state.storage.exists(&twin).await.unwrap_or(true) {
-            return Err(AclRefusal::TwinForm);
-        }
-    }
     let wac::PolicyStep::Settled(wac::PolicyOutcome::Found(doc)) =
         wac::classify_policy_read(path, wac::PolicyRead::Present { body, content_type }, false)
     else {
@@ -5358,9 +5299,18 @@ async fn handle_admin_provision(
         }
     }
 
-    // No inner `{pod_dir}/.acl` copy: since SP-PAR-290 the resolver reads both
-    // storage forms and denies a container that has both, so the sibling above
-    // must be the only one written.
+    // Courtesy inner copy at `{pod_dir}/.acl`. This server's walk-up resolver
+    // never reads it (it probes the sibling `{container}.acl`), but the
+    // node-solid-server (NSS) convention stores a container's ACL INSIDE the
+    // container as `<container>/.acl`; writing both keeps interop with tooling
+    // that expects the inner convention. Harmless here — the sibling above is
+    // authoritative — so a failure to write it is non-fatal.
+    let inner_acl_path = pod_dir.join(".acl");
+    if !inner_acl_path.exists() {
+        if let Err(e) = tokio::fs::write(&inner_acl_path, acl_content.as_bytes()).await {
+            tracing::warn!(pubkey = %pubkey, error = %e, "/_admin/provision: write inner .acl failed (non-fatal; sibling ACL governs)");
+        }
+    }
 
     // --- Git init (feature-gated) ----------------------------------------
     #[cfg(feature = "git")]
@@ -6972,30 +6922,6 @@ mod payment_gating_tests {
             Some("/a/b")
         );
         assert_eq!(protected_resource_for_acl("/a/b").as_deref(), None);
-    }
-}
-
-#[cfg(test)]
-mod dual_form_scan_tests {
-    use super::dual_form_acl_containers;
-
-    #[test]
-    fn lists_only_containers_with_both_forms() {
-        let t = tempfile::tempdir().unwrap();
-        let r = t.path();
-        for d in ["both", "inside_only", "sidecar_only", "both/deep"] {
-            std::fs::create_dir_all(r.join(d)).unwrap();
-        }
-        std::fs::write(r.join("both.acl"), "x").unwrap();
-        std::fs::write(r.join("both/.acl"), "x").unwrap();
-        std::fs::write(r.join("inside_only/.acl"), "x").unwrap();
-        std::fs::write(r.join("sidecar_only.acl"), "x").unwrap();
-        std::fs::write(r.join(".acl"), "x").unwrap();
-        let (found, truncated) = dual_form_acl_containers(r, 1000);
-        assert_eq!(found, vec!["/both/".to_string()]);
-        assert!(!truncated);
-        let (_, truncated) = dual_form_acl_containers(r, 2);
-        assert!(truncated, "the scan is bounded");
     }
 }
 

@@ -49,20 +49,20 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 94.3%** — 264/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 96.1%** |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 93.9%** — 263/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 95.7%** |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
-> **Authoritative figure.** **94.3% strict** over 300 rows, and an **upper
+> **Authoritative figure.** **93.9% strict** over 300 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
 > in its scope (§26–§28 and the eleven rows it reclassified). The remaining
 > `present` rows have not been re-audited for server wiring, and some may be
 > library-only in the same way. The `0.0.224` delta adds 14 rows (§26); §27
-> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%; the 2026-11-21 second wave (rows 265, 266, 278, 279, 280, 288, 289 and the challenge of row 73) moved it to 94.3% (row 290 closed the ignored-ACL hazard).
+> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%; the 2026-11-21 second wave (rows 265, 266, 278, 279, 280, 288, 289 and the challenge of row 73) moved it to 93.9%.
 
 ### By status
 
@@ -70,9 +70,9 @@ and 104 were reclassified in place. Method and evidence:
 |---|---|
 | present (includes present-by-absence) | 235 |
 | net-new (ours; not in JSS) | 19 |
-| semantic-difference | 10 |
+| semantic-difference | 9 |
 | partial-parity | 10 |
-| missing | 6 |
+| missing | 7 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
@@ -740,7 +740,7 @@ reclassified in place to match.
 | 287 | Pod created by self-service registration is usable by its owner | `src/server.js:1296-1303` (owner ACL written with the pod, `relativizeOwnerWebId`) | `POST /.pods` (`provision_named_pod`) writes containers and the profile card but no ACL: the owner gets 403 on `GET /alice/` and on PUT into their own pod, and anonymous gets 401 on the profile card | present | `crates/solid-pod-rs-server/src/lib.rs:2806-2855` | **P0, runtime.** The server seeds no root ACL, so a new pod inherits whatever root ACL the operator configured: with none, the owner is refused (the probe); with a root ACL that has `acl:default`, the pod gets the root's grants, not an owner grant, and anything that root grants publicly applies to the new pod too. `tests/registration_security.rs` covers only the gate. A fix must write path targets at the sidecar our resolver reads (`/alice.acl`). Fixed 2026-11-01: `named_pod_acls` writes the JSS ACL tree before any content. Tests: server `tests/named_pod_owner_access.rs`, including a public-write operator root ACL. The pod has no simple-auth token as in JSS; the owner authenticates through whatever IdP asserts the WebID. |
 | 288 | `acl:accessTo` / `acl:default` given as absolute or relative IRIs match the resource | `src/wac/parser.js:224-227` | With `public_base_url` configured, absolute and document-relative targets resolve against the ACL document's URL and match as paths when, and only when, their origin (scheme, host, port; default port and host case normalised) is the configured one. Any other origin, userinfo, query, fragment or encoded separator matches nothing. Root-relative `</path>` is unchanged. With no configured origin, absolute IRIs, and relative targets in a Turtle ACL, still deny; a JSON-LD ACL resolves its relative targets against its own path even then (row 265: expansion cannot tell `/a/` from `./a/`, and a relative reference can only name this pod) | present | `crates/solid-pod-rs/src/wac/iri.rs` (`AclBase`); `src/wac/resolver.rs` (`resolve_policy_from_storage_with_base`); `crates/solid-pod-rs-server/src/lib.rs` (`AppState::acl_base`, `check_proposed_acl`) | Fixed 2026-11-21. The origin comes from `public_base_url` only, never a request `Host`. Tests: `wac::iri::tests` (9, incl. look-alike hosts, ports, schemes, case, trailing slash, percent-encoding), server `tests/acl_iri_origin.rs` (7), `provision::...::public_type_index_acl_grants_on_the_request_path_given_the_pod_origin`.
 | 289 | Relative `acl:agent` WebIDs resolved against the ACL | `src/server.js:1296-1303`; `src/wac/parser.js:228` | With `public_base_url` configured, a relative `acl:agent` IRI is resolved against the ACL document's URL before comparison; absolute agents, `did:` agents and class IRIs are unchanged. With no configured origin a relative agent matches nothing (JSON-LD and Turtle alike: only a WebID can match, and a root-relative path is not one) | present | `crates/solid-pod-rs/src/wac/iri.rs` (`resolve_agent`) | Fixed 2026-11-21. Tests: `wac::iri::tests::relative_agents_resolve_against_the_acl_document`; server `tests/acl_iri_origin.rs::a_relative_acl_agent_resolves_against_the_acl_document`.
-| 290 | Container ACL at `<container>/.acl` | JSS layout `/c/.acl` | The resolver probes both `<container>.acl` (written and advertised by this server) and `<container>/.acl` at each container level: one present governs, none ascends, both deny everyone, a read error is unavailable and does not ascend. Writes creating the second form are refused (409) | semantic-difference | `src/wac/resolver.rs` | Hazard closed 2026-11-21: a JSS-layout `<c>/.acl` used to be ignored, so the parent's broader grant applied. Layout parity is still not there: the server writes and advertises `<c>.acl`, not `<c>/.acl`. Tests: server `tests/container_acl_forms.rs`; boot warning `dual_form_acl_containers`. Migrating the written form is a remaining option (ADR-2002).
+| 290 | Container ACL at `<container>/.acl` | JSS layout `/c/.acl` | Resolver reads `/c.acl`; a JSS-layout `/c/.acl` is ignored and the parent's grant applies | missing | `src/wac/resolver.rs` | **P1**, runtime. Widens access after a migration: the parent's broader grant applies in place of the narrower container ACL. `migrate-from-jss.md` must state the move. |
 
 ### Defects found in passing (not parity rows)
 

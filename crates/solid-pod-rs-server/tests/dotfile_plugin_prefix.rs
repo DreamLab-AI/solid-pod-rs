@@ -108,12 +108,7 @@ async fn seeded_status_and_body(uri: &str) -> (u16, String) {
         (".acl", PUBLIC_READ_ACL),
         (".forge/token.key", "MARKER-FORGE-KEY"),
         (".account/user.json", "MARKER-ACCOUNT"),
-        // A valid ACL (the resolver reads `<c>/.acl` since SP-PAR-290, and an
-        // invalid one would deny the control request); the marker is a comment.
-        (
-            "alice/.acl",
-            "# MARKER-ALICE-ACL\n@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n<#p> a acl:Authorization ; acl:agentClass foaf:Agent ; acl:accessTo </alice/> ; acl:default </alice/> ; acl:mode acl:Read .\n",
-        ),
+        ("alice/.acl", "MARKER-ALICE-ACL"),
         ("alice/x.meta", "MARKER-META"),
         ("alice/public.txt", "PUBLIC-CONTROL"),
     ] {

@@ -138,13 +138,10 @@ async fn provision_sibling_acl_grants_owner_write_on_deep_pod_path() {
 }
 
 #[tokio::test]
-async fn provision_inner_only_acl_is_read_by_the_resolver() {
-    // History: the OLD provisioning layout wrote the ACL INSIDE the pod at
-    // `/pods/{pk}/.acl`, which the walk-up resolver never probed, so the grant
-    // was invisible and the pod denied by default. Provisioning now writes the
-    // sibling `/pods/{pk}.acl`. Since SP-PAR-290 the resolver also reads the
-    // in-container form, so a pod migrated from a reference-server layout is
-    // governed by its own ACL instead of silently inheriting a parent's grant.
+async fn provision_inner_only_acl_is_invisible_to_resolver() {
+    // Regression proof for BUG 2: the OLD layout wrote the ACL INSIDE the pod
+    // at `/pods/{pk}/.acl`. The walk-up resolver never probes that key, so the
+    // grant is invisible and the pod is deny-by-default (→ 403 on every write).
     let pk = "2222222222222222222222222222222222222222222222222222222222222222";
     let deep = format!("/pods/{pk}/media/public/x");
 
@@ -160,8 +157,9 @@ async fn provision_inner_only_acl_is_read_by_the_resolver() {
     let resolver = StorageAclResolver::new(pod.clone());
     let resolved = resolver.find_effective_acl(&deep).await.unwrap();
     assert!(
-        resolved.is_some(),
-        "an in-container /pods/{{pk}}/.acl must be read by the walk-up resolver"
+        resolved.is_none(),
+        "an inner-only /pods/{{pk}}/.acl must be invisible to the walk-up \
+         resolver (this is the bug the sibling-ACL fix corrects)"
     );
 }
 

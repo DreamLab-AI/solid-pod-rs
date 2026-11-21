@@ -6,8 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **A JSON-LD ACL with a plain string on a rule predicate** (for example `"acl:mode": "acl:Read"` without an
+  `@type: @id` coercion) is now unreadable and denies; before, that one value was silently dropped.
+- **`/.notifications` is on by default** (`--no-notifications` removes it). Its per-peer cap counts the TCP peer
+  address, so behind a reverse proxy the cap is 16 sockets in total unless raised with `NotifyHub::with_limits`.
+- **Container ACLs are read only at `<container>.acl`** (unchanged). A pod migrated from the reference
+  JavaScript server's layout (`<container>/.acl`) must have its container ACLs moved to the sidecar location, or
+  the container inherits its parent's access. See the ADR-2002 note (2026-11-21).
+
 ### Security
 
+- **Git subprocesses run with `maintenance.auto=false` and `gc.auto=0`**, so no detached maintenance writes into a
+  repository after a command returns (fixes a flaky mirror test).
 - **The forge token key is created `0600` atomically** (`create_new` with mode `0600`), instead of written and then
   chmodded, which left a window under a permissive umask. An existing key is never overwritten.
 - **Only `GET /.notifications` passes the dotfile guard** (SP-PAR-279 follow-up). The carve-out ignored the
@@ -20,11 +32,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default` or `mode`; for `acl:origin` that would have turned a restricted rule into an unrestricted grant. The
   document is now unreadable (denies), as is a Turtle ACL with such an object. The JSON-LD placeholder host is
   also stripped only as an exact host and may not be spelled out in a document.
-- **A container ACL stored as `<container>/.acl` is no longer ignored** (SP-PAR-290). The resolver read only
-  `<container>.acl`, so with a public-read root ACL a private `/docs/.acl` left `/docs/a.txt` readable. It now
-  probes both forms at each container level: one present governs, none ascends, both deny everyone, a read error
-  on either is unavailable (no ascent). Writes that would create the second form are refused with 409; boot warns
-  about containers that already have both. Where the server writes ACLs (`<container>.acl`) is unchanged.
 - **The Nostr relay can be mounted: `--nostr`, `--nostr-path`, `--nostr-max-events`, off by default**
   (SP-PAR-278, SP-PAR-280). `solid-pod-rs-server` now depends on `solid-pod-rs-nostr`. The relay answers the NIP-11
   information document at its URL (`Accept: application/nostr+json`) and speaks NIP-01 over a WebSocket. Only its

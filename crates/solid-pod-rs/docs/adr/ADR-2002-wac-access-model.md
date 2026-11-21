@@ -56,7 +56,7 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > (a relative reference can only name this pod); it is an inconsistency to close
 > by resolving Turtle relative targets the same way or by requiring an origin.
 
-> Note 2026-11-21: three decisions recorded here; (1) and (2) stay open, (3) is fixed.
+> Note 2026-11-21: three open decisions recorded here, none changed by code.
 > (1) SP-ACL-REVIEW-02, whether a Web-Ledger fee is for *admission* or for
 > *successful service*. Today it is debited at admission
 > (`charge_granted_payment`, `crates/solid-pod-rs-server/src/lib.rs`, called from
@@ -69,21 +69,14 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > configured an Append-only agent can grow a resource without bound (only the
 > 4 MiB RDF parse cap limits it, indirectly), and the per-resource lock is
 > in-process. Options: require a quota when Append grants exist, or add a size
-> cap for append-only writers. (3) SP-PAR-290, container ACL location: FIXED
-> 2026-11-21. Until that commit the resolver read a container's ACL only at
-> `<container>.acl` (`acl_sidecar_key`), so a reference-server-layout
-> `<container>/.acl` was a plain file the walk never read and the parent's grant
-> applied; with a public root ACL a private `/docs/.acl` left `/docs/a.txt`
-> readable (verified). The resolver (`crates/solid-pod-rs/src/wac/resolver.rs`)
-> now probes both keys at every container level: neither, ascend; exactly one,
-> use it; both, deny everyone (never prefer, never merge); a read error on
-> either key is `Unavailable` and does not ascend. The key actually read
-> anchors relative IRIs. Writes that would create the second form while the
-> first exists are refused with 409 (PUT, PATCH, POST, COPY), and boot logs
-> containers that already have both. Where the server writes and advertises
-> ACLs (`<container>.acl`, `Link: rel="acl"`) is unchanged. Remaining option,
-> not an open exposure: migrate to `<container>/.acl` as the written form, which
-> changes the storage layout and needs a migration and a dual-read period.
+> cap for append-only writers. (3) SP-PAR-290, container ACL location: the
+> resolver reads a container's ACL at `<container>.acl`
+> (`crates/solid-pod-rs/src/wac/resolver.rs`, `acl_sidecar_key`), so a JSS-layout
+> `<container>/.acl` is a plain file the walk never reads and the parent's grant
+> applies. Verified 2026-11-21: with a public root ACL, a private `/docs/.acl`
+> leaves `/docs/a.txt` readable. Moving to `<container>/.acl` changes the storage
+> layout and needs a migration and a dual-read period; the decision is whether to
+> migrate or to refuse writes to `<container>/.acl` meanwhile.
 
 ## Context
 

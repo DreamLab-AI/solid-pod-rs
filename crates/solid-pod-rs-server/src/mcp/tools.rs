@@ -1421,6 +1421,9 @@ mod jev_tests {
         std::env::remove_var("SOLID_POD_JEV");
         let s = Arc::new(MemoryBackend::new());
         s.create_container("/pub/").await.unwrap();
+        s.put("/pub/.acl", Bytes::from(PUBLIC_ACL), "text/turtle")
+            .await
+            .unwrap();
         s.put("/pub.acl", Bytes::from(PUBLIC_ACL), "text/turtle")
             .await
             .unwrap();
