@@ -267,11 +267,18 @@ fn rule_json(
     }
     for name in &RULE_PREDICATES[..7] {
         let iri = format!("{ACL_NS}{name}");
-        let values: Vec<Value> = props
-            .iter()
-            .filter(|(p, _)| *p == iri)
-            .filter_map(|(_, o)| id_ref(o))
-            .collect();
+        let mut values: Vec<Value> = Vec::new();
+        for (_, o) in props.iter().filter(|(p, _)| *p == iri) {
+            // A rule predicate takes IRIs. Dropping a literal here would, for
+            // `acl:origin`, turn a restricted rule into an unrestricted grant,
+            // so any non-IRI object makes the whole document unreadable.
+            let Some(v) = id_ref(o) else {
+                return Err(PodError::AclParse(format!(
+                    "JSON-LD ACL: acl:{name} must take IRIs, not a literal or blank node"
+                )));
+            };
+            values.push(v);
+        }
         if let Some(v) = one_or_many(values) {
             out.insert(format!("acl:{name}"), v);
         }
@@ -554,6 +561,40 @@ mod tests {
             "https://acl-base.invalid@evil.example/x",
         ] {
             assert_eq!(compact(foreign), foreign, "{foreign}");
+        }
+    }
+
+    #[test]
+    fn a_non_iri_object_on_a_rule_predicate_makes_the_acl_unreadable() {
+        for pred in [
+            "agent",
+            "agentClass",
+            "agentGroup",
+            "origin",
+            "accessTo",
+            "default",
+            "mode",
+        ] {
+            for obj in [
+                json!("https://app.example"),
+                json!({"@value": 7}),
+                json!({"x": "blank"}),
+            ] {
+                let mut node = json!({
+                    "@id": "#o", "@type": "acl:Authorization",
+                    "acl:agentClass": {"@id": "foaf:Agent"},
+                    "acl:accessTo": {"@id": "/r"}, "acl:mode": {"@id": "acl:Read"}});
+                node[format!("acl:{pred}")] =
+                    json!([node[format!("acl:{pred}")].clone(), obj.clone()]);
+                if node[format!("acl:{pred}")][0].is_null() {
+                    node[format!("acl:{pred}")] = json!([obj.clone()]);
+                }
+                let doc = json!({"@context": {"acl": ACL_NS, "x": "http://x.example/"}, "@graph": [node]});
+                assert!(
+                    parse_expanded(doc.to_string().as_bytes(), "/r.acl").is_err(),
+                    "acl:{pred} with {obj} must be unreadable"
+                );
+            }
         }
     }
 

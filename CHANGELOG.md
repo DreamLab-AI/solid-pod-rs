@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A literal on an ACL rule predicate is a parse error, in JSON-LD and Turtle** (SP-PAR-265 follow-up). The
+  JSON-LD reader dropped a non-IRI object on `acl:agent`, `agentClass`, `agentGroup`, `origin`, `accessTo`,
+  `default` or `mode`; for `acl:origin` that would have turned a restricted rule into an unrestricted grant. The
+  document is now unreadable (denies), as is a Turtle ACL with such an object. The JSON-LD placeholder host is
+  also stripped only as an exact host and may not be spelled out in a document.
 - **A container ACL stored as `<container>/.acl` is no longer ignored** (SP-PAR-290). The resolver read only
   `<container>.acl`, so with a public-read root ACL a private `/docs/.acl` left `/docs/a.txt` readable. It now
   probes both forms at each container level: one present governs, none ascends, both deny everyone, a read error

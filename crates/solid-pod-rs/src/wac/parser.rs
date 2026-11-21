@@ -234,6 +234,14 @@ fn parse_turtle_authorization(
             "http://www.w3.org/ns/auth/acl#",
         );
         let objects = parse_object_list(rest.trim(), prefixes);
+        // A rule predicate takes IRIs. A literal (or a blank node) there is a
+        // malformed ACL: ignoring it would, for `acl:origin`, turn a
+        // restricted rule into an unrestricted grant.
+        if is_rule_iri_predicate(&pred_expanded) && has_non_iri_object(rest.trim()) {
+            return Err(PodError::AclParse(format!(
+                "{pred} must take IRIs, not a literal or blank node"
+            )));
+        }
 
         match pred_expanded.as_str() {
             "a" | "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" | "rdf:type"
@@ -283,6 +291,60 @@ fn parse_turtle_authorization(
         Ok(Some(auth))
     } else {
         Ok(None)
+    }
+}
+
+/// `true` for the rule predicates whose objects must be IRIs.
+fn is_rule_iri_predicate(expanded: &str) -> bool {
+    const NS: &str = "http://www.w3.org/ns/auth/acl#";
+    expanded
+        .strip_prefix(NS)
+        .or_else(|| expanded.strip_prefix("acl:"))
+        .is_some_and(|local| {
+            matches!(
+                local,
+                "agent" | "agentClass" | "agentGroup" | "origin" | "accessTo" | "default" | "mode"
+            )
+        })
+}
+
+/// `true` when any object in a Turtle object list is not an IRI or prefixed
+/// name: a quoted literal, a bare number or boolean, a blank node or a
+/// collection. Reads the raw text, because the term popper strips the quotes
+/// that tell a literal from an IRI.
+fn has_non_iri_object(input: &str) -> bool {
+    let mut remaining = input.trim().to_string();
+    loop {
+        let owned = remaining.clone();
+        let r = owned.trim_start();
+        if r.is_empty() {
+            return false;
+        }
+        let first = r.chars().next().unwrap_or(' ');
+        let word_end = r
+            .find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ']' | ')'))
+            .unwrap_or(r.len());
+        let word = &r[..word_end];
+        let numeric = !word.is_empty()
+            && word.chars().any(|c| c.is_ascii_digit())
+            && word
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'E'));
+        if matches!(first, '"' | '\'' | '[' | '(')
+            || word.starts_with("_:")
+            || word == "true"
+            || word == "false"
+            || numeric
+        {
+            return true;
+        }
+        let Some((_, rest)) = turtle_pop_term(r) else {
+            return false;
+        };
+        match rest.trim_start().strip_prefix(',') {
+            Some(after) => remaining = after.to_string(),
+            None => return false,
+        }
     }
 }
 
@@ -681,6 +743,40 @@ fn expand_curie_or_iri(tok: &str, prefixes: &HashMap<String, String>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_literal_on_a_rule_predicate_is_a_parse_error() {
+        for (pred, obj) in [
+            ("acl:origin", "\"https://app.example\""),
+            ("acl:agent", "\"https://alice.example/#me\""),
+            ("acl:agentClass", "\"foaf:Agent\""),
+            ("acl:agentGroup", "\"x\""),
+            ("acl:accessTo", "\"/doc\""),
+            ("acl:default", "\"/doc\""),
+            ("acl:mode", "\"Read\""),
+            ("acl:mode", "42"),
+            ("acl:origin", "[ a acl:Thing ]"),
+            (
+                "acl:origin",
+                "<https://ok.example>, \"https://app.example\"",
+            ),
+        ] {
+            let ttl = format!(
+                "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+                 <#r> a acl:Authorization ; acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; \
+                 acl:accessTo </d> ; acl:mode acl:Read ; {pred} {obj} .\n"
+            );
+            assert!(
+                parse_turtle_acl(&ttl).is_err(),
+                "{pred} {obj} must be an error"
+            );
+        }
+        // Control: the IRI forms still parse.
+        let ok = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+                  <#r> a acl:Authorization ; acl:agentClass <http://xmlns.com/foaf/0.1/Agent> ; \
+                  acl:accessTo </d> ; acl:origin <https://app.example> ; acl:mode acl:Read .\n";
+        assert!(parse_turtle_acl(ok).is_ok());
+    }
 
     #[test]
     fn split_subject_and_https_restrictions_are_preserved() {
