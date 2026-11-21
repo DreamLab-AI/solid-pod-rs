@@ -153,6 +153,21 @@ WebRTC:
   document's `id` only when it names the fetched document (so `.../card.jsonld#me` actors verify).
 - `AppState` gains `ap_federation` (a type-erased `Option<Arc<dyn Any + Send + Sync>>`, always present; set with `AppState::set_ap_federation`), `remotestorage` and `webrtc`: a source break for code that builds `AppState` with a struct literal.
 
+### Added (PATCH of stored JSON-LD and HTML data islands, SP-PAR-276, narrow)
+
+- N3 Patch and SPARQL Update now edit a stored `application/ld+json` document, or a `text/html` page with exactly one
+  `<script type="application/ld+json">` element (a WebID profile card is one), **in place**: only the edited values change,
+  and everything else, including key order and the HTML around the island, is kept byte for byte. It needs
+  `--public-base-url` (the base is that origin plus the resource path, never `Host`); without it, or for any document
+  outside the documented shape, an `.acl`/`.meta` sidecar, or an edit that cannot be expressed (a new subject, a blank
+  node), the answer is `409` with one generic message and nothing is written. A delete that names a triple the document
+  does not hold is `409` in both dialects. JSON-LD ACLs are deliberately not patchable. The shape is in the
+  `jsonld_patch` module documentation and PARITY row 276 (now `partial-parity`; JSS accepts any JSON-LD).
+- The WebID readers (`extract_oidc_issuer`, `extract_nostr_pubkey`, `extract_cid_openid_provider`, `validate_webid_html`)
+  find the island with an HTML parser (new dependencies `html5ever` 0.38 and `markup5ever_rcdom` 0.38): text that only
+  looks like an island (in a comment, an attribute, a `<textarea>`) is no longer read, and documents over 4 MiB are an
+  error. With several islands the first in document order is read, as before.
+
 ### Upgrade notes
 
 - **Stored HTML is sandboxed over LDP by default** (SP-LDP-HTML-SANDBOX, owner decision). A `GET` or `HEAD` of a stored

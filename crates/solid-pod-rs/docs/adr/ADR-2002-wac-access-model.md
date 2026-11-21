@@ -60,6 +60,40 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > names answers 409 in both dialects; the island is located with a
 > real HTML parser and by the same locator the readers use (`webid.rs` and the conneg reader).
 
+> Note 2026-11-21 (SP-PAR-276, third attempt, narrow, implemented): PATCH of a stored JSON-LD document or an HTML
+> page with one JSON-LD data island is edited **in place**, never regenerated from the graph
+> (`crates/solid-pod-rs/src/jsonld_patch.rs`; server arm `patch_stored_jsonld` in `crates/solid-pod-rs-server/src/lib.rs`;
+> locator `crates/solid-pod-rs/src/html_island.rs`). How each recorded requirement is met.
+> (1) *Write-back preserves the stored shape.* The patch engine yields G1 from the document's graph G0; the
+> difference becomes byte-range edits of the stored text (remove a value, add a value to an existing key, append a key to
+> an existing node object). `@context`, key order, whitespace, escapes, a top-level object and every untouched value are
+> the stored bytes; a `@list` or other form the writer cannot reproduce makes the document unpatchable. A key is written
+> under the document's own term for the predicate, else a compact IRI under a context prefix, else the full IRI. The
+> test `an_edit_changes_only_the_edited_bytes_in_both_dialects` compares the whole body. (2) *Every defect of attempt two is
+> a test.* The provisioned profile card (HTML with an island, `nostr:pubkey` added by key provisioning, an issuer) is
+> renamed three ways (DELETE DATA + INSERT DATA, DELETE/INSERT WHERE, N3) and `extract_oidc_issuer`,
+> `extract_nostr_pubkey`, `check_profile_declares_issuer` and `webid_declares_pubkey` give the same values before and
+> after, the page differing only in the name. (3) *JSON-LD ACLs are not patchable*: any `.acl`/`.meta` path is refused
+> before the document is read (`a_json_ld_acl_is_not_patchable`), so a revocation cannot appear to succeed. (4) *A delete
+> that removes fewer triples than it names is 409 in both dialects*: the engine's check (7254a41) runs unchanged on this
+> path (`a_delete_that_names_an_absent_triple_is_409_in_both_dialects_and_writes_nothing`). (5) *The island is found by a
+> real HTML parser, and by the readers' locator*: `html_island` (html5ever) is the one locator; `webid.rs` reads through
+> `first_jsonld_island`, the writer through `sole_jsonld_island` (exactly one element; zero or several is 409). The
+> parser gives no source offsets, so the writer splices the new text where the parsed text occurs and accepts the result
+> only if the re-parsed page is the original tree with that one text node changed (doctype, comments, attributes,
+> template contents, all other text). Written JSON escapes `<` and U+2028/2029. (6) *Base no caller can name*: the base is
+> `public_base_url` plus the resource path (never `Host` or a forwarding header), and with none configured the patch is
+> refused (`a_hostile_host_header_changes_nothing`, `with_no_public_base_url_the_patch_is_refused`). The N3 Patch is
+> re-parsed against that base. A relative `@id` in the document and an absolute IRI in the patch therefore meet in one IRI
+> space. (7) *Round trip is a checked property*: on every request the writer deletes and re-writes every non-structural
+> triple with the document's own context; the result must re-parse (never fetching a context:
+> `a_remote_context_is_never_fetched`) to the same graph with the same `@context` text, and after each edit the result
+> must read back to exactly G1 by `oxjsonld` and by the module's own reader, or nothing is written. The supported shape
+> is stated in the module documentation and in PARITY row 276 (partial-parity: JSS accepts any JSON-LD). The Turtle write
+> arm, `append_to_stored` and `seed_graph_from_patch_target` are byte-identical to main; an Append-only caller never
+> reaches this path (`an_append_only_agent_never_reaches_the_json_ld_path`).
+
+
 > Note 2026-11-21 (SP-PAR-265, SP-PAR-288): relative `acl:accessTo` / `acl:default`
 > targets are read differently by the two ACL syntaxes while no pod origin
 > (`public_base_url`) is configured. A JSON-LD ACL is expanded

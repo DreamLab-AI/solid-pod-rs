@@ -71,6 +71,19 @@ effect. Apps deployed by a git push to `/public/apps/` are stored resources and
 are sandboxed like any other, so they need the flag to run. Pages the binary generates (the Mashlib wrapper, the forge UI) are not
 pod storage and are unchanged.
 
+### PATCH of stored JSON-LD and WebID profile cards
+
+With `--public-base-url` set, an N3 Patch or SPARQL Update can edit a stored
+`application/ld+json` document, or an HTML page that holds exactly one
+`<script type="application/ld+json">` element (a WebID profile card is one).
+The edit is made in place: only the changed values differ, and key order,
+formatting and the HTML around the island are kept byte for byte. A document
+outside the supported shape (see the `jsonld_patch` module documentation and
+PARITY row 276), an edit that cannot be expressed in it (a new subject, a blank
+node), a missing `--public-base-url`, and any `.acl` or `.meta` document are
+refused with `409` and nothing is written. A delete that names a triple the
+document does not hold is `409` too. JSON-LD ACLs are never patchable this way.
+
 The write-path authenticator also accepts JSS's two-part development bearer
 token when `TOKEN_SECRET` is explicitly set to at least 32 bytes. The token is
 base64url payload plus HMAC-SHA256 signature; the payload must contain valid
