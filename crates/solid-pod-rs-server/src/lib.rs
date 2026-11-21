@@ -241,36 +241,125 @@ static RESOURCE_WRITE_LOCKS: std::sync::LazyLock<Vec<tokio::sync::Mutex<()>>> =
 pub(crate) async fn lock_resource_pod(
     storage: &dyn Storage,
     path: &str,
-) -> Result<ResourceGuard, PodError> {
+) -> Result<ResourceGuard, LockError> {
+    lock_resource_pod_wait(storage, path, CROSS_PROCESS_LOCK_WAIT).await
+}
+
+/// [`lock_resource_pod`] with an explicit wait for another process's lock.
+pub(crate) async fn lock_resource_pod_wait(
+    storage: &dyn Storage,
+    path: &str,
+    wait: std::time::Duration,
+) -> Result<ResourceGuard, LockError> {
+    lock_pair(
+        &RESOURCE_WRITE_LOCKS[resource_stripe(path)],
+        storage,
+        path,
+        wait,
+    )
+    .await
+}
+
+/// The in-process stripe of `path`. Keyed per process, so a client cannot
+/// choose a path that shares a given resource's stripe.
+fn resource_stripe(path: &str) -> usize {
     use std::hash::BuildHasher;
-    // Keyed per process, so a client cannot choose a path that shares a
-    // given resource's stripe.
     static STRIPE_KEY: std::sync::LazyLock<std::collections::hash_map::RandomState> =
         std::sync::LazyLock::new(std::collections::hash_map::RandomState::new);
-    let stripe = (STRIPE_KEY.hash_one(path) as usize) % RESOURCE_WRITE_LOCK_STRIPES;
-    let mutex = RESOURCE_WRITE_LOCKS[stripe].lock().await;
-    // SP-PAR-275: the in-process lock above is taken first, then the backend's
-    // cross-process lock (an OS file lock on the filesystem backend), so two
-    // server processes on one data root cannot interleave a read-modify-write.
-    // A task holds at most one resource lock at a time, so the order cannot
-    // deadlock.
-    let storage_lock = storage
-        .lock_exclusive(path, CROSS_PROCESS_LOCK_WAIT)
-        .await?;
-    Ok(ResourceGuard {
-        _mutex: mutex,
-        _storage_lock: storage_lock,
-    })
+    (STRIPE_KEY.hash_one(path) as usize) % RESOURCE_WRITE_LOCK_STRIPES
+}
+
+/// How often a writer retries the cross-process lock while another process
+/// holds it.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Take `mutex` (in-process), then the backend's lock on `key`
+/// (cross-process), in that order, so two server processes on one data root
+/// cannot interleave a read-modify-write (SP-PAR-275). The in-process mutex is
+/// never held while waiting for another process: the cross-process lock is
+/// tried without waiting under the mutex, and on a miss the mutex is released
+/// before sleeping and the pair retried, so one slow remote holder does not
+/// queue every in-process writer on the stripe behind it. The lock order
+/// (in-process, then backend) is unchanged, and a task holds at most one such
+/// pair at a time, so the order cannot deadlock. Waits at most `wait`, then
+/// [`LockError::Busy`].
+async fn lock_pair(
+    mutex: &'static tokio::sync::Mutex<()>,
+    storage: &dyn Storage,
+    key: &str,
+    wait: std::time::Duration,
+) -> Result<ResourceGuard, LockError> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let held = mutex.lock().await;
+        match storage.lock_exclusive(key, std::time::Duration::ZERO).await {
+            Ok(lock) => {
+                return Ok(ResourceGuard {
+                    _storage_lock: lock,
+                    _mutex: held,
+                })
+            }
+            Err(PodError::Conflict(msg)) => {
+                drop(held);
+                if std::time::Instant::now() >= deadline {
+                    return Err(LockError::Busy(msg));
+                }
+                tokio::time::sleep(LOCK_RETRY).await;
+            }
+            Err(e) => return Err(LockError::Pod(e)),
+        }
+    }
 }
 
 /// How long a write waits for another process's lock on the same resource
 /// before answering `503` with `Retry-After`.
 const CROSS_PROCESS_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Both halves of a resource write lock; released together on drop.
+/// Both halves of a resource write lock; released together on drop (the
+/// cross-process lock first, then the in-process mutex).
 pub(crate) struct ResourceGuard {
-    _mutex: tokio::sync::MutexGuard<'static, ()>,
     _storage_lock: Option<solid_pod_rs::storage::StorageLock>,
+    _mutex: tokio::sync::MutexGuard<'static, ()>,
+}
+
+/// Why a write lock was not obtained.
+#[derive(Debug)]
+pub(crate) enum LockError {
+    /// Another process held the lock for the whole wait: `503`, retry.
+    Busy(String),
+    /// The backend failed.
+    Pod(PodError),
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(msg) => write!(f, "{msg}"),
+            Self::Pod(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<PodError> for LockError {
+    fn from(e: PodError) -> Self {
+        Self::Pod(e)
+    }
+}
+
+impl From<LockError> for ActixError {
+    /// `Busy` is `503` with `Retry-After: 1`; anything else maps as a
+    /// [`PodError`] does.
+    fn from(e: LockError) -> Self {
+        match e {
+            LockError::Busy(msg) => {
+                let rsp = HttpResponse::ServiceUnavailable()
+                    .insert_header((header::RETRY_AFTER, "1"))
+                    .body(msg.clone());
+                actix_web::error::InternalError::from_response(msg, rsp).into()
+            }
+            LockError::Pod(e) => to_actix(e),
+        }
+    }
 }
 
 /// [`lock_resource_pod`] for a handler: a lock held by another process past
@@ -279,16 +368,7 @@ pub(crate) async fn lock_resource(
     storage: &dyn Storage,
     path: &str,
 ) -> Result<ResourceGuard, ActixError> {
-    match lock_resource_pod(storage, path).await {
-        Ok(g) => Ok(g),
-        Err(PodError::Conflict(msg)) => {
-            let rsp = HttpResponse::ServiceUnavailable()
-                .insert_header((header::RETRY_AFTER, "1"))
-                .body(msg.clone());
-            Err(actix_web::error::InternalError::from_response(msg, rsp).into())
-        }
-        Err(e) => Err(to_actix(e)),
-    }
+    Ok(lock_resource_pod(storage, path).await?)
 }
 
 /// Attempts [`mint_and_lock_target`] makes before refusing with 409.
@@ -301,11 +381,21 @@ const MINT_LOCK_ATTEMPTS: usize = 64;
 /// creators can pick the same free name and the second silently replaces
 /// the first. Under the lock the name is re-checked; if another writer took
 /// it first, the lock is released and a fresh name minted. Only one stripe
-/// is held at any moment.
+/// is held at any moment. Running out of names is `409` (a
+/// [`PodError::Conflict`]); a lock another process holds past the wait is
+/// [`LockError::Busy`], `503`, as on every other write path.
 pub(crate) async fn mint_and_lock_target(
     storage: &dyn Storage,
     target: &str,
-) -> Result<(String, ResourceGuard), PodError> {
+) -> Result<(String, ResourceGuard), LockError> {
+    mint_and_lock_target_wait(storage, target, CROSS_PROCESS_LOCK_WAIT).await
+}
+
+async fn mint_and_lock_target_wait(
+    storage: &dyn Storage,
+    target: &str,
+    wait: std::time::Duration,
+) -> Result<(String, ResourceGuard), LockError> {
     let mut previous: Option<String> = None;
     for _ in 0..MINT_LOCK_ATTEMPTS {
         let candidate = mint_unique_target(storage, target).await;
@@ -314,7 +404,7 @@ pub(crate) async fn mint_and_lock_target(
         if previous.as_deref() == Some(candidate.as_str()) {
             break;
         }
-        let guard = lock_resource_pod(storage, &candidate).await?;
+        let guard = lock_resource_pod_wait(storage, &candidate, wait).await?;
         // A failed probe is not evidence the name is free: refuse rather
         // than risk overwriting.
         if !storage.exists(&candidate).await? {
@@ -323,7 +413,7 @@ pub(crate) async fn mint_and_lock_target(
         drop(guard);
         previous = Some(candidate);
     }
-    Err(PodError::Conflict(format!("no free name for {target}")))
+    Err(PodError::Conflict(format!("no free name for {target}")).into())
 }
 
 /// Refuse a write whose `If-Match` / `If-None-Match` precondition fails
@@ -2188,7 +2278,7 @@ async fn handle_post(
         // so a concurrent POST cannot mint the same name.
         let (minted, guard) = mint_and_lock_target(&*state.storage, &target)
             .await
-            .map_err(to_actix)?;
+            .map_err(ActixError::from)?;
         target = minted;
         guard
     };
@@ -7224,5 +7314,81 @@ mod proxy_origin_tests {
         );
         assert!(!same_origin(o, "https://a.example:8443/x"), "port change");
         assert!(!same_origin(o, "not a url"));
+    }
+}
+
+/// Write-lock behaviour (SP-PAR-275 review): a lock another process holds past
+/// the wait is `Busy`/`503` on every path, and the in-process mutex is not held
+/// while waiting for that process.
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::*;
+    use solid_pod_rs::storage::fs::FsBackend;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    async fn two_handles() -> (tempfile::TempDir, Arc<FsBackend>, FsBackend) {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = Arc::new(FsBackend::new(dir.path()).await.unwrap());
+        let other = FsBackend::new(dir.path()).await.unwrap();
+        (dir, ours, other)
+    }
+
+    #[actix_web::test]
+    async fn a_lock_held_elsewhere_past_the_wait_is_busy_on_both_paths() {
+        let (_d, ours, other) = two_handles().await;
+        let _held = other
+            .lock_exclusive("/note", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let direct = lock_resource_pod_wait(&*ours, "/note", Duration::from_millis(100)).await;
+        assert!(
+            matches!(direct, Err(LockError::Busy(_))),
+            "{:?}",
+            direct.err()
+        );
+        // `/note` is free in storage, so minting picks it and then waits for
+        // the lock: that timeout is 503 like every other path, not 409.
+        let minted = mint_and_lock_target_wait(&*ours, "/note", Duration::from_millis(100)).await;
+        let err = minted.err().expect("the lock is held");
+        assert!(matches!(err, LockError::Busy(_)), "{err:?}");
+        let rsp = ActixError::from(err).error_response();
+        assert_eq!(rsp.status().as_u16(), 503);
+        assert!(rsp.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[actix_web::test]
+    async fn running_out_of_names_is_still_409() {
+        let e: ActixError = LockError::Pod(PodError::Conflict("no free name for /x".into())).into();
+        assert_eq!(e.error_response().status().as_u16(), 409);
+    }
+
+    #[actix_web::test]
+    async fn the_in_process_mutex_is_free_while_waiting_for_another_process() {
+        let (_d, ours, other) = two_handles().await;
+        let held = other
+            .lock_exclusive("/slow", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let waiter = {
+            let ours = ours.clone();
+            tokio::spawn(async move {
+                lock_resource_pod_wait(&*ours, "/slow", Duration::from_secs(5))
+                    .await
+                    .is_ok()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A different task on the same in-process stripe must get the mutex
+        // while the waiter waits on the other process, not queue behind it.
+        let stripe = &RESOURCE_WRITE_LOCKS[resource_stripe("/slow")];
+        let got = tokio::time::timeout(Duration::from_millis(500), stripe.lock()).await;
+        assert!(
+            got.is_ok(),
+            "the waiter holds the in-process mutex while it waits"
+        );
+        drop(got);
+        drop(held);
+        assert!(waiter.await.unwrap(), "the waiter proceeds once released");
     }
 }
