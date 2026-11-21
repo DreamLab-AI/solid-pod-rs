@@ -121,4 +121,4 @@ pub use registration::{
 };
 pub use session::{SessionError, SessionId, SessionStore};
 pub use tokens::{issue_access_token, AccessToken, TokenError};
-pub use user_store::{InMemoryUserStore, User, UserStore, UserStoreError};
+pub use user_store::{hash_password, InMemoryUserStore, User, UserStore, UserStoreError};

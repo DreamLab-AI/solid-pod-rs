@@ -273,8 +273,8 @@ struct Cli {
     #[arg(long, env = "JSS_AP_NOSTR_PUBKEY")]
     ap_nostr_pubkey: Option<String>,
 
-    /// Operator subcommands (Sprint 11): `quota reconcile`,
-    /// `account delete`, `invite create`. When absent the binary runs
+    /// Operator subcommands: `quota reconcile`, `account create/delete/list/export`,
+    /// `invite create`. When absent the binary runs
     /// the HTTP server (default / existing behaviour).
     #[command(subcommand)]
     op: Option<OperatorCommand>,

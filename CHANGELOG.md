@@ -168,6 +168,16 @@ WebRTC:
   looks like an island (in a comment, an attribute, a `<textarea>`) is no longer read, and documents over 4 MiB are an
   error. With several islands the first in document order is read, as before.
 
+### Added (account store, parity row 135)
+
+- `FileUserStore`: a durable account store at `<root>/.server/accounts.json` (0600, atomic writes, cross-process lock)
+  implementing `solid_pod_rs_idp::UserStore`. `UserStore` gains `find_by_webid`, `update_last_login` and `last_login`
+  (defaults keep existing stores compiling); `solid_pod_rs_idp::hash_password` is public.
+- CLI: `account create`, `account list`, `account export` (no password hash), and `account delete` now acts on the persisted
+  store. `account create` reads the password from stdin, and its username (also the pod name) must pass the same
+  reserved-name check as `POST /api/accounts/new`. **Behaviour change:** `account` takes `-r/--root` (`JSS_STORAGE_ROOT`,
+  default `./data`) like `invite`, and `account delete` of an unknown id exits non-zero. Passkey persistence is still open.
+
 ### Upgrade notes
 
 - **Stored HTML is sandboxed over LDP by default** (SP-LDP-HTML-SANDBOX, owner decision). A `GET` or `HEAD` of a stored

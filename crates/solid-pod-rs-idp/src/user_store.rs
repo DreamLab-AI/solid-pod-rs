@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use rand::rngs::OsRng;
 use thiserror::Error;
@@ -40,6 +41,33 @@ pub enum UserStoreError {
     /// Sprint-11 `account delete` still compile.
     #[error("not implemented")]
     NotImplemented,
+}
+
+/// Hash `password` with Argon2id (a fresh random salt) for storage in
+/// [`User::password_hash`]. Refuses a password shorter than
+/// [`MIN_PASSWORD_LENGTH`], as registration does (JSS commit `1feead2`).
+///
+/// ```
+/// use solid_pod_rs_idp::user_store::hash_password;
+/// let phc = hash_password("correct horse").unwrap();
+/// assert!(phc.starts_with("$argon2id$"));
+/// assert!(hash_password("short").is_err());
+/// ```
+///
+/// # Errors
+///
+/// [`UserStoreError::PasswordTooShort`], or [`UserStoreError::Hash`].
+pub fn hash_password(password: &str) -> Result<String, UserStoreError> {
+    if password.len() < MIN_PASSWORD_LENGTH {
+        return Err(UserStoreError::PasswordTooShort {
+            min_length: MIN_PASSWORD_LENGTH,
+        });
+    }
+    let salt = SaltString::generate(&mut OsRng);
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| UserStoreError::Hash(e.to_string()))?
+        .to_string())
 }
 
 /// User record. `password_hash` is an Argon2id PHC string.
@@ -110,6 +138,30 @@ pub trait UserStore: Send + Sync + 'static {
         Err(UserStoreError::NotImplemented)
     }
 
+    /// Look up a user by WebID (JSS `findByWebId`). Compared exactly: a WebID
+    /// is a case-sensitive URL, and a near-match must not resolve to someone
+    /// else's account.
+    ///
+    /// Default impl returns `Ok(None)` so existing stores compile unchanged.
+    async fn find_by_webid(&self, _webid: &str) -> Result<Option<User>, UserStoreError> {
+        Ok(None)
+    }
+
+    /// Record a successful login now (JSS `updateLastLogin`). Returns
+    /// `Ok(false)` when the id is unknown.
+    ///
+    /// Default impl returns [`UserStoreError::NotImplemented`].
+    async fn update_last_login(&self, _id: &str) -> Result<bool, UserStoreError> {
+        Err(UserStoreError::NotImplemented)
+    }
+
+    /// When the user last logged in, if ever and if the store records it.
+    ///
+    /// Default impl returns `Ok(None)`.
+    async fn last_login(&self, _id: &str) -> Result<Option<DateTime<Utc>>, UserStoreError> {
+        Ok(None)
+    }
+
     /// Update a user's password hash. The caller has already verified
     /// the current password and validated the new password length.
     /// Returns `Ok(true)` when the password was updated, `Ok(false)`
@@ -132,6 +184,8 @@ pub struct InMemoryUserStore {
     inner: RwLock<HashMap<String, User>>,
     /// Secondary index: lowercase username -> lowercase email.
     username_index: RwLock<HashMap<String, String>>,
+    /// Last successful login, by user id.
+    last_login: RwLock<HashMap<String, DateTime<Utc>>>,
 }
 
 impl InMemoryUserStore {
@@ -240,7 +294,29 @@ impl UserStore for InMemoryUserStore {
         }
     }
 
+    async fn find_by_webid(&self, webid: &str) -> Result<Option<User>, UserStoreError> {
+        Ok(self
+            .inner
+            .read()
+            .values()
+            .find(|u| u.webid == webid)
+            .cloned())
+    }
+
+    async fn update_last_login(&self, id: &str) -> Result<bool, UserStoreError> {
+        if !self.inner.read().values().any(|u| u.id == id) {
+            return Ok(false);
+        }
+        self.last_login.write().insert(id.to_string(), Utc::now());
+        Ok(true)
+    }
+
+    async fn last_login(&self, id: &str) -> Result<Option<DateTime<Utc>>, UserStoreError> {
+        Ok(self.last_login.read().get(id).copied())
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, UserStoreError> {
+        self.last_login.write().remove(id);
         let mut guard = self.inner.write();
         // Find the keyed entry whose row matches this id and remove it.
         let email_key = guard
@@ -459,5 +535,50 @@ mod tests {
             }
             other => panic!("expected PasswordTooShort, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn find_by_webid_is_exact_and_last_login_is_recorded() {
+        let store = InMemoryUserStore::new();
+        store
+            .insert_user(
+                "u1",
+                "a@example.com",
+                "https://pod.example/a/profile/card#me",
+                None,
+                "password1",
+            )
+            .unwrap();
+        let hit = store
+            .find_by_webid("https://pod.example/a/profile/card#me")
+            .await
+            .unwrap();
+        assert_eq!(hit.map(|u| u.id).as_deref(), Some("u1"));
+        // Exact: neither case nor a trailing character resolves.
+        for near in [
+            "https://POD.example/a/profile/card#me",
+            "https://pod.example/a/profile/card#me ",
+            "https://pod.example/a/profile/card",
+        ] {
+            assert!(store.find_by_webid(near).await.unwrap().is_none(), "{near}");
+        }
+        assert_eq!(store.last_login("u1").await.unwrap(), None);
+        assert!(store.update_last_login("u1").await.unwrap());
+        assert!(store.last_login("u1").await.unwrap().is_some());
+        assert!(!store.update_last_login("nobody").await.unwrap());
+        assert!(store.delete("u1").await.unwrap());
+        assert_eq!(store.last_login("u1").await.unwrap(), None);
+    }
+
+    #[test]
+    fn hash_password_enforces_the_minimum_and_salts() {
+        assert!(matches!(
+            hash_password("1234567"),
+            Err(UserStoreError::PasswordTooShort { min_length: 8 })
+        ));
+        assert_ne!(
+            hash_password("12345678").unwrap(),
+            hash_password("12345678").unwrap()
+        );
     }
 }

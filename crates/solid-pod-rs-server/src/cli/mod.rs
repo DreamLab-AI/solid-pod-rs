@@ -5,7 +5,7 @@
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|
 //! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::QuotaPolicy::reconcile`] |
-//! | `account delete <user-id>`           | JSS #292 (`d9e56d8`)   | [`solid_pod_rs_idp::UserStore::delete`] |
+//! | `account create/delete/list/export`  | JSS #292 (`d9e56d8`)   | [`FileUserStore`] (`<root>/.server/accounts.json`) |
 //! | `invite create -u N [--expires-in]`  | JSS #304 (`6578ab9`)   | [`solid_pod_rs_idp::InviteStore`]  |
 //!
 //! Every runner is async and takes an already-constructed store so
@@ -17,6 +17,8 @@ use clap::{Args, Subcommand};
 mod install;
 pub use install::{parse_app_spec, run_install, AppSpec, InstallArgs};
 
+mod account_store;
+pub use account_store::{CreateError, FileUserStore};
 mod invite_store;
 pub use invite_store::{Consume, FileInviteStore, InviteRow};
 
@@ -33,9 +35,22 @@ pub enum OperatorCommand {
     #[command(subcommand)]
     Quota(QuotaCommand),
 
-    /// Account lifecycle — currently only `delete`.
-    #[command(subcommand)]
-    Account(AccountCommand),
+    /// Account lifecycle: `create`, `delete`, `list`, `export`. Accounts
+    /// persist in `<root>/.server/accounts.json`.
+    Account {
+        /// Data directory holding `.server/accounts.json` (JSS `-r, --root`).
+        #[arg(
+            short = 'r',
+            long,
+            global = true,
+            env = "JSS_STORAGE_ROOT",
+            default_value = "./data"
+        )]
+        root: std::path::PathBuf,
+        /// The account operation.
+        #[command(subcommand)]
+        cmd: AccountCommand,
+    },
 
     /// Invite-token operations: `create`, `list`, `revoke` (JSS
     /// `bin/jss.js` 457-540). Invites persist in
@@ -102,8 +117,48 @@ pub struct QuotaReconcileArgs {
 /// `account` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
-    /// Remove a user, their pods, and their WebID profile.
+    /// Create an account. The username is also the pod name, so it must
+    /// pass the registration name check (names the server serves itself,
+    /// such as `remotestorage`, are refused). The password is read from
+    /// stdin, never from the command line.
+    Create(AccountCreateArgs),
+
+    /// Remove a user from the account store. (The pod's files are not
+    /// touched.)
     Delete(AccountDeleteArgs),
+
+    /// List accounts (no password hashes).
+    List,
+
+    /// Print one account as JSON (no password hash).
+    Export(AccountExportArgs),
+}
+
+/// Arguments for `account create`.
+#[derive(Debug, Args, Clone)]
+pub struct AccountCreateArgs {
+    /// Username, also the pod name (`[A-Za-z0-9_-]`).
+    pub username: String,
+
+    /// Email address (unique, case-insensitive).
+    #[arg(long)]
+    pub email: String,
+
+    /// Display name.
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Public base URL of the server; the WebID is
+    /// `<base-url>/<username>/profile/card#me`.
+    #[arg(long = "base-url", env = "JSS_BASE_URL")]
+    pub base_url: String,
+}
+
+/// Arguments for `account export`.
+#[derive(Debug, Args, Clone)]
+pub struct AccountExportArgs {
+    /// Stable internal user id.
+    pub user_id: String,
 }
 
 /// Arguments for `account delete`.
@@ -315,6 +370,93 @@ where
     Ok(deleted)
 }
 
+/// Run `account create`: read the password from `prompt` (stdin in the
+/// binary) and create the account in `store`. The name goes through the same
+/// pod-name and reserved-name check as `POST /api/accounts/new`.
+pub async fn run_account_create<P: Prompt>(
+    args: &AccountCreateArgs,
+    store: &FileUserStore,
+    prompt: &mut P,
+) -> anyhow::Result<solid_pod_rs_idp::User> {
+    // Refuse a bad name before asking for a secret.
+    if !crate::valid_pod_name(&args.username) {
+        anyhow::bail!(
+            "account create: {:?} is not a valid account name (use [A-Za-z0-9_-]; names the \
+             server serves itself are reserved)",
+            args.username
+        );
+    }
+    let password = prompt
+        .ask("Password (read from stdin): ")?
+        .ok_or_else(|| anyhow::anyhow!("account create aborted: no password on stdin"))?;
+    store
+        .create(
+            &args.username,
+            &args.email,
+            &password,
+            args.name.as_deref(),
+            &args.base_url,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("account create: {e}"))
+}
+
+/// Run an `account` subcommand against the file store under `root`.
+pub async fn run_account_command(
+    root: &std::path::Path,
+    cmd: AccountCommand,
+) -> anyhow::Result<()> {
+    let store = FileUserStore::new(root);
+    match cmd {
+        AccountCommand::Create(args) => {
+            let mut prompt = StdinPrompt;
+            let user = run_account_create(&args, &store, &mut prompt).await?;
+            println!("created account {} ({})", user.id, user.webid);
+            Ok(())
+        }
+        AccountCommand::Delete(args) => {
+            let mut prompt = StdinPrompt;
+            if run_account_delete(&args, &store, &mut prompt).await? {
+                println!("deleted user {}", args.user_id);
+                Ok(())
+            } else {
+                anyhow::bail!("no such user {}", args.user_id)
+            }
+        }
+        AccountCommand::List => {
+            let rows = store
+                .list()
+                .await
+                .map_err(|e| anyhow::anyhow!("account store: {e}"))?;
+            if rows.is_empty() {
+                println!("No accounts found.");
+            }
+            for r in rows {
+                println!(
+                    "{}  {}  {}",
+                    r["id"].as_str().unwrap_or(""),
+                    r["username"].as_str().unwrap_or(""),
+                    r["webid"].as_str().unwrap_or("")
+                );
+            }
+            Ok(())
+        }
+        AccountCommand::Export(args) => {
+            match store
+                .export(&args.user_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("account store: {e}"))?
+            {
+                Some(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    Ok(())
+                }
+                None => anyhow::bail!("no such user {}", args.user_id),
+            }
+        }
+    }
+}
+
 /// Run `invite create`. Returns the minted invite *and* the final
 /// invite URL so the binary can print both in one step and tests can
 /// assert on the URL's shape.
@@ -372,21 +514,7 @@ pub async fn dispatch(cmd: OperatorCommand) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        OperatorCommand::Account(AccountCommand::Delete(args)) => {
-            // The binary ships with the in-memory UserStore by default;
-            // operators wiring a persistent store plug their own
-            // dispatch in place of this one. The default keeps the
-            // subcommand callable in dev without a configured DB.
-            let store = solid_pod_rs_idp::InMemoryUserStore::new();
-            let mut prompt = StdinPrompt;
-            let deleted = run_account_delete(&args, &store, &mut prompt).await?;
-            if deleted {
-                println!("deleted user {}", args.user_id);
-            } else {
-                println!("no such user {}", args.user_id);
-            }
-            Ok(())
-        }
+        OperatorCommand::Account { root, cmd } => run_account_command(&root, cmd).await,
         OperatorCommand::Invite { root, cmd } => run_invite_command(&root, cmd).await,
         OperatorCommand::Install(args) => run_install(&args).await,
     }
