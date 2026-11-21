@@ -1494,12 +1494,23 @@ async fn debit_ledger(
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Set the `Link` headers for `path`, and `Accept-Ranges` (`none` on a
+/// container, `bytes` on a resource, as JSS does on every LDP response).
 fn set_link_headers(rsp: &mut HttpResponse, path: &str) {
     let links = ldp::link_headers(path).join(", ");
     if let Ok(value) = header::HeaderValue::from_str(&links) {
         rsp.headers_mut()
             .insert(header::HeaderName::from_static("link"), value);
     }
+    let ranges = if ldp::is_container(path) {
+        "none"
+    } else {
+        "bytes"
+    };
+    rsp.headers_mut().insert(
+        header::HeaderName::from_static("accept-ranges"),
+        header::HeaderValue::from_static(ranges),
+    );
 }
 
 fn set_wac_allow(rsp: &mut HttpResponse, header_value: &str) {
@@ -2009,6 +2020,13 @@ async fn handle_post(
         Ok(p) => p,
         Err(e) => return Err(to_actix(e)),
     };
+    // A Slug may not mint a name the dotfile guard refuses for every other
+    // method (`.git`, `.env`, `x.meta.json`): nothing could read or remove it
+    // afterwards. JSS accepts such slugs; this is a deliberate difference.
+    if !state.dotfiles.is_allowed(Path::new(&target)) {
+        return Ok(HttpResponse::BadRequest()
+            .body("refused: the Slug names a path the dotfile policy does not allow"));
+    }
     let ct = req
         .headers()
         .get(header::CONTENT_TYPE)

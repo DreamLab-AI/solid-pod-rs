@@ -102,6 +102,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`Accept-Ranges` is sent on GET, HEAD and write responses** (`bytes` on a resource, `none` on a container, as JSS
+  does); before, only OPTIONS carried it (SP-PAR row 23).
+- **POST refuses a `Slug` that would mint a name the dotfile guard refuses** (`.git`, `.env`, `x.meta.json`): 400.
+  JSS accepts such slugs and creates a file nothing can read or remove; the refusal is a deliberate difference
+  (row 6).
+
 - **Parity comparator moved from JSS 0.0.224 to 0.0.231** (`PARITY-CHECKLIST.md` §29, rows 301-306). Of the
   35 upstream commits since 0.0.224 only six behaviours are user-visible server behaviour; this server already had
   five of them (encoded dot segments, bounded auth fetches, strict NIP-98, atomic conditional writes, the `<>`
