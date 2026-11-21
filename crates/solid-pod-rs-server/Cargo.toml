@@ -121,6 +121,7 @@ solid-pod-rs-forge = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-forge
 # Optional ActivityPub actor endpoint (JSS `--activitypub`, `--ap-*` knobs).
 # Gated by `activitypub` (default-off); pulls the AP crate and its SQLite stack.
 solid-pod-rs-activitypub = { version = "0.5.0-alpha.22", path = "../solid-pod-rs-activitypub", optional = true }
+actix-ws = "0.3"
 
 [features]
 # Feature umbrella toggles for the server binary.
@@ -196,3 +197,4 @@ k256 = { version = "0.14", features = ["schnorr"] }
 # Local mock HTTP server for the mempool endpoint-selection tests (ADR-2007).
 # Keeps 404-vs-5xx behaviour assertable without touching a real explorer.
 wiremock = "0.6"
+tokio-tungstenite = "0.24"

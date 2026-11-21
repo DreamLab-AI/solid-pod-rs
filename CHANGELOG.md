@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **`GET /.notifications` is served, and `Updates-Via` is sent only when it is** (SP-PAR-279). The server now
+  mounts the library's `solid-0.1` session on an actix WebSocket (`actix-ws`). Every `sub` and every delivery is
+  checked against WAC `acl:Read` on the resource concerned, at that moment; subscriptions must name this server's
+  own origin; an unreadable change is dropped without an `err` that would name it. `--no-notifications` removes
+  the route, the `Updates-Via` header and the `/.well-known/solid` gateway together. `AppState::notifications`
+  and `DotfileGuard::with_notifications_route` are new.
 - **JSON-LD ACLs are read by expanded IRI** (SP-PAR-265). `parse_jsonld_acl*` now expands the document with
   `oxjsonld` instead of reading literal `acl:` keys, so `@context` with any prefix, `@vocab`, a context array, the
   expanded form, a single node and an array `@type` all read as written. A remote `@context` is never fetched and

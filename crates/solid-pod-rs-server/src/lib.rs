@@ -112,6 +112,7 @@ pub mod activitypub;
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 pub mod cross_identity;
+pub mod notifications_ws;
 pub mod scheme;
 
 pub(crate) mod hardened_git;
@@ -387,6 +388,11 @@ pub struct AppState {
     /// ActivityPub actor provider; `Some` mounts the actor route (set by the
     /// `activitypub` feature's `ApConfig`; always `None` otherwise).
     pub activitypub: Option<Arc<dyn ActorDocument>>,
+    /// The `solid-0.1` notification hub. `Some` mounts `GET /.notifications`
+    /// and is the only thing that makes the server send `Updates-Via`
+    /// (SP-PAR-279); `None` mounts nothing and advertises nothing. On by
+    /// default; `--no-notifications` clears it.
+    pub notifications: Option<Arc<notifications_ws::NotifyHub>>,
 }
 
 /// Source of the ActivityPub actor document served at
@@ -535,6 +541,7 @@ impl AppState {
             allowed_hosts: Vec::new(),
             cross_identity: None,
             activitypub: None,
+            notifications: Some(notifications_ws::NotifyHub::new()),
         }
     }
 }
@@ -1497,7 +1504,13 @@ fn set_wac_allow(rsp: &mut HttpResponse, header_value: &str) {
     }
 }
 
-fn set_updates_via(rsp: &mut HttpResponse, base_url: &str) {
+/// Advertise the notification gateway, but only when the route that serves it
+/// is mounted.
+fn set_updates_via(rsp: &mut HttpResponse, state: &AppState) {
+    if state.notifications.is_none() {
+        return;
+    }
+    let base_url = state.nodeinfo.base_url.as_str();
     let ws_base = base_url
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
@@ -1655,7 +1668,7 @@ async fn handle_get(
                     .body(inject_live_reload(&body, state.live_reload));
                 set_cache_policy(&mut rsp, "text/html", index_audience);
                 set_wac_allow(&mut rsp, &wac_allow);
-                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_updates_via(&mut rsp, &state);
                 set_link_headers(&mut rsp, &path);
                 return Ok(rsp);
             }
@@ -1688,7 +1701,7 @@ async fn handle_get(
                 .body(inject_live_reload(html, state.live_reload));
             set_cache_policy(&mut rsp, "text/html", audience);
             set_wac_allow(&mut rsp, &wac_allow);
-            set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+            set_updates_via(&mut rsp, &state);
             set_link_headers(&mut rsp, &path);
             return Ok(rsp);
         }
@@ -1700,7 +1713,7 @@ async fn handle_get(
         );
         set_cache_policy(&mut rsp, "application/ld+json", audience);
         set_wac_allow(&mut rsp, &wac_allow);
-        set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+        set_updates_via(&mut rsp, &state);
         set_link_headers(&mut rsp, &path);
         return Ok(rsp);
     }
@@ -1737,7 +1750,7 @@ async fn handle_get(
                     .body(inject_live_reload(html, state.live_reload));
                 set_cache_policy(&mut rsp, "text/html", audience);
                 set_wac_allow(&mut rsp, &wac_allow);
-                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_updates_via(&mut rsp, &state);
                 set_link_headers(&mut rsp, &path);
                 return Ok(rsp);
             }
@@ -1768,7 +1781,7 @@ async fn handle_get(
                 }
                 set_cache_policy(&mut rsp, negotiated_ct, audience);
                 set_wac_allow(&mut rsp, &wac_allow);
-                set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+                set_updates_via(&mut rsp, &state);
                 set_link_headers(&mut rsp, &path);
                 return Ok(rsp);
             }
@@ -1790,7 +1803,7 @@ async fn handle_get(
             }
             set_cache_policy(&mut rsp, &meta.content_type, audience);
             set_wac_allow(&mut rsp, &wac_allow);
-            set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+            set_updates_via(&mut rsp, &state);
             set_link_headers(&mut rsp, &path);
             Ok(rsp)
         }
@@ -2878,7 +2891,7 @@ async fn handle_options(
         rsp.headers_mut()
             .insert(header::HeaderName::from_static("accept-ranges"), v);
     }
-    set_updates_via(&mut rsp, &state.nodeinfo.base_url);
+    set_updates_via(&mut rsp, &state);
     Ok(rsp)
 }
 
@@ -2887,7 +2900,18 @@ async fn handle_options(
 // ---------------------------------------------------------------------------
 
 async fn handle_well_known_solid(state: web::Data<AppState>) -> HttpResponse {
-    let doc = interop::well_known_solid(&state.nodeinfo.base_url, &state.nodeinfo.base_url);
+    let mut doc = serde_json::to_value(interop::well_known_solid(
+        &state.nodeinfo.base_url,
+        &state.nodeinfo.base_url,
+    ))
+    .unwrap_or_default();
+    // Name the notification gateway only when it is served (SP-PAR-279).
+    if state.notifications.is_none() {
+        if let Some(o) = doc.as_object_mut() {
+            o.remove("notificationGateway");
+            o.remove("notification_gateway");
+        }
+    }
     HttpResponse::Ok()
         .content_type("application/ld+json")
         .json(doc)
@@ -4458,6 +4482,7 @@ fn plugin_prefix_owns(path: &str) -> bool {
 pub struct DotfileGuard {
     allow: Arc<DotfileAllowlist>,
     hosts: Option<Arc<HostPolicy>>,
+    notifications: bool,
 }
 
 /// `Host` allow-list enforced by [`DotfileGuard`] (security review M1).
@@ -4475,7 +4500,19 @@ pub struct HostPolicy {
 
 impl DotfileGuard {
     pub fn new(allow: Arc<DotfileAllowlist>) -> Self {
-        Self { allow, hosts: None }
+        Self {
+            allow,
+            hosts: None,
+            notifications: false,
+        }
+    }
+
+    /// Let the exact path `/.notifications` through: set only when the
+    /// notification route is mounted, so with it off the name stays a refused
+    /// dotfile like any other (SP-PAR-279).
+    pub fn with_notifications_route(mut self, mounted: bool) -> Self {
+        self.notifications = mounted;
+        self
     }
 
     /// Also enforce a `Host` allow-list; an empty list changes nothing.
@@ -4503,6 +4540,7 @@ where
             service,
             allow: self.allow.clone(),
             hosts: self.hosts.clone(),
+            notifications: self.notifications,
         }))
     }
 }
@@ -4512,6 +4550,7 @@ pub struct DotfileGuardMiddleware<S> {
     service: S,
     allow: Arc<DotfileAllowlist>,
     hosts: Option<Arc<HostPolicy>>,
+    notifications: bool,
 }
 
 impl<S, B> Service<ServiceRequest> for DotfileGuardMiddleware<S>
@@ -4548,6 +4587,7 @@ where
         let allow_system_route = path.starts_with("/.well-known/")
             || path == "/.pods"
             || path.starts_with("/pay/")
+            || (self.notifications && path == "/.notifications")
             || plugin_prefix_owns(&path);
         if !allow_system_route {
             let pb = PathBuf::from(&path);
@@ -5999,10 +6039,14 @@ pub fn build_app(
         // discriminator in LDP.
         .wrap(NormalizePath::new(TrailingSlash::MergeOnly))
         .wrap(PathTraversalGuard)
-        .wrap(DotfileGuard::new(dotfiles).with_host_policy(HostPolicy {
-            allowed: allowed_hosts,
-            trust_proxy: state.trust_proxy,
-        }));
+        .wrap(
+            DotfileGuard::new(dotfiles)
+                .with_host_policy(HostPolicy {
+                    allowed: allowed_hosts,
+                    trust_proxy: state.trust_proxy,
+                })
+                .with_notifications_route(state.notifications.is_some()),
+        );
 
     // CORS / rate-limit: middleware is driven by the library types from
     // S7-A. We register pass-through headers when the env-driven policy
@@ -6051,6 +6095,15 @@ pub fn build_app(
     #[cfg(feature = "export-jsonld")]
     {
         app = app.route("/api/exports/all", web::get().to(handle_export_all));
+    }
+
+    // `solid-0.1` notifications (SP-PAR-279): mounted only when enabled, and
+    // `Updates-Via` is advertised under exactly the same condition.
+    if state.notifications.is_some() {
+        app = app.route(
+            "/.notifications",
+            web::get().to(notifications_ws::handle_notifications),
+        );
     }
 
     // App discovery endpoint (JSS #464 Phase 2 — public, no auth required).

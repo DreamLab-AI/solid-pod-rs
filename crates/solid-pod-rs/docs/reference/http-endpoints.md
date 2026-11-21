@@ -103,7 +103,12 @@ Feature `oidc` required. Build with `oidc::discovery_for(issuer)`.
 
 ### `GET /.notifications`
 
-Returns the subscription-discovery JSON-LD document. Build with
+`solid-pod-rs-server` serves this path as a WebSocket upgrade speaking the
+`solid-0.1` protocol (`sub`/`unsub` in; `ack`/`err`/`pub` out), with a WAC
+Read check on every subscription and every delivery. It is mounted, and
+`Updates-Via` advertised, unless the server runs with `--no-notifications`.
+A library consumer that builds its own routes can instead return the
+subscription-discovery JSON-LD document. Build with
 `notifications::discovery_document(pod_base)`.
 
 ```json

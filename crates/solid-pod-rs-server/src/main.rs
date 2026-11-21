@@ -115,6 +115,12 @@ struct Cli {
     #[arg(long)]
     no_mcp: bool,
 
+    /// Do not serve `GET /.notifications` (the `solid-0.1` WebSocket) and do
+    /// not advertise it with `Updates-Via` or in `/.well-known/solid`. On by
+    /// default; the route and its advertisement always change together.
+    #[arg(long, env = "JSS_NO_NOTIFICATIONS")]
+    no_notifications: bool,
+
     /// Content negotiation: accept and advertise `text/n3` request bodies
     /// (JSS `--conneg`, `JSS_CONNEG`).
     #[arg(long, env = "JSS_CONNEG")]
@@ -341,6 +347,12 @@ async fn main() -> anyhow::Result<()> {
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
     // baked-in env value can be overridden at the command line.
     state.mcp_enabled = cli.mcp && !cli.no_mcp;
+    if cli.no_notifications {
+        state.notifications = None;
+        info!(
+            "notifications disabled — /.notifications is not mounted and Updates-Via is not sent"
+        );
+    }
     if state.mcp_enabled {
         info!("MCP server enabled — POST /mcp is live (agent tool surface, #490)");
     }

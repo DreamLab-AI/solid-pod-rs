@@ -127,6 +127,17 @@ mutation is applied on top of pre-existing triples rather than replacing
 them; a body that is neither empty nor parseable N-Triples is refused with
 `409` rather than silently overwritten.
 
+## Notifications (`/.notifications`)
+
+`GET /.notifications` upgrades to a WebSocket speaking the `solid-0.1` protocol
+(`protocol solid-0.1`; the client sends `sub <url>` / `unsub <url>`, the server
+answers `ack <url>`, `err <url> forbidden` or `pub <url>`). A subscription is
+accepted only for a URL on this server's own origin that the caller may read,
+and each `pub` is re-checked against WAC `acl:Read` on the changed resource;
+a change the subscriber cannot read is never announced. The route, the
+`Updates-Via` response header and the `/.well-known/solid` gateway are on
+together and off together with `--no-notifications` (`JSS_NO_NOTIFICATIONS`).
+
 ## Agent write path (NIP-98)
 
 Write verbs (`PUT` / `POST` / `PATCH` / `DELETE` / `COPY`) authenticate the
