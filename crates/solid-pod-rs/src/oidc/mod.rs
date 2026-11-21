@@ -436,9 +436,11 @@ pub const DPOP_REPLAY_REFUSED_MESSAGE: &str = "DPoP proof rejected";
 /// The claims are not readable from this type. The only way to obtain the
 /// [`DpopVerified`] needed to issue a token is [`PendingDpopProof::record`],
 /// which spends the `jti` in a [`DpopReplayCache`] and fails on a replay or a
-/// full cache. Forgetting to record is therefore a type error (the claims never
+/// full cache. Through this API forgetting to record is a type error (the claims never
 /// appear), and dropping the value without recording is flagged by
-/// `#[must_use]`.
+/// `#[must_use]`. [`verify_dpop_proof`] with `None` as its cache still returns
+/// unrecorded claims by design (an opt-out of replay detection); this type
+/// guards only the `_unrecorded` path.
 #[cfg(feature = "dpop-replay-cache")]
 #[must_use = "a verified DPoP proof is replayable until `.record(cache)` spends its jti"]
 #[derive(Debug)]

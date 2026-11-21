@@ -50,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up). It recorded first, so an unauthenticated client holding any key could fill the global replay cache
   with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded`, which
   returns a `#[must_use]` `PendingDpopProof` whose only exit is `.record(cache)` (SP-DPOP-UNRECORDED-API: the
-  claims are unreachable without spending the `jti`, and `record_dpop_jti` is now private; both now sit behind the
+  through `verify_dpop_proof_unrecorded` the claims are unreachable without spending the `jti`; `verify_dpop_proof(..., None)` still returns unrecorded claims through the public API, by design, for callers that opt out of replay detection; and `record_dpop_jti` is now private; both now sit behind the
   `dpop-replay-cache` feature, as the cache type does); a replayed `jti` after the code is consumed fails the exchange (the code stays
   spent) and issues no token. `Provider::with_dpop_replay_cache` added.
 - **A full DPoP replay cache and a replayed proof give the same generic client message** (`DPoP proof rejected`);
