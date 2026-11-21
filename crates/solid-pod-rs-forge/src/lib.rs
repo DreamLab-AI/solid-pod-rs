@@ -186,24 +186,45 @@ fn now_secs() -> u64 {
 /// UUIDs, each 122 bits of entropy from the platform RNG). Persisting it
 /// keeps minted tokens valid across restarts.
 fn load_or_create_token_key(plugin_dir: &Path) -> Result<[u8; 32], ForgeError> {
+    use std::io::Write;
     let path = plugin_dir.join(".forge-token-key");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if bytes.len() == 32 {
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&bytes);
-            return Ok(key);
+    // A concurrent creator may win the race; read what it wrote. A file of the
+    // wrong length (a torn write) is removed and created afresh.
+    for _ in 0..4 {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if bytes.len() == 32 {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                return Ok(key);
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+        let mut key = [0u8; 32];
+        key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        // Create with mode 0600 in the same call that creates the file, so
+        // the key is never on disk with a umask-derived mode, and refuse to
+        // overwrite (`create_new`).
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut f) => {
+                f.write_all(&key)?;
+                f.sync_all()?;
+                return Ok(key);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
         }
     }
-    let mut key = [0u8; 32];
-    key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    std::fs::write(&path, key)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(key)
+    Err(ForgeError::Io(std::io::Error::other(
+        "could not create the forge token key",
+    )))
 }
 
 /// The forge service. One instance is built at server startup and shared
@@ -1480,6 +1501,28 @@ impl ForgeService {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_token_key_is_created_0600_and_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let key = load_or_create_token_key(td.path()).unwrap();
+        let path = td.path().join(".forge-token-key");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+        // A second load returns the same key and leaves the file alone.
+        assert_eq!(load_or_create_token_key(td.path()).unwrap(), key);
+        assert_eq!(std::fs::read(&path).unwrap(), key);
+        // A torn (wrong-length) file is replaced, still 0600.
+        std::fs::write(&path, b"short").unwrap();
+        let fresh = load_or_create_token_key(td.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), fresh);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     use super::*;
     use bytes::Bytes;
     use tempfile::TempDir;

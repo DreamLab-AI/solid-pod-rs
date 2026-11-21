@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The forge token key is created `0600` atomically** (`create_new` with mode `0600`), instead of written and then
+  chmodded, which left a window under a permissive umask. An existing key is never overwritten.
 - **Only `GET /.notifications` passes the dotfile guard** (SP-PAR-279 follow-up). The carve-out ignored the
   method, so a PUT by a root Write holder created a `/.notifications` dotfile the guard otherwise refuses.
 - **`/.notifications` is bounded per peer and reaps dead sockets** (SP-PAR-279 follow-up): 16 sockets per remote
