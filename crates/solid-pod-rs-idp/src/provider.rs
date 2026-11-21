@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use solid_pod_rs::oidc::replay::min_ttl_for_skew;
-use solid_pod_rs::oidc::{record_dpop_jti, verify_dpop_proof_unrecorded, DpopReplayCache};
+use solid_pod_rs::oidc::{verify_dpop_proof_unrecorded, DpopReplayCache};
 
 use crate::error::ProviderError;
 use crate::jwks::Jwks;
@@ -269,7 +269,7 @@ impl Provider {
         // replay cache and lock out every real code exchange. The `jti` is
         // recorded below, once the authorisation code has been accepted, so
         // insertions are bounded by valid codes.
-        let verified = verify_dpop_proof_unrecorded(
+        let pending = verify_dpop_proof_unrecorded(
             dpop_proof,
             &expected_htu,
             "POST",
@@ -277,7 +277,6 @@ impl Provider {
             self.config.dpop_skew_secs,
         )
         .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?;
-        let jkt = verified.jkt;
 
         // Consume the code (single-use).
         let code: AuthCodeRecord = self
@@ -321,9 +320,11 @@ impl Provider {
         // cannot be paired with a fresh code to get a token, and the client
         // must restart the authorisation. Both refusals share one generic
         // message; the cause is in the server log.
-        record_dpop_jti(&self.dpop_replay, &verified.jti)
+        let jkt = pending
+            .record(&self.dpop_replay)
             .await
-            .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?;
+            .map_err(|e| ProviderError::InvalidDpop(e.to_string()))?
+            .jkt;
 
         // Sign the access token.
         let key = self.jwks.active_key();

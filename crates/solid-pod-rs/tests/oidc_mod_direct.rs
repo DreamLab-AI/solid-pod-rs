@@ -363,3 +363,67 @@ async fn verify_dpop_proof_happy_path_returns_jkt() {
     assert_eq!(v.htm, "GET");
     assert_eq!(v.jti, "jti-ok-1");
 }
+
+// ---------------------------------------------------------------------------
+// SP-DPOP-UNRECORDED-API: the unrecorded verifier hands back a guard whose
+// only exit is recording the `jti`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn unrecorded_verification_spends_the_jti_only_when_the_guard_is_recorded() {
+    use solid_pod_rs::oidc::{verify_dpop_proof_unrecorded, DpopReplayCache};
+
+    let secret = b"unrecorded-guard-secret";
+    let jwk = test_jwk(secret);
+    let now = 1_700_000_000u64;
+    let proof = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/t",
+        "POST",
+        now,
+        "jti-guard-1",
+    );
+    let cache = DpopReplayCache::with_config(std::time::Duration::from_secs(122), 16);
+
+    // Verifying records nothing: two guards for one proof both verify.
+    let first = verify_dpop_proof_unrecorded(&proof, "https://pod.example/t", "POST", now, 60)
+        .expect("valid proof");
+    let second = verify_dpop_proof_unrecorded(&proof, "https://pod.example/t", "POST", now, 60)
+        .expect("verification alone spends nothing");
+
+    // Recording yields the claims, once.
+    let claims = first
+        .record(&cache)
+        .await
+        .expect("first record spends the jti");
+    assert_eq!(claims.jti, "jti-guard-1");
+    assert_eq!(claims.htm, "POST");
+
+    // The replayed proof is refused at the recording step, with the generic message.
+    let err = second.record(&cache).await.unwrap_err();
+    assert_eq!(
+        format!("{err}"),
+        PodError::Nip98(solid_pod_rs::oidc::DPOP_REPLAY_REFUSED_MESSAGE.into()).to_string()
+    );
+
+    // A guard dropped without recording leaves the cache untouched: the same
+    // proof can still be recorded afterwards by a caller that does record.
+    let other = build_dpop_proof(
+        secret,
+        &jwk,
+        "https://pod.example/t",
+        "POST",
+        now,
+        "jti-guard-2",
+    );
+    drop(verify_dpop_proof_unrecorded(&other, "https://pod.example/t", "POST", now, 60).unwrap());
+    verify_dpop_proof_unrecorded(&other, "https://pod.example/t", "POST", now, 60)
+        .unwrap()
+        .record(&cache)
+        .await
+        .expect("an abandoned guard recorded nothing");
+
+    // A proof that fails verification yields no guard at all.
+    assert!(verify_dpop_proof_unrecorded(&proof, "https://pod.example/t", "GET", now, 60).is_err());
+}

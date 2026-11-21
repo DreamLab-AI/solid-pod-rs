@@ -16,8 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   judged as `http.example`. Non-`ws`/`wss` relay URLs are refused.
 - **The IdP token endpoint records a DPoP `jti` only after the authorisation code is accepted** (AW1-05
   follow-up). It recorded first, so an unauthenticated client holding any key could fill the global replay cache
-  with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded` and
-  `oidc::record_dpop_jti`; a replayed `jti` after the code is consumed fails the exchange (the code stays
+  with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded`, which
+  returns a `#[must_use]` `PendingDpopProof` whose only exit is `.record(cache)` (SP-DPOP-UNRECORDED-API: the
+  claims are unreachable without spending the `jti`, and `record_dpop_jti` is now private); a replayed `jti` after the code is consumed fails the exchange (the code stays
   spent) and issues no token. `Provider::with_dpop_replay_cache` added.
 - **A full DPoP replay cache and a replayed proof give the same generic client message** (`DPoP proof rejected`);
   the capacity and lifetime stay in the server log.

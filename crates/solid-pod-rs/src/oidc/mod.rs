@@ -430,35 +430,71 @@ pub async fn verify_dpop_proof_with_ath(
 /// size or lifetime); the detail goes to the server log only.
 pub const DPOP_REPLAY_REFUSED_MESSAGE: &str = "DPoP proof rejected";
 
+/// A DPoP proof whose signature and claims verified but whose `jti` is not yet
+/// spent. Returned by [`verify_dpop_proof_unrecorded`].
+///
+/// The claims are not readable from this type. The only way to obtain the
+/// [`DpopVerified`] needed to issue a token is [`PendingDpopProof::record`],
+/// which spends the `jti` in a [`DpopReplayCache`] and fails on a replay or a
+/// full cache. Forgetting to record is therefore a type error (the claims never
+/// appear), and dropping the value without recording is flagged by
+/// `#[must_use]`.
+#[cfg(feature = "dpop-replay-cache")]
+#[must_use = "a verified DPoP proof is replayable until `.record(cache)` spends its jti"]
+#[derive(Debug)]
+pub struct PendingDpopProof {
+    verified: DpopVerified,
+}
+
+#[cfg(feature = "dpop-replay-cache")]
+impl PendingDpopProof {
+    /// Spend the proof's `jti` in `cache` and hand back the verified claims.
+    ///
+    /// A replayed `jti` and a full cache both fail closed with the same
+    /// [`DPOP_REPLAY_REFUSED_MESSAGE`]; the specific reason is logged only.
+    ///
+    /// # Errors
+    ///
+    /// [`PodError::Nip98`] when the `jti` was already seen inside the cache's
+    /// lifetime, or the cache has no room for a live entry.
+    pub async fn record(self, cache: &DpopReplayCache) -> Result<DpopVerified, PodError> {
+        record_dpop_jti(cache, &self.verified.jti).await?;
+        Ok(self.verified)
+    }
+}
+
 /// Verify a DPoP proof (signature, `typ`, `htu`, `htm`, `iat` window) WITHOUT
 /// touching any replay cache.
 ///
 /// For callers that must finish their own authorisation before the `jti` is
 /// spent (the IdP token endpoint: an unauthenticated client invents the proof
 /// key, so recording at this point would let it fill the cache with valid
-/// proofs). Such a caller MUST then call [`record_dpop_jti`], and issue
+/// proofs). The result is a [`PendingDpopProof`]: call
+/// [`PendingDpopProof::record`] once the caller's own checks pass, and issue
 /// nothing if that fails.
+///
+/// # Errors
+///
+/// [`PodError::Nip98`] when the proof's signature, `typ`, `htu`, `htm` or `iat`
+/// does not verify.
+#[cfg(feature = "dpop-replay-cache")]
 pub fn verify_dpop_proof_unrecorded(
     proof: &str,
     expected_htu: &str,
     expected_htm: &str,
     now: u64,
     skew: u64,
-) -> Result<DpopVerified, PodError> {
+) -> Result<PendingDpopProof, PodError> {
     verify_dpop_proof_core(proof, expected_htu, expected_htm, now, skew, None)
+        .map(|verified| PendingDpopProof { verified })
 }
 
 /// Record a verified proof's `jti` in `cache`, refusing a replay.
 ///
 /// A replayed `jti` and a full cache both fail closed with the same
 /// [`DPOP_REPLAY_REFUSED_MESSAGE`]; the specific reason is logged only.
-///
-/// # Errors
-///
-/// [`PodError::Nip98`] when the `jti` was already seen inside the cache's
-/// lifetime, or the cache has no room for a live entry.
 #[cfg(feature = "dpop-replay-cache")]
-pub async fn record_dpop_jti(cache: &DpopReplayCache, jti: &str) -> Result<(), PodError> {
+async fn record_dpop_jti(cache: &DpopReplayCache, jti: &str) -> Result<(), PodError> {
     match cache.check_and_record(jti).await {
         Ok(()) => Ok(()),
         Err(e) => {
