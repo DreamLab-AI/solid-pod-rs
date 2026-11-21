@@ -732,8 +732,36 @@ async fn pod_info(_args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
 // ACL tools (#496)
 // ---------------------------------------------------------------------------
 
-fn acl_url_for(path: &str) -> String {
-    format!("{path}.acl")
+/// The key `write_acl` writes: the one the active layout reads. Under `both`
+/// that is the sidecar when it exists (it is read first) and otherwise the
+/// inner form, which is read when the sidecar is absent and is governed by
+/// Control on the container itself, not on a sibling resource of that name.
+async fn acl_write_key(state: &AppState, path: &str) -> String {
+    let advertised = wac::acl_advertised_key(path, state.acl_layout);
+    let container = path == "/" || path.ends_with('/');
+    if state.acl_layout == wac::AclLayout::Both
+        && container
+        && path != "/"
+        && !state.storage.exists(&advertised).await.unwrap_or(false)
+    {
+        return format!("{}/.acl", path.trim_end_matches('/'));
+    }
+    advertised
+}
+
+/// The path an ACL tool governs. A path without a trailing slash that names an
+/// existing container is that container (`/docs` is `/docs/`), so both
+/// spellings reach the same ACL key and the same gate.
+async fn acl_subject(state: &AppState, path: &str) -> String {
+    if path == "/" || path.ends_with('/') {
+        return path.to_string();
+    }
+    let container = format!("{path}/");
+    if state.storage.exists(&container).await.unwrap_or(false) {
+        container
+    } else {
+        path.to_string()
+    }
 }
 
 fn short_mode(mode: &str) -> String {
@@ -765,16 +793,33 @@ async fn read_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         Ok(p) => p,
         Err(e) => return e,
     };
-    if !wac_check(state, ctx, path, AccessMode::Control).await {
-        return tool_error(format!("access denied: control {path}"));
+    // Reading an ACL discloses the whole authorisation graph, so each key that
+    // is read goes through the REST read gate (Control on the governed
+    // resource), on the keys the active layout reads, in its reading order.
+    let path = &acl_subject(state, path).await;
+    let container = path == "/" || path.ends_with('/');
+    let mut found = None;
+    for key in wac::acl_probe_keys(path, container, state.acl_layout) {
+        if state.storage.exists(&key).await.unwrap_or(false) {
+            if let Err(e) = authorise(state, ctx, &key, AccessMode::Read, "read acl").await {
+                return e;
+            }
+            if let Ok((body, _)) = state.storage.get(&key).await {
+                found = Some((key, body));
+                break;
+            }
+        }
     }
-    let acl_path = acl_url_for(path);
-    let (body, _meta) = match state.storage.get(&acl_path).await {
-        Ok(v) => v,
-        Err(_) => {
+    let (acl_path, body) = match found {
+        Some(f) => f,
+        None => {
+            let key = wac::acl_advertised_key(path, state.acl_layout);
+            if let Err(e) = authorise(state, ctx, &key, AccessMode::Read, "read acl").await {
+                return e;
+            }
             return tool_json(json!({
-                "path": path, "aclPath": acl_path, "exists": false, "authorizations": []
-            }))
+                "path": path, "aclPath": key, "exists": false, "authorizations": []
+            }));
         }
     };
     let doc = match parse_jsonld_acl(&body) {
@@ -877,8 +922,13 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         Some(a) => a,
         None => return tool_error("authorizations must be an array"),
     };
-    if !wac_check(state, ctx, path, AccessMode::Control).await {
-        return tool_error(format!("access denied: control {path}"));
+    // The same gate as an HTTP PUT of the ACL: on the key the active layout
+    // writes, with the layout's extra Control check on the container's other
+    // form (`enforce_write_inner`).
+    let path = &acl_subject(state, path).await;
+    let acl_path = acl_write_key(state, path).await;
+    if let Err(e) = authorise(state, ctx, &acl_path, AccessMode::Write, "write acl").await {
+        return e;
     }
     let doc = build_acl_jsonld(path, authorizations);
     let serialized = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
@@ -931,7 +981,6 @@ async fn write_acl(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
         ));
     }
 
-    let acl_path = acl_url_for(path);
     let bytes = Bytes::from(serialized.into_bytes());
     // Same per-resource serialisation as an LDP PATCH of this ACL, so a
     // concurrent PATCH cannot write back the graph this call replaces.
@@ -1722,5 +1771,230 @@ mod jev_tests {
         .await;
         assert_eq!(out["isError"], true);
         assert!(spy.seen.lock().unwrap().is_empty());
+    }
+}
+
+/// The ACL tools authorise on the ACL key the active layout uses, through the
+/// same gate as the HTTP handlers (SP-PAR-290 review). The property: an agent
+/// whose Control reaches `/docs/` only from the root's `acl:default` cannot use
+/// `write_acl` or `read_acl` to take over or read a container whose own ACL
+/// excludes it, in any layout, and a write lands where the layout reads.
+#[cfg(test)]
+mod acl_tool_layout_tests {
+    use super::*;
+    use solid_pod_rs::storage::{memory::MemoryBackend, Storage};
+    use solid_pod_rs::wac::AclLayout;
+    use std::sync::Arc;
+
+    const A: &str = "https://a.example/#me";
+    const B: &str = "https://b.example/#me";
+
+    fn turtle(agent: &str, modes: &str, target: &str, default: bool) -> String {
+        let d = if default {
+            format!("acl:default <{target}> ; ")
+        } else {
+            String::new()
+        };
+        format!(
+            "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n<#r> a acl:Authorization ; acl:agent <{agent}> ; acl:accessTo <{target}> ; {d}acl:mode {modes} .\n"
+        )
+    }
+
+    /// Root: A has Read/Write/Control with default. `/docs/` exists and its
+    /// own ACL (in the layout's form) gives only B Control.
+    async fn setup(layout: AclLayout) -> (AppState, McpCtx, Arc<MemoryBackend>) {
+        let s = Arc::new(MemoryBackend::new());
+        s.put(
+            "/.acl",
+            Bytes::from(turtle(A, "acl:Read, acl:Write, acl:Control", "/", true)),
+            "text/turtle",
+        )
+        .await
+        .unwrap();
+        s.create_container("/docs/").await.unwrap();
+        let b_only = turtle(B, "acl:Read, acl:Write, acl:Control", "/docs/", true);
+        let key = match layout {
+            AclLayout::Sidecar => "/docs.acl",
+            AclLayout::Inner | AclLayout::Both => "/docs/.acl",
+        };
+        s.put(key, Bytes::from(b_only), "text/turtle")
+            .await
+            .unwrap();
+        let mut st = AppState::new(s.clone());
+        st.mcp_enabled = true;
+        st.acl_layout = layout;
+        let ctx = McpCtx {
+            web_id: Some(A.into()),
+            origin: "http://localhost:8080".into(),
+            federation_depth: 0,
+            request_origin: None,
+        };
+        (st, ctx, s)
+    }
+
+    async fn text(s: &MemoryBackend, key: &str) -> Option<String> {
+        s.get(key)
+            .await
+            .ok()
+            .map(|(b, _)| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    fn grant_a() -> Value {
+        json!([{"agents":[A],"modes":["Read","Write","Control"],"isDefault":true}])
+    }
+
+    fn denied(v: &Value) -> bool {
+        v["isError"].as_bool().unwrap_or(false)
+    }
+
+    const ALL: [AclLayout; 3] = [AclLayout::Sidecar, AclLayout::Inner, AclLayout::Both];
+
+    #[actix_web::test]
+    async fn write_acl_cannot_take_over_a_container_that_excludes_the_caller() {
+        for layout in ALL {
+            for path in ["/docs", "/docs/"] {
+                let (st, ctx, s) = setup(layout).await;
+                let before = (text(&s, "/docs.acl").await, text(&s, "/docs/.acl").await);
+                let out = call_tool(
+                    "write_acl",
+                    &json!({"path": path, "authorizations": grant_a()}),
+                    &st,
+                    &ctx,
+                )
+                .await;
+                assert!(denied(&out), "{layout:?} {path}: {out}");
+                // Nothing was written at either form.
+                let after = (text(&s, "/docs.acl").await, text(&s, "/docs/.acl").await);
+                assert_eq!(after, before, "{layout:?} {path}");
+            }
+        }
+    }
+
+    #[actix_web::test]
+    async fn read_acl_cannot_read_a_container_acl_that_excludes_the_caller() {
+        for layout in ALL {
+            for path in ["/docs", "/docs/"] {
+                let (st, ctx, _s) = setup(layout).await;
+                let out = call_tool("read_acl", &json!({"path": path}), &st, &ctx).await;
+                assert!(denied(&out), "{layout:?} {path}: {out}");
+            }
+        }
+    }
+
+    #[actix_web::test]
+    async fn the_owner_of_the_container_can_write_and_read_where_the_layout_reads() {
+        for layout in ALL {
+            let (st, mut ctx, s) = setup(layout).await;
+            ctx.web_id = Some(B.into());
+            let auths = json!([{"agents":[B],"modes":["Read","Write","Control"],"isDefault":true}]);
+            let out = call_tool(
+                "write_acl",
+                &json!({"path": "/docs/", "authorizations": auths}),
+                &st,
+                &ctx,
+            )
+            .await;
+            assert!(!denied(&out), "{layout:?}: {out}");
+            let (sidecar, inner) = (text(&s, "/docs.acl").await, text(&s, "/docs/.acl").await);
+            let rewritten = |x: &Option<String>| x.as_ref().is_some_and(|b| b.contains("@graph"));
+            match layout {
+                // The default layout reads the sidecar: that is where it went.
+                AclLayout::Sidecar => {
+                    assert!(rewritten(&sidecar), "{layout:?}");
+                    assert!(inner.is_none());
+                }
+                // Inner reads only the inner form; both reads the sidecar
+                // first, and with none present the write goes to the inner form.
+                AclLayout::Inner | AclLayout::Both => {
+                    assert!(rewritten(&inner), "{layout:?}");
+                    assert!(sidecar.is_none());
+                }
+            }
+            let out = call_tool("read_acl", &json!({"path": "/docs/"}), &st, &ctx).await;
+            assert!(!denied(&out), "{layout:?}: {out}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_default_layout_revocation_through_mcp_takes_effect() {
+        // Root gives A Control; /docs/ has no ACL of its own. A narrows /docs/
+        // to Read for B only (no Write for B). In the default layout the tool
+        // must write the sidecar the resolver reads, so B's write is refused.
+        let s = Arc::new(MemoryBackend::new());
+        s.put(
+            "/.acl",
+            Bytes::from(
+                "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n<#a> a acl:Authorization ; acl:agent <https://a.example/#me> ; acl:accessTo </> ; acl:default </> ; acl:mode acl:Read, acl:Write, acl:Control .\n<#b> a acl:Authorization ; acl:agent <https://b.example/#me> ; acl:accessTo </> ; acl:default </> ; acl:mode acl:Read, acl:Write .\n",
+            ),
+            "text/turtle",
+        )
+        .await
+        .unwrap();
+        s.create_container("/docs/").await.unwrap();
+        let mut st = AppState::new(s.clone());
+        st.mcp_enabled = true;
+        let ctx = McpCtx {
+            web_id: Some(A.into()),
+            origin: "http://localhost:8080".into(),
+            federation_depth: 0,
+            request_origin: None,
+        };
+        assert!(
+            crate::enforce_write_ctx(&st, "/docs/x", AccessMode::Write, Some(B), None)
+                .await
+                .is_ok(),
+            "B writes before the revocation"
+        );
+        let auths = json!([
+            {"agents":[A],"modes":["Read","Write","Control"],"isDefault":true},
+            {"agents":[B],"modes":["Read"],"isDefault":true}
+        ]);
+        let out = call_tool(
+            "write_acl",
+            &json!({"path": "/docs/", "authorizations": auths}),
+            &st,
+            &ctx,
+        )
+        .await;
+        assert!(!denied(&out), "{out}");
+        assert!(s.exists("/docs.acl").await.unwrap());
+        assert!(!s.exists("/docs/.acl").await.unwrap());
+        assert!(
+            crate::enforce_write_ctx(&st, "/docs/x", AccessMode::Write, Some(B), None)
+                .await
+                .is_err(),
+            "the revocation must take effect"
+        );
+    }
+
+    #[actix_web::test]
+    async fn create_and_write_with_an_acl_name_take_the_same_gate() {
+        for layout in [AclLayout::Inner, AclLayout::Both] {
+            let (st, ctx, s) = setup(layout).await;
+            for (tool, args) in [
+                (
+                    "create_resource",
+                    json!({"container": "/", "slug": "docs.acl", "content": "x"}),
+                ),
+                (
+                    "write_resource",
+                    json!({"path": "/docs.acl", "content": "x"}),
+                ),
+                (
+                    "create_resource",
+                    json!({"container": "/docs/", "slug": ".acl", "content": "x"}),
+                ),
+                (
+                    "write_resource",
+                    json!({"path": "/docs/.acl", "content": "x"}),
+                ),
+            ] {
+                let out = call_tool(tool, &args, &st, &ctx).await;
+                assert!(denied(&out), "{layout:?} {tool} {args}: {out}");
+            }
+            assert!(!s.exists("/docs.acl").await.unwrap(), "{layout:?}");
+            let inner = text(&s, "/docs/.acl").await.unwrap();
+            assert!(inner.contains("b.example"), "{layout:?}: inner ACL intact");
+        }
     }
 }
