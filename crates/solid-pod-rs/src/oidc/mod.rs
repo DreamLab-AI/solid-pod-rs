@@ -824,6 +824,11 @@ pub fn verify_access_token(
     )
 }
 
+/// Largest `exp`/`nbf` leeway an [`AccessTokenPolicy`] honours, in seconds.
+/// A larger configured value is clamped to this, so no setting can make an
+/// expired token usable for long.
+pub const MAX_CLOCK_LEEWAY_SECS: u64 = 300;
+
 /// Audience every Solid-OIDC access token is expected to carry.
 pub const SOLID_OIDC_AUDIENCE: &str = "solid";
 
@@ -841,7 +846,9 @@ pub struct AccessTokenPolicy {
     /// (RFC 7519 §4.1.4 and §4.1.5 allow "a small leeway"). A token is
     /// refused once `now >= exp + leeway` and while `nbf > now + leeway`.
     /// Defaults to [`replay::DPOP_DEFAULT_SKEW_SECS`], the same tolerance
-    /// DPoP `iat` gets; `0` restores strict comparison.
+    /// DPoP `iat` gets; `0` restores strict comparison. Values above
+    /// [`MAX_CLOCK_LEEWAY_SECS`] are clamped, by the setter and again at the
+    /// comparison (the field is public).
     pub clock_leeway_secs: u64,
 }
 
@@ -855,10 +862,11 @@ impl AccessTokenPolicy {
         }
     }
 
-    /// The same policy with a different `exp`/`nbf` leeway in seconds.
+    /// The same policy with a different `exp`/`nbf` leeway in seconds,
+    /// clamped to [`MAX_CLOCK_LEEWAY_SECS`] (300 s).
     #[must_use]
     pub fn with_clock_leeway_secs(mut self, secs: u64) -> Self {
-        self.clock_leeway_secs = secs;
+        self.clock_leeway_secs = secs.min(MAX_CLOCK_LEEWAY_SECS);
         self
     }
 }
@@ -1009,11 +1017,12 @@ pub fn verify_access_token_with_policy(
     // RFC 7519 §4.1.4: the token must not be accepted on or after `exp`,
     // allowing the policy's small clock-skew leeway (saturating: a huge
     // `exp` or leeway cannot wrap into the past).
-    if claims.exp.saturating_add(policy.clock_leeway_secs) <= now {
+    let leeway = policy.clock_leeway_secs.min(MAX_CLOCK_LEEWAY_SECS);
+    if claims.exp.saturating_add(leeway) <= now {
         return Err(PodError::Nip98("access token expired".into()));
     }
     // RFC 7519 §4.1.5: nor before `nbf`, with the same leeway.
-    if nbf.is_some_and(|nbf| nbf > now.saturating_add(policy.clock_leeway_secs)) {
+    if nbf.is_some_and(|nbf| nbf > now.saturating_add(leeway)) {
         return Err(PodError::Nip98("access token not yet valid (nbf)".into()));
     }
 
@@ -1444,8 +1453,43 @@ mod tests {
         // The default (60 s) applies through `verify_access_token`.
         assert!(verify_access_token(&token, &ks, "https://op", "T", 2_059).is_ok());
         assert!(verify_access_token(&token, &ks, "https://op", "T", 2_060).is_err());
-        // A huge leeway saturates instead of wrapping.
-        assert!(run(u64::MAX, u64::MAX).is_err());
+        // The leeway is clamped: a huge setting is MAX_CLOCK_LEEWAY_SECS (300).
+        assert_eq!(
+            AccessTokenPolicy::default()
+                .with_clock_leeway_secs(u64::MAX)
+                .clock_leeway_secs,
+            MAX_CLOCK_LEEWAY_SECS
+        );
+        assert!(run(2_299, u64::MAX).is_ok());
+        assert!(
+            run(2_300, u64::MAX).is_err(),
+            "exp + 300 is expired however large the setting"
+        );
+        assert!(run(1_200, u64::MAX).is_ok(), "nbf - 300 accepted");
+        assert!(run(1_199, u64::MAX).is_err(), "nbf - 301 refused");
+        // A public field set past the maximum is clamped at the comparison.
+        let mut raw = AccessTokenPolicy::default();
+        raw.clock_leeway_secs = u64::MAX;
+        assert!(
+            verify_access_token_with_policy(&token, &ks, "https://op", "T", 2_300, &raw).is_err()
+        );
+        // Default boundaries, accepting and refusing sides (exp = 2000, nbf = 1500).
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 2_059).is_ok(),
+            "exp + 59"
+        );
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 2_061).is_err(),
+            "exp + 61"
+        );
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 1_440).is_ok(),
+            "nbf - 60"
+        );
+        assert!(
+            verify_access_token(&token, &ks, "https://op", "T", 1_439).is_err(),
+            "nbf - 61"
+        );
     }
 
     #[test]

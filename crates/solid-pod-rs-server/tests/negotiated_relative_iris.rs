@@ -17,10 +17,16 @@ const OPEN_ACL: &str = "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
 #[actix_web::test]
 async fn relative_iris_in_a_stored_turtle_body_are_resolved_on_a_negotiated_read() {
     let s: Arc<dyn Storage> = Arc::new(MemoryBackend::new());
-    s.put("/.acl", Bytes::from(OPEN_ACL), "text/turtle").await.unwrap();
-    s.put("/doc.ttl", Bytes::from("<#a> <#b> \"v1\" .\n"), "text/turtle")
+    s.put("/.acl", Bytes::from(OPEN_ACL), "text/turtle")
         .await
         .unwrap();
+    s.put(
+        "/doc.ttl",
+        Bytes::from("<#a> <#b> \"v1\" .\n"),
+        "text/turtle",
+    )
+    .await
+    .unwrap();
     let app = test::init_service(build_app(AppState::new(s))).await;
     for accept in ["application/n-triples", "application/ld+json"] {
         let rsp = test::call_service(
