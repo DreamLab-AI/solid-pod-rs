@@ -102,6 +102,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Parity comparator moved from JSS 0.0.224 to 0.0.231** (`PARITY-CHECKLIST.md` §29, rows 301-306). Of the
+  35 upstream commits since 0.0.224 only six behaviours are user-visible server behaviour; this server already had
+  five of them (encoded dot segments, bounded auth fetches, strict NIP-98, atomic conditional writes, the `<>`
+  subject) and the sixth (percent-encoded listing names) is a recorded semantic difference. Regression tests:
+  `crates/solid-pod-rs-server/tests/jss_0231_delta.rs`. No behaviour changed.
+
 - **An insert-only PATCH needs only `acl:Append`** (SP-PAR-273). This widens what an Append holder can do: an
   agent with `acl:Append` and no `acl:Write` can now PATCH a resource when the patch provably only inserts (an N3
   Patch with no `solid:deletes` and no `solid:where`, or a SPARQL Update of `INSERT DATA` only). Any delete,

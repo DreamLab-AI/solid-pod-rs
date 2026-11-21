@@ -30,9 +30,9 @@ and our status against it.
 
 ---
 
-## Current state (2026-11-01 — JSS `7c9b0de`, package 0.0.224; plugins `63a16cb`)
+## Current state (2026-11-21 — JSS `943fb8d`, package 0.0.231; plugins `63a16cb`)
 
-**300 rows tracked** across 28 functional sections. §26 records the `0.0.221` →
+**306 rows tracked** across 29 functional sections (§29 is the `0.0.224` → `0.0.231` delta). §26 records the `0.0.221` →
 `0.0.224` core delta: ACLs read by expanded JSON-LD IRI and refusal of ACLs that
 grant nothing (#631/#632), PATCH applied as quads with Append for insert-only and
 per-resource serialisation (#633), and NIP-11 at the relay URL (#635). §27 records
@@ -49,13 +49,13 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 93.9%** — 263/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 95.7%** |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 94.1%** — 269/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 95.8%** |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
-> **Authoritative figure.** **93.9% strict** over 300 rows, and an **upper
+> **Authoritative figure.** **94.1% strict** over 306 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
@@ -68,19 +68,19 @@ and 104 were reclassified in place. Method and evidence:
 
 | Status | Count |
 |---|---|
-| present (includes present-by-absence) | 235 |
+| present (includes present-by-absence) | 240 |
 | net-new (ours; not in JSS) | 19 |
-| semantic-difference | 9 |
+| semantic-difference | 10 |
 | partial-parity | 10 |
 | missing | 7 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
-| **Total** | **300** |
+| **Total** | **306** |
 
 Counts are the output of `scripts/parity-check.sh` as of 2026-11-21 (the 2026-11-01 audit set the rows). Core
-comparator: upstream `JavaScriptSolidServer` `gh-pages` at `7c9b0de`, package
-`0.0.224`, 2026-10-22. Plugins comparator: `plugins` at `63a16cb`, 2026-10-19.
+comparator: upstream `JavaScriptSolidServer` `gh-pages` at `943fb8d`, package
+`0.0.231`, 2026-11-17 (rows 1-300 audited at `7c9b0de`, `0.0.224`; §29 is the delta). Plugins comparator: `plugins` at `63a16cb`, 2026-10-19.
 
 Row-total note: the 132-rows headline (Sprint 12 close) counted the
 unique feature rows across sections 1–17. Sprint 13 adds 3 scheduled
@@ -806,6 +806,27 @@ webdav. Of the eleven core-feature ports, nip05 (rows 128, 197), webfinger (105)
 and pay are already tracked elsewhere; relay, notifications, activitypub, webrtc,
 remotestorage, terminal and tunnel are rows 278 to 285. The forge is §25. Full classification of all 41
 directories: `docs/reference/jss-parity-audit-2026-11-01.md`.
+
+---
+
+## 29. JSS `0.0.224` → `0.0.231` delta (core, audited 2026-11-21)
+
+Comparator moved to `943fb8d` (package `0.0.231`, 2026-11-17); the delta is `7c9b0de..943fb8d`
+(35 non-merge commits). Only user-visible server behaviour is tracked. The rest is outside
+the crate's scope: the Mashlib CDN page and `--panes` pane loader (#654, #658, #660; the
+data-browser shell is a consumer concern, row 110), the WAC-exempt app-subtree 404 (#611; rows 221 and 297,
+plugins are compile-time here), the Turtle writer's comment and version bumps. Behaviour was
+read from JSS source and tests; nothing was copied (JSS is AGPL-3.0, see its `LICENSING.md`; this
+workspace is AGPL-3.0 too, and every implementation here is written from the observed behaviour).
+
+| # | JSS feature | JSS commit / issue | solid-pod-rs | Status | Rust evidence | Notes |
+|---|---|---|---|---|---|---|
+| 301 | Dot segments are percent-decoded before the dotfile guard, and a decoded leading dot is refused (`%2Egit`, `%2Eacl`) | `ff62c8d`, #639 (`src/utils/dotfiles.js`) | The guard and the store both use the request's literal spelling, so `%2Egit` is one literal name and can never address `.git`; `..` is refused after two decodes | present | `crates/solid-pod-rs-server/src/lib.rs` (`path_is_traversal`, `DotfileGuardMiddleware`); test `tests/jss_0231_delta.rs::encoded_dot_segments_never_reach_a_dotfile` | Characterisation test written 2026-11-21 against the unmodified code (no fail-before). Ours answers 404 for an encoded name that does not exist where JSS answers 403. |
+| 302 | Auth-document fetch deadline covers the body read | `59e9ec5`, `703b766`, `3ac8f60`, #641 | Every outbound auth fetch (JWKS, client identifier documents, did:nostr) uses a whole-request `reqwest` timeout, which includes the body | present | `src/oidc/jwks.rs:212`, `src/interop.rs:419,516`, `crates/solid-pod-rs-idp/src/registration.rs:172,287` | |
+| 303 | NIP-98: `method` tag required, URL bound exactly, replayed event id refused, the lenient git rules only for git-shaped requests with git on | `3901cb6`, `ad67618`, `809ac76`, #643 | `verify_at` requires `u` and `method` and compares the URL; `Nip98ReplayCache` is single-use per event id; `MatchPolicy::GitLenient` is used only by `solid-pod-rs-git` | present | `src/auth/nip98.rs:122-190`, `src/auth/replay.rs`, `crates/solid-pod-rs-server/src/lib.rs:196-202` | Ours predates the JSS change (ADR-2006). |
+| 304 | PUT and DELETE are atomic conditional writes (If-Match, If-None-Match under the per-resource queue); a failed conditional write creates no directory | `4f05c44`, `f8fff8a`, `e47d44f`, #600 | Per-resource in-process lock around check and write on every write method | present | `crates/solid-pod-rs-server/tests/jss_0231_delta.rs` (racing If-Match PUTs, racing creates, DELETE vs PUT, no directory left) | The cross-process half is row 275. |
+| 305 | A container listing percent-encodes the names it lists | `9d091a9`, #662 | The store keys a resource by the client's own spelling (`a%20b` stays `a%20b`), so a listing of HTTP-created resources already carries encoded names and round-trips | semantic-difference | `crates/solid-pod-rs-server/src/lib.rs` (handlers use `req.uri().path()` as the key) | JSS keeps decoded names on disk and encodes on output. Matching it means decoding on write and migrating existing data, and would make the dotfile guard depend on decoding; not done. A name stored decoded (written through the storage API, not over HTTP) that contains a space or `#` is listed raw. |
+| 306 | A Turtle document that describes itself (`<>`) is stored and read as `"@id": ""` | `26b0685`, #656 | The body is stored as written and read with the document URL as base | present | `crates/solid-pod-rs-server/tests/jss_0231_delta.rs::self_describing_turtle_document_keeps_its_own_subject` | Characterisation test, no fail-before. |
 
 ---
 
