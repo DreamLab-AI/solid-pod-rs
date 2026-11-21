@@ -3561,11 +3561,50 @@ async fn handle_pod_check(state: web::Data<AppState>, path: web::Path<String>) -
     }
 }
 
+/// Top-level names this server serves itself, which no pod or account may
+/// take (compared case-insensitively). Pod creation writes an ACL at
+/// `/<name>/`, so a tenant holding one of these would overwrite, or be handed
+/// Control over, the server's own subtree: above all `remotestorage`, whose
+/// owner-only ACL protects every remoteStorage document. Dotted names
+/// (`.well-known`, `.pods`, `.notifications`, ...) are already refused by the
+/// character set. Names with no route today (`idp`, `ap`, `nostr`,
+/// `notifications`) are held back for the surfaces that use them.
+///
+/// A custom `--nostr-path` or `--webrtc-path` is not in this list; the
+/// defaults (`relay`, `webrtc`) are.
+const RESERVED_POD_NAMES: &[&str] = &[
+    "_admin",
+    "_git",
+    "account",
+    "ap",
+    "api",
+    "forge",
+    "idp",
+    "inbox",
+    "login",
+    "mcp",
+    "nostr",
+    "notifications",
+    "pay",
+    "pods",
+    "private",
+    "profile",
+    "proxy",
+    "public",
+    "relay",
+    "remotestorage",
+    "storage",
+    "webrtc",
+];
+
 fn valid_pod_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        && !RESERVED_POD_NAMES
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
 fn request_ip(req: &HttpRequest) -> IpAddr {
@@ -3676,7 +3715,7 @@ async fn provisioning_gate(
 ) -> Option<HttpResponse> {
     if !valid_pod_name(name) {
         return Some(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Invalid pod name. Use alphanumeric, dash, or underscore only."
+            "error": "Invalid pod name. Use alphanumeric, dash, or underscore only; names the server uses itself are reserved."
         })));
     }
 

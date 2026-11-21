@@ -158,3 +158,64 @@ async fn an_invite_does_nothing_without_a_data_root() {
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
 }
+
+/// One request per call, each from its own address so the per-IP rate limiter
+/// never interferes with the property under test.
+fn from_ip(n: u8, uri: &str, body: serde_json::Value) -> actix_http::Request {
+    test::TestRequest::post()
+        .uri(uri)
+        .peer_addr(std::net::SocketAddr::from(([198, 51, 100, n], 4000)))
+        .set_json(body)
+        .to_request()
+}
+
+#[actix_web::test]
+async fn names_the_server_owns_cannot_be_registered_on_either_route() {
+    // Property: no tenant can register a pod or account name that is a path
+    // this server serves itself. `remotestorage` above all: the pod-creation
+    // step writes an ACL for `/<name>/`, which for that name would overwrite
+    // the owner-only ACL of the remoteStorage container (or, if registered
+    // first, hand a tenant Control over every remoteStorage document). The
+    // refusal is unconditional (the feature need not be mounted) and
+    // case-insensitive.
+    let mut state = state();
+    state.nodeinfo.open_registrations = true;
+    let storage = state.storage.clone();
+    let app = test::init_service(build_app(state)).await;
+    let mut n = 1u8;
+    for name in [
+        "remotestorage",
+        "RemoteStorage",
+        "REMOTESTORAGE",
+        "reMoteStorAge",
+        "storage",
+        "_admin",
+        "_git",
+        "public",
+        "private",
+        "profile",
+    ] {
+        for (uri, key) in [("/.pods", "name"), ("/api/accounts/new", "username")] {
+            n += 1;
+            let rsp =
+                test::call_service(&app, from_ip(n, uri, serde_json::json!({ key: name }))).await;
+            assert_eq!(rsp.status().as_u16(), 400, "{uri} accepted {name:?}");
+        }
+        assert!(
+            !storage
+                .exists(&format!("/{}/", name.to_ascii_lowercase()))
+                .await
+                .unwrap(),
+            "{name:?} must not have been created"
+        );
+    }
+    // Ordinary names, including ones that merely contain a reserved word, work.
+    for (uri, key, name) in [
+        ("/.pods", "name", "remotestorage2"),
+        ("/api/accounts/new", "username", "my-storage"),
+    ] {
+        n += 1;
+        let rsp = test::call_service(&app, from_ip(n, uri, serde_json::json!({ key: name }))).await;
+        assert!(rsp.status().is_success(), "{uri} refused {name:?}");
+    }
+}
