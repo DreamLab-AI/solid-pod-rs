@@ -83,7 +83,10 @@ WebRTC:
   minimum 1) sets it, and with `--trust-proxy` the client address is the one the proxy forwarded
   (`scheme::client_ip_with`, reading `Forwarded`/`X-Forwarded-For` through actix-web's own parser, falling back to the
   peer when the value is not an IP). Without `--trust-proxy` the header is ignored. As for the scheme and host, this is
-  only sound behind a proxy that overwrites those headers.
+  only sound behind a proxy that overwrites those headers. Residual risk: actix-web reads `Forwarded` before
+  `X-Forwarded-For` and takes the first entry, so a proxy that appends to `X-Forwarded-For` (nginx
+  `$proxy_add_x_forwarded_for`) or passes a client-sent `Forwarded` through lets a client choose its own budget; only
+  the 128-socket total then holds. The README and `--help` say what the proxy must do.
 
 ### Changed (source breaks and behaviour)
 

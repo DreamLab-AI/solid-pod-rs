@@ -199,7 +199,11 @@ the target receives it with `from` set to your authenticated identity. Bounded:
 128 sockets (8 per client address, set with `--webrtc-max-per-ip` /
 `JSS_WEBRTC_MAX_PER_IP`; the address is the socket peer, or with `--trust-proxy`
 the one the reverse proxy forwarded, so behind nginx or Caddy set `--trust-proxy`
-or every client shares one budget), 64 KiB frames,
+or every client shares one budget. With it set the proxy must overwrite
+`X-Forwarded-For` with the peer it saw, not append to a client-sent value (nginx
+`proxy_set_header X-Forwarded-For $remote_addr;`, not `$proxy_add_x_forwarded_for`),
+and strip or overwrite `Forwarded`, which is read first; otherwise a client picks its
+own budget and only the 128-socket total holds), 64 KiB frames,
 120 s idle, a 1 h session limit however active, 60 frames of any kind per 10 s, and
 at most 8 queued messages per sender in one recipient's queue. The relay never says
 whether a peer is online: a message to an absent or busy peer gets no reply. No
@@ -225,7 +229,9 @@ module documentation of `remotestorage.rs` for the full authority statement.
   under `inner`). An ACL that already exists is never overwritten or merged (a
   warning is logged if it grants Read to the public or to authenticated agents). If
   the root ACL names no `acl:agent` with Control, an ACL with no authorisations is
-  written instead: the container is denied over LDP, and tokens keep working.
+  written instead: the container is denied over LDP, and tokens keep working. Under
+  that ACL nobody can edit `/remotestorage.acl` over LDP, so the operator changes
+  it on disk.
 - **Served inert.** Every `/storage/` response carries
   `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: default-src 'none'; sandbox`, and HTML, XHTML, SVG,

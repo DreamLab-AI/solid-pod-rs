@@ -229,6 +229,10 @@ struct Cli {
     /// address is the socket peer; with `--trust-proxy` it is the one the
     /// reverse proxy forwarded, so clients behind one proxy get a budget each.
     /// Without `--trust-proxy` every client behind a proxy shares the proxy's.
+    /// With `--trust-proxy` the proxy must overwrite `X-Forwarded-For` with the
+    /// peer address it saw (not append to a client-sent value) and strip or
+    /// overwrite `Forwarded`, which is read first; otherwise a client chooses
+    /// its own budget and only the 128-socket total still holds.
     #[arg(
         long,
         env = "JSS_WEBRTC_MAX_PER_IP",
