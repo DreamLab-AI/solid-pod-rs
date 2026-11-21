@@ -335,6 +335,11 @@ and pushes them into a pod over the git smart protocol (the same
 `/_git/{pubkey}/` path the forum git client uses). The app-spec grammar
 mirrors JSS `src/cli/install.js`:
 
+> The pod git lane of **this** server refuses every push (`403
+> push_not_served`), for every caller, so `install` cannot target a
+> solid-pod-rs pod. It targets a pod served by JSS or by a deployment that adds
+> its own pod-push route (which must require the pod owner).
+
 ```text
 <name>                 → https://github.com/solid-apps/<name>
 <org>/<repo>           → https://github.com/<org>/<repo>
