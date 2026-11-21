@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- `actix-http` 3.20.5 to 3.22.0: RUSTSEC-2026-0552, RUSTSEC-2026-0553 and RUSTSEC-2026-0554 (HTTP/1.1 chunked-trailer,
+  chunk-extension and keep-alive partial-request handling; remotely triggerable, request-smuggling class).
+- `quinn-udp` 0.5.15 to 0.5.16: RUSTSEC-2026-0538 (the receive loop could spin after a truncated datagram).
+- `RUSTSEC-2026-0543` (`chrono` unmaintained, no fixed version) is ignored in `deny.toml` and `.cargo/audit.toml` with a
+  dated rationale: `chrono` is mandatory transitively via `oauth2`/`openidconnect` and `sqlx-core`. Review by 2026-12-20.
+
+### Fixed
+
+- `FsBackend` first-use lock setup (`concurrent_first_use_settles_on_one_key`, macOS): key creation and the stripe-file
+  open now redo the whole attempt when the filesystem reports `NotFound` for an entry another creator is racing to make,
+  and name the failing step in the error. Regression: `first_use_survives_the_lock_directory_vanishing_underneath_it`.
+- Test helpers minted NIP-98 events from a base fixed at process start, so a slow run (the tarpaulin coverage build) made
+  the server rightly refuse them as stale, failing `two_servers_follow_accept_and_deliver_a_note` with 401. The helpers in
+  six `solid-pod-rs-server` test files now use the wall clock. No server change.
+- Rustdoc: an intra-doc link in `AccessTokenPolicy::clock_leeway_secs` that resolved only with `dpop-replay-cache` broke
+  `cargo doc` for the `oidc` feature set.
+
 ## [0.5.0-alpha.23] — 2026-11-21
 
 ### Documentation
