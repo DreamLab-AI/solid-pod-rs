@@ -30,4 +30,13 @@ ignore = [
     # which is already inside the trust boundary. Exit: sqlx 0.9 migration
     # (separate change). Review no later than 2026-12-20.
     "RUSTSEC-2026-0459",
+    # 2026-11-21: RUSTSEC-2026-0543 (chrono unmaintained, no fixed version; the
+    # advisory lists jiff and time as alternatives). chrono is a direct
+    # dependency of four workspace crates AND is mandatory transitively via
+    # oauth2 5.0 / openidconnect 4.1 and sqlx-core 0.8, neither of which can
+    # drop it, so a workspace-only migration would not remove it from the
+    # closure. Informational (no vulnerability). Revisit when openidconnect and
+    # sqlx drop chrono, or when a maintained chrono release appears; review no
+    # later than 2026-12-20.
+    "RUSTSEC-2026-0543",
 ]
