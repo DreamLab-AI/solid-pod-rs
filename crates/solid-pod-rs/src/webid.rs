@@ -174,25 +174,21 @@ pub fn generate_webid_html_with_issuer(
 }
 
 /// Locate and parse the JSON-LD data island from a WebID HTML document.
+///
+/// The island is found by [`crate::html_island`], the same locator the PATCH
+/// write path edits through: the first `<script type="application/ld+json">`
+/// *element* in document order, as an HTML parser sees it. Text that only looks
+/// like one (inside a comment, an attribute, a `<textarea>`, a `<title>`)
+/// is not read.
 fn parse_json_ld(data: &[u8]) -> Result<Option<Value>, String> {
     let text =
         std::str::from_utf8(data).map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
-    let start = match text.find("application/ld+json") {
-        Some(s) => s,
-        None => return Ok(None),
+    let island = crate::html_island::first_jsonld_island(text).map_err(|e| e.to_string())?;
+    let Some(island) = island else {
+        return Ok(None);
     };
-    let tag_end = match text[start..].find('>') {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let json_start = start + tag_end + 1;
-    let script_end = match text[json_start..].find("</script>") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let json_str = text[json_start..json_start + script_end].trim();
-    let value: Value =
-        serde_json::from_str(json_str).map_err(|e| format!("WebID JSON-LD parse error: {e}"))?;
+    let value: Value = serde_json::from_str(island.trim())
+        .map_err(|e| format!("WebID JSON-LD parse error: {e}"))?;
     Ok(Some(value))
 }
 
@@ -308,7 +304,7 @@ pub fn extract_cid_openid_provider(data: &[u8]) -> Result<Option<String>, String
 pub fn validate_webid_html(data: &[u8]) -> Result<(), String> {
     let text =
         std::str::from_utf8(data).map_err(|_| "WebID profile must be valid UTF-8".to_string())?;
-    if !text.contains("application/ld+json") {
+    if !matches!(crate::html_island::first_jsonld_island(text), Ok(Some(_))) {
         return Err(
             "WebID profile must contain a <script type=\"application/ld+json\"> block".to_string(),
         );
@@ -321,6 +317,42 @@ pub fn validate_webid_html(data: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Property (reader locator): the WebID readers see exactly the JSON-LD
+    // island an HTML parser sees. A look-alike in a comment or an attribute is
+    // not read, and with several real islands the first in document order is.
+    #[test]
+    fn readers_ignore_islands_that_are_not_elements() {
+        let fake = r#"{"solid:oidcIssuer": {"@id": "https://evil"}, "nostr:pubkey": "ee"}"#;
+        let real = r#"{"solid:oidcIssuer": {"@id": "https://op"}, "nostr:pubkey": "aa"}"#;
+        let doc = format!(
+            "<!-- <script type=\"application/ld+json\">{fake}</script> -->\n\
+             <p title='<script type=\"application/ld+json\">{fake}</script>'>x</p>\n\
+             <script type=\"application/ld+json\">{real}</script>"
+        );
+        assert_eq!(
+            extract_oidc_issuer(doc.as_bytes()).unwrap().as_deref(),
+            Some("https://op")
+        );
+        assert_eq!(
+            extract_nostr_pubkey(doc.as_bytes()).unwrap().as_deref(),
+            Some("aa")
+        );
+        // Only look-alikes: no island at all.
+        let none = format!("<!-- <script type=\"application/ld+json\">{fake}</script> -->");
+        assert_eq!(extract_oidc_issuer(none.as_bytes()).unwrap(), None);
+        assert!(validate_webid_html(none.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn with_two_islands_readers_take_the_first_in_document_order() {
+        let doc = r#"<script type="application/ld+json">{"nostr:pubkey": "first"}</script>
+            <script type="application/ld+json">{"nostr:pubkey": "second"}</script>"#;
+        assert_eq!(
+            extract_nostr_pubkey(doc.as_bytes()).unwrap().as_deref(),
+            Some("first")
+        );
+    }
 
     fn json_ld_body(html: &str) -> serde_json::Value {
         let start = html.find("application/ld+json").expect("ld+json tag");

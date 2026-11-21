@@ -140,6 +140,7 @@ pub mod bitcoin_tx;
 pub mod blocktrail;
 pub mod config;
 pub mod error;
+pub mod html_island;
 pub mod interop;
 pub mod ldp;
 pub mod mashlib;

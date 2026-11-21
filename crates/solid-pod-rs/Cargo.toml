@@ -115,6 +115,11 @@ rand = { version = "0.8", optional = true }
 # Gated behind `config-loader`.
 serde_norway = { version = "0.9", optional = true }
 toml = { version = "0.8", optional = true }
+# HTML parser for the JSON-LD data island (`html_island`): readers and the PATCH
+# write path locate the island through one spec-conformant parser, not a string
+# search. Pure Rust, wasm32-safe.
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
 
 [features]
 # `default` preserves the surface from 0.4.0-alpha.2: filesystem +
