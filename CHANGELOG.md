@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A PATCH never rebases stored IRIs onto the request `Host`** (SP-PATCH-WRITE-REBASE). The Write path read the
+  stored body and the patch against `Host` (unless `public_base_url` was set) and re-serialised every relative IRI
+  as an absolute one on that origin, so a Write holder with a hostile `Host` could rewrite the stored document. It
+  now reads and writes in a fixed IRI space (`https://patch-base.invalid/<path>`) and writes every relative IRI back
+  relative (`<#a>`, `</other>`), with or without `public_base_url`. The create-by-PATCH path does the same. Choice
+  made: keep relative IRIs relative (rather than refuse), which never changes the meaning of a stored triple at its
+  own URL. An ACL patch keeps path-form targets for the same reason. Behaviour change: the stored bytes no longer
+  contain the request origin.
+- **PATCH reads a stored JSON-LD body and writes JSON-LD back** (SP-PAR-276). New `rdf_input::serialize_jsonld`.
+  Not preserved by the round trip: `@context` and prefixes, key and node order, compaction, blank-node labels.
+  A JSON-LD body with a named graph, a remote `@context` or a relative predicate is refused with 409 and left
+  untouched. HTML data islands are still not patched.
 - **`GET /.notifications` is served, and `Updates-Via` is sent only when it is** (SP-PAR-279). The server now
   mounts the library's `solid-0.1` session on an actix WebSocket (`actix-ws`). Every `sub` and every delivery is
   checked against WAC `acl:Read` on the resource concerned, at that moment; subscriptions must name this server's

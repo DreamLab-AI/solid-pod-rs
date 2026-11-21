@@ -274,7 +274,7 @@ async fn a_relative_iri_in_sparql_needs_write_and_is_refused_for_append() {
 }
 
 #[actix_web::test]
-async fn an_agent_with_write_keeps_the_rewriting_behaviour() {
+async fn an_agent_with_write_keeps_the_rewriting_behaviour_but_not_the_host_rebase() {
     let storage = pod(WRITE_ACL, OWNER_TURTLE.as_bytes(), "text/turtle").await;
     let body = format!(
         "{N3_HEAD}_:p a solid:InsertDeletePatch ; solid:inserts {{ <#x> <http://example.org/p> \"v\" }} ."
@@ -290,9 +290,12 @@ async fn an_agent_with_write_keeps_the_rewriting_behaviour() {
     assert_eq!(status, 204);
     let (now, ct) = stored(&storage).await;
     assert_eq!(ct, "text/turtle");
-    // Re-serialised as absolute N-Triples against the request origin.
-    assert!(now.contains("<http://pod.example/inbox/log#x>"), "{now}");
-    assert!(now.contains("<http://pod.example/inbox/log#me>"), "{now}");
+    // Re-serialised as N-Triples (comments and prefixes are dropped), with the
+    // relative IRIs kept relative: the request origin is not written
+    // (SP-PATCH-WRITE-REBASE).
+    assert!(now.contains("<#x>"), "{now}");
+    assert!(now.contains("<#me>"), "{now}");
+    assert!(!now.contains("pod.example"), "{now}");
     assert!(!now.contains("# owner notes"));
 }
 

@@ -84,6 +84,7 @@ async fn make_state() -> AppState {
         allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
+        notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
     }
 }
 

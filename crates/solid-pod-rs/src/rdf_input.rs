@@ -268,6 +268,116 @@ pub fn parse_jsonld(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
     Ok(g)
 }
 
+/// Serialise `graph` as JSON-LD (the expanded, flattened form oxjsonld emits:
+/// one `@graph` array of node objects, no `@context`).
+///
+/// IRIs under `base_iri` are written relative to it (`@id` and `@type`
+/// values) and `base_iri` itself is not written, so a document read with a base
+/// and written back with the same one keeps its relative IRIs relative and
+/// resolves them against whatever URL it is later read from. A *predicate* under `base_iri` cannot be
+/// written (a JSON-LD property key must be absolute), so it is an error rather
+/// than a silently rewritten key.
+///
+/// What a round trip through the graph does not preserve: the `@context` and
+/// any prefixes or term definitions, key and node order, compaction (values
+/// come back as expanded `@value`/`@id` objects), blank-node labels, and
+/// anything that is not an RDF triple. Only the default graph is written.
+///
+/// # Errors
+///
+/// [`PodError::BadRequest`] for a term oxrdf rejects, a blank-node predicate or
+/// a predicate under `base_iri`; [`PodError::Internal`] if serialisation fails.
+///
+/// # Example
+///
+/// ```
+/// use solid_pod_rs::rdf_input::{parse_jsonld, serialize_jsonld};
+///
+/// let base = "https://p.example/card";
+/// let g = parse_jsonld(br##"{"@id":"#me","http://x.example/p":"v"}"##, base).unwrap();
+/// let text = serialize_jsonld(&g, base).unwrap();
+/// assert!(text.contains("\"@id\":\"#me\""), "{text}");
+/// assert!(!text.contains("@base"), "{text}");
+/// assert_eq!(parse_jsonld(text.as_bytes(), base).unwrap().len(), 1);
+/// ```
+pub fn serialize_jsonld(graph: &Graph, base_iri: &str) -> Result<String, PodError> {
+    use oxrdf::{BlankNode, GraphNameRef, Literal, NamedNode, NamedNodeRef, QuadRef};
+
+    let origin = url::Url::parse(base_iri)
+        .map_err(|e| bad(format!("invalid base IRI: {e}")))?
+        .origin();
+    let mut ser = oxjsonld::JsonLdSerializer::new()
+        .with_base_iri(base_iri)
+        .map_err(|e| bad(format!("invalid base IRI: {e}")))?
+        .for_writer(Vec::new());
+    let named = |iri: &str| NamedNode::new(iri).map_err(|e| bad(format!("invalid IRI {iri}: {e}")));
+    for t in graph.triples() {
+        let subject: oxrdf::Subject = match &t.subject {
+            Term::Iri(i) => named(i)?.into(),
+            Term::BlankNode(b) => BlankNode::new(b)
+                .map_err(|e| bad(format!("invalid blank node {b}: {e}")))?
+                .into(),
+            Term::Literal { .. } => return Err(bad("a literal cannot be a subject")),
+        };
+        let Term::Iri(pred) = &t.predicate else {
+            return Err(bad("a predicate must be an IRI"));
+        };
+        if url::Url::parse(pred).is_ok_and(|u| u.origin() == origin) {
+            return Err(bad(format!(
+                "predicate {pred} is relative to the document and cannot be written as a JSON-LD key"
+            )));
+        }
+        let predicate = named(pred)?;
+        let object: oxrdf::Term = match &t.object {
+            Term::Iri(i) => named(i)?.into(),
+            Term::BlankNode(b) => BlankNode::new(b)
+                .map_err(|e| bad(format!("invalid blank node {b}: {e}")))?
+                .into(),
+            Term::Literal {
+                value,
+                datatype,
+                language,
+            } => match (language, datatype) {
+                (Some(l), _) => Literal::new_language_tagged_literal(value, l)
+                    .map_err(|e| bad(format!("invalid language tag {l}: {e}")))?
+                    .into(),
+                (None, Some(d)) => Literal::new_typed_literal(value, named(d)?).into(),
+                (None, None) => Literal::new_simple_literal(value).into(),
+            },
+        };
+        ser.serialize_quad(QuadRef::new(
+            subject.as_ref(),
+            NamedNodeRef::from(&predicate),
+            object.as_ref(),
+            GraphNameRef::DefaultGraph,
+        ))
+        .map_err(|e| PodError::BadRequest(format!("JSON-LD serialisation: {e}")))?;
+    }
+    let bytes = ser
+        .finish()
+        .map_err(|e| PodError::BadRequest(format!("JSON-LD serialisation: {e}")))?;
+    // The serialiser states the base it relativised against as `@base`. That
+    // base is a working value the caller chose; left in the document it would
+    // pin every relative IRI to it instead of to the URL the document is read
+    // from, so it is removed and the IRIs stay genuinely relative.
+    let mut doc: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| PodError::BadRequest(format!("JSON-LD serialisation: {e}")))?;
+    if let Some(obj) = doc.as_object_mut() {
+        let drop_context = match obj.get_mut("@context").and_then(|c| c.as_object_mut()) {
+            Some(ctx) => {
+                ctx.remove("@base");
+                ctx.is_empty()
+            }
+            None => false,
+        };
+        if drop_context {
+            obj.remove("@context");
+        }
+    }
+    serde_json::to_string(&doc)
+        .map_err(|e| PodError::BadRequest(format!("JSON-LD serialisation: {e}")))
+}
+
 fn parse_turtle_inner(body: &[u8], base_iri: &str) -> Result<Graph, PodError> {
     let parser = TurtleParser::new()
         .with_base_iri(base_iri)

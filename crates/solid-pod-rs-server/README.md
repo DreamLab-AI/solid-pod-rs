@@ -122,10 +122,18 @@ Transcoded responses carry `Content-Type` of the negotiated format plus
 - the target is `application/rdf+xml` (no serialiser — declined, served as-is).
 
 Non-RDF resources are always served verbatim. PATCH likewise seeds its
-working graph from the existing N-Triples body, so an N3/SPARQL-Update
-mutation is applied on top of pre-existing triples rather than replacing
-them; a body that is neither empty nor parseable N-Triples is refused with
-`409` rather than silently overwritten.
+working graph from the existing body (Turtle, N-Triples or JSON-LD), so an
+N3/SPARQL-Update mutation is applied on top of pre-existing triples rather than
+replacing them; a body that cannot be read (or a JSON-LD body with a named
+graph or a remote `@context`) is refused with `409` rather than silently
+overwritten. The result is written back in the stored form: JSON-LD stays
+JSON-LD (expanded, without `@context`; blank-node labels, key order and
+prefixes are not preserved), anything else goes back as N-Triples served as
+`text/turtle` (comments and prefixes are dropped). The patch and the stored
+body are read in one fixed IRI space that no request header chooses, and every
+relative IRI is written back relative, so a request `Host` can never rebase
+what is stored, with or without `public_base_url`. HTML data islands are not
+patched (`409`).
 
 ## Notifications (`/.notifications`)
 

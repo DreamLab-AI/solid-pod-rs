@@ -69,6 +69,7 @@ async fn public_read_state() -> AppState {
         allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
+        notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
     }
 }
 
@@ -117,6 +118,7 @@ async fn public_write_state(body_cap: usize) -> AppState {
         allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
+        notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
     }
 }
 
@@ -289,6 +291,7 @@ async fn server_authenticated_put_with_no_acl_grant_returns_403() {
         allowed_hosts: Vec::new(),
         cross_identity: None,
         activitypub: None,
+        notifications: Some(solid_pod_rs_server::notifications_ws::NotifyHub::new()),
     };
     let app = test::init_service(build_app(state)).await;
 

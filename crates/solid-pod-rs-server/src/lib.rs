@@ -2203,9 +2203,17 @@ async fn handle_patch(
         Some(parsed) => Some(parsed.map_err(patch_parse_err)?),
         None => None,
     };
-    let acl_origin = protected_resource_for_acl(&path)
-        .is_some()
-        .then(|| scheme::request_origin(&req));
+    let is_acl = protected_resource_for_acl(&path).is_some();
+    // The patch the write path applies is read in the fixed IRI space, never
+    // against the request `Host` (SP-PATCH-WRITE-REBASE). `n3_patch` above
+    // still serves the authorisation analysis and the append-only path.
+    let patch_base = patch_base_iri(&path);
+    let n3_write = match dialect {
+        ldp::PatchDialect::N3 => {
+            Some(ldp::N3Patch::parse(&body_str, Some(&patch_base)).map_err(patch_parse_err)?)
+        }
+        _ => None,
+    };
 
     // Serialise the read-modify-write; check `If-Match` / `If-None-Match`
     // against the ETag that this PATCH will actually replace.
@@ -2255,15 +2263,17 @@ async fn handle_patch(
             // destroy.
             let out = match dialect {
                 ldp::PatchDialect::N3 => {
-                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
-                    n3_patch
+                    let seed =
+                        seed_graph_for_patch(&current_body, &meta.content_type, &patch_base)?;
+                    n3_write
                         .as_ref()
                         .expect("parsed above for the N3 dialect")
                         .apply(seed)
                         .map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::SparqlUpdate => {
-                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
+                    let seed =
+                        seed_graph_for_patch(&current_body, &meta.content_type, &patch_base)?;
                     ldp::apply_sparql_patch(seed, &body_str).map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::JsonPatch => {
@@ -2306,16 +2316,29 @@ async fn handle_patch(
                     return Ok(rsp);
                 }
             };
-            let mut outcome = out?;
-            if let Some(origin) = &acl_origin {
-                outcome.graph = acl_targets_as_paths(outcome.graph, origin);
-            }
-            // Round-trip the updated graph back to Turtle so the next
-            // GET reflects the mutation.
-            if acl_origin.is_some() && graph_has_acl_condition(&outcome.graph) {
+            let outcome = out?;
+            if is_acl && graph_has_acl_condition(&outcome.graph) {
                 return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
             }
-            let serialised = graph_to_turtle(&outcome.graph);
+            // Write the updated graph back in the stored form so the next GET
+            // reflects the mutation: JSON-LD stays JSON-LD, everything else
+            // goes back as relative-preserving Turtle. Nothing here consults
+            // the request `Host`.
+            let stored_jsonld = is_jsonld_content_type(&meta.content_type);
+            let (serialised, write_type) = if stored_jsonld {
+                let text = solid_pod_rs::rdf_input::serialize_jsonld(&outcome.graph, &patch_base)
+                    .map_err(|e| {
+                    actix_web::error::ErrorConflict(format!(
+                        "the patched JSON-LD resource cannot be written back as JSON-LD ({e})"
+                    ))
+                })?;
+                (text, "application/ld+json")
+            } else {
+                (
+                    graph_to_turtle(&relativise_graph(outcome.graph, &path)),
+                    PATCHED_RDF_CONTENT_TYPE,
+                )
+            };
             // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
             // (enforced above), but — unlike PUT — the POST-patch result was
             // never checked against the lockout guard, so a Control holder
@@ -2327,7 +2350,7 @@ async fn handle_patch(
                     &req,
                     &path,
                     serialised.as_bytes(),
-                    PATCHED_RDF_CONTENT_TYPE,
+                    write_type,
                     agent.as_deref(),
                 )
                 .await
@@ -2341,11 +2364,7 @@ async fn handle_patch(
             let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
             let write = state
                 .storage
-                .put(
-                    &path,
-                    Bytes::from(serialised.into_bytes()),
-                    PATCHED_RDF_CONTENT_TYPE,
-                )
+                .put(&path, Bytes::from(serialised.into_bytes()), write_type)
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
@@ -2357,7 +2376,14 @@ async fn handle_patch(
         Err(PodError::NotFound(_)) => {
             // PATCH against an absent resource — create it.
             let graph = match &n3_patch {
-                Some(p) => p.apply(ldp::Graph::new()).map_err(patch_parse_err)?.graph,
+                Some(_) => {
+                    n3_write
+                        .as_ref()
+                        .expect("parsed above for the N3 dialect")
+                        .apply(ldp::Graph::new())
+                        .map_err(patch_parse_err)?
+                        .graph
+                }
                 None => {
                     let create =
                         ldp::apply_patch_to_absent(dialect, &body_str).map_err(patch_parse_err)?;
@@ -2369,14 +2395,10 @@ async fn handle_patch(
                     graph
                 }
             };
-            let graph = match &acl_origin {
-                Some(origin) => acl_targets_as_paths(graph, origin),
-                None => graph,
-            };
-            if acl_origin.is_some() && graph_has_acl_condition(&graph) {
+            if is_acl && graph_has_acl_condition(&graph) {
                 return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
             }
-            let serialised = graph_to_turtle(&graph);
+            let serialised = graph_to_turtle(&relativise_graph(graph, &path));
             // F7: same lockout guard on the create-via-PATCH `.acl` path.
             if protected_resource_for_acl(&path).is_some() {
                 if let Err(refusal) = check_proposed_acl(
@@ -2726,36 +2748,84 @@ fn seed_graph_from_patch_target(
     })
 }
 
-/// Rewrite the `acl:accessTo` / `acl:default` targets of a patched ACL that
-/// name this server's own origin as server-root paths.
+/// The fixed IRI space a PATCH reads and writes in (SP-PATCH-WRITE-REBASE).
 ///
-/// The WAC evaluator matches targets against the request *path*, and every
-/// ACL this server provisions uses path-form targets (`</alice/>`). PATCH
-/// resolves IRIs against the resource URL, so without this a PATCH to an
-/// ACL would store `<https://host/alice/>`, which the evaluator never
-/// matches, and lock the owner out. Agents keep their full WebIDs; targets
-/// on another origin are left alone and so never match.
-fn acl_targets_as_paths(graph: ldp::Graph, origin: &str) -> ldp::Graph {
-    const ACCESS_TO: &str = "http://www.w3.org/ns/auth/acl#accessTo";
-    const DEFAULT: &str = "http://www.w3.org/ns/auth/acl#default";
-    let origin = origin.trim_end_matches('/');
+/// A stored body and a patch are resolved against `PATCH_BASE_ORIGIN + path`,
+/// an origin that no request header chooses, and everything under that origin
+/// is written back as a relative reference ([`relativise_graph`]). A relative
+/// IRI stored before the patch is therefore stored relative after it, whatever
+/// `Host` the request carried and whether or not `public_base_url` is set.
+/// `.invalid` is reserved (RFC 6761) and never resolves; an IRI that really
+/// names this host is read as relative, and can name only this resource.
+const PATCH_BASE_ORIGIN: &str = "https://patch-base.invalid";
+
+/// The base IRI for patching the resource at `path`.
+fn patch_base_iri(path: &str) -> String {
+    format!("{PATCH_BASE_ORIGIN}{path}")
+}
+
+/// Write every IRI under [`PATCH_BASE_ORIGIN`] back as a relative reference:
+/// the resource itself as `<>`, its fragments as `<#frag>`, anything else as a
+/// root-relative path (`</other>`, `</other#x>`). Those resolve to the same
+/// IRI at this resource, at any origin. Other IRIs are untouched.
+fn relativise_graph(graph: ldp::Graph, path: &str) -> ldp::Graph {
+    let fix = |t: &ldp::Term| match t {
+        ldp::Term::Iri(i) => match i.strip_prefix(PATCH_BASE_ORIGIN) {
+            Some(rest) => {
+                let rel = if rest == path {
+                    String::new()
+                } else if let Some(frag) = rest.strip_prefix(path).filter(|f| f.starts_with('#')) {
+                    frag.to_string()
+                } else {
+                    rest.to_string()
+                };
+                ldp::Term::Iri(rel)
+            }
+            None => t.clone(),
+        },
+        other => other.clone(),
+    };
     let mut out = ldp::Graph::new();
     for t in graph.triples() {
-        let object = match (&t.predicate, &t.object) {
-            (ldp::Term::Iri(p), ldp::Term::Iri(o)) if p == ACCESS_TO || p == DEFAULT => o
-                .strip_prefix(origin)
-                .filter(|rest| rest.starts_with('/'))
-                .map(|rest| ldp::Term::Iri(rest.to_string()))
-                .unwrap_or_else(|| t.object.clone()),
-            _ => t.object.clone(),
-        };
         out.insert(ldp::Triple::new(
-            t.subject.clone(),
-            t.predicate.clone(),
-            object,
+            fix(&t.subject),
+            fix(&t.predicate),
+            fix(&t.object),
         ));
     }
     out
+}
+
+/// `true` when a stored body is JSON-LD, which a PATCH reads and writes back as
+/// JSON-LD (SP-PAR-276).
+fn is_jsonld_content_type(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/ld+json"))
+}
+
+/// Read the stored body as the working graph for an RDF patch: JSON-LD bodies
+/// through the JSON-LD reader (remote contexts never fetched, named graphs
+/// refused), everything else through [`seed_graph_from_patch_target`]. A body
+/// that cannot be read is refused with `409`, never overwritten.
+fn seed_graph_for_patch(
+    current_body: &[u8],
+    content_type: &str,
+    base_iri: &str,
+) -> Result<ldp::Graph, ActixError> {
+    if is_jsonld_content_type(content_type) {
+        if std::str::from_utf8(current_body).is_ok_and(|t| t.trim().is_empty()) {
+            return Ok(ldp::Graph::new());
+        }
+        return solid_pod_rs::rdf_input::parse_jsonld(current_body, base_iri).map_err(|e| {
+            actix_web::error::ErrorConflict(format!(
+                "existing JSON-LD resource cannot be non-destructively patched ({e}); \
+                 PUT a readable representation or use a JSON Patch"
+            ))
+        });
+    }
+    seed_graph_from_patch_target(current_body, base_iri)
 }
 
 /// Walk the storage tree from `path` upward, returning the first
