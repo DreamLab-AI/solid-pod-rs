@@ -27,7 +27,9 @@ fn delete_data_of_an_absent_triple_is_a_conflict() {
 
 #[test]
 fn delete_data_naming_one_present_and_one_absent_triple_is_a_conflict() {
-    conflict("DELETE DATA { <http://e/a> <http://e/name> \"old\" . <http://e/a> <http://e/nope> \"x\" }");
+    conflict(
+        "DELETE DATA { <http://e/a> <http://e/name> \"old\" . <http://e/a> <http://e/nope> \"x\" }",
+    );
 }
 
 #[test]
