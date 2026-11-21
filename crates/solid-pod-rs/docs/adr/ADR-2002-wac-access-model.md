@@ -17,6 +17,28 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 
 # ADR-2002 — Ground access control on Web Access Control, not ACP
 
+> Note 2026-11-21: three open decisions recorded here, none changed by code.
+> (1) SP-ACL-REVIEW-02, whether a Web-Ledger fee is for *admission* or for
+> *successful service*. Today it is debited at admission
+> (`charge_granted_payment`, `crates/solid-pod-rs-server/src/lib.rs`, called from
+> `enforce_write_ctx` / `enforce_read_ctx`; `handlers/pay.rs`) before the handler
+> runs, so a request that then fails is still charged. Options: keep (simple,
+> never serves unpaid), refund on failure (needs an idempotent credit path and a
+> hook on every handler exit), or debit after serving (can serve a request
+> unpaid, reversing "never serve unpaid"). A product choice. (2)
+> SP-APPEND-UNBOUNDED, the deployment policy for `acl:Append`: with no quota
+> configured an Append-only agent can grow a resource without bound (only the
+> 4 MiB RDF parse cap limits it, indirectly), and the per-resource lock is
+> in-process. Options: require a quota when Append grants exist, or add a size
+> cap for append-only writers. (3) SP-PAR-290, container ACL location: the
+> resolver reads a container's ACL at `<container>.acl`
+> (`crates/solid-pod-rs/src/wac/resolver.rs`, `acl_sidecar_key`), so a JSS-layout
+> `<container>/.acl` is a plain file the walk never reads and the parent's grant
+> applies. Verified 2026-11-21: with a public root ACL, a private `/docs/.acl`
+> leaves `/docs/a.txt` readable. Moving to `<container>/.acl` changes the storage
+> layout and needs a migration and a dual-read period; the decision is whether to
+> migrate or to refuse writes to `<container>/.acl` meanwhile.
+
 ## Context
 
 Solid specifies two mutually-exclusive authorisation systems: Web Access

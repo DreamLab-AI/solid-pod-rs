@@ -17,6 +17,17 @@ lineage: Distils archived ADR-060 Decision 2 (hold the verifier in-repo, extract
 
 # ADR-2006 — Single-source NIP-98 and expose a ReplayStore seam, not a cross-tier store
 
+> Note 2026-11-21 (SP-NIP98-REPLAY-FILL): the NIP-98 replay stores record the
+> event id straight after signature verification
+> (`crates/solid-pod-rs-server/src/lib.rs`, `extract_pubkey_with_body`;
+> `crates/solid-pod-rs-forge/src/auth.rs`) and, by this ADR, refuse at capacity
+> rather than evict. The key is client-chosen, so valid unique tokens from any key
+> can fill the store; unlike the IdP token endpoint (AW1-05) there is no earlier
+> credential that limits insertions, so reordering cannot help. Open decision:
+> the rate-limit or quota policy that bounds insertions (per key, per source
+> address, or a global ceiling with an eviction rule), or accepting the
+> availability cost the replay modules already document.
+
 ## Context
 
 NIP-98 HTTP-signature auth is used by the core library, the git smart-HTTP
