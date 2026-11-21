@@ -12,10 +12,13 @@
 //!
 //! # Content-Security-Policy tiers and residual risk
 //!
-//! A page that loads the widget needs the weak [`build_csp`] policy
-//! (`'unsafe-inline'` and `https://esm.sh`), because the vendored widget
-//! dynamically imports from that CDN and must not be edited. Every other page
-//! gets [`build_strict_csp`] (`script-src 'self' 'nonce-<random>'`). A
+//! No policy trusts `'self'` for scripts: a pod writer can store a `.js` file
+//! on the same origin, so `'self'` would make it a valid script source for a
+//! forge page. A page that loads the widget needs the [`build_csp`] policy
+//! (`script-src 'nonce-<random>' https://esm.sh`), because the vendored widget
+//! dynamically imports from that CDN and must not be edited; its script tag
+//! carries the nonce. Every other page gets [`build_strict_csp`]
+//! (`script-src 'nonce-<random>'`). A
 //! handler opts a page into the weak tier with the internal
 //! [`crate::WIDGET_PAGE_HEADER`] response header, never by page content. No
 //! page sets it today. The residual risk is that any future widget page
@@ -29,30 +32,80 @@ use crate::request::ForgeResponse;
 /// The vendored widget source, byte-identical to the upstream file.
 pub static XLOGIN_JS: &[u8] = include_bytes!("../assets/xlogin.js");
 
-/// Build the page `Content-Security-Policy`.
+/// Build the widget page `Content-Security-Policy`.
 ///
-/// `script-src` admits inline scripts, the forge's own `/xlogin.js` and
-/// `https://esm.sh` (xlogin's dynamic `import()`s are governed by
-/// `script-src`, not `connect-src`). `connect-src` is `'self'` plus the
+/// `script-src` is `'nonce-<nonce>' https://esm.sh`: only a script tag that
+/// carries the response's nonce runs (the page's own `<script nonce=...
+/// src="/forge/xlogin.js">`), and its dynamic `import()`s (governed by
+/// `script-src`, not `connect-src`) may load from the CDN. There is no
+/// `'self'` and no `'unsafe-inline'`, so a script a pod writer stored on the
+/// same origin is not a valid source. `connect-src` is `'self'` plus the
 /// operator's `csp_connect` origins that look like plain `http(s)` origins
 /// (no whitespace, `;`, quotes), so external Solid IdP login stays blocked
 /// unless opted in. `form-action 'self'` keeps the plain GET search forms
-/// working.
+/// working. `nonce` must be unguessable and fresh per response; only
+/// `[A-Za-z0-9+/=_-]` characters are kept.
 ///
 /// # Examples
 ///
 /// ```
 /// use solid_pod_rs_forge::xlogin::build_csp;
 ///
-/// let csp = build_csp(&[]);
+/// let csp = build_csp(&[], "abc123");
+/// assert!(csp.contains("script-src 'nonce-abc123' https://esm.sh;"));
+/// assert!(!csp.contains("script-src 'self'"));
 /// assert!(csp.contains("connect-src 'self';"));
-/// assert!(csp.contains("script-src 'unsafe-inline' 'self' https://esm.sh;"));
-/// let csp = build_csp(&["https://idp.example".into(), "javascript:evil".into(), "https://a b".into()]);
+///
+/// let csp = build_csp(&["https://idp.example".into(), "javascript:evil".into(), "https://a b".into()], "n");
 /// assert!(csp.contains("connect-src 'self' https://idp.example;"));
 /// assert!(!csp.contains("evil"));
 /// ```
 #[must_use]
-pub fn build_csp(csp_connect: &[String]) -> String {
+pub fn build_csp(csp_connect: &[String], nonce: &str) -> String {
+    page_csp(
+        csp_connect,
+        &format!("'nonce-{}' https://esm.sh", clean(nonce)),
+    )
+}
+
+/// Build the strict page `Content-Security-Policy` for pages that do **not**
+/// load the login widget (security review M4).
+///
+/// Identical to [`build_csp`] except `script-src` is `'nonce-<nonce>'` alone:
+/// no `'self'`, no `'unsafe-inline'` and no `https://esm.sh`, so neither an
+/// HTML-injection bug nor a script a pod writer stored on the same origin can
+/// run on such a page, and the third-party CDN is never trusted. No forge
+/// page emits a script today; the nonce reserves the slot, so any future
+/// script must carry it. `nonce` must be unguessable and fresh per response;
+/// only `[A-Za-z0-9+/=_-]` characters are kept.
+///
+/// **Residual risk.** A page that loads [`XLOGIN_JS`] still needs the CDN in
+/// `script-src` (see [`build_csp`]), because the vendored widget, which must
+/// not be edited, dynamically imports from it, until the widget is vendored
+/// with its imports or pinned with subresource integrity.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs_forge::xlogin::build_strict_csp;
+///
+/// let csp = build_strict_csp(&[], "abc123");
+/// assert!(csp.contains("script-src 'nonce-abc123';"));
+/// assert!(!csp.contains("'self' 'nonce") && !csp.contains("esm.sh"));
+/// ```
+#[must_use]
+pub fn build_strict_csp(csp_connect: &[String], nonce: &str) -> String {
+    page_csp(csp_connect, &format!("'nonce-{}'", clean(nonce)))
+}
+
+fn clean(nonce: &str) -> String {
+    nonce
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
+        .collect()
+}
+
+fn page_csp(csp_connect: &[String], script_src: &str) -> String {
     let mut connect = String::from("'self'");
     for o in csp_connect {
         let rest = o
@@ -71,45 +124,8 @@ pub fn build_csp(csp_connect: &[String]) -> String {
     }
     format!(
         "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: data:; \
-script-src 'unsafe-inline' 'self' https://esm.sh; connect-src {connect}; \
+script-src {script_src}; connect-src {connect}; \
 base-uri 'none'; form-action 'self'"
-    )
-}
-
-/// Build the strict page `Content-Security-Policy` for pages that do **not**
-/// load the login widget (security review M4).
-///
-/// Identical to [`build_csp`] except `script-src` is `'self' 'nonce-<nonce>'`:
-/// no `'unsafe-inline'` and no `https://esm.sh`, so an HTML-injection bug on
-/// such a page cannot run script and the third-party CDN is never trusted.
-/// No forge page emits an inline script today; the nonce reserves the slot,
-/// so any future inline script must carry it. `nonce` must be unguessable
-/// and fresh per response; only `[A-Za-z0-9+/=_-]` characters are kept.
-///
-/// **Residual risk.** A page that loads [`XLOGIN_JS`] still needs the widget
-/// policy of [`build_csp`] (`'unsafe-inline'` and `esm.sh`, because the
-/// vendored widget, which must not be edited, dynamically imports from the
-/// CDN). Such a page keeps the weaker policy until the widget is vendored
-/// with its imports or pinned with subresource integrity.
-///
-/// # Examples
-///
-/// ```
-/// use solid_pod_rs_forge::xlogin::build_strict_csp;
-///
-/// let csp = build_strict_csp(&[], "abc123");
-/// assert!(csp.contains("script-src 'self' 'nonce-abc123';"));
-/// assert!(!csp.contains("unsafe-inline'; connect") && !csp.contains("esm.sh"));
-/// ```
-#[must_use]
-pub fn build_strict_csp(csp_connect: &[String], nonce: &str) -> String {
-    let nonce: String = nonce
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
-        .collect();
-    build_csp(csp_connect).replace(
-        "script-src 'unsafe-inline' 'self' https://esm.sh;",
-        &format!("script-src 'self' 'nonce-{nonce}';"),
     )
 }
 
@@ -185,8 +201,9 @@ mod tests {
     // JSS test "issues pages load the widget; CSP admits it and keeps connect-src 'self'".
     #[test]
     fn csp_admits_widget_and_keeps_connect_self() {
-        let csp = build_csp(&[]);
-        assert!(csp.contains("script-src 'unsafe-inline' 'self' https://esm.sh"));
+        let csp = build_csp(&[], "n0nce");
+        assert!(csp.contains("script-src 'nonce-n0nce' https://esm.sh;"));
+        assert!(!csp.contains("'self' https://esm.sh") && !csp.contains("unsafe-inline' "));
         assert!(csp.contains("connect-src 'self';"));
         assert!(csp.contains("form-action 'self'"));
         assert!(csp.starts_with("default-src 'none';"));
@@ -197,7 +214,7 @@ mod tests {
         let csp = build_strict_csp(&[], "ab12'; script-src *");
         assert!(csp.contains("'nonce-ab12script-src'"), "{csp}");
         assert!(!csp.contains("esm.sh"));
-        assert!(!csp.contains("unsafe-inline' 'self'"));
+        assert!(!csp.contains("script-src 'self'") && !csp.contains("'self' 'nonce"));
         assert!(
             csp.contains("style-src 'unsafe-inline'"),
             "styles unchanged"
@@ -207,14 +224,17 @@ mod tests {
 
     #[test]
     fn csp_connect_origins_are_filtered() {
-        let csp = build_csp(&[
-            "https://idp.example".into(),
-            "http://localhost:3000".into(),
-            "ftp://x".into(),
-            "https://a;b".into(),
-            "https://a'b".into(),
-            "https://".into(),
-        ]);
+        let csp = build_csp(
+            &[
+                "https://idp.example".into(),
+                "http://localhost:3000".into(),
+                "ftp://x".into(),
+                "https://a;b".into(),
+                "https://a'b".into(),
+                "https://".into(),
+            ],
+            "n",
+        );
         assert!(csp.contains("connect-src 'self' https://idp.example http://localhost:3000;"));
         assert!(!csp.contains("ftp"));
         assert!(!csp.contains("a;b"));

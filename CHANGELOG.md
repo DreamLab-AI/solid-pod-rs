@@ -57,6 +57,18 @@ WebRTC:
   follow-up below for reverse proxies), a 1 h session limit, every frame type counts against the rate limit, and one
   sender may hold at most 8 of a recipient's 32 queue slots.
 
+### Security (review of the stored-content sandbox)
+
+- **Forge pages no longer trust `'self'` for scripts.** `script-src` is `'nonce-<random>'` on every forge page and
+  `'nonce-<random>' https://esm.sh` on a widget page (the vendored widget's dynamic imports); never `'self'` and never
+  `'unsafe-inline'`, so a `.js` file a writer stored in a pod is not a valid script source. **Source break:**
+  `xlogin::build_csp` takes the nonce as its second argument. A widget page writes
+  `nonce="__FORGE_CSP_NONCE__"` (`NONCE_PLACEHOLDER`) on its script tags and the service substitutes the response's
+  nonce (widget pages only) and sends `Cache-Control: no-store`. No forge page emits a script today.
+- **`/proxy` responses are sandboxed.** Every proxied response carries `Content-Security-Policy: default-src 'none';
+  sandbox` and `X-Content-Type-Options: nosniff`, set after the upstream headers so an upstream policy cannot replace
+  them. `fetch` readers are unaffected.
+
 ### Security (re-review follow-up: remoteStorage, pod names, WebRTC behind a proxy)
 
 - **Stored XSS no longer depends on an ACL being written.** LDP `GET`/`HEAD` of anything under `/remotestorage/` (also

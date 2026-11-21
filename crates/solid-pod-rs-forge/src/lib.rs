@@ -99,6 +99,11 @@ pub mod xlogin;
 /// Content-Security-Policy. It never reaches the client.
 pub const WIDGET_PAGE_HEADER: &str = "x-forge-csp";
 
+/// Placeholder a widget page writes as the `nonce` attribute of its script
+/// tags. [`ForgeService::handle`] replaces it, on widget pages only, with the
+/// nonce of the response's `Content-Security-Policy`.
+pub const NONCE_PLACEHOLDER: &str = "__FORGE_CSP_NONCE__";
+
 /// The file a mirrored served repository carries once publication into it
 /// is allowed: the mirror's preparation found no trace of the pre-isolation
 /// layout (no `refs/mirror`, no `hideRefs` of them, no alternates) and, for
@@ -511,10 +516,19 @@ impl ForgeService {
                 .any(|(k, v)| k.eq_ignore_ascii_case(WIDGET_PAGE_HEADER) && v == "widget");
             resp.headers
                 .retain(|(k, _)| !k.eq_ignore_ascii_case(WIDGET_PAGE_HEADER));
+            let nonce = uuid::Uuid::new_v4().simple().to_string();
             let csp = if widget {
-                xlogin::build_csp(&self.cfg.csp_connect)
+                // The widget page's script tags carry the placeholder; give
+                // them this response's nonce (widget pages only, so page text
+                // can never leak it), and never cache a page that embeds one.
+                let body = String::from_utf8_lossy(&resp.body).replace(NONCE_PLACEHOLDER, &nonce);
+                resp.body = bytes::Bytes::from(body);
+                resp.headers
+                    .retain(|(k, _)| !k.eq_ignore_ascii_case("cache-control"));
+                resp.headers
+                    .push(("cache-control".into(), "no-store".into()));
+                xlogin::build_csp(&self.cfg.csp_connect, &nonce)
             } else {
-                let nonce = uuid::Uuid::new_v4().simple().to_string();
                 xlogin::build_strict_csp(&self.cfg.csp_connect, &nonce)
             };
             resp.headers.push(("content-security-policy".into(), csp));
@@ -1561,13 +1575,88 @@ mod tests {
             200,
             "<p>&lt;script src=\"/forge/xlogin.js\"&gt;</p>".to_string(),
         ));
-        assert!(csp(&mention).contains("script-src 'self' 'nonce-"));
+        // Property: a script a pod writer stored (a `.js` on the same origin)
+        // is never a valid script source for a forge page: `script-src` is
+        // nonce-only (plus the CDN on widget pages), never `'self'`.
+        let script_src = |r: &ForgeResponse| -> String {
+            csp(r)
+                .split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with("script-src"))
+                .unwrap_or("")
+                .to_string()
+        };
+        let nonce_of = |r: &ForgeResponse| -> String {
+            script_src(r)
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("'nonce-").and_then(|n| n.strip_suffix('\'')))
+                .unwrap_or("")
+                .to_string()
+        };
         assert!(widget.headers.iter().all(|(k, _)| k != WIDGET_PAGE_HEADER));
-        assert!(csp(&plain).contains("script-src 'self' 'nonce-"));
-        assert!(!csp(&plain).contains("unsafe-inline' 'self'"));
-        assert!(csp(&widget).contains("script-src 'unsafe-inline' 'self' https://esm.sh"));
+        for r in [&plain, &mention, &widget] {
+            let d = script_src(r);
+            assert!(
+                !d.contains("'self'"),
+                "script-src must not allow 'self': {d}"
+            );
+            assert!(!d.contains("unsafe-inline"), "{d}");
+            assert!(nonce_of(r).len() >= 16, "{d}");
+        }
+        assert_eq!(
+            script_src(&plain),
+            format!("script-src 'nonce-{}'", nonce_of(&plain))
+        );
+        assert!(!csp(&plain).contains("esm.sh"));
+        assert_eq!(
+            script_src(&widget),
+            format!("script-src 'nonce-{}' https://esm.sh", nonce_of(&widget))
+        );
+        // connect-src keeps 'self' for the page's own API calls.
+        assert!(csp(&plain).contains("connect-src 'self';"));
         let again = svc.finish_page(ForgeResponse::html(200, "<p>hi</p>".to_string()));
         assert_ne!(csp(&plain), csp(&again), "the nonce is fresh per response");
+    }
+
+    /// A widget page loads `/forge/xlogin.js` and so needs a script tag the
+    /// policy admits: the handler writes the placeholder, the service puts the
+    /// header's nonce in its place, and the page is never cached (a cached
+    /// page would replay its nonce). Pages that are not widget pages never
+    /// have the placeholder replaced, so page text cannot leak the nonce.
+    #[test]
+    fn widget_page_scripts_carry_the_header_nonce_and_are_not_cached() {
+        let (_td, svc) = service();
+        let body = format!(
+            "<script type=\"module\" nonce=\"{NONCE_PLACEHOLDER}\" src=\"/forge/xlogin.js\"></script>"
+        );
+        let widget = svc.finish_page(
+            ForgeResponse::html(200, body.clone()).with_header(WIDGET_PAGE_HEADER, "widget"),
+        );
+        let csp = widget
+            .headers
+            .iter()
+            .find(|(k, _)| k == "content-security-policy")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let nonce = csp
+            .split("'nonce-")
+            .nth(1)
+            .and_then(|r| r.split('\'').next())
+            .unwrap()
+            .to_string();
+        let html = String::from_utf8(widget.body.to_vec()).unwrap();
+        assert!(html.contains(&format!("nonce=\"{nonce}\"")), "{html}");
+        assert!(!html.contains(NONCE_PLACEHOLDER));
+        assert!(widget
+            .headers
+            .iter()
+            .any(|(k, v)| k == "cache-control" && v == "no-store"));
+        let plain = svc.finish_page(ForgeResponse::html(200, body));
+        let html = String::from_utf8(plain.body.to_vec()).unwrap();
+        assert!(
+            html.contains(NONCE_PLACEHOLDER),
+            "non-widget text is left alone"
+        );
     }
 
     /// M1: with `base_url` configured, a forged `host_url` cannot make an

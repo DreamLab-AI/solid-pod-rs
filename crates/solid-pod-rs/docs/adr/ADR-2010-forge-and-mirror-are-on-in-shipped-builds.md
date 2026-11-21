@@ -54,6 +54,8 @@ The route's WAC check is pod-root only (`lib.rs:4785-4801`), which does not esta
 - Egress now exists in a default build: the mirror opens relay sockets and runs `git fetch` when configured, and announce publishes to configured relays. Both are inert without configuration.
 - Enabling a consumer is still a deployment act: agentbox needs the server built with `forge-full` and its `FORGE_*` settings; VisionClaw does not run this server (it embeds the library behind its own `/solid` handler) and needs a `/forge` adapter before it can host the forge at all.
 - Residual risks, accepted: the CSP for the vendored login widget keeps `'unsafe-inline'` and `esm.sh`, because the widget needs both (pages without the widget get a nonce policy); an anonymous compare can still ask the forge to fetch a same-named repository from an owner the base repository already has a pull request with, which needs edge rate limiting; the dependency audit is outstanding.
+
+> Note 2026-11-21: the widget policy no longer has `'unsafe-inline'` or `'self'` in `script-src`: it is `'nonce-<random>' https://esm.sh` (`crates/solid-pod-rs-forge/src/xlogin.rs`, `build_csp`), and every other page is nonce-only. The `esm.sh` residual remains.
 - Superseded by this record: the default-off clauses of ADR-2009 and baseline invariant 8's "stays opt-in" wording. ADR-2009's analysis stands.
 
 ## Verification

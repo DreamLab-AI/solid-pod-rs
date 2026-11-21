@@ -4652,24 +4652,46 @@ async fn handle_proxy(
             body_bytes.extend_from_slice(&chunk);
         }
 
-        // Build the response.
-        let mut rsp = HttpResponse::build(
-            StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        );
-        rsp.insert_header(("Content-Type", upstream_content_type.as_str()));
-        rsp.insert_header(("X-Proxy-Status", upstream_status.to_string()));
+        return Ok(proxied_response(
+            upstream_status,
+            &upstream_content_type,
+            &forwarded_headers,
+            body_bytes,
+        ));
+    }
+}
 
-        // Forward non-sensitive headers.
-        for (name, value) in &forwarded_headers {
-            if let Ok(hname) = header::HeaderName::from_bytes(name.as_bytes()) {
-                if let Ok(hval) = header::HeaderValue::from_str(value) {
-                    rsp.insert_header((hname, hval));
-                }
+/// Build the `/proxy` response from the upstream's status, type, vetted
+/// headers and body. The sandboxing policy and `nosniff` are set after the
+/// upstream headers are copied, so the upstream cannot replace them.
+fn proxied_response(
+    upstream_status: u16,
+    upstream_content_type: &str,
+    forwarded_headers: &[(String, String)],
+    body_bytes: Vec<u8>,
+) -> HttpResponse {
+    let mut rsp = HttpResponse::build(
+        StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+    );
+    rsp.insert_header(("Content-Type", upstream_content_type));
+    rsp.insert_header(("X-Proxy-Status", upstream_status.to_string()));
+
+    // Forward non-sensitive headers.
+    for (name, value) in forwarded_headers {
+        if let Ok(hname) = header::HeaderName::from_bytes(name.as_bytes()) {
+            if let Ok(hval) = header::HeaderValue::from_str(value) {
+                rsp.insert_header((hname, hval));
             }
         }
-
-        return Ok(rsp.body(body_bytes));
     }
+
+    // Upstream active content (HTML, SVG, ...) must not run with this
+    // origin's authority if a browser is pointed at /proxy. Applies to every
+    // proxied response: `fetch` readers are unaffected by CSP.
+    rsp.insert_header((header::CONTENT_SECURITY_POLICY, remotestorage::STORAGE_CSP));
+    rsp.insert_header((header::X_CONTENT_TYPE_OPTIONS, "nosniff"));
+
+    rsp.body(body_bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -7656,6 +7678,44 @@ mod forge_env_tests {
         let other = tempfile::tempdir().unwrap();
         let c = forge_service(other.path().join(".forge")).unwrap();
         assert!(!Arc::ptr_eq(&a, &c));
+    }
+}
+
+#[cfg(test)]
+mod proxy_response_tests {
+    use super::*;
+
+    /// Property: whatever the upstream sends, the proxied bytes are never
+    /// rendered with the pod origin's authority: the response is sandboxed
+    /// and `nosniff`, and the upstream's own (possibly permissive) policy
+    /// never replaces it. `fetch` readers are unaffected.
+    #[test]
+    fn upstream_active_content_is_sandboxed_whatever_the_upstream_says() {
+        for (ct, up_csp) in [
+            ("text/html", None),
+            ("text/plain, text/html", None),
+            (
+                "image/svg+xml",
+                Some("default-src *; script-src 'unsafe-inline'"),
+            ),
+            ("application/json", Some("default-src *")),
+        ] {
+            let mut fwd = vec![("x-up".to_string(), "1".to_string())];
+            if let Some(c) = up_csp {
+                fwd.push(("content-security-policy".into(), c.into()));
+            }
+            fwd.push(("x-content-type-options".into(), "".into()));
+            let rsp = proxied_response(200, ct, &fwd, b"<script>1</script>".to_vec());
+            let h = rsp.headers();
+            let all: Vec<_> = h
+                .get_all("content-security-policy")
+                .map(|v| v.to_str().unwrap().to_string())
+                .collect();
+            assert_eq!(all, vec!["default-src 'none'; sandbox".to_string()], "{ct}");
+            assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff", "{ct}");
+            assert_eq!(h.get("x-up").unwrap(), "1", "other headers still forwarded");
+            assert_eq!(h.get("content-type").unwrap(), ct);
+        }
     }
 }
 
