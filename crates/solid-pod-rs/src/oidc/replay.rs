@@ -27,7 +27,7 @@
 //!    would reopen the replay window for that proof. The cost is
 //!    availability, not authentication: flooding the cache with valid unique
 //!    proofs can make legitimate requests fail until entries expire, so size
-//!    the cache for worst-case rate (10_000 default ≈ 166 rps at 60s TTL).
+//!    the cache for worst-case rate (10_000 default ≈ 82 rps at the 122s TTL).
 //!    This is the policy ADR-2006 adopted for the NIP-98 replay store.
 //! 5. All operations are `async` and use a single `tokio::sync::Mutex`;
 //!    the critical section is panic-free-by-construction (no indexing,
@@ -55,10 +55,26 @@ use tokio::sync::Mutex;
 // Configuration constants
 // ---------------------------------------------------------------------------
 
-/// Default TTL for a remembered `jti`: 60 seconds, matching the
-/// Solid-OIDC §5.2 recommended iat-skew window and JSS's
-/// `src/auth/solid-oidc.js` default.
-pub const DEFAULT_TTL_SECS: u64 = 60;
+/// The widest `iat` skew the library's own defaults accept either side of
+/// "now" (the IdP's `dpop_skew_secs` default).
+pub const DPOP_DEFAULT_SKEW_SECS: u64 = 60;
+
+/// The shortest lifetime that still covers a proof. A proof is accepted with
+/// `iat` anywhere in `now +/- skew`, so one proof stays acceptable for up to
+/// `2 * skew` seconds; the entry must outlive that, plus a small margin, or a
+/// future-dated proof can be replayed after its entry expires. Derived the
+/// same way as the NIP-98 floor (`auth::replay::MIN_TTL_SECS`).
+pub const MIN_TTL_SECS: u64 = min_ttl_for_skew(DPOP_DEFAULT_SKEW_SECS);
+
+/// The shortest safe entry lifetime, in seconds, for proofs accepted within
+/// `skew` seconds of now: `2 * skew + 2`. Use it when an operator configures
+/// a skew wider than [`DPOP_DEFAULT_SKEW_SECS`].
+pub const fn min_ttl_for_skew(skew: u64) -> u64 {
+    2 * skew + 2
+}
+
+/// Default TTL for a remembered `jti`: the [`MIN_TTL_SECS`] floor, 122 s.
+pub const DEFAULT_TTL_SECS: u64 = MIN_TTL_SECS;
 
 /// Default capacity: 10_000 entries. At ≈150 bytes/entry (string jti
 /// + Instant) this bounds worst-case memory to ~1.5 MB.
@@ -116,14 +132,18 @@ struct LruCacheInner {
 }
 
 impl DpopReplayCache {
-    /// Construct with defaults (TTL 60s, max_size 10_000), optionally
+    /// Construct with defaults (TTL 122s, max_size 10_000; a TTL below
+    /// [`MIN_TTL_SECS`] is raised to it), optionally
     /// overridden by environment variables
     /// `SOLID_POD_DPOP_REPLAY_TTL_SECS` / `SOLID_POD_DPOP_REPLAY_MAX_SIZE`.
     pub fn from_env() -> Self {
         let ttl_secs = std::env::var(ENV_TTL_SECS)
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_TTL_SECS);
+            .unwrap_or(DEFAULT_TTL_SECS)
+            // Never below the floor: a shorter (or zero) lifetime reopens the
+            // replay window for a future-dated proof.
+            .max(MIN_TTL_SECS);
         let max_size = std::env::var(ENV_MAX_SIZE)
             .ok()
             .and_then(|s| s.parse::<usize>().ok())

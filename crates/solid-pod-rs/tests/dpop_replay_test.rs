@@ -272,9 +272,11 @@ async fn f5g_verify_dpop_with_cache_rejects_replay() {
         .await
         .unwrap_err();
     let msg = format!("{err}");
+    // One generic client-facing message for a replay and a full cache; the
+    // cause is in the server log only.
     assert!(
-        msg.contains("replay"),
-        "error must identify the replay: {msg}"
+        msg.contains("DPoP proof rejected") && !msg.contains("jti"),
+        "replay must be refused with the generic message: {msg}"
     );
     // Cache length unchanged — replay does not refresh.
     assert_eq!(cache.len().await, 1);
@@ -305,6 +307,8 @@ async fn evict_expired_removes_stale_entries() {
 #[tokio::test]
 async fn defaults_match_ddd_contract() {
     // Sanity: the public constants match the DDD-documented defaults.
-    assert_eq!(DEFAULT_TTL_SECS, 60);
+    // Floor: a proof stays acceptable for 2 * skew, so the lifetime is
+    // 2 * 60 + 2 (was 60, inside the window).
+    assert_eq!(DEFAULT_TTL_SECS, 122);
     assert_eq!(DEFAULT_MAX_SIZE, 10_000);
 }
