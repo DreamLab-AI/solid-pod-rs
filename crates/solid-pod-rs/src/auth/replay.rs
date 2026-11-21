@@ -5,7 +5,7 @@
 //! verifier in [`crate::auth::nip98`] proves the token is well-formed, in-window
 //! (±[`crate::auth::nip98`] `TIMESTAMP_TOLERANCE`) and correctly signed, but it
 //! holds no state — so a captured token can be **replayed** for the whole
-//! ~120s tolerance window (see [`MIN_TTL_SECS`]). This module closes that window with a
+//! ~120s tolerance window (see [`MIN_TTL_SECS`](crate::auth::replay::MIN_TTL_SECS)). This module closes that window with a
 //! single-use nonce store keyed on the canonical NIP-01 event id
 //! ([`crate::auth::nip98::Nip98Verified::event_id`]).
 //!
@@ -75,7 +75,7 @@ use super::nip98::TIMESTAMP_TOLERANCE;
 /// Smallest TTL that can never let an id expire while its token still passes
 /// the freshness check.
 ///
-/// The verifier accepts `created_at` within ±[`TIMESTAMP_TOLERANCE`] seconds
+/// The verifier accepts `created_at` within ±`TIMESTAMP_TOLERANCE` seconds
 /// of `now` in whole seconds, so one token is acceptable across a span of
 /// `2 * TIMESTAMP_TOLERANCE` seconds plus the rounding of both ends (just
 /// under one extra second). The replay check refuses while the id's age is
