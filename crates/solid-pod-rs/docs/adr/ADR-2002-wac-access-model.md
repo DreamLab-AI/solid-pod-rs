@@ -99,7 +99,11 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > runs, so a request that then fails is still charged. Options: keep (simple,
 > never serves unpaid), refund on failure (needs an idempotent credit path and a
 > hook on every handler exit), or debit after serving (can serve a request
-> unpaid, reversing "never serve unpaid"). A product choice. (2)
+> unpaid, reversing "never serve unpaid"). A product choice.
+> Decided by the owner 2026-11-21: the fee is for *admission*. It is debited
+> when access is granted, before the handler runs, and is not refunded if the
+> request then fails; clients should treat a paid request as spent whatever
+> its status. (2)
 > SP-APPEND-UNBOUNDED, the deployment policy for `acl:Append`: with no quota
 > configured an Append-only agent can grow a resource without bound (only the
 > 4 MiB RDF parse cap limits it, indirectly), and the per-resource lock is

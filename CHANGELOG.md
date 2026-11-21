@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.23] — 2026-11-21
+
+### Documentation
+
+- Web-Ledger fees are charged for admission: debited when access is granted, before the handler runs, and not
+  refunded if the request then fails (ADR-2002, owner decision 2026-11-21).
+
 ### Security (review of the ActivityPub, remoteStorage and WebRTC additions)
 
 ActivityPub (`solid-pod-rs-activitypub` and the server mount):
