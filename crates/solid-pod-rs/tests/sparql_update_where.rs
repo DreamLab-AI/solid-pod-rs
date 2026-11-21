@@ -157,7 +157,10 @@ fn the_insert_only_classifier_and_the_inspects_classifier_agree() {
     assert!(sparql_update_is_insert_only(insert));
     assert!(!sparql_update_inspects(insert));
     let delete_data = "DELETE DATA { <http://e/s> <http://e/p> \"1\" }";
-    assert!(!sparql_update_inspects(delete_data));
+    // A DELETE DATA that names triples answers 409 when one is absent, so it
+    // reads the resource (it pinned `false` while an absent delete was a 204).
+    assert!(sparql_update_inspects(delete_data));
+    assert!(!sparql_update_is_insert_only(delete_data));
     for u in [
         "DELETE WHERE { ?s ?p ?o }",
         "INSERT { ?s <http://e/p> ?o } WHERE { ?s <http://e/q> ?o }",

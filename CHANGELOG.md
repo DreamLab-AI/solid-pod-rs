@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Upgrade notes
 
+- **A SPARQL Update that deletes a triple the resource does not hold is now `409` and writes nothing** (row 41),
+  as an N3 Patch already was and as JSS is for both dialects. Before, `DELETE DATA` of an absent triple (and an absent
+  `DELETE` template instance) answered `204`, so a revocation on a Turtle ACL could report success and leave the
+  grant. Clients that sent a blanket `DELETE DATA` and relied on it being a no-op must now catch the `409` (or use
+  `DELETE ... WHERE`). A `DELETE DATA` that names triples now needs `acl:Read` as well as `acl:Write`, because the
+  `409` against `204` says whether they exist; an empty `DELETE DATA {}` is still insert-only (`acl:Append`).
+- **SPARQL Update limits**: at most 32 `WHERE` patterns and 16 operations per update (`400`), and one work budget per
+  request across all its operations (`409` when exceeded), all checked before anything is written.
+
 - **Container ACL layout is a setting, `--acl-layout sidecar|inner|both` (`JSS_ACL_LAYOUT`), default `sidecar`** (SP-PAR-290).
   The default reads and writes exactly what earlier releases did. `inner` reads only `<container>/.acl` (the
   reference server's layout) and drops every sidecar ACL, widening access to the parent's grant: run

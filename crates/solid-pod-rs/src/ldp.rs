@@ -1320,7 +1320,8 @@ pub fn sparql_update_is_insert_only(update: &str) -> bool {
 /// `DELETE/INSERT ... WHERE`, `DELETE WHERE` or `INSERT ... WHERE`. Such a
 /// PATCH needs `acl:Read` as well as `acl:Write`, because its outcome (and
 /// what a `WHERE` copies into new triples) reveals the resource's content.
-/// `INSERT DATA` and `DELETE DATA` do not inspect it. A body that does not
+/// A `DELETE DATA` that names triples inspects it too (its 409 against 204
+/// says whether they exist); `INSERT DATA` and an empty `DELETE DATA` do not. A body that does not
 /// parse, or is over [`SPARQL_UPDATE_MAX_BYTES`], is `false`: it is refused
 /// by [`apply_sparql_patch`] and reveals nothing.
 #[must_use]
@@ -1332,11 +1333,12 @@ pub fn sparql_update_inspects(update: &str) -> bool {
     let Ok(parsed) = Update::parse(update, None) else {
         return false;
     };
-    parsed.operations.iter().any(|op| {
-        !matches!(
-            op,
-            GraphUpdateOperation::InsertData { .. } | GraphUpdateOperation::DeleteData { .. }
-        )
+    parsed.operations.iter().any(|op| match op {
+        GraphUpdateOperation::InsertData { .. } => false,
+        // A delete that names triples answers 409 when one is absent, so its
+        // outcome reveals whether they exist; an empty one reveals nothing.
+        GraphUpdateOperation::DeleteData { data } => !data.is_empty(),
+        _ => true,
     })
 }
 
@@ -1597,12 +1599,21 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
                 }
             }
             GraphUpdateOperation::DeleteData { data } => {
+                // Every named triple must be present, judged against the graph
+                // as this operation finds it; one that is not is a 409 and
+                // nothing is written, as for an N3 Patch.
+                let mut removal = Graph::new();
                 for q in data {
                     let tr = ground_quad_to_triple(q).ok_or_else(unsupported_graph_form)?;
-                    if graph.remove(&tr) {
-                        deleted += 1;
+                    if !graph.contains(&tr) {
+                        return Err(PodError::Conflict(format!(
+                            "triple to delete not found: {tr:?}"
+                        )));
                     }
+                    removal.insert(tr);
                 }
+                deleted += removal.len();
+                graph.subtract(&removal);
             }
             GraphUpdateOperation::DeleteInsert {
                 delete,

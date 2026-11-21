@@ -551,7 +551,7 @@ fn substitute(t: &PatchTriple, b: &Bindings, fresh: &mut FreshBlanks) -> Result<
 /// A template triple that a solution leaves unbound, or that would put a
 /// literal in subject position or a non-IRI in predicate position, is skipped.
 /// A blank node in the insert template is fresh for every solution. Deleting
-/// a triple that is absent is not an error. The join is bounded exactly as an
+/// a triple that is absent is a conflict (409). The join is bounded exactly as an
 /// N3 `solid:where` is (see [`MAX_PARTIAL_BINDINGS`], [`MAX_MATCH_STEPS`]);
 /// a pattern over budget is refused with a conflict, never truncated.
 ///
@@ -591,7 +591,14 @@ pub(crate) fn apply_sparql_where(
             }
         }
     }
-    let deleted = removal.triples().filter(|t| target.contains(t)).count();
+    // A delete instance that names a triple the graph lacks is a 409, as in an
+    // N3 Patch and in the reference server; nothing is written.
+    if let Some(absent) = removal.triples().find(|t| !target.contains(t)) {
+        return Err(PodError::Conflict(format!(
+            "triple to delete not found: {absent:?}"
+        )));
+    }
+    let deleted = removal.len();
     let mut graph = target;
     graph.subtract(&removal);
     let inserted = addition.triples().filter(|t| !graph.contains(t)).count();

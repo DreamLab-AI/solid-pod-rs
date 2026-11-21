@@ -159,3 +159,42 @@ async fn an_update_with_thousands_of_patterns_or_many_operations_is_refused() {
     }
     assert_eq!(stored(&storage).await, before, "nothing was written");
 }
+
+#[actix_web::test]
+async fn a_delete_data_that_matches_nothing_is_409_and_writes_nothing() {
+    let (storage, app) = setup("acl:Read, acl:Write").await;
+    let before = stored(&storage).await;
+    let st = sparql(
+        &app,
+        "DELETE DATA { <http://e/s> <http://e/secret> \"not the value\" }",
+    )
+    .await;
+    assert_eq!(st, 409);
+    assert_eq!(stored(&storage).await, before);
+    let st = sparql(
+        &app,
+        "DELETE DATA { <http://e/s> <http://e/secret> \"guess\" }",
+    )
+    .await;
+    assert_eq!(st, 204);
+}
+
+#[actix_web::test]
+async fn a_write_only_agent_cannot_probe_content_with_delete_data() {
+    // 409 against 204 tells the caller whether the triple exists.
+    let (storage, app) = setup("acl:Write").await;
+    let before = stored(&storage).await;
+    for update in [
+        "DELETE DATA { <http://e/s> <http://e/secret> \"guess\" }",
+        "DELETE DATA { <http://e/s> <http://e/secret> \"nope\" }",
+    ] {
+        let st = sparql(&app, update).await;
+        assert!(
+            st == 401 || st == 403,
+            "write-only agent ran {update}: {st}"
+        );
+    }
+    assert_eq!(stored(&storage).await, before);
+    // An empty DELETE DATA reveals nothing and stays insert-only.
+    assert_eq!(sparql(&app, "DELETE DATA { }").await, 204);
+}
