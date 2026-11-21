@@ -222,15 +222,20 @@ module documentation of `remotestorage.rs` for the full authority statement.
   server therefore writes an ACL for `/remotestorage/` granting Read, Write and
   Control to the agents the root ACL gives Control on `/` (and nobody else), in
   the form `--acl-layout` reads (`/remotestorage.acl`, or `/remotestorage/.acl`
-  under `inner`). An ACL that already exists is never overwritten or merged; if
-  the root ACL names no such agent nothing is written and a warning is logged.
+  under `inner`). An ACL that already exists is never overwritten or merged (a
+  warning is logged if it grants Read to the public or to authenticated agents). If
+  the root ACL names no `acl:agent` with Control, an ACL with no authorisations is
+  written instead: the container is denied over LDP, and tokens keep working.
 - **Served inert.** Every `/storage/` response carries
   `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: default-src 'none'; sandbox`, and HTML, XHTML, SVG,
   XML and JavaScript documents are sent `Content-Disposition: attachment`.
   Applications reading with `fetch` are unaffected; a stored PDF or media file
-  cannot be viewed directly in a browser tab. LDP responses carry `nosniff`
-  only: the pod serves stored `index.html` pages by design.
+  cannot be viewed directly in a browser tab. LDP `GET`/`HEAD` under
+  `/remotestorage/` carries the same headers, whatever the ACL says and whether or
+  not the feature is on. Other LDP responses carry `nosniff` only: the pod serves
+  stored `index.html` pages by design. The names `remotestorage`, `storage` and
+  the other paths this server serves cannot be registered as pod or account names.
 - Deleting a document returns its bytes to the quota. Tokens can only be
   revoked all at once, and the `remotestorage` quota bucket is separate from
   the pod's own.

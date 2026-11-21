@@ -55,9 +55,35 @@ remoteStorage:
 WebRTC:
 
 - A well-formed message to an absent, present, busy or over-budget peer gets no reply, so the relay no longer reveals
-  whether a pubkey is online (the module documentation said it did not). At most 8 sockets per peer address (the
-  proxy's address behind a reverse proxy), a 1 h session limit, every frame type counts against the rate limit, and one
+  whether a pubkey is online (the module documentation said it did not). At most 8 sockets per client address (see the
+  follow-up below for reverse proxies), a 1 h session limit, every frame type counts against the rate limit, and one
   sender may hold at most 8 of a recipient's 32 queue slots.
+
+### Security (re-review follow-up: remoteStorage, pod names, WebRTC behind a proxy)
+
+- **Stored XSS no longer depends on an ACL being written.** LDP `GET`/`HEAD` of anything under `/remotestorage/` (also
+  percent-encoded, case-varied and dot-segment spellings, and refusals) now carries the `/storage/` headers:
+  `Content-Security-Policy: default-src 'none'; sandbox`, `X-Content-Type-Options: nosniff` and, for active types,
+  `Content-Disposition: attachment`; with the feature flag on or off, since the data may predate it. Other LDP paths are
+  unchanged. When the root ACL names no `acl:agent` with Control (Control only through `acl:agentGroup` or
+  `acl:agentClass`, to nobody, or no root ACL) the mount step now writes an ACL with no authorisations for
+  `/remotestorage/` (denied over LDP; the token route is not WAC-gated and keeps working) instead of only warning, so a
+  public-read root cannot expose uploaded HTML. An existing container ACL is still never overwritten; one that grants
+  Read to the public or to authenticated agents is reported as `ContainerAcl::ExistingPermissive` and logged as a
+  warning at start. The earlier "owner decision" on sandboxing LDP applies to the rest of the pod, not to this container.
+- **Reserved pod and account names.** `valid_pod_name` refused no name by meaning, so `remotestorage` could be
+  registered: pod creation writes the ACL for `/<name>/`, which would overwrite the owner-only container ACL or, if
+  registered first, give a tenant Control over every remoteStorage document. Now refused, always and
+  case-insensitively, on `/.pods` and `/api/accounts/new`: `_admin`, `_git`, `account`, `ap`, `api`, `forge`, `idp`,
+  `inbox`, `login`, `mcp`, `nostr`, `notifications`, `pay`, `pods`, `private`, `profile`, `proxy`, `public`, `relay`,
+  `remotestorage`, `storage`, `webrtc`. Dotted names were already refused by the character set. A custom
+  `--nostr-path` or `--webrtc-path` is not covered by the list.
+- **WebRTC per-address cap behind a reverse proxy.** The cap keyed on the socket peer and ignored `--trust-proxy`, so
+  behind nginx or Caddy the relay held 8 sockets in total. `--webrtc-max-per-ip` / `JSS_WEBRTC_MAX_PER_IP` (default 8,
+  minimum 1) sets it, and with `--trust-proxy` the client address is the one the proxy forwarded
+  (`scheme::client_ip_with`, reading `Forwarded`/`X-Forwarded-For` through actix-web's own parser, falling back to the
+  peer when the value is not an IP). Without `--trust-proxy` the header is ignored. As for the scheme and host, this is
+  only sound behind a proxy that overwrites those headers.
 
 ### Changed (source breaks and behaviour)
 
@@ -72,7 +98,8 @@ WebRTC:
   `try_enqueue_delivery`, `delivery_queue_len`, `follower_count_for_host`, `next_due_delivery_excluding`;
   `handle_inbox_with`/`InboxLimits`, `HttpActorKeyResolver::with_cache_policy`/`KeyCachePolicy`,
   `solid_pod_rs_server::activitypub::{open_store, BODY_READ_TIMEOUT}` and
-  `solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl}` are new.
+  `solid_pod_rs_server::remotestorage::{secure_container, ContainerAcl}` are new (`ContainerAcl` gained
+  `ExistingPermissive`; `NoOwner` now means a deny-all ACL was written), as is `scheme::client_ip_with`.
 - The `Accept` returned by `build_accept` no longer carries the Follow's other fields.
 - An `ap.db` created by an earlier build keeps its old file mode until the server starts once with this version.
 
