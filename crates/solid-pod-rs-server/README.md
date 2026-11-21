@@ -196,7 +196,11 @@ Off by default. `GET /webrtc` (`--webrtc-path`) upgrades to a WebSocket for an
 authenticated peer (NIP-98 `Authorization` header; native clients only).
 Send `{"type":"offer|answer|candidate|hangup","to":"did:nostr:...","sdp":...}`;
 the target receives it with `from` set to your authenticated identity. Bounded:
-128 sockets, 64 KiB frames, 120 s idle, 60 messages per 10 s. No storage access.
+128 sockets (8 per peer address; behind a reverse proxy that is the proxy's address), 64 KiB frames,
+120 s idle, a 1 h session limit however active, 60 frames of any kind per 10 s, and
+at most 8 queued messages per sender in one recipient's queue. The relay never says
+whether a peer is online: a message to an absent or busy peer gets no reply. No
+storage access.
 
 ## remoteStorage (`--remotestorage`)
 

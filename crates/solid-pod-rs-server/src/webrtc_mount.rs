@@ -17,17 +17,27 @@
 //!   `{"type": ..., "from": "<sender did>", ...}`. `from` is always the
 //!   authenticated sender; a `from` sent by the client is ignored. Only
 //!   `type`, `sdp` (a string) and `candidate` (an object) are copied.
-//! * `{"type": "error", "message": ...}` comes back for bad input or an
-//!   offline peer.
+//! * `{"type": "error", "message": ...}` comes back for malformed input (bad
+//!   JSON, unknown type, missing `to`, an oversized `sdp`, signalling
+//!   yourself). Nothing comes back about the peer: a well-formed message to a
+//!   peer that is online, offline, busy or unknown gets the same response (none),
+//!   so the relay cannot be used to probe whether a pubkey is online. A client
+//!   learns the peer is not there the way it does in any signalling protocol,
+//!   by getting no answer.
 //!
 //! # Bounds
 //!
-//! At most [`MAX_CONNECTIONS`] sockets in all and one per identity (a new
-//! connection replaces the old one); frames of at most [`MAX_FRAME_BYTES`]; a
-//! socket that sends nothing for [`IDLE_TIMEOUT`] is closed; at most
-//! [`RATE_MESSAGES`] messages per [`RATE_WINDOW`] per socket (then closed);
-//! at most [`QUEUE_DEPTH`] messages waiting for a slow peer (further ones are
-//! refused with an error to the sender).
+//! At most [`MAX_CONNECTIONS`] sockets in all, [`MAX_PER_IP`] per peer address
+//! (behind a reverse proxy the peer address is the proxy's, so the cap then
+//! applies to the proxy as a whole) and one per identity (a new connection
+//! replaces the old one); frames of at most [`MAX_FRAME_BYTES`]; a socket that
+//! sends nothing for [`IDLE_TIMEOUT`] is closed, and no socket lives longer than
+//! [`MAX_SESSION`] however active (a client's pings reset the idle timer but not
+//! the session limit); at most [`RATE_MESSAGES`] frames of any kind (text,
+//! binary, ping, pong) per [`RATE_WINDOW`] per socket (then closed); at most
+//! [`QUEUE_DEPTH`] messages waiting for a slow peer, of which one sender may
+//! hold at most [`PER_SENDER_QUEUE`]; messages over either bound are dropped
+//! without a reply.
 //!
 //! # Differences from JSS
 //!
@@ -63,6 +73,16 @@ pub const RATE_MESSAGES: usize = 60;
 pub const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Messages queued for one peer.
 pub const QUEUE_DEPTH: usize = 32;
+/// Sockets one peer address may hold. Behind a reverse proxy the peer address
+/// is the proxy's, so this then limits the proxy as a whole: raise it, or
+/// enforce the per-client limit at the proxy.
+pub const MAX_PER_IP: usize = 8;
+/// Longest a socket lives, however busy: a client that keeps pinging cannot
+/// hold a slot for ever.
+pub const MAX_SESSION: Duration = Duration::from_secs(3600);
+/// Messages one sender may have waiting in one recipient's queue (of
+/// [`QUEUE_DEPTH`]), so no single sender can fill a recipient's queue.
+pub const PER_SENDER_QUEUE: usize = 8;
 const MAX_SDP_BYTES: usize = 32 * 1024;
 const MAX_ID_BYTES: usize = 256;
 const HEARTBEAT: Duration = Duration::from_secs(30);
@@ -74,8 +94,14 @@ pub struct Limits {
     pub max_connections: usize,
     /// Idle limit.
     pub idle: Duration,
-    /// Messages per window.
+    /// Frames (of any kind) per window.
     pub rate_messages: usize,
+    /// Most sockets from one peer address.
+    pub max_per_ip: usize,
+    /// Longest a socket lives, however active.
+    pub max_session: Duration,
+    /// Most messages one sender may have waiting in one recipient's queue.
+    pub per_sender_queue: usize,
 }
 
 impl Default for Limits {
@@ -84,13 +110,39 @@ impl Default for Limits {
             max_connections: MAX_CONNECTIONS,
             idle: IDLE_TIMEOUT,
             rate_messages: RATE_MESSAGES,
+            max_per_ip: MAX_PER_IP,
+            max_session: MAX_SESSION,
+            per_sender_queue: PER_SENDER_QUEUE,
         }
     }
 }
 
+/// Messages waiting in one recipient's queue, by sender.
+type Pending = Arc<Mutex<HashMap<String, usize>>>;
+
+/// A frame waiting for a recipient, remembering who queued it.
+struct Queued {
+    from: String,
+    frame: String,
+}
+
 struct Peer {
     generation: u64,
-    tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<Queued>,
+    pending: Pending,
+}
+
+/// Return one unit of `from`'s budget in a recipient's queue.
+fn release(pending: &Pending, from: &str) {
+    let mut map = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(n) = map.get_mut(from) {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            map.remove(from);
+        }
+    }
 }
 
 /// A mounted relay.
@@ -99,6 +151,7 @@ pub struct WebRtcMount {
     limits: Limits,
     peers: Mutex<HashMap<String, Peer>>,
     connections: AtomicUsize,
+    per_ip: Mutex<HashMap<std::net::IpAddr, usize>>,
     next_generation: AtomicU64,
 }
 
@@ -133,6 +186,7 @@ impl WebRtcMount {
             limits,
             peers: Mutex::new(HashMap::new()),
             connections: AtomicUsize::new(0),
+            per_ip: Mutex::new(HashMap::new()),
             next_generation: AtomicU64::new(1),
         }))
     }
@@ -150,10 +204,24 @@ impl WebRtcMount {
     }
 }
 
-struct Slot(Arc<WebRtcMount>);
+/// One socket's claim on the global and per-address counts, returned on drop.
+struct Slot(Arc<WebRtcMount>, Option<std::net::IpAddr>);
 impl Drop for Slot {
     fn drop(&mut self) {
         self.0.connections.fetch_sub(1, Ordering::Relaxed);
+        if let Some(ip) = self.1 {
+            let mut map = self
+                .0
+                .per_ip
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(n) = map.get_mut(&ip) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    map.remove(&ip);
+                }
+            }
+        }
     }
 }
 
@@ -184,15 +252,41 @@ pub(crate) async fn handle_webrtc(
         mount.connections.fetch_sub(1, Ordering::Relaxed);
         return Ok(HttpResponse::ServiceUnavailable().body("too many connections"));
     }
-    let slot = Slot(mount.clone());
+    // The per-address count is taken while holding the global slot, so both
+    // are returned together when the socket ends.
+    let ip = req.peer_addr().map(|a| a.ip());
+    if let Some(ip) = ip {
+        let mut map = mount
+            .per_ip
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = map.entry(ip).or_insert(0);
+        if *n >= mount.limits.max_per_ip {
+            drop(map);
+            mount.connections.fetch_sub(1, Ordering::Relaxed);
+            return Ok(
+                HttpResponse::ServiceUnavailable().body("too many connections from this address")
+            );
+        }
+        *n += 1;
+    }
+    let slot = Slot(mount.clone(), ip);
     let (response, mut session, stream) = actix_ws::handle(&req, body)?;
     let mut stream = stream.max_frame_size(MAX_FRAME_BYTES);
 
     let generation = mount.next_generation.fetch_add(1, Ordering::Relaxed);
-    let (tx, mut rx) = mpsc::channel::<String>(QUEUE_DEPTH);
+    let (tx, mut rx) = mpsc::channel::<Queued>(QUEUE_DEPTH);
+    let pending: Pending = Pending::default();
     // A new connection for the same identity replaces the old one: dropping
     // the old sender ends the old task.
-    mount.peers().insert(did.clone(), Peer { generation, tx });
+    mount.peers().insert(
+        did.clone(),
+        Peer {
+            generation,
+            tx,
+            pending: pending.clone(),
+        },
+    );
 
     actix_web::rt::spawn(async move {
         let _slot = slot;
@@ -200,11 +294,16 @@ pub(crate) async fn handle_webrtc(
         let mut last_seen = Instant::now();
         let mut tick = tokio::time::interval(HEARTBEAT.min(mount.limits.idle));
         tick.tick().await;
+        // However active the client is, the socket ends at the session limit.
+        let session_end = tokio::time::sleep(mount.limits.max_session);
+        tokio::pin!(session_end);
         let reason = loop {
             tokio::select! {
                 msg = stream.next() => match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        last_seen = Instant::now();
+                    Some(Ok(frame)) => {
+                        // Every frame the client sends is metered, whatever
+                        // its kind: pings and binary frames cost the server
+                        // too.
                         let now = Instant::now();
                         recent.push_back(now);
                         while recent.front().is_some_and(|t| now.duration_since(*t) > RATE_WINDOW) {
@@ -213,36 +312,45 @@ pub(crate) async fn handle_webrtc(
                         if recent.len() > mount.limits.rate_messages {
                             break Some(CloseReason::from((CloseCode::Policy, "rate limit")));
                         }
-                        if let Some(err) = relay(&mount, &did, &text) {
-                            if session.text(err).await.is_err() {
-                                break None;
+                        match frame {
+                            Message::Text(text) => {
+                                last_seen = now;
+                                if let Some(err) = relay(&mount, &did, &text) {
+                                    if session.text(err).await.is_err() {
+                                        break None;
+                                    }
+                                }
                             }
+                            Message::Ping(p) => {
+                                last_seen = now;
+                                if session.pong(&p).await.is_err() {
+                                    break None;
+                                }
+                            }
+                            Message::Close(r) => break r,
+                            Message::Binary(_) => {
+                                let sent = session.text(error_frame("binary frames not accepted")).await;
+                                if sent.is_err() {
+                                    break None;
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    Some(Ok(Message::Ping(p))) => {
-                        last_seen = Instant::now();
-                        if session.pong(&p).await.is_err() {
-                            break None;
-                        }
-                    }
-                    Some(Ok(Message::Pong(_))) => {}
-                    Some(Ok(Message::Close(r))) => break r,
-                    Some(Ok(Message::Binary(_))) => {
-                        if session.text(error_frame("binary frames not accepted")).await.is_err() {
-                            break None;
-                        }
-                    }
-                    Some(Ok(_)) => {}
                     Some(Err(_)) | None => break None,
                 },
                 out = rx.recv() => match out {
-                    Some(frame) => {
-                        if session.text(frame).await.is_err() {
+                    Some(queued) => {
+                        release(&pending, &queued.from);
+                        if session.text(queued.frame).await.is_err() {
                             break None;
                         }
                     }
                     // Replaced by a newer connection for this identity.
                     None => break Some(CloseReason::from((CloseCode::Normal, "replaced"))),
+                },
+                () = &mut session_end => {
+                    break Some(CloseReason::from((CloseCode::Away, "session limit")));
                 },
                 _ = tick.tick() => {
                     if last_seen.elapsed() >= mount.limits.idle {
@@ -303,14 +411,31 @@ fn relay(mount: &WebRtcMount, from: &str, text: &str) -> Option<String> {
         out.insert("candidate".into(), c.clone());
     }
     let frame = serde_json::Value::Object(out).to_string();
-    let tx = mount.peers().get(to).map(|p| p.tx.clone());
-    match tx {
-        None => Some(error_frame("peer not online")),
-        Some(tx) => match tx.try_send(frame) {
-            Ok(()) => None,
-            Err(_) => Some(error_frame("peer busy or gone")),
-        },
+    // Whatever the peer's state, the sender is told nothing about it: absent,
+    // present, busy and over-budget all end the same way.
+    let target = mount
+        .peers()
+        .get(to)
+        .map(|p| (p.tx.clone(), p.pending.clone()));
+    let (tx, pending) = target?;
+    {
+        let mut map = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = map.entry(from.to_string()).or_insert(0);
+        if *held >= mount.limits.per_sender_queue {
+            return None;
+        }
+        *held += 1;
     }
+    let queued = Queued {
+        from: from.to_string(),
+        frame,
+    };
+    if tx.try_send(queued).is_err() {
+        release(&pending, from);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -321,10 +446,26 @@ mod tests {
         WebRtcMount::new("/webrtc").unwrap()
     }
 
-    fn add(m: &WebRtcMount, did: &str) -> mpsc::Receiver<String> {
+    fn add(m: &WebRtcMount, did: &str) -> mpsc::Receiver<Queued> {
         let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
-        m.peers().insert(did.into(), Peer { generation: 1, tx });
+        m.peers().insert(
+            did.into(),
+            Peer {
+                generation: 1,
+                tx,
+                pending: Pending::default(),
+            },
+        );
         rx
+    }
+
+    /// What the connection task does on receiving: take the frame and return
+    /// the sender's budget.
+    fn recv(m: &WebRtcMount, rx: &mut mpsc::Receiver<Queued>, did: &str) -> Option<String> {
+        let q = rx.try_recv().ok()?;
+        let pending = m.peers().get(did).map(|p| p.pending.clone())?;
+        release(&pending, &q.from);
+        Some(q.frame)
     }
 
     #[test]
@@ -337,7 +478,8 @@ mod tests {
             r#"{"type":"offer","to":"did:nostr:b","from":"did:nostr:evil","sdp":"v=0","extra":1,"candidate":[1]}"#,
         );
         assert!(err.is_none());
-        let got: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        let got: serde_json::Value =
+            serde_json::from_str(&recv(&m, &mut rx, "did:nostr:b").unwrap()).unwrap();
         assert_eq!(got["from"], "did:nostr:a");
         assert_eq!(got["sdp"], "v=0");
         assert!(got.get("extra").is_none());
@@ -348,31 +490,58 @@ mod tests {
     }
 
     #[test]
-    fn bad_input_and_offline_peers_get_an_error_frame() {
+    fn bad_input_gets_an_error_frame() {
         let m = mount();
         for bad in [
             "not json",
             r#"{"type":"announce","to":"x"}"#,
             r#"{"type":"offer"}"#,
             r#"{"type":"offer","to":"did:nostr:a"}"#,
-            r#"{"type":"offer","to":"did:nostr:nobody"}"#,
         ] {
             let e = relay(&m, "did:nostr:a", bad).unwrap();
             assert!(e.contains("\"error\""), "{bad}: {e}");
         }
     }
 
+    /// Property: what a sender is told never depends on whether the named peer
+    /// is online, nor on how full that peer's queue is.
     #[test]
-    fn a_full_queue_refuses_instead_of_growing() {
+    fn the_reply_does_not_depend_on_the_peers_state() {
         let m = mount();
+        let msg = r#"{"type":"hangup","to":"did:nostr:b"}"#;
+        // Absent peer.
+        let absent = relay(&m, "did:nostr:a", msg);
+        // Present peer, queue with room, then driven to its limit.
         let _rx = add(&m, "did:nostr:b");
-        let mut refused = 0;
+        let mut replies = vec![absent];
         for _ in 0..QUEUE_DEPTH + 5 {
-            if relay(&m, "did:nostr:a", r#"{"type":"hangup","to":"did:nostr:b"}"#).is_some() {
-                refused += 1;
-            }
+            replies.push(relay(&m, "did:nostr:a", msg));
         }
-        assert_eq!(refused, 5);
+        assert!(replies.iter().all(Option::is_none), "{replies:?}");
+    }
+
+    /// Property: one sender cannot fill a recipient's queue; another sender
+    /// can still reach the recipient, and the recipient's queue stays bounded.
+    #[test]
+    fn one_sender_cannot_fill_a_recipients_queue() {
+        let m = mount();
+        let mut rx = add(&m, "did:nostr:b");
+        let msg = |from: &str| (from.to_string(), r#"{"type":"hangup","to":"did:nostr:b"}"#);
+        let (a, text) = msg("did:nostr:a");
+        for _ in 0..QUEUE_DEPTH * 2 {
+            let _ = relay(&m, &a, text);
+        }
+        let mut from_a = 0;
+        while rx.try_recv().is_ok() {
+            from_a += 1;
+        }
+        assert_eq!(from_a, m.limits.per_sender_queue);
+        // The recipient's queue is no longer the flooder's to fill: a second
+        // sender still gets through while the first one is at its budget.
+        let (c, text) = msg("did:nostr:c");
+        let _ = relay(&m, &c, text);
+        let got = recv(&m, &mut rx, "did:nostr:b").expect("c reached b");
+        assert!(got.contains("did:nostr:c"), "{got}");
     }
 
     #[test]

@@ -130,9 +130,9 @@ async fn offers_reach_only_the_named_peer_with_the_true_sender() {
     assert_eq!(got["sdp"], "v=0");
     assert!(next_json(&mut c).await.is_none(), "C hears nothing");
 
-    // An offline peer, bad JSON and a content-addressed announce are errors.
+    // Bad JSON and a content-addressed announce are errors. (An offline peer
+    // is deliberately not: see `a_present_and_an_absent_peer_are_indistinguishable_to_a_sender`.)
     for bad in [
-        json!({"type": "offer", "to": did_of(0x44), "sdp": "x"}).to_string(),
         "not json".to_string(),
         json!({"type": "announce", "resource": "abcdef012345"}).to_string(),
     ] {
@@ -148,6 +148,7 @@ async fn the_relay_is_bounded() {
         max_connections: 2,
         idle: Duration::from_millis(600),
         rate_messages: 5,
+        ..Limits::default()
     })
     .await;
 
@@ -185,6 +186,7 @@ async fn an_oversized_frame_and_an_idle_socket_are_closed() {
         max_connections: 8,
         idle: Duration::from_millis(500),
         rate_messages: 60,
+        ..Limits::default()
     })
     .await;
     let mut big = connect(&s, Some(0x11)).await.unwrap();
@@ -215,4 +217,110 @@ async fn an_oversized_frame_and_an_idle_socket_are_closed() {
         }
     }
     assert!(closed, "an idle socket is closed");
+}
+
+// ---------------------------------------------------------------------------
+// Review C
+// ---------------------------------------------------------------------------
+
+async fn closes_within(ws: &mut Ws, secs: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => return true,
+            Ok(Some(Ok(_))) | Err(_) => {}
+        }
+    }
+    false
+}
+
+#[actix_web::test]
+async fn pings_and_binary_frames_count_against_the_rate_limit() {
+    // Property: the rate limit counts every frame the client sends, so ping
+    // and binary frames cannot be used to burn the server's time unmetered.
+    for frame in [Message::Ping(vec![]), Message::Binary(vec![0u8; 4])] {
+        let s = serve(Limits {
+            rate_messages: 5,
+            ..Limits::default()
+        })
+        .await;
+        let mut a = connect(&s, Some(0x11)).await.unwrap();
+        for _ in 0..8 {
+            let _ = a.send(frame.clone()).await;
+        }
+        assert!(closes_within(&mut a, 5).await, "{frame:?} was not metered");
+    }
+}
+
+#[actix_web::test]
+async fn a_busy_socket_is_closed_at_the_session_limit() {
+    // Property: a client that keeps the socket active (pings reset the idle
+    // timer) still cannot hold its slot beyond the maximum session lifetime.
+    let s = serve(Limits {
+        idle: Duration::from_secs(30),
+        max_session: Duration::from_millis(700),
+        ..Limits::default()
+    })
+    .await;
+    let mut a = connect(&s, Some(0x11)).await.unwrap();
+    let start = tokio::time::Instant::now();
+    let mut closed = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if a.send(Message::Ping(vec![])).await.is_err() {
+            closed = true;
+            break;
+        }
+        if let Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) =
+            tokio::time::timeout(Duration::from_millis(150), a.next()).await
+        {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "a pinging socket was never closed");
+    assert!(start.elapsed() < Duration::from_secs(4));
+}
+
+#[actix_web::test]
+async fn one_address_cannot_take_every_slot() {
+    // Property: one peer address holds at most `max_per_ip` sockets, so it
+    // cannot lock other addresses out of the global pool; the refusal is 503.
+    let s = serve(Limits {
+        max_per_ip: 2,
+        ..Limits::default()
+    })
+    .await;
+    let _a = connect(&s, Some(0x11)).await.unwrap();
+    let _b = connect(&s, Some(0x22)).await.unwrap();
+    let err = connect(&s, Some(0x33)).await.unwrap_err();
+    assert!(err.to_string().contains("503"), "{err}");
+    // A slot is returned when a socket closes.
+    drop(_a);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(connect(&s, Some(0x44)).await.is_ok());
+}
+
+#[actix_web::test]
+async fn a_present_and_an_absent_peer_are_indistinguishable_to_a_sender() {
+    // Property: the relay does not reveal whether a pubkey is online. A
+    // well-formed message to an online peer and to an absent one get the same
+    // response (none), so a sender cannot probe for presence.
+    let s = serve(Limits::default()).await;
+    let mut a = connect(&s, Some(0x11)).await.unwrap();
+    let mut b = connect(&s, Some(0x22)).await.unwrap();
+    for to in [did_of(0x22), did_of(0x99)] {
+        a.send(Message::text(
+            json!({"type": "offer", "to": to, "sdp": "v=0"}).to_string(),
+        ))
+        .await
+        .unwrap();
+        assert!(
+            next_json(&mut a).await.is_none(),
+            "the sender was told something about {to}"
+        );
+    }
+    assert!(
+        next_json(&mut b).await.is_some(),
+        "the online peer still gets its offer"
+    );
 }
