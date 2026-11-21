@@ -204,6 +204,17 @@ struct Cli {
     #[arg(long, env = "JSS_AP_FEDERATION")]
     ap_federation: bool,
 
+    /// Serve remoteStorage (draft-dejong-remotestorage-22) at
+    /// `/storage/<user>/` over the pod subtree `/remotestorage/`, authorised
+    /// only by scoped bearer tokens the pod owner mints at
+    /// `POST /remotestorage/tokens`. Off by default.
+    #[arg(long, env = "JSS_REMOTESTORAGE")]
+    remotestorage: bool,
+
+    /// The remoteStorage user name in `/storage/<user>/` (default: me).
+    #[arg(long, env = "JSS_REMOTESTORAGE_USER", default_value = "me")]
+    remotestorage_user: String,
+
     /// ActivityPub username (default: me).
     #[arg(long, env = "JSS_AP_USERNAME")]
     ap_username: Option<String>,
@@ -430,6 +441,18 @@ async fn main() -> anyhow::Result<()> {
             "Nostr relay mounted"
         );
         state.nostr = Some(mount);
+    }
+    if cli.remotestorage {
+        let rs = solid_pod_rs_server::remotestorage::RemoteStorage::new(
+            &cli.remotestorage_user,
+            state.data_root.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("--remotestorage-user: {e}"))?;
+        info!(
+            user = rs.user(),
+            "remoteStorage mounted at /storage/<user>/"
+        );
+        state.remotestorage = Some(rs);
     }
     if cli.no_notifications {
         state.notifications = None;

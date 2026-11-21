@@ -190,6 +190,17 @@ is the NIP-98 `Authorization` header: a browser cannot attach one to a
 as an anonymous caller and sees only what the public may read. If a cookie or
 other ambient credential is ever added, set `allowed_origins` first.
 
+## remoteStorage (`--remotestorage`)
+
+Off by default. Serves `/storage/<user>/` (default user `me`) over the pod
+subtree `/remotestorage/`. There is no OAuth page: the pod owner mints a scoped
+bearer token with a NIP-98-signed `POST /remotestorage/tokens` body such as
+`{"scope": "contacts:rw notes:r", "ttl_secs": 86400}` (the token is returned
+once; `DELETE /remotestorage/tokens` revokes all). A token reaches only the
+modules in its scopes, plus `/public/<module>/` for the same modules; documents
+under `/public/` are readable by anyone, folder listings need a token. See the
+module documentation of `remotestorage.rs` for the full authority statement.
+
 ## ActivityPub federation (`--ap-federation`)
 
 Off by default, behind the `activitypub` cargo feature. `--activitypub` alone

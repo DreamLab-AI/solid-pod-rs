@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (remoteStorage, SP-PAR-283)
+
+- **`--remotestorage` (`JSS_REMOTESTORAGE`, `--remotestorage-user`, default `me`) serves remoteStorage
+  (draft-dejong-remotestorage-22) at `/storage/<user>/`.** Off by default (JSS has it always on). GET, HEAD, PUT,
+  DELETE and OPTIONS on documents and folders, folder listings as JSON-LD with ETags (a folder's ETag changes when
+  anything beneath it does; empty folders are omitted), `If-Match` / `If-None-Match` (304, 412), the WebFinger link.
+  The data is the pod subtree `/remotestorage/`, not the pod root. Access is by bearer token only, minted by the pod
+  owner at `POST /remotestorage/tokens` (NIP-98 bound to the body, `acl:Control` on `/`; `DELETE` revokes all): a
+  token is 32 random bytes, only its SHA-256 is kept, scopes are `module:r|rw` or `*:r|rw`, and it covers
+  `/<module>/` and `/public/<module>/` only. Documents under `/public/` are readable without a token; their folder
+  listings are not. ACL and metadata names, dotfiles and `..` are refused. Not provided: the OAuth authorisation
+  endpoint, `.notifications` events, `Last-Modified`. New dependency: `rand` (already in the lock file) for token
+  entropy. `AppState` gains `remotestorage`: a source break for struct-literal construction.
+
 ### Added (ActivityPub federation, SP-PAR-281)
 
 - **`--ap-federation` (`JSS_AP_FEDERATION`) mounts the ActivityPub inbox, outbox, collections and signed delivery.**

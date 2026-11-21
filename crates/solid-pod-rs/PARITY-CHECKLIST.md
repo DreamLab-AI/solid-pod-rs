@@ -49,13 +49,13 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 97.2%** — 278/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 98.1%** (278 + 0.5 × 5 over 286; the earlier 95.8% did not match its own counts) |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 97.6%** — 279/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 98.4%** (279 + 0.5 × 5 over 286; the earlier 95.8% did not match its own counts) |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are mounted behind `--ap-federation` (281) |
 
-> **Authoritative figure.** **97.2% strict** over 306 rows, and an **upper
+> **Authoritative figure.** **97.6% strict** over 306 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
@@ -68,11 +68,11 @@ and 104 were reclassified in place. Method and evidence:
 
 | Status | Count |
 |---|---|
-| present (includes present-by-absence) | 250 |
+| present (includes present-by-absence) | 251 |
 | net-new (ours; not in JSS) | 19 |
 | semantic-difference | 9 |
 | partial-parity | 5 |
-| missing | 3 |
+| missing | 2 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
@@ -733,7 +733,7 @@ reclassified in place to match.
 | 280 | Relay mount knobs `--nostr`, `--nostr-path` (default `/relay`), `--nostr-max-events`, `JSS_NOSTR*`; `<relay>/info` alias | `bin/jss.js:117-120`; `config.js:63-66`; `relay.js:292-298` | `--nostr` (`JSS_NOSTR`), `--nostr-path` (`JSS_NOSTR_PATH`, default `/relay`, validated: plain segments only), `--nostr-max-events` (`JSS_NOSTR_MAX_EVENTS`, default 1000). The relay's exemption from WAC is its two exact paths (`<path>`, `<path>/info`), matched as whole segments: `/relayx`, `/relay/other`, `/relay.txt` stay pod paths under WAC. WebSocket frames, filters and subscriptions are bounded by the relay's `RelayLimits`; at most 256 sockets | present | `crates/solid-pod-rs-server/src/main.rs`; `src/nostr_mount.rs` (`validate_path`, `NostrMount`) | Fixed 2026-11-21. The relay is open (public publish and subscribe), so it is off unless asked for. A pod resource stored at the relay path is shadowed while it is mounted. Tests: server `tests/nostr_relay.rs`, `nostr_mount::tests`.
 | 281 | ActivityPub inbox and outbox routed, with signed delivery | `src/ap/routes/inbox.js`, `outbox.js` | `handle_inbox`, `handle_outbox`, `DeliveryWorker`, the signature-verifying actor resolver and the SQLite store, mounted as routes | present | `crates/solid-pod-rs-activitypub/src/inbox.rs:50`, `outbox.rs:33`; `crates/solid-pod-rs-server/src/lib.rs:1456` | 2026-11-21: fixed. Opt-in `--ap-federation` (needs `--activitypub` and `--public-base-url`; ids are minted from the configured origin, never `Host`). Routes: `POST /inbox`, `POST /profile/card.jsonld/inbox`, `GET`/`POST /profile/card.jsonld/outbox`, `GET /profile/card.jsonld/followers` and `/following`, the WebFinger `self` link; NodeInfo was already served. Deliberate differences from JSS (each an upstream candidate): inbound signatures are enforced, the outbox needs the pod owner, outbound fetches are SSRF-guarded and bounded. Owner posts `Note`, `Create`, `Follow`, `Update`, `Delete`, `Announce`, `Like`; `Undo` (unfollow) and `Accept`/`Reject` are refused (400), a recorded limit. JSS routes not ported: Mastodon client API and `/oauth/*` (separate rows). Tests `crates/solid-pod-rs-server/tests/ap_federation.rs` (two servers on loopback, the SSRF guard given the test-only loopback allowance), `crates/solid-pod-rs-activitypub/tests/federation_hardening.rs`. |
 | 282 | WebRTC signalling (`--webrtc`) | `src/webrtc/index.js` (March 2026) | Not provided | missing | none | P2. If ported, use the plugins repo's attach order (`webrtc/plugin.js`), which fixes an auth race core has. Pairs with the plugins `turn/` credentials. |
-| 283 | remoteStorage draft-22 at `/storage/:user/*`, on by default | `src/remotestorage.js`; `src/server.js:500` | Not provided | missing | none | P2. `docs/reference/jss-feature-inventory.md` wrongly says JSS lacks it. |
+| 283 | remoteStorage draft-22 at `/storage/:user/*`, on by default | `src/remotestorage.js`; `src/server.js:500` | `remotestorage::RemoteStorage` + `handle_storage`: GET/HEAD/PUT/DELETE/OPTIONS at `/storage/<user>/`, folder listings as JSON-LD with ETags, conditional requests, WebFinger link, owner-minted scoped bearer tokens | present | none | 2026-11-21: implemented, **off by default** (`--remotestorage`, `JSS_REMOTESTORAGE`, user `--remotestorage-user`, default `me`), unlike JSS, where it is always on. Deliberate differences from JSS (each an upstream candidate): data lives under the pod subtree `/remotestorage/`, not the pod root; every access needs a token whose scopes cover the module and mode (JSS lets any authenticated caller read and write the whole pod through `/storage/`, with WAC skipped); a `/public/` folder listing needs a token (JSS serves it unauthenticated; the draft allows only documents). Token mapping: see the module documentation (`crates/solid-pod-rs-server/src/remotestorage.rs`): 32 random bytes, SHA-256 kept, constant-time lookup, `module:r|rw` or `*:r|rw`, expiry, minted by the pod owner (NIP-98 bound to the body, `acl:Control` on `/`) at `POST /remotestorage/tokens`. Not provided, recorded: the OAuth authorisation endpoint (a browser redirect cannot carry the owner credential; a login and consent page is a product decision), so WebFinger omits that property; no `.notifications` events and no `Last-Modified`. Tests `crates/solid-pod-rs-server/tests/remotestorage.rs`. |
 | 284 | Browser terminal over WebSocket (`--terminal`) | `src/terminal/index.js` | Not provided | explicitly-deferred | none | A remote shell. If ever ported, take the plugins repo's model: mandatory access control, curated environment, confined working directory. |
 | 285 | `/.tunnel` reverse HTTP tunnel over WebSocket (`--tunnel`) | `src/tunnel/index.js` | Not provided | explicitly-deferred | none | Distinct from row 214 (Cloudflare credential passthrough). |
 | 286 | `If-Match` / `If-None-Match` honoured on PUT and PATCH | `src/handlers/resource.js:1246-1255` | `evaluate_preconditions` is library-only; the server never calls it | present | `src/ldp.rs:1545`; no call in `crates/solid-pod-rs-server/src` | **P1, runtime:** a stale `If-Match` is ignored (PATCH 204, PUT 201) and `If-None-Match: *` overwrites. With row 274 open, clients have no optimistic-concurrency fallback. Fixed 2026-11-01: `check_write_preconditions`, 412; tested with an ETag from a real GET. Extended 2026-11-03 to DELETE. |

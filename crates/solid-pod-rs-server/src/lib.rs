@@ -115,6 +115,7 @@ pub mod cli;
 pub mod cross_identity;
 pub mod nostr_mount;
 pub mod notifications_ws;
+pub mod remotestorage;
 pub mod scheme;
 
 pub(crate) mod hardened_git;
@@ -560,6 +561,11 @@ pub struct AppState {
     /// `--activitypub` and an explicit `public_base_url`.
     #[cfg(feature = "activitypub")]
     pub ap_federation: Option<Arc<activitypub::Federation>>,
+    /// remoteStorage (SP-PAR-283): `GET|HEAD|PUT|DELETE /storage/<user>/...`
+    /// over the pod subtree `/remotestorage/`, authorised by owner-minted
+    /// scoped bearer tokens. `None` (the default) mounts nothing;
+    /// `--remotestorage` sets it.
+    pub remotestorage: Option<Arc<remotestorage::RemoteStorage>>,
 }
 
 /// Source of the ActivityPub actor document served at
@@ -713,6 +719,7 @@ impl AppState {
             nostr: None,
             #[cfg(feature = "activitypub")]
             ap_federation: None,
+            remotestorage: None,
         }
     }
 }
@@ -3223,25 +3230,37 @@ async fn handle_well_known_webfinger(
         "{}/profile/card#me",
         state.nodeinfo.base_url.trim_end_matches('/')
     );
-    // With federation on, the JRD also carries the ActivityPub `self` link a
-    // remote needs to follow this actor, and answers only for this actor.
+    // Extra links, each only for the account it describes: the ActivityPub
+    // `self` link when federation is on (and then the answer is for this actor
+    // alone), and the remoteStorage link for the storage user.
+    let mut extra: Vec<serde_json::Value> = Vec::new();
     #[cfg(feature = "activitypub")]
-    let actor_link = match state.ap_federation.as_ref() {
-        Some(fed) => match fed.webfinger_actor_link(&resource) {
-            Some(link) => Some(link),
+    if let Some(fed) = state.ap_federation.as_ref() {
+        match fed.webfinger_actor_link(&resource) {
+            Some(link) => extra.push(serde_json::to_value(link).unwrap_or_default()),
             None => return HttpResponse::NotFound().finish(),
-        },
-        None => None,
-    };
+        }
+    }
+    if let Some(rs) = state.remotestorage.as_ref() {
+        let host = state
+            .nodeinfo
+            .base_url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/');
+        if resource.eq_ignore_ascii_case(&format!("acct:{}@{host}", rs.user())) {
+            extra.push(rs.webfinger_link(&state.nodeinfo.base_url));
+        }
+    }
     match interop::webfinger_response(&resource, &state.nodeinfo.base_url, &webid) {
-        Some(mut jrd) => {
-            #[cfg(feature = "activitypub")]
-            if let Some(link) = actor_link {
-                jrd.links.push(link);
+        Some(jrd) => {
+            let mut doc = serde_json::to_value(&jrd).unwrap_or_default();
+            if let Some(links) = doc.get_mut("links").and_then(|l| l.as_array_mut()) {
+                links.extend(extra);
             }
             HttpResponse::Ok()
                 .content_type("application/jrd+json")
-                .json(jrd)
+                .json(doc)
         }
         None => HttpResponse::NotFound().finish(),
     }
@@ -6476,6 +6495,33 @@ pub fn build_app(
             .route(
                 "/profile/card.jsonld/following",
                 web::get().to(activitypub::handle_following),
+            );
+    }
+
+    // remoteStorage (SP-PAR-283; off unless `--remotestorage`). The token
+    // routes and `/storage/<user>/...` only; the owner-gated minting route is
+    // registered here, ahead of the pod handlers, so it is never a pod path.
+    if let Some(rs) = &state.remotestorage {
+        let pattern = format!("/storage/{}{{tail:.*}}", rs.user());
+        app = app
+            .route(
+                "/remotestorage/tokens",
+                web::post().to(remotestorage::handle_mint),
+            )
+            .route(
+                "/remotestorage/tokens",
+                web::delete().to(remotestorage::handle_revoke),
+            )
+            .service(
+                web::resource(pattern)
+                    .route(
+                        web::method(actix_web::http::Method::OPTIONS)
+                            .to(remotestorage::handle_options),
+                    )
+                    .route(web::get().to(remotestorage::handle_storage))
+                    .route(web::head().to(remotestorage::handle_storage))
+                    .route(web::put().to(remotestorage::handle_storage))
+                    .route(web::delete().to(remotestorage::handle_storage)),
             );
     }
 

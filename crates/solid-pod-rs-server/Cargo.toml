@@ -67,6 +67,8 @@ bytes = "1"
 base64 = "0.22"
 hex = "0.4"
 hmac = "0.12"
+# Random bytes for remoteStorage access tokens (OS entropy).
+rand = "0.8"
 sha2 = "0.10"
 
 # Constant-time byte comparison for the native-pod provisioning PSK
