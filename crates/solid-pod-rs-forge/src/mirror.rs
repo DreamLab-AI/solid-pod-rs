@@ -5819,6 +5819,56 @@ mod tests {
         }
     }
 
+    /// Records every `host[:port]` the SSRF policy is asked to judge, then
+    /// refuses it so no socket is opened.
+    struct Recording(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl SsrfCheck for Recording {
+        async fn verify_host(&self, host: &str) -> Result<Option<std::net::IpAddr>, String> {
+            self.0.lock().unwrap().push(host.to_string());
+            Err("recorded".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_session_judges_the_host_it_would_dial() {
+        // SP-MIRROR-WS-REWRITE at the call site: an upper-case scheme and a
+        // host that itself contains `ws` were judged as `http.example` by the
+        // old first-match `replacen`. The policy must see the dialled host.
+        let tmp = tempfile::tempdir().unwrap();
+        let rec = Arc::new(Recording(std::sync::Mutex::new(Vec::new())));
+        let cfg = MirrorConfig {
+            relays: vec!["wss://r.example".into()],
+            follow: vec![FollowEntry {
+                pubkey: pubhex(&key(11)),
+                name: "x".into(),
+                clone: None,
+            }],
+            min_interval_ms: 0,
+        };
+        let m = Arc::new(
+            Mirror::new(
+                cfg,
+                MirrorStore::new(tmp.path()),
+                Arc::new(GitCli::new(tmp.path().join("repos"))),
+            )
+            .with_relay_ssrf(rec.clone()),
+        );
+        for relay in [
+            "WSS://ws.example:1/",
+            "Ws://WS.Example:7777/x",
+            "wss://ws.ws/",
+        ] {
+            let why = session_outcome(&m, relay).await;
+            assert!(why.contains("relay host refused"), "{relay}: {why}");
+        }
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            ["ws.example:1", "ws.example:7777", "ws.ws"]
+        );
+    }
+
     #[tokio::test]
     async fn the_relay_host_judged_is_the_host_dialled_whatever_the_scheme_spelling() {
         // SP-MIRROR-WS-REWRITE. Each spelling names loopback once parsed as a
