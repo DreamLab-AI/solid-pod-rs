@@ -5462,8 +5462,39 @@ fn mirror_config() -> Option<solid_pod_rs_forge::mirror::MirrorConfig> {
 #[cfg(feature = "forge")]
 struct ForgeRuntime {
     service: Arc<solid_pod_rs_forge::ForgeService>,
+    /// The mirror's relay sessions; taken (once) by [`stop_forge`].
     #[cfg(feature = "forge-mirror")]
-    _mirror: Option<solid_pod_rs_forge::mirror::MirrorHandle>,
+    mirror: std::sync::Mutex<Option<solid_pod_rs_forge::mirror::MirrorHandle>>,
+}
+
+/// The process-wide forge runtimes, one per forge data directory.
+#[cfg(feature = "forge")]
+fn forge_registry(
+) -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<ForgeRuntime>>> {
+    static REGISTRY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<ForgeRuntime>>>,
+    > = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
+}
+
+/// Start the mirror's relay sessions for `plugin_dir`.
+#[cfg(feature = "forge-mirror")]
+fn spawn_mirror(
+    plugin_dir: &Path,
+    mcfg: solid_pod_rs_forge::mirror::MirrorConfig,
+) -> solid_pod_rs_forge::mirror::MirrorHandle {
+    use solid_pod_rs_forge::mirror::{GitCli, Mirror, MirrorStore};
+    let git = Arc::new(GitCli::new(plugin_dir.join("repos")));
+    // ADR-2010: a loopback or private-network relay is admitted only when
+    // the operator lists it. The allowance covers the relay sockets alone;
+    // clone URLs from remote announcements keep the default SSRF policy.
+    let relays = Arc::new(solid_pod_rs_forge::operator_relays::OperatorRelays::new(
+        &mcfg.relays,
+    ));
+    let engine =
+        Arc::new(Mirror::new(mcfg, MirrorStore::new(plugin_dir), git).with_relay_ssrf(relays));
+    tracing::info!("forge: mirror on kind-30618 started");
+    engine.start()
 }
 
 /// One long-lived forge service per forge data directory. It owns state that
@@ -5473,11 +5504,7 @@ struct ForgeRuntime {
 fn forge_service(
     plugin_dir: PathBuf,
 ) -> Result<Arc<solid_pod_rs_forge::ForgeService>, solid_pod_rs_forge::ForgeError> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Arc<ForgeRuntime>>>> = OnceLock::new();
-    let reg = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut reg = reg
+    let mut reg = forge_registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(rt) = reg.get(&plugin_dir) {
@@ -5497,26 +5524,13 @@ fn forge_service(
     let svc = svc.with_announce_ssrf(relay_policy);
     let service = Arc::new(svc);
     #[cfg(feature = "forge-mirror")]
-    let mirror = mirror_config().map(|mcfg| {
-        use solid_pod_rs_forge::mirror::{GitCli, Mirror, MirrorStore};
-        let git = Arc::new(GitCli::new(plugin_dir.join("repos")));
-        // ADR-2010: a loopback or private-network relay is admitted only when
-        // the operator lists it. The allowance covers the relay sockets alone;
-        // clone URLs from remote announcements keep the default SSRF policy.
-        let relays = Arc::new(solid_pod_rs_forge::operator_relays::OperatorRelays::new(
-            &mcfg.relays,
-        ));
-        let engine =
-            Arc::new(Mirror::new(mcfg, MirrorStore::new(&plugin_dir), git).with_relay_ssrf(relays));
-        tracing::info!("forge: mirror on kind-30618 started");
-        engine.start()
-    });
+    let mirror = mirror_config().map(|mcfg| spawn_mirror(&plugin_dir, mcfg));
     reg.insert(
         plugin_dir,
         Arc::new(ForgeRuntime {
             service: Arc::clone(&service),
             #[cfg(feature = "forge-mirror")]
-            _mirror: mirror,
+            mirror: std::sync::Mutex::new(mirror),
         }),
     );
     Ok(service)
@@ -5524,15 +5538,56 @@ fn forge_service(
 
 /// Start the forge (and, with `forge-mirror`, its relay sessions) at boot
 /// rather than on the first request, so a mirror follows its repositories
-/// from the moment the server is up. A no-op without a filesystem data root.
+/// from the moment the server is up. `Ok` without a filesystem data root,
+/// where there is nothing to start.
+///
+/// # Errors
+///
+/// The forge could not be built (an invalid configuration, an unwritable
+/// data directory, an unusable token key). The caller should refuse to boot:
+/// left running, every `/forge` request would answer 500 (SP-PAR-293).
 #[cfg(feature = "forge")]
-pub fn start_forge(state: &AppState) {
+pub fn start_forge(state: &AppState) -> Result<(), solid_pod_rs_forge::ForgeError> {
     if let Some(dir) = forge_plugin_dir(state) {
-        match forge_service(dir) {
-            Ok(_) => tracing::info!("forge: started"),
-            Err(e) => tracing::error!("forge: could not start: {e}"),
+        forge_service(dir)?;
+        tracing::info!("forge: started");
+    }
+    Ok(())
+}
+
+/// Close the forge's long-lived background work at shutdown: ask each mirror
+/// relay session to close and wait for it, instead of cutting it mid-await
+/// when the runtime drops (SP-PAR-292). Safe to call more than once, and a
+/// no-op for a forge that never started or runs no mirror.
+#[cfg(feature = "forge")]
+pub async fn stop_forge(state: &AppState) {
+    if let Some(dir) = forge_plugin_dir(state) {
+        stop_forge_dir(&dir).await;
+    }
+}
+
+#[cfg(feature = "forge")]
+async fn stop_forge_dir(dir: &Path) {
+    #[cfg(feature = "forge-mirror")]
+    {
+        let runtime = forge_registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(dir)
+            .cloned();
+        let handle = runtime.and_then(|rt| {
+            rt.mirror
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+        if let Some(handle) = handle {
+            handle.stop().await;
+            tracing::info!("forge: mirror stopped");
         }
     }
+    #[cfg(not(feature = "forge-mirror"))]
+    let _ = dir;
 }
 
 /// Single actix handler for every `/forge/*` path. Translates actix →
@@ -6556,6 +6611,63 @@ mod forge_env_tests {
         std::env::remove_var("FORGE_MIRROR_RELAYS");
         std::env::remove_var("FORGE_MIRROR_FOLLOW");
         std::env::remove_var("FORGE_MIRROR_MIN_INTERVAL_MS");
+    }
+
+    /// A forge that cannot be built fails boot instead of being logged
+    /// (SP-PAR-293): here the data root is a file, so `.forge` cannot exist.
+    #[test]
+    fn a_forge_that_cannot_be_built_fails_start_forge() {
+        let td = tempfile::tempdir().unwrap();
+        let file = td.path().join("not-a-directory");
+        std::fs::write(&file, b"x").unwrap();
+        let mut state =
+            AppState::new(Arc::new(solid_pod_rs::storage::memory::MemoryBackend::new()));
+        state.data_root = Some(file);
+        assert!(start_forge(&state).is_err());
+
+        // No data root: nothing to start, not an error.
+        state.data_root = None;
+        assert!(start_forge(&state).is_ok());
+
+        // A buildable forge starts.
+        let ok = tempfile::tempdir().unwrap();
+        state.data_root = Some(ok.path().to_path_buf());
+        assert!(start_forge(&state).is_ok());
+    }
+
+    /// `stop_forge` closes the mirror's relay sessions and waits for them
+    /// (SP-PAR-292); a second call is a no-op.
+    #[actix_web::test]
+    async fn stop_forge_closes_the_mirror_sessions() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join(".forge");
+        forge_service(dir.clone()).unwrap();
+        let pk = "ab".repeat(32);
+        let mcfg = solid_pod_rs_forge::mirror::parse_mirror_config(&serde_json::json!({
+            "relays": ["ws://127.0.0.1:9"],
+            "follow": [{"pubkey": pk, "name": "agent"}],
+        }))
+        .expect("valid mirror config");
+        let rt = forge_registry()
+            .lock()
+            .unwrap()
+            .get(&dir)
+            .cloned()
+            .expect("runtime registered");
+        *rt.mirror.lock().unwrap() = Some(spawn_mirror(&dir, mcfg));
+
+        let stopped =
+            tokio::time::timeout(std::time::Duration::from_secs(10), stop_forge_dir(&dir)).await;
+        assert!(
+            stopped.is_ok(),
+            "stop_forge must not hang on a live session"
+        );
+        assert!(rt.mirror.lock().unwrap().is_none(), "handle was consumed");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stop_forge_dir(&dir))
+                .await
+                .is_ok()
+        );
     }
 
     #[test]

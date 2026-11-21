@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The server closes the forge mirror's relay sessions at shutdown** (SP-PAR-292) through the new
+  `stop_forge`, rather than cutting them when the runtime drops.
+- **A forge that cannot start fails boot** (SP-PAR-293): `start_forge` now returns `Result` (was `()`) and the
+  binary refuses to boot on `Err`, instead of logging it and answering every `/forge` request 500.
 - **The dotfile guard defers to the `/forge` plugin mount** (SP-PAR-291), so a dot segment under it reaches
   the forge instead of a 403 from the guard. Whole-segment match, forge feature only, never for a path with a
   `.` or `..` segment.

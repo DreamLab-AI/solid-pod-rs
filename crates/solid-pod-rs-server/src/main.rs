@@ -457,7 +457,8 @@ async fn main() -> anyhow::Result<()> {
     info!(%bind_addr, "solid-pod-rs-server starting");
 
     #[cfg(feature = "forge")]
-    solid_pod_rs_server::start_forge(&state);
+    solid_pod_rs_server::start_forge(&state)
+        .context("the forge could not start; refusing to boot")?;
 
     let state_factory = state.clone();
     let server_builder = HttpServer::new(move || build_app(state_factory.clone()));
@@ -499,6 +500,8 @@ async fn main() -> anyhow::Result<()> {
 
     server.await.context("HTTP server exited with error")?;
     let _ = shutdown.await;
+    #[cfg(feature = "forge")]
+    solid_pod_rs_server::stop_forge(&state).await;
     info!("solid-pod-rs-server stopped cleanly");
     Ok(())
 }
