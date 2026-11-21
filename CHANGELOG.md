@@ -102,6 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The twelve JSS #631 ACL fixtures run as Rust tests** (row 268): `crates/solid-pod-rs-server/tests/jss_wac_fixtures.rs`.
+  No failing case: the four differences (remote `@context`, bare modes under `@id` coercion, 409 against 400, short
+  against full IRIs) are recorded in the row as kept, fail-closed behaviour.
+
 - **SPARQL Update `WHERE` is evaluated** (row 41). `DELETE/INSERT ... WHERE`, `DELETE WHERE` and `INSERT ... WHERE`
   with variables now apply per solution of a basic graph pattern, with the same join bounds as an N3 `solid:where`;
   before, a variable pattern was dropped and the PATCH answered 204 having done nothing. Named-graph quads,
