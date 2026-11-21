@@ -347,7 +347,16 @@ impl RsPath {
     }
 }
 
+/// Whether one DECODED path segment may name a stored document.
+///
+/// Names are compared case-folded (the way a case-insensitive filesystem would
+/// see them) so `x.ACL`, `x.%41CL` (decoded to `x.ACL`) and `x.meta.j\u{17F}on`
+/// are the sidecars they alias; the pod's own dotfile policy
+/// ([`solid_pod_rs::security::dotfile::is_path_allowed`]) runs on the segment as
+/// well, so this route can never accept a name the rest of the server refuses.
 fn valid_segment(s: &str) -> bool {
+    use solid_pod_rs::security::dotfile::{fold_case, is_path_allowed};
+    let folded = fold_case(s);
     !s.is_empty()
         && s.len() <= MAX_NAME_BYTES
         && s != "."
@@ -355,9 +364,10 @@ fn valid_segment(s: &str) -> bool {
         && !s.starts_with('.')
         && !s.contains(['/', '\\', '\0'])
         && !s.chars().any(char::is_control)
-        && !s.contains(".solid-pod-tmp-")
-        && !s.ends_with(".meta.json")
-        && solid_pod_rs::wac::protected_resource_for_acl(&format!("/{s}")).is_none()
+        && !folded.contains(".solid-pod-tmp-")
+        && !folded.ends_with(".meta.json")
+        && solid_pod_rs::wac::protected_resource_for_acl(&format!("/{folded}")).is_none()
+        && is_path_allowed(s).is_ok()
 }
 
 /// Validate the part of the URL path after `/storage/U`, which is `/` or
@@ -941,6 +951,39 @@ mod tests {
             assert!(parse_path(bad).is_err(), "{bad}");
         }
         assert!(parse_path("/a/b c.txt").is_ok());
+    }
+
+    /// Property: the sidecar-name guard is case-folded and runs on the DECODED
+    /// segment, so no spelling of `.acl`, `.meta` or `.meta.json` (mixed case,
+    /// percent-encoded letters, the long s) names a sidecar on a
+    /// case-insensitive filesystem.
+    #[test]
+    fn case_and_encoding_variants_of_guarded_names_are_refused() {
+        for bad in [
+            "/a/x.ACL",
+            "/a/x.Acl",
+            "/a/x.%41CL",
+            "/a/x.%61%43l",
+            "/a/X.Meta",
+            "/a/X.MET%41",
+            "/a/y.META.JSON",
+            "/a/y.meta.JS%4fN",
+            "/a/x.meta.j%C5%BFon",
+            "/a/.ACL",
+            "/a/.%41cl",
+            "/a/.SOLID-POD-TMP-1",
+        ] {
+            assert!(parse_path(bad).is_err(), "{bad} was accepted");
+        }
+        for ok in [
+            "/a/acl.txt",
+            "/a/x.aclx",
+            "/a/meta",
+            "/a/Notes.TXT",
+            "/a/b.jsonld",
+        ] {
+            assert!(parse_path(ok).is_ok(), "{ok} was refused");
+        }
     }
 
     #[test]
