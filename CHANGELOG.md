@@ -114,12 +114,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **PATCH of stored JSON-LD and of an HTML page's JSON-LD island** (SP-PAR-276). With `public_base_url` configured an N3 or SPARQL
-  PATCH of an `application/ld+json` resource, or of the first JSON-LD `<script>` of a `text/html` resource, reads the
-  stored body and the patch against the resource's real URL and writes JSON-LD back in the stored form (the rest of the
-  page untouched; `<` escaped inside the island). Without a configured origin it answers 409 naming `public_base_url`.
-  Turtle PATCH is unchanged. `ldp::apply_sparql_patch_with_base` and the `*_with_base` classifiers are new.
-
 - **Cross-process resource lock** (SP-PAR-275, ER-29): two server processes sharing one filesystem data root can no longer
   interleave a read-modify-write. `Storage::lock_exclusive` (new, defaulted) is taken by `FsBackend` as an OS `flock` on
   one of 256 stripe files under `.solid-pod-locks/` (hidden from listings), inside the in-process lock, for every write.

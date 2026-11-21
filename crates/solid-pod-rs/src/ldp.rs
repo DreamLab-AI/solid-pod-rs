@@ -1295,19 +1295,11 @@ pub const SPARQL_UPDATE_MAX_BYTES: usize = 1_048_576; // 1 MiB
 /// all `false`, so the caller falls back to requiring `acl:Write`.
 #[must_use]
 pub fn sparql_update_is_insert_only(update: &str) -> bool {
-    sparql_update_is_insert_only_with_base(update, None)
-}
-
-/// [`sparql_update_is_insert_only`] reading relative IRIs against `base`. A
-/// caller that applies a patch with a base must classify it with the same
-/// base: a body that only parses with one decides nothing under the other.
-#[must_use]
-pub fn sparql_update_is_insert_only_with_base(update: &str, base: Option<&str>) -> bool {
     use spargebra::{GraphUpdateOperation, Update};
     if update.len() > SPARQL_UPDATE_MAX_BYTES {
         return false;
     }
-    let Ok(parsed) = Update::parse(update, base) else {
+    let Ok(parsed) = Update::parse(update, None) else {
         return false;
     };
     !parsed.operations.is_empty()
@@ -1327,19 +1319,11 @@ pub fn sparql_update_is_insert_only_with_base(update: &str, base: Option<&str>) 
 /// by [`apply_sparql_patch`] and reveals nothing.
 #[must_use]
 pub fn sparql_update_inspects(update: &str) -> bool {
-    sparql_update_inspects_with_base(update, None)
-}
-
-/// [`sparql_update_inspects`] reading relative IRIs against `base`; see
-/// [`sparql_update_is_insert_only_with_base`] for why the base must match the
-/// one the patch is applied with.
-#[must_use]
-pub fn sparql_update_inspects_with_base(update: &str, base: Option<&str>) -> bool {
     use spargebra::{GraphUpdateOperation, Update};
     if update.len() > SPARQL_UPDATE_MAX_BYTES {
         return false;
     }
-    let Ok(parsed) = Update::parse(update, base) else {
+    let Ok(parsed) = Update::parse(update, None) else {
         return false;
     };
     parsed.operations.iter().any(|op| {
@@ -1360,17 +1344,6 @@ pub fn sparql_update_inspects_with_base(update: &str, base: Option<&str>) -> boo
 ///
 /// Rejects inputs exceeding [`SPARQL_UPDATE_MAX_BYTES`] before parsing.
 pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, PodError> {
-    apply_sparql_patch_with_base(target, update, None)
-}
-
-/// [`apply_sparql_patch`] resolving relative IRIs in the update against
-/// `base` (the resource URL), so the update and a graph parsed against the
-/// same URL share one IRI space.
-pub fn apply_sparql_patch_with_base(
-    target: Graph,
-    update: &str,
-    base: Option<&str>,
-) -> Result<PatchOutcome, PodError> {
     if update.len() > SPARQL_UPDATE_MAX_BYTES {
         return Err(PodError::BadRequest(format!(
             "SPARQL-Update body exceeds {} byte limit ({} bytes)",
@@ -1387,7 +1360,7 @@ pub fn apply_sparql_patch_with_base(
     };
     use spargebra::{GraphUpdateOperation, Update};
 
-    let parsed = Update::parse(update, base)
+    let parsed = Update::parse(update, None)
         .map_err(|e| PodError::Unsupported(format!("SPARQL parse error: {e}")))?;
 
     // Our in-crate `Term::literal` helper stores plain literals with

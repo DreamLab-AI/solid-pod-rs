@@ -45,6 +45,21 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > HTML-island bodies (SP-PAR-276) therefore remain open; setting
 > `public_base_url` still closes the first for a deployment.
 
+> Note 2026-11-21 (SP-PAR-276, second withdrawal): a later attempt, PATCH of stored JSON-LD and HTML data islands
+> against the configured origin, was also withdrawn (commit 6d976fc reverted; PARITY row 276 is `missing` again;
+> nothing of its `jsonld_patch.rs` was kept). Review found three defects. (1) The write-back emitted a bare
+> top-level array with no `@context` and full-IRI keys, while `extract_oidc_issuer` and `extract_nostr_pubkey`
+> (`webid.rs`, about line 207) read a top-level object, so any PATCH to a WebID profile card (stored as HTML with a
+> JSON-LD island; SolidOS edits names this way) broke Solid-OIDC login and the Nostr binding; non-IRI keys were
+> dropped and `@list` was flattened, all answering 204. (2) JSON-LD ACLs became patchable and a SPARQL
+> `DELETE DATA` that matched nothing answered 204, so a revocation could report success and leave the grant. The
+> claim that this matched JSS was wrong: JSS answers 409 "Triple to delete not found" for both dialects
+> (`src/patch/quads.js`, about line 161 in the reference clone). (3) The island was located by string search, not
+> by an HTML parser. Requirements for a future attempt: write-back preserves the stored document's shape
+> (`@context`, compaction, a top-level object, `@list`), as JSS does; a delete that removes fewer triples than it
+> names answers 409 in both dialects; the island is located with a
+> real HTML parser and by the same locator the readers use (`webid.rs` and the conneg reader).
+
 > Note 2026-11-21 (SP-PAR-265, SP-PAR-288): relative `acl:accessTo` / `acl:default`
 > targets are read differently by the two ACL syntaxes while no pod origin
 > (`public_base_url`) is configured. A JSON-LD ACL is expanded
