@@ -72,6 +72,9 @@ pub enum InboxError {
     /// HTTP Signature verification failed.
     #[error("signature error: {0}")]
     Signature(#[from] SigError),
+    /// A configured bound (for example the follower cap) is reached.
+    #[error("limit reached: {0}")]
+    Limit(String),
 }
 
 /// Outbox-layer errors raised by [`crate::outbox`].

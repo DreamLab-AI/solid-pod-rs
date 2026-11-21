@@ -14,6 +14,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{error::InboxError, http_sig::VerifiedActor, store::Store};
 
+/// Most followers one actor keeps; a further `Follow` is refused with
+/// [`InboxError::Limit`] (an existing follower may still re-follow).
+pub const MAX_FOLLOWERS: i64 = 5_000;
+
+/// Most inbox rows kept per store; older rows are deleted first.
+pub const MAX_INBOX_ROWS: i64 = 10_000;
+
 /// The outcome of processing an inbox activity. The HTTP layer maps
 /// this to status codes and any extra response side-effects
 /// (e.g. enqueue an Accept reply).
@@ -73,6 +80,7 @@ pub async fn handle_inbox(
     if !was_new {
         return Ok(InboxOutcome::Duplicate);
     }
+    store.trim_inbox(MAX_INBOX_ROWS).await?;
 
     match activity_type {
         "Follow" => {
@@ -82,6 +90,13 @@ pub async fn handle_inbox(
                 ));
             }
             let follower_id = verified_actor.actor_url.clone();
+            if !store.is_follower(local_actor_id, &follower_id).await?
+                && store.follower_count(local_actor_id).await? >= MAX_FOLLOWERS
+            {
+                return Err(InboxError::Limit(format!(
+                    "more than {MAX_FOLLOWERS} followers"
+                )));
+            }
             // Per JSS — the follower's inbox is looked up from the
             // actor document. That fetch is the caller's responsibility
             // (we'd pull it in via [`crate::http_sig::ActorKeyResolver`]

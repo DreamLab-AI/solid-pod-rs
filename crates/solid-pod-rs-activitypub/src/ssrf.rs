@@ -27,11 +27,46 @@ use solid_pod_rs::security::ssrf::{IpClass, SsrfPolicy};
 
 use crate::error::SigError;
 
-/// Returns `true` if the given IP address is non-public per core's
-/// classification. Delegates to [`SsrfPolicy::classify`] and treats
-/// every class except [`IpClass::Public`] as private/dangerous.
-fn is_private_ip(ip: IpAddr) -> bool {
-    !matches!(SsrfPolicy::classify(ip), IpClass::Public)
+/// Which address classes an outbound fetch may reach.
+///
+/// The default ([`SsrfGuard::strict`]) permits public addresses only, so
+/// loopback, RFC 1918, link-local, CGNAT, cloud metadata and every other
+/// reserved range are refused. The one relaxation is
+/// [`SsrfGuard::permit_loopback_for_tests`], which lets tests run two
+/// servers on `127.0.0.1`; it never unlocks private, link-local or
+/// metadata ranges, and no CLI flag or environment variable reaches it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SsrfGuard {
+    allow_loopback: bool,
+}
+
+impl SsrfGuard {
+    /// Public addresses only. This is the [`Default`].
+    #[must_use]
+    pub const fn strict() -> Self {
+        Self {
+            allow_loopback: false,
+        }
+    }
+
+    /// Strict, except that loopback (`127.0.0.0/8`, `::1`) is permitted.
+    ///
+    /// For tests that federate two servers on the local machine. Production
+    /// code must not call it; the server binary never does.
+    #[must_use]
+    pub const fn permit_loopback_for_tests() -> Self {
+        Self {
+            allow_loopback: true,
+        }
+    }
+
+    fn permits(self, ip: IpAddr) -> bool {
+        match SsrfPolicy::classify(ip) {
+            IpClass::Public => true,
+            IpClass::Loopback => self.allow_loopback,
+            _ => false,
+        }
+    }
 }
 
 /// Validate that a URL is safe to fetch (not targeting internal
@@ -43,14 +78,28 @@ fn is_private_ip(ip: IpAddr) -> bool {
 ///
 /// This is a thin wrapper around the core SSRF validation in
 /// [`solid_pod_rs::security::ssrf`], adding AP-specific scheme
-/// restriction and error mapping.
+/// restriction and error mapping. It blocks the calling thread while it
+/// resolves; async code uses [`resolve_ssrf_safe_with`].
 pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
     resolve_ssrf_safe(url).map(|_| ())
 }
 
-/// Like [`assert_ssrf_safe`], but returns the validated host and the
-/// first resolved socket address so the caller can **pin** the outbound
-/// connection to that exact IP.
+/// Blocking form of [`resolve_ssrf_safe_with`] under the strict guard.
+///
+/// Returns the validated host and the first resolved socket address so a
+/// caller can **pin** the outbound connection to that exact IP. Prefer
+/// the async form inside a runtime: this one stalls the thread on DNS.
+pub fn resolve_ssrf_safe(url: &str) -> Result<(String, SocketAddr), SigError> {
+    let (host, port) = split_target(url)?;
+    let addrs: Vec<SocketAddr> = format!("{host}:{port}")
+        .to_socket_addrs()
+        .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{host}': {e}")))?
+        .collect();
+    check_addrs(&host, addrs, SsrfGuard::strict())
+}
+
+/// Resolve `url` without blocking the runtime and return the validated
+/// host and first address, or refuse.
 ///
 /// Pinning is what closes the TOCTOU / DNS-rebinding gap: without it, the
 /// hostname is resolved once here (public IP) and then a *second* time by
@@ -58,60 +107,69 @@ pub fn assert_ssrf_safe(url: &str) -> Result<(), SigError> {
 /// Feeding the returned [`SocketAddr`] into
 /// `reqwest::ClientBuilder::resolve(host, addr)` — together with
 /// `redirect::Policy::none()` — guarantees the fetch connects only to the
-/// address that was actually classified as routable.
+/// address that was classified as permitted.
 ///
-/// Returns `Err(SigError::SsrfBlocked(..))` if the scheme is not
-/// http/https, the URL has no host, DNS fails, or any resolved address is
-/// in a private/reserved range.
-pub fn resolve_ssrf_safe(url: &str) -> Result<(String, SocketAddr), SigError> {
-    let parsed = url::Url::parse(url).map_err(|e| SigError::Url(e.to_string()))?;
+/// Every resolved address must be permitted by `guard`, not only the one
+/// that is pinned. Returns `Err(SigError::SsrfBlocked(..))` if the scheme
+/// is not http/https, the URL has no host, DNS fails, or any resolved
+/// address is refused.
+pub async fn resolve_ssrf_safe_with(
+    url: &str,
+    guard: SsrfGuard,
+) -> Result<(String, SocketAddr), SigError> {
+    let (host, port) = split_target(url)?;
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
+        .await
+        .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{host}': {e}")))?
+        .collect();
+    check_addrs(&host, addrs, guard)
+}
 
+fn split_target(url: &str) -> Result<(String, u16), SigError> {
+    let parsed = url::Url::parse(url).map_err(|e| SigError::Url(e.to_string()))?;
     // Only allow http/https schemes (AP-specific restriction).
     match parsed.scheme() {
         "http" | "https" => {}
         other => {
             return Err(SigError::SsrfBlocked(format!(
-                "scheme '{}' is not allowed",
-                other
+                "scheme '{other}' is not allowed"
             )));
         }
     }
-
     let host = parsed
         .host_str()
         .ok_or_else(|| SigError::SsrfBlocked("URL has no host".into()))?
         .to_string();
-
-    // Default port for the scheme.
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let addr_str = format!("{host}:{port}");
+    Ok((host, port))
+}
 
-    // Resolve hostname to IP addresses.
-    let addrs: Vec<SocketAddr> = addr_str
-        .to_socket_addrs()
-        .map_err(|e| SigError::SsrfBlocked(format!("DNS resolution failed for '{}': {}", host, e)))?
-        .collect();
-
+fn check_addrs(
+    host: &str,
+    addrs: Vec<SocketAddr>,
+    guard: SsrfGuard,
+) -> Result<(String, SocketAddr), SigError> {
     if addrs.is_empty() {
         return Err(SigError::SsrfBlocked(format!(
-            "DNS resolution returned no addresses for '{}'",
-            host
+            "DNS resolution returned no addresses for '{host}'"
         )));
     }
-
-    // Every resolved address must be routable — delegate to core classifier.
     for addr in &addrs {
-        if is_private_ip(addr.ip()) {
+        if !guard.permits(addr.ip()) {
             return Err(SigError::SsrfBlocked(format!(
-                "resolved address {} for '{}' is in a private/reserved range",
-                addr.ip(),
-                host
+                "resolved address {} for '{host}' is in a private/reserved range",
+                addr.ip()
             )));
         }
     }
+    Ok((host.to_string(), addrs[0]))
+}
 
-    // Pin the connection to the first validated address.
-    Ok((host, addrs[0]))
+/// Returns `true` if the given IP address is non-public per core's
+/// classification (used by the tests of the classifier).
+#[cfg(test)]
+fn is_private_ip(ip: IpAddr) -> bool {
+    !SsrfGuard::strict().permits(ip)
 }
 
 // ---------------------------------------------------------------------------

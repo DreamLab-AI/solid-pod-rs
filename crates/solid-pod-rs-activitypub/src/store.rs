@@ -465,6 +465,94 @@ impl Store {
         }
     }
 
+    // ----------------------- bounded listings -----------------------------
+
+    /// Follower actor ids, oldest first, at most `limit`.
+    pub async fn list_followers(
+        &self,
+        actor_id: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT follower_id FROM followers WHERE actor_id = ?1 \
+             ORDER BY accepted_at ASC, follower_id ASC LIMIT ?2",
+        )
+        .bind(actor_id)
+        .bind(limit.max(0))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    /// Accepted follow targets, oldest first, at most `limit`.
+    pub async fn list_following(
+        &self,
+        actor_id: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT target_id FROM following WHERE actor_id = ?1 AND accepted = 1 \
+             ORDER BY requested_at ASC, target_id ASC LIMIT ?2",
+        )
+        .bind(actor_id)
+        .bind(limit.max(0))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    /// Accepted follow targets for `actor_id`.
+    pub async fn following_count(&self, actor_id: &str) -> Result<i64, sqlx::Error> {
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM following WHERE actor_id = ?1 AND accepted = 1")
+                .bind(actor_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n)
+    }
+
+    /// The newest outbox rows for `actor_id`, newest first, at most `limit`.
+    pub async fn recent_outbox(
+        &self,
+        actor_id: &str,
+        limit: i64,
+    ) -> Result<Vec<OutboxRow>, sqlx::Error> {
+        let rows: Vec<(String, String, String, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT id, actor_id, activity, created_at, delivery_state FROM outbox \
+             WHERE actor_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+        )
+        .bind(actor_id)
+        .bind(limit.max(0))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, actor_id, activity, created_at, delivery_state)| OutboxRow {
+                    id,
+                    actor_id,
+                    activity: serde_json::from_str(&activity).unwrap_or(serde_json::Value::Null),
+                    created_at,
+                    delivery_state,
+                },
+            )
+            .collect())
+    }
+
+    /// Delete the oldest inbox rows beyond `keep`, so a remote that keeps
+    /// sending validly signed activities cannot grow the table without
+    /// bound. Returns the rows removed.
+    pub async fn trim_inbox(&self, keep: i64) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM inbox WHERE rowid IN ( \
+               SELECT rowid FROM inbox ORDER BY received_at DESC, rowid DESC LIMIT -1 OFFSET ?1)",
+        )
+        .bind(keep.max(0))
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn load_activity(
         &self,
         activity_id: &str,

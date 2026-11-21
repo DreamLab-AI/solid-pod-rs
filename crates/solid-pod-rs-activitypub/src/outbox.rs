@@ -41,37 +41,51 @@ pub async fn handle_outbox(
         .ok_or_else(|| OutboxError::InvalidActivity("missing type".into()))?
         .to_string();
 
-    // Ensure id is present; generate one otherwise.
+    let base = actor.id.trim_end_matches("#me").to_string();
     let mut activity = activity;
-    if activity
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.is_empty())
-        .unwrap_or(true)
-    {
-        let base = actor.id.trim_end_matches("#me");
-        let fresh_id = format!("{base}/activities/{}", uuid::Uuid::new_v4());
-        activity["id"] = serde_json::Value::String(fresh_id);
+
+    // The pod's own actor is the only author: whatever `actor` the caller
+    // wrote is replaced, and a caller-chosen `id` outside the actor's own
+    // origin is replaced too (storage keys on `id` and overwrites, and an id
+    // under another origin is not the pod's to mint).
+    activity["actor"] = serde_json::Value::String(actor.id.clone());
+    let origin = url::Url::parse(&actor.id)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default();
+    let own_id = !origin.is_empty()
+        && activity
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.starts_with(&format!("{origin}/")));
+    if !own_id {
+        activity["id"] =
+            serde_json::Value::String(format!("{base}/activities/{}", uuid::Uuid::new_v4()));
     }
 
-    // Ensure actor field is present and matches.
-    if activity.get("actor").and_then(|v| v.as_str()).is_none() {
-        activity["actor"] = serde_json::Value::String(actor.id.clone());
-    }
+    // `targetInbox` is a delivery hint for the caller, not part of the
+    // activity: it is read here and never stored or sent on.
+    let target_inbox = activity
+        .as_object_mut()
+        .and_then(|o| o.remove("targetInbox"))
+        .and_then(|v| v.as_str().map(str::to_string));
 
     let activity_id = store.record_outbox(&actor.id, &activity).await?;
 
     // Figure out delivery targets. For `Create` + `Announce` + `Update`
-    // + `Delete` we broadcast to followers; for `Follow` we deliver to
-    // the target's inbox (pulled from activity.object.inbox if
-    // pre-hydrated, else 0 — the caller is expected to hydrate via
-    // their resolver prior to calling).
+    // + `Delete` we broadcast to followers; for `Follow` we deliver to the
+    // target's inbox (the caller hydrates it from the target's actor
+    // document before calling) and record the follow as requested, so the
+    // target's `Accept` has a row to acknowledge.
     let inboxes: Vec<String> = match activity_type.as_str() {
-        "Follow" => activity
-            .get("targetInbox")
-            .and_then(|v| v.as_str())
-            .map(|s| vec![s.to_string()])
-            .unwrap_or_default(),
+        "Follow" => {
+            if let Some(target) = activity.get("object").and_then(|v| v.as_str()) {
+                store
+                    .add_following(&actor.id, target)
+                    .await
+                    .map_err(OutboxError::Storage)?;
+            }
+            target_inbox.into_iter().collect()
+        }
         _ => store
             .follower_inboxes(&actor.id)
             .await
@@ -117,6 +131,13 @@ fn wrap_note_in_create(actor: &Actor, note: serde_json::Value) -> serde_json::Va
     if note.get("attributedTo").is_none() {
         note["attributedTo"] = serde_json::Value::String(actor.id.clone());
     }
+    // Public, with the followers collection copied, as JSS addresses a post.
+    if note.get("to").is_none() {
+        note["to"] = serde_json::json!(["https://www.w3.org/ns/activitystreams#Public"]);
+    }
+    if note.get("cc").is_none() {
+        note["cc"] = serde_json::json!([actor.followers]);
+    }
     // Stamp published on the Note if missing.
     if note.get("published").is_none() {
         note["published"] = serde_json::Value::String(now.clone());
@@ -128,6 +149,8 @@ fn wrap_note_in_create(actor: &Actor, note: serde_json::Value) -> serde_json::Va
         "id": activity_id,
         "actor": actor.id,
         "published": now,
+        "to": note["to"].clone(),
+        "cc": note["cc"].clone(),
         "object": note,
     })
 }

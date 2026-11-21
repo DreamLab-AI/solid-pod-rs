@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::{
     http_sig::{sign_request, OutboundRequest},
-    ssrf::resolve_ssrf_safe,
+    ssrf::{resolve_ssrf_safe_with, SsrfGuard},
     store::Store,
 };
 
@@ -61,6 +61,8 @@ pub struct DeliveryWorker {
     /// When true, skip SSRF validation. Only intended for tests where
     /// the mock server binds to 127.0.0.1.
     skip_ssrf_check: bool,
+    /// Address classes a delivery may reach (strict unless a test says so).
+    guard: SsrfGuard,
 }
 
 impl DeliveryWorker {
@@ -79,7 +81,16 @@ impl DeliveryWorker {
                 .build()
                 .expect("reqwest client builds"),
             skip_ssrf_check: false,
+            guard: SsrfGuard::strict(),
         }
+    }
+
+    /// Replace the address guard. Tests federating two local servers pass
+    /// [`SsrfGuard::permit_loopback_for_tests`]; the default is strict.
+    #[must_use]
+    pub fn with_guard(mut self, guard: SsrfGuard) -> Self {
+        self.guard = guard;
+        self
     }
 
     /// Create a worker that skips SSRF checks. **Only for tests** where
@@ -96,6 +107,7 @@ impl DeliveryWorker {
                 .build()
                 .expect("reqwest client builds"),
             skip_ssrf_check: true,
+            guard: SsrfGuard::strict(),
         }
     }
 
@@ -121,7 +133,7 @@ impl DeliveryWorker {
         let http = if self.skip_ssrf_check {
             self.http.clone()
         } else {
-            let (host, pinned) = match resolve_ssrf_safe(&item.inbox_url) {
+            let (host, pinned) = match resolve_ssrf_safe_with(&item.inbox_url, self.guard).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -138,6 +150,7 @@ impl DeliveryWorker {
             };
             reqwest::Client::builder()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
+                .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30))
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve(&host, pinned)

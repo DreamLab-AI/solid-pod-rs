@@ -314,7 +314,11 @@ fn sign_request_host_matches_url() {
         .find(|(k, _)| k == "Host")
         .map(|(_, v)| v.as_str())
         .unwrap();
-    assert_eq!(host, "specific-host.example");
+    // RFC 9110 section 7.2: the Host value keeps a non-default port (the
+    // earlier expectation, without the port, signed a value the HTTP client
+    // does not send, so a verifier rebuilding the base from the received
+    // header could never agree).
+    assert_eq!(host, "specific-host.example:8443");
 }
 
 #[test]

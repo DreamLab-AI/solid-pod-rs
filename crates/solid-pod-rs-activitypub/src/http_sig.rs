@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::error::SigError;
-use crate::ssrf::resolve_ssrf_safe;
+use crate::ssrf::{resolve_ssrf_safe_with, SsrfGuard};
 
 /// A raw inbound request awaiting signature verification.
 #[derive(Debug, Clone)]
@@ -90,18 +90,110 @@ pub trait ActorKeyResolver: Send + Sync {
     async fn resolve(&self, key_id: &str) -> Result<VerifiedActor, SigError>;
 }
 
-/// HTTP-backed resolver with actor-document caching. Matches
-/// JSS's `fetchActor` behaviour: GET the URL (with `#main-key` or
-/// similar fragment stripped), parse `publicKey.publicKeyPem`.
+/// Largest actor document the resolver will read (bytes).
+pub const MAX_ACTOR_DOC_BYTES: usize = 256 * 1024;
+
+/// Whole-fetch time budget for an actor document.
+pub const ACTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// HTTP-backed resolver. Matches JSS's `fetchActor` behaviour: GET the
+/// URL (with `#main-key` or similar fragment stripped), parse
+/// `publicKey.publicKeyPem`.
+///
+/// Every fetch is attacker-reachable (the `keyId` of an unauthenticated
+/// request names the host), so it is bounded: the address is checked and
+/// pinned by an [`SsrfGuard`], redirects are not followed, the whole
+/// exchange has a time limit and the body is read incrementally up to a
+/// byte limit.
 pub struct HttpActorKeyResolver {
     user_agent: String,
+    guard: SsrfGuard,
+    max_bytes: usize,
+    timeout: Duration,
 }
 
 impl Default for HttpActorKeyResolver {
     fn default() -> Self {
         Self {
             user_agent: "solid-pod-rs-activitypub/0.4.0".to_string(),
+            guard: SsrfGuard::strict(),
+            max_bytes: MAX_ACTOR_DOC_BYTES,
+            timeout: ACTOR_FETCH_TIMEOUT,
         }
+    }
+}
+
+impl HttpActorKeyResolver {
+    /// A resolver with the strict guard and the default limits.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the address guard (tests use
+    /// [`SsrfGuard::permit_loopback_for_tests`]).
+    #[must_use]
+    pub fn with_guard(mut self, guard: SsrfGuard) -> Self {
+        self.guard = guard;
+        self
+    }
+
+    /// Replace the body-size and whole-fetch time limits.
+    #[must_use]
+    pub fn with_limits(mut self, max_bytes: usize, timeout: Duration) -> Self {
+        self.max_bytes = max_bytes;
+        self.timeout = timeout;
+        self
+    }
+
+    /// Fetch and parse the JSON document at `url` under this resolver's
+    /// guard and limits (also used to find a follow target's inbox).
+    ///
+    /// # Errors
+    ///
+    /// [`SigError::SsrfBlocked`] for a refused address,
+    /// [`SigError::ActorFetch`] for any transport, status, size, time or
+    /// parse failure.
+    pub async fn fetch_document(&self, url: &str) -> Result<serde_json::Value, SigError> {
+        let fail = |e: String| SigError::ActorFetch(url.to_string(), e);
+        let (host, pinned) = resolve_ssrf_safe_with(url, self.guard).await?;
+        let client = reqwest::Client::builder()
+            .user_agent(self.user_agent.clone())
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(self.timeout)
+            .timeout(self.timeout)
+            .resolve(&host, pinned)
+            .build()
+            .map_err(|e| fail(e.to_string()))?;
+        let mut resp = client
+            .get(url)
+            .header(reqwest::header::ACCEPT, "application/activity+json")
+            .send()
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(fail(format!("status {}", resp.status())));
+        }
+        if resp
+            .content_length()
+            .is_some_and(|n| n > self.max_bytes as u64)
+        {
+            return Err(fail(format!(
+                "document larger than {} bytes",
+                self.max_bytes
+            )));
+        }
+        let mut body: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| fail(e.to_string()))? {
+            if body.len() + chunk.len() > self.max_bytes {
+                return Err(fail(format!(
+                    "document larger than {} bytes",
+                    self.max_bytes
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body).map_err(|e| fail(e.to_string()))
     }
 }
 
@@ -112,38 +204,7 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .split_once('#')
             .map(|(u, _)| u.to_string())
             .unwrap_or_else(|| key_id.to_string());
-
-        // P0-08 + TOCTOU: reject private/internal IPs before fetching the
-        // remote actor document, and PIN the connection to the validated
-        // IP. `resolve_ssrf_safe` resolves the host once and hands back the
-        // routable address; building a per-request client that resolves the
-        // host to exactly that address (with redirects disabled) means the
-        // fetch cannot be rebound to an internal target between the check
-        // and the connect, nor auto-follow a 3xx past the guard.
-        let (host, pinned) = resolve_ssrf_safe(&actor_url)?;
-        let client = reqwest::Client::builder()
-            .user_agent(self.user_agent.clone())
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve(&host, pinned)
-            .build()
-            .map_err(|e| SigError::ActorFetch(actor_url.clone(), e.to_string()))?;
-
-        let resp = client
-            .get(&actor_url)
-            .header(reqwest::header::ACCEPT, "application/activity+json")
-            .send()
-            .await
-            .map_err(|e| SigError::ActorFetch(actor_url.clone(), e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(SigError::ActorFetch(
-                actor_url.clone(),
-                format!("status {}", resp.status()),
-            ));
-        }
-        let doc: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| SigError::ActorFetch(actor_url.clone(), e.to_string()))?;
+        let doc = self.fetch_document(&actor_url).await?;
         let pem = doc
             .get("publicKey")
             .and_then(|k| k.get("publicKeyPem"))
@@ -439,9 +500,14 @@ pub fn sign_request(
     key_id: &str,
 ) -> Result<(), SigError> {
     let url = url::Url::parse(&req.url).map_err(|e| SigError::Url(e.to_string()))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| SigError::Url("url has no host".into()))?;
+    // RFC 9110 section 7.2: the Host value carries the port unless it is the
+    // scheme's default, and the verifier rebuilds the base from the header it
+    // received, so the signed value must be exactly what is sent.
+    let host = match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        (None, _) => return Err(SigError::Url("url has no host".into())),
+    };
     let path = if let Some(q) = url.query() {
         format!("{}?{}", url.path(), q)
     } else {
