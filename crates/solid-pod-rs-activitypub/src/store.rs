@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS followers (
     follower_id TEXT NOT NULL,
     inbox TEXT,
     accepted_at DATETIME,
+    host TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (actor_id, follower_id)
 );
 CREATE TABLE IF NOT EXISTS following (
@@ -99,7 +100,8 @@ CREATE TABLE IF NOT EXISTS delivery_queue (
     inbox_url TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     next_retry DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_error TEXT
+    last_error TEXT,
+    host TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS actors (
     id TEXT PRIMARY KEY,
@@ -150,6 +152,52 @@ async fn migrate_legacy_inbox(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     tx.commit().await
 }
 
+/// The lower-cased host of `url` (no port), or `""` when it has none. Per-host
+/// limits key on this, not on the authority, so varying the port does not
+/// dodge them.
+#[must_use]
+pub fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default()
+}
+
+/// Add the `host` column to `followers` and `delivery_queue` tables written
+/// before it existed, and fill it from the stored URLs. A no-op once present.
+async fn add_host_columns(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    for (table, url_col, id_col) in [
+        ("followers", "follower_id", "rowid"),
+        ("delivery_queue", "inbox_url", "id"),
+    ] {
+        let (has,): (i64,) = sqlx::query_as(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'host'"
+        ))
+        .fetch_one(pool)
+        .await?;
+        if has > 0 {
+            continue;
+        }
+        sqlx::query(&format!(
+            "ALTER TABLE {table} ADD COLUMN host TEXT NOT NULL DEFAULT ''"
+        ))
+        .execute(pool)
+        .await?;
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as(&format!("SELECT {id_col}, {url_col} FROM {table}"))
+                .fetch_all(pool)
+                .await?;
+        for (id, url) in rows {
+            sqlx::query(&format!("UPDATE {table} SET host = ?1 WHERE {id_col} = ?2"))
+                .bind(host_of(&url))
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     /// Connect to an arbitrary SQLite URL (use `sqlite::memory:` for
     /// tests). Runs the schema idempotently.
@@ -160,6 +208,7 @@ impl Store {
             .await?;
         migrate_legacy_inbox(&pool).await?;
         sqlx::query(SCHEMA).execute(&pool).await?;
+        add_host_columns(&pool).await?;
         Ok(Self {
             pool,
             queue_full_logged: std::sync::Arc::default(),
@@ -189,13 +238,14 @@ impl Store {
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now();
         sqlx::query(
-            "INSERT OR REPLACE INTO followers (actor_id, follower_id, inbox, accepted_at) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO followers (actor_id, follower_id, inbox, accepted_at, host) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind(actor_id)
         .bind(follower_id)
         .bind(inbox)
         .bind(now)
+        .bind(host_of(follower_id))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -251,6 +301,21 @@ impl Store {
             .bind(actor_id)
             .fetch_one(&self.pool)
             .await?;
+        Ok(n)
+    }
+
+    /// Followers of `actor_id` whose actor lives on `host` (see [`host_of`]).
+    pub async fn follower_count_for_host(
+        &self,
+        actor_id: &str,
+        host: &str,
+    ) -> Result<i64, sqlx::Error> {
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM followers WHERE actor_id = ?1 AND host = ?2")
+                .bind(actor_id)
+                .bind(host)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(n)
     }
 
@@ -415,12 +480,13 @@ impl Store {
         inbox_url: &str,
     ) -> Result<i64, sqlx::Error> {
         let res = sqlx::query(
-            "INSERT INTO delivery_queue (activity_id, inbox_url, attempts, next_retry) \
-             VALUES (?1, ?2, 0, ?3)",
+            "INSERT INTO delivery_queue (activity_id, inbox_url, attempts, next_retry, host) \
+             VALUES (?1, ?2, 0, ?3, ?4)",
         )
         .bind(activity_id)
         .bind(inbox_url)
         .bind(Utc::now())
+        .bind(host_of(inbox_url))
         .execute(&self.pool)
         .await?;
         Ok(res.last_insert_rowid())
@@ -468,6 +534,50 @@ impl Store {
         .bind(Utc::now())
         .fetch_optional(&self.pool)
         .await?;
+        Ok(row.map(
+            |(queue_id, activity_id, inbox_url, attempts, last_error)| DeliveryItem {
+                queue_id,
+                activity_id,
+                inbox_url,
+                attempts,
+                last_error,
+            },
+        ))
+    }
+
+    /// The oldest due delivery that is not `skip_ids` and whose host is not in
+    /// `skip_hosts`. The concurrent worker uses this so a host with work already
+    /// in flight, or with an open circuit, cannot fill the window and starve
+    /// the others.
+    pub async fn next_due_delivery_excluding(
+        &self,
+        skip_ids: &[i64],
+        skip_hosts: &[String],
+    ) -> Result<Option<DeliveryItem>, sqlx::Error> {
+        let mut q = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT id, activity_id, inbox_url, attempts, last_error FROM delivery_queue \
+             WHERE next_retry <= ",
+        );
+        q.push_bind(Utc::now());
+        for (col, n) in [("id", skip_ids.len()), ("host", skip_hosts.len())] {
+            if n > 0 {
+                q.push(format!(" AND {col} NOT IN ("));
+                let mut sep = q.separated(", ");
+                if col == "id" {
+                    for v in skip_ids {
+                        sep.push_bind(*v);
+                    }
+                } else {
+                    for v in skip_hosts {
+                        sep.push_bind(v.clone());
+                    }
+                }
+                q.push(")");
+            }
+        }
+        q.push(" ORDER BY id ASC LIMIT 1");
+        let row: Option<(i64, String, String, i64, Option<String>)> =
+            q.build_query_as().fetch_optional(&self.pool).await?;
         Ok(row.map(
             |(queue_id, activity_id, inbox_url, attempts, last_error)| DeliveryItem {
                 queue_id,

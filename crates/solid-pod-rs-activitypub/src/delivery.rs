@@ -13,18 +13,38 @@
 //! can also trigger a one-shot tick via [`DeliveryWorker::drain_once`]
 //! which is how the test-suite exercises the retry logic.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use tokio::sync::Semaphore;
 
 use crate::{
     http_sig::{sign_request, OutboundRequest},
     ssrf::{resolve_ssrf_safe_with, SsrfGuard},
-    store::Store,
+    store::{host_of, DeliveryItem, Store},
 };
 
 /// Retry backoff schedule in seconds. Index = attempt count prior to
 /// this attempt; we cap at the final step.
 const BACKOFF_SECONDS: &[i64] = &[30, 120, 600, 3_600, 21_600, 86_400];
+
+/// Deliveries attempted at once across all hosts.
+pub const MAX_CONCURRENT_DELIVERIES: usize = 8;
+
+/// Deliveries attempted at once to one host (by hostname, not port), so a slow
+/// host holds at most this many of the [`MAX_CONCURRENT_DELIVERIES`] slots.
+pub const MAX_INFLIGHT_PER_HOST: usize = 2;
+
+/// Consecutive failed attempts to a host before its circuit opens.
+pub const BREAKER_THRESHOLD: u32 = 5;
+
+/// How long a freshly opened circuit stays open; each further failure doubles
+/// it, up to [`BREAKER_MAX_OPEN`]. After it lapses one attempt is let through.
+pub const BREAKER_BASE_OPEN: Duration = Duration::from_secs(30);
+
+/// Longest a circuit stays open.
+pub const BREAKER_MAX_OPEN: Duration = Duration::from_secs(3_600);
 
 /// Maximum attempts before we give up and drop the queue entry.
 const MAX_ATTEMPTS: i64 = BACKOFF_SECONDS.len() as i64;
@@ -63,6 +83,25 @@ pub struct DeliveryWorker {
     skip_ssrf_check: bool,
     /// Address classes a delivery may reach (strict unless a test says so).
     guard: SsrfGuard,
+    /// Global bound on concurrent attempts made by [`Self::run`].
+    slots: Arc<Semaphore>,
+    /// In-flight rows and per-host health, shared by the attempts.
+    hosts: Mutex<HostState>,
+}
+
+/// What the concurrent runner knows about hosts: rows being attempted (so two
+/// tasks never take one row), per-host in-flight counts and circuit breakers.
+#[derive(Default)]
+struct HostState {
+    inflight_ids: HashSet<i64>,
+    inflight_per_host: HashMap<String, usize>,
+    health: HashMap<String, Health>,
+}
+
+#[derive(Default)]
+struct Health {
+    failures: u32,
+    open_until: Option<Instant>,
 }
 
 impl DeliveryWorker {
@@ -82,6 +121,8 @@ impl DeliveryWorker {
                 .expect("reqwest client builds"),
             skip_ssrf_check: false,
             guard: SsrfGuard::strict(),
+            slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DELIVERIES)),
+            hosts: Mutex::default(),
         }
     }
 
@@ -108,6 +149,8 @@ impl DeliveryWorker {
                 .expect("reqwest client builds"),
             skip_ssrf_check: true,
             guard: SsrfGuard::strict(),
+            slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DELIVERIES)),
+            hosts: Mutex::default(),
         }
     }
 
@@ -118,6 +161,114 @@ impl DeliveryWorker {
         let Some(item) = self.store.next_due_delivery().await? else {
             return Ok(DeliveryOutcome::Idle);
         };
+        self.attempt_tracked(item).await
+    }
+
+    /// One attempt, then the host's circuit breaker is updated from its outcome.
+    async fn attempt_tracked(
+        &self,
+        item: DeliveryItem,
+    ) -> Result<DeliveryOutcome, crate::error::OutboxError> {
+        let host = host_of(&item.inbox_url);
+        let outcome = self.attempt(item).await?;
+        self.record_health(&host, &outcome);
+        Ok(outcome)
+    }
+
+    fn record_health(&self, host: &str, outcome: &DeliveryOutcome) {
+        let mut st = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+        match outcome {
+            DeliveryOutcome::Delivered => {
+                st.health.remove(host);
+            }
+            DeliveryOutcome::Rescheduled { .. } => {
+                let h = st.health.entry(host.to_string()).or_default();
+                h.failures = h.failures.saturating_add(1);
+                if h.failures >= BREAKER_THRESHOLD {
+                    let doublings = (h.failures - BREAKER_THRESHOLD).min(16);
+                    let open = BREAKER_BASE_OPEN
+                        .saturating_mul(1u32 << doublings)
+                        .min(BREAKER_MAX_OPEN);
+                    h.open_until = Some(Instant::now() + open);
+                }
+            }
+            DeliveryOutcome::Dropped | DeliveryOutcome::Idle => {}
+        }
+    }
+
+    /// Hosts the runner must not pick work for right now: at their in-flight
+    /// limit or with an open circuit; plus the rows already being attempted.
+    fn blocked(&self) -> (Vec<i64>, Vec<String>) {
+        let st = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let mut hosts: Vec<String> = st
+            .inflight_per_host
+            .iter()
+            .filter(|(_, n)| **n >= MAX_INFLIGHT_PER_HOST)
+            .map(|(h, _)| h.clone())
+            .collect();
+        hosts.extend(
+            st.health
+                .iter()
+                .filter(|(_, h)| h.open_until.is_some_and(|t| t > now))
+                .map(|(h, _)| h.clone()),
+        );
+        (st.inflight_ids.iter().copied().collect(), hosts)
+    }
+
+    fn claim(&self, id: i64, host: &str) {
+        let mut st = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+        st.inflight_ids.insert(id);
+        *st.inflight_per_host.entry(host.to_string()).or_insert(0) += 1;
+    }
+
+    fn release(&self, id: i64, host: &str) {
+        let mut st = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+        st.inflight_ids.remove(&id);
+        if let Some(n) = st.inflight_per_host.get_mut(host) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                st.inflight_per_host.remove(host);
+            }
+        }
+    }
+
+    /// Start as many due deliveries as the concurrency bounds allow.
+    async fn dispatch(
+        self: &Arc<Self>,
+        tasks: &mut tokio::task::JoinSet<()>,
+    ) -> Result<(), crate::error::OutboxError> {
+        loop {
+            let Ok(permit) = self.slots.clone().try_acquire_owned() else {
+                return Ok(());
+            };
+            let (skip_ids, skip_hosts) = self.blocked();
+            let Some(item) = self
+                .store
+                .next_due_delivery_excluding(&skip_ids, &skip_hosts)
+                .await?
+            else {
+                return Ok(());
+            };
+            let host = host_of(&item.inbox_url);
+            self.claim(item.queue_id, &host);
+            let me = Arc::clone(self);
+            tasks.spawn(async move {
+                let _permit = permit;
+                let id = item.queue_id;
+                if let Err(e) = me.attempt_tracked(item).await {
+                    tracing::warn!(error = %e, "delivery attempt failed");
+                }
+                me.release(id, &host);
+            });
+        }
+    }
+
+    /// Make exactly one delivery attempt for `item`.
+    async fn attempt(
+        &self,
+        item: DeliveryItem,
+    ) -> Result<DeliveryOutcome, crate::error::OutboxError> {
         let Some(activity) = self.store.load_activity(&item.activity_id).await? else {
             // Orphaned queue row — the activity is gone. Drop.
             self.store.drop_delivery(item.queue_id).await?;
@@ -256,21 +407,26 @@ impl DeliveryWorker {
         Ok(inboxes.len())
     }
 
-    /// Long-running poller. Ticks every `tick` and calls
-    /// [`Self::drain_once`] until the queue is empty, then sleeps.
+    /// Long-running poller. Every `tick` (or as soon as an attempt finishes) it
+    /// starts the due deliveries the bounds allow: at most
+    /// [`MAX_CONCURRENT_DELIVERIES`] at once, at most [`MAX_INFLIGHT_PER_HOST`]
+    /// per host, none for a host whose circuit is open. A host that never
+    /// answers therefore holds at most its own share of slots for its timeout
+    /// and never delays another host's rows.
     pub async fn run(self: Arc<Self>, tick: Duration) {
+        let mut tasks = tokio::task::JoinSet::new();
         loop {
-            loop {
-                match self.drain_once().await {
-                    Ok(DeliveryOutcome::Idle) => break,
-                    Ok(_) => continue,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "delivery worker tick failed");
-                        break;
-                    }
+            if let Err(e) = self.dispatch(&mut tasks).await {
+                tracing::warn!(error = %e, "delivery worker tick failed");
+            }
+            if tasks.is_empty() {
+                tokio::time::sleep(tick).await;
+            } else {
+                tokio::select! {
+                    _ = tasks.join_next() => {}
+                    () = tokio::time::sleep(tick) => {}
                 }
             }
-            tokio::time::sleep(tick).await;
         }
     }
 }

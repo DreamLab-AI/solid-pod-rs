@@ -205,6 +205,7 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .map(|(u, _)| u.to_string())
             .unwrap_or_else(|| key_id.to_string());
         let doc = self.fetch_document(&actor_url).await?;
+        let doc_url = actor_url.clone();
         // The actor's id is the document's `id`, which JSS-style actors give
         // with a fragment (`.../card.jsonld#me`) while the key is fetched
         // from the document URL. It is taken only when it names the very
@@ -219,11 +220,21 @@ impl ActorKeyResolver for HttpActorKeyResolver {
             .and_then(|k| k.get("publicKeyPem"))
             .and_then(|v| v.as_str())
             .ok_or(SigError::NoPublicKey)?;
-        let inbox_url = doc
+        // The inbox we would deliver to: the shared inbox if there is one, else
+        // the personal inbox. If either names another origin than the actor
+        // document, that offending URL is reported instead, so the inbox
+        // handler refuses a Follow from this actor (it cannot aim our
+        // deliveries at a host it does not control).
+        let shared = doc
             .get("endpoints")
             .and_then(|v| v.get("sharedInbox"))
-            .and_then(|v| v.as_str())
-            .or_else(|| doc.get("inbox").and_then(|v| v.as_str()))
+            .and_then(|v| v.as_str());
+        let personal = doc.get("inbox").and_then(|v| v.as_str());
+        let inbox_url = [shared, personal]
+            .into_iter()
+            .flatten()
+            .find(|u| !crate::inbox::same_origin(u, &doc_url))
+            .or(shared.or(personal))
             .map(str::to_string);
         Ok(VerifiedActor {
             key_id: key_id.to_string(),

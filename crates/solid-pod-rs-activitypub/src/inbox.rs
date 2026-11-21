@@ -12,7 +12,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::InboxError, http_sig::VerifiedActor, store::Store};
+use crate::{
+    error::InboxError,
+    http_sig::VerifiedActor,
+    store::{host_of, Store},
+};
 
 /// Most followers one actor keeps; a further `Follow` is refused with
 /// [`InboxError::Limit`] (an existing follower may still re-follow).
@@ -34,8 +38,39 @@ pub const MAX_ACCEPT_ROWS: i64 = MAX_FOLLOWERS;
 /// it new deliveries are refused rather than queued.
 pub const MAX_DELIVERY_QUEUE: i64 = 4 * MAX_FOLLOWERS;
 
+/// Most followers one remote host (by hostname, any port) may have. Many
+/// actors on a shared instance are legitimate, so this is not tiny, but it is
+/// small enough that one host cannot take the whole [`MAX_FOLLOWERS`] budget
+/// or make the delivery worker's per-host queue deep.
+pub const DEFAULT_MAX_FOLLOWERS_PER_HOST: i64 = 50;
+
 /// Longest activity `id` accepted (bytes).
 pub const MAX_ACTIVITY_ID_BYTES: usize = 2_048;
+
+/// Operator-tunable inbox limits. [`Default`] is what [`handle_inbox`] uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InboxLimits {
+    /// Most followers one remote host may have (see
+    /// [`DEFAULT_MAX_FOLLOWERS_PER_HOST`]). A further new follower from that
+    /// host is refused with [`InboxError::Limit`].
+    pub max_followers_per_host: i64,
+}
+
+impl Default for InboxLimits {
+    fn default() -> Self {
+        Self {
+            max_followers_per_host: DEFAULT_MAX_FOLLOWERS_PER_HOST,
+        }
+    }
+}
+
+/// Whether `a` and `b` are URLs with the same origin (scheme, host, port).
+pub(crate) fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin().is_tuple() && a.origin() == b.origin(),
+        _ => false,
+    }
+}
 
 /// The outcome of processing an inbox activity. The HTTP layer maps
 /// this to status codes and any extra response side-effects
@@ -76,6 +111,28 @@ pub async fn handle_inbox(
     verified_actor: &VerifiedActor,
     activity: &serde_json::Value,
 ) -> Result<InboxOutcome, InboxError> {
+    handle_inbox_with(
+        store,
+        local_actor_id,
+        verified_actor,
+        activity,
+        &InboxLimits::default(),
+    )
+    .await
+}
+
+/// [`handle_inbox`] with explicit [`InboxLimits`].
+///
+/// A `Follow` is refused unless the follower's inbox (and shared inbox) lie on
+/// the same origin as its actor document: the follower cannot aim our
+/// deliveries at a host it does not control.
+pub async fn handle_inbox_with(
+    store: &Store,
+    local_actor_id: &str,
+    verified_actor: &VerifiedActor,
+    activity: &serde_json::Value,
+    limits: &InboxLimits,
+) -> Result<InboxOutcome, InboxError> {
     let activity_type = activity
         .get("type")
         .and_then(|v| v.as_str())
@@ -100,16 +157,42 @@ pub async fn handle_inbox(
         return Err(InboxError::InvalidJson("activity id too long".into()));
     }
 
-    // A Follow from someone who already follows is idempotent: nothing is
-    // stored, no Accept is built and no delivery is queued, however many
-    // times (and under however many fresh ids) it is sent.
-    if activity_type == "Follow"
-        && activity.get("object").and_then(|v| v.as_str()) == Some(local_actor_id)
-        && store
-            .is_follower(local_actor_id, &verified_actor.actor_url)
+    // Every Follow check runs before anything is stored, so a refused Follow
+    // leaves no trace. A Follow from someone who already follows is
+    // idempotent: nothing is stored, no Accept is built and no delivery is
+    // queued, however many times (and under however many fresh ids) it is sent.
+    if activity_type == "Follow" {
+        if activity.get("object").and_then(|v| v.as_str()) != Some(local_actor_id) {
+            return Err(InboxError::ActorMismatch(
+                "Follow object is not the local actor".into(),
+            ));
+        }
+        let follower_id = &verified_actor.actor_url;
+        if store.is_follower(local_actor_id, follower_id).await? {
+            return Ok(InboxOutcome::Duplicate);
+        }
+        if let Some(inbox) = &verified_actor.inbox_url {
+            if !same_origin(inbox, follower_id) {
+                return Err(InboxError::ActorMismatch(
+                    "the follower's inbox is not on its actor's origin".into(),
+                ));
+            }
+        }
+        if store.follower_count(local_actor_id).await? >= MAX_FOLLOWERS {
+            return Err(InboxError::Limit(format!(
+                "more than {MAX_FOLLOWERS} followers"
+            )));
+        }
+        if store
+            .follower_count_for_host(local_actor_id, &host_of(follower_id))
             .await?
-    {
-        return Ok(InboxOutcome::Duplicate);
+            >= limits.max_followers_per_host
+        {
+            return Err(InboxError::Limit(format!(
+                "more than {} followers from one host",
+                limits.max_followers_per_host
+            )));
+        }
     }
 
     let was_new = store
@@ -125,19 +208,7 @@ pub async fn handle_inbox(
 
     match activity_type {
         "Follow" => {
-            if activity.get("object").and_then(|v| v.as_str()) != Some(local_actor_id) {
-                return Err(InboxError::ActorMismatch(
-                    "Follow object is not the local actor".into(),
-                ));
-            }
             let follower_id = verified_actor.actor_url.clone();
-            if !store.is_follower(local_actor_id, &follower_id).await?
-                && store.follower_count(local_actor_id).await? >= MAX_FOLLOWERS
-            {
-                return Err(InboxError::Limit(format!(
-                    "more than {MAX_FOLLOWERS} followers"
-                )));
-            }
             // Per JSS — the follower's inbox is looked up from the
             // actor document. That fetch is the caller's responsibility
             // (we'd pull it in via [`crate::http_sig::ActorKeyResolver`]

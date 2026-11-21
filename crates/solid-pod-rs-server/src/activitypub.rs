@@ -24,10 +24,10 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use futures_util::StreamExt;
 use solid_pod_rs_activitypub::inbox::{MAX_ACCEPT_ROWS, MAX_DELIVERY_QUEUE};
 use solid_pod_rs_activitypub::{
-    generate_actor_keypair, handle_inbox, handle_outbox_post as handle_outbox_post_lib,
+    generate_actor_keypair, handle_inbox_with, handle_outbox_post as handle_outbox_post_lib,
     render_actor, verify_request_signature, with_also_known_as, Actor, DeliveryConfig,
-    DeliveryWorker, HttpActorKeyResolver, InboxError, InboxOutcome, OutboxError, SignedRequest,
-    SsrfGuard, Store,
+    DeliveryWorker, HttpActorKeyResolver, InboxError, InboxLimits, InboxOutcome, OutboxError,
+    SignedRequest, SsrfGuard, Store,
 };
 use tokio::sync::Semaphore;
 
@@ -279,6 +279,7 @@ pub struct Federation {
     authority: String,
     resolver: HttpActorKeyResolver,
     inbox_slots: Semaphore,
+    limits: InboxLimits,
     worker: Arc<DeliveryWorker>,
     delivery_task: tokio::task::JoinHandle<()>,
 }
@@ -319,6 +320,33 @@ impl Federation {
         guard: SsrfGuard,
         tick: std::time::Duration,
     ) -> Result<Arc<Self>, String> {
+        Self::start_with_limits(
+            config,
+            private_pem,
+            base_url,
+            store,
+            guard,
+            tick,
+            InboxLimits::default(),
+        )
+    }
+
+    /// [`Self::start`] with explicit inbox limits (for example a different
+    /// per-host follower cap).
+    ///
+    /// # Errors
+    ///
+    /// A message when `base_url` is not a bare origin.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_limits(
+        config: &ApConfig,
+        private_pem: String,
+        base_url: &str,
+        store: Store,
+        guard: SsrfGuard,
+        tick: std::time::Duration,
+        limits: InboxLimits,
+    ) -> Result<Arc<Self>, String> {
         let origin = crate::scheme::normalise_origin(base_url).ok_or_else(|| {
             format!("federation needs a bare scheme://host base URL, got {base_url:?}")
         })?;
@@ -354,6 +382,7 @@ impl Federation {
             authority,
             resolver: HttpActorKeyResolver::default().with_guard(guard),
             inbox_slots: Semaphore::new(MAX_CONCURRENT_INBOX),
+            limits,
             worker,
             delivery_task,
         }))
@@ -502,7 +531,7 @@ pub(crate) async fn handle_inbox_post(
     let Ok(activity) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return plain(StatusCode::BAD_REQUEST, "invalid JSON");
     };
-    match handle_inbox(&fed.store, &fed.actor.id, &verified, &activity).await {
+    match handle_inbox_with(&fed.store, &fed.actor.id, &verified, &activity, &fed.limits).await {
         Ok(InboxOutcome::FollowAccepted {
             follower_inbox,
             accept_object,
