@@ -305,6 +305,135 @@ impl RemoteStorage {
 }
 
 // ---------------------------------------------------------------------------
+// Owner-only container ACL
+// ---------------------------------------------------------------------------
+
+/// What [`secure_container`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerAcl {
+    /// An owner-only ACL was written for `/remotestorage/`.
+    Created,
+    /// An ACL the active layout reads already exists; it was left untouched.
+    Existing,
+    /// The root ACL names no agent with `acl:Control` on `/`, so there is no
+    /// owner to grant; nothing was written (the container then inherits the
+    /// root ACL, which grants nothing to anyone).
+    NoOwner,
+}
+
+/// Whether an ACL target id names the pod root (`/`, `./`, or an absolute URL
+/// whose path is `/`).
+fn names_root(id: &str) -> bool {
+    id == "/" || id == "./" || url::Url::parse(id).is_ok_and(|u| u.path() == "/")
+}
+
+/// The agents the root ACL grants `acl:Control` on `/`.
+async fn root_controllers(
+    storage: &dyn solid_pod_rs::storage::Storage,
+    layout: solid_pod_rs::wac::AclLayout,
+) -> Result<Vec<String>, String> {
+    use solid_pod_rs::wac::{IdOrIds, PolicyOutcome};
+    fn ids(v: &Option<IdOrIds>) -> Vec<&str> {
+        match v {
+            None => Vec::new(),
+            Some(IdOrIds::Single(r)) => vec![r.id.as_str()],
+            Some(IdOrIds::Multiple(rs)) => rs.iter().map(|r| r.id.as_str()).collect(),
+        }
+    }
+    let doc = match solid_pod_rs::wac::resolve_policy_with_layout(storage, "/", None, layout).await
+    {
+        PolicyOutcome::Found(doc) => doc,
+        PolicyOutcome::Invalid { reason, .. } => {
+            return Err(format!("the root ACL is invalid: {reason}"))
+        }
+        PolicyOutcome::Unavailable { detail, .. } => {
+            return Err(format!("the root ACL could not be read: {detail}"))
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let mut owners: Vec<String> = Vec::new();
+    for auth in doc.graph.iter().flatten() {
+        let control = ids(&auth.mode)
+            .iter()
+            .any(|m| *m == "acl:Control" || m.ends_with("#Control"));
+        let at_root = ids(&auth.access_to)
+            .into_iter()
+            .chain(ids(&auth.default))
+            .any(names_root);
+        if !control || !at_root {
+            continue;
+        }
+        for agent in ids(&auth.agent) {
+            let plain = !agent.is_empty()
+                && !agent
+                    .chars()
+                    .any(|c| c.is_whitespace() || "<>\"{}|\\^`".contains(c));
+            if plain && !owners.iter().any(|o| o == agent) {
+                owners.push(agent.to_string());
+            }
+        }
+    }
+    Ok(owners)
+}
+
+/// Give `/remotestorage/` its own owner-only ACL, in the form the active
+/// `layout` reads, unless one already exists.
+///
+/// Documents live in the pod under `/remotestorage/`, so over LDP they
+/// inherit whatever the root ACL grants by default. A root that lets the
+/// public or any authenticated agent read would expose every private
+/// remoteStorage document and listing. The ACL written here grants Read,
+/// Write and Control to the agents the root ACL gives Control on `/` (the
+/// pod owners, the same gate that mints tokens), and nobody else.
+///
+/// An existing ACL is never overwritten or merged, so an owner who has shaped
+/// this container keeps their policy. Call it at mount time, before serving.
+///
+/// # Errors
+///
+/// A message when the root ACL is invalid or storage fails.
+pub async fn secure_container(
+    storage: &dyn solid_pod_rs::storage::Storage,
+    layout: solid_pod_rs::wac::AclLayout,
+) -> Result<ContainerAcl, String> {
+    use solid_pod_rs::wac::AclLayout;
+    let container = format!("{ROOT}/");
+    let sidecar = solid_pod_rs::wac::acl_sidecar_key(&container);
+    let inner = format!("{ROOT}/.acl");
+    let read: Vec<&str> = match layout {
+        AclLayout::Sidecar => vec![&sidecar],
+        AclLayout::Inner => vec![&inner],
+        AclLayout::Both => vec![&sidecar, &inner],
+    };
+    for key in read {
+        if storage.exists(key).await.map_err(|e| e.to_string())? {
+            return Ok(ContainerAcl::Existing);
+        }
+    }
+    let owners = root_controllers(storage, layout).await?;
+    if owners.is_empty() {
+        return Ok(ContainerAcl::NoOwner);
+    }
+    let agents = owners
+        .iter()
+        .map(|o| format!("<{o}>"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let doc = format!(
+        "@prefix acl: <http://www.w3.org/ns/auth/acl#> .\n\
+         <#owner> a acl:Authorization ;\n    acl:agent {agents} ;\n    \
+         acl:accessTo <{container}> ;\n    acl:default <{container}> ;\n    \
+         acl:mode acl:Read, acl:Write, acl:Control .\n"
+    );
+    let key = solid_pod_rs::wac::acl_advertised_key(&container, layout);
+    storage
+        .put(&key, Bytes::from(doc), "text/turtle")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ContainerAcl::Created)
+}
+
+// ---------------------------------------------------------------------------
 // Paths and scopes
 // ---------------------------------------------------------------------------
 

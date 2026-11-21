@@ -209,6 +209,25 @@ modules in its scopes, plus `/public/<module>/` for the same modules; documents
 under `/public/` are readable by anyone, folder listings need a token. See the
 module documentation of `remotestorage.rs` for the full authority statement.
 
+- **Owner-only ACL at mount time.** Documents sit in the pod under
+  `/remotestorage/`, where over LDP they would inherit the root ACL: a root that
+  lets the public or any signed-in agent read would expose them. At start-up the
+  server therefore writes an ACL for `/remotestorage/` granting Read, Write and
+  Control to the agents the root ACL gives Control on `/` (and nobody else), in
+  the form `--acl-layout` reads (`/remotestorage.acl`, or `/remotestorage/.acl`
+  under `inner`). An ACL that already exists is never overwritten or merged; if
+  the root ACL names no such agent nothing is written and a warning is logged.
+- **Served inert.** Every `/storage/` response carries
+  `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'; sandbox`, and HTML, XHTML, SVG,
+  XML and JavaScript documents are sent `Content-Disposition: attachment`.
+  Applications reading with `fetch` are unaffected; a stored PDF or media file
+  cannot be viewed directly in a browser tab. LDP responses carry `nosniff`
+  only: the pod serves stored `index.html` pages by design.
+- Deleting a document returns its bytes to the quota. Tokens can only be
+  revoked all at once, and the `remotestorage` quota bucket is separate from
+  the pod's own.
+
 ## ActivityPub federation (`--ap-federation`)
 
 Off by default, behind the `activitypub` cargo feature. `--activitypub` alone

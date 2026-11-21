@@ -474,6 +474,21 @@ async fn main() -> anyhow::Result<()> {
             user = rs.user(),
             "remoteStorage mounted at /storage/<user>/"
         );
+        match solid_pod_rs_server::remotestorage::secure_container(
+            &*state.storage,
+            state.acl_layout,
+        )
+        .await
+        {
+            Ok(solid_pod_rs_server::remotestorage::ContainerAcl::Created) => info!(
+                "wrote an owner-only ACL for /remotestorage/ (the root ACL no longer governs it)"
+            ),
+            Ok(solid_pod_rs_server::remotestorage::ContainerAcl::Existing) => {}
+            Ok(solid_pod_rs_server::remotestorage::ContainerAcl::NoOwner) => tracing::warn!(
+                "the root ACL names no agent with Control: /remotestorage/ was given no ACL of its own"
+            ),
+            Err(e) => anyhow::bail!("--remotestorage: could not secure /remotestorage/: {e}"),
+        }
         state.remotestorage = Some(rs);
     }
     if cli.no_notifications {
