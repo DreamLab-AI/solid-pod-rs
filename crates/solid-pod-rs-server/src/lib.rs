@@ -2599,6 +2599,27 @@ async fn handle_patch(
             set_provenance_headers(&mut rsp, &provenance);
             Ok(rsp)
         }
+        // A stored JSON-LD document, or an HTML page with a JSON-LD data
+        // island, patched by N3 Patch or SPARQL Update: edited in place, only
+        // against the configured origin, only when the document is in a
+        // shape the writer reproduces exactly. Everything else is refused.
+        Ok((current_body, meta))
+            if matches!(
+                dialect,
+                ldp::PatchDialect::N3 | ldp::PatchDialect::SparqlUpdate
+            ) && is_jsonld_target(&meta.content_type) =>
+        {
+            patch_stored_jsonld(
+                &state,
+                &path,
+                agent.as_deref(),
+                &current_body,
+                &meta.content_type,
+                dialect,
+                &body_str,
+            )
+            .await
+        }
         Ok((current_body, meta)) => {
             // Seed the working graph from the EXISTING resource body so the
             // mutation lands on top of the triples already stored, rather
@@ -2769,6 +2790,90 @@ async fn handle_patch(
         }
         Err(e) => Err(to_actix(e)),
     }
+}
+
+/// The one answer to every refusal on the JSON-LD / HTML-island PATCH path,
+/// so the response does not say which shape check failed.
+const JSONLD_PATCH_REFUSED: &str =
+    "refused: this stored document cannot be patched in place; PUT a replacement";
+
+/// Stored types the in-place JSON-LD PATCH path handles.
+fn is_jsonld_target(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/ld+json" || essence == "text/html"
+}
+
+/// PATCH of a stored JSON-LD document or HTML data island (parity row 276).
+///
+/// Properties this function preserves, each with the test that fails if it
+/// is violated (`tests/jsonld_patch.rs`):
+///
+/// * the base is the configured public origin plus the resource path, never
+///   the request `Host` or a forwarding header; with none configured the
+///   patch is refused;
+/// * an ACL or metadata sidecar is never patched here;
+/// * the document is written only if it reads back to exactly the graph the
+///   patch produced (`StoredDocument::write_back`), and only in a shape the
+///   writer reproduces exactly (`StoredDocument::open`); any refusal writes
+///   nothing and answers one generic 409;
+/// * a delete that names a triple the document does not hold is a 409 in both
+///   dialects (the patch engine);
+/// * the stored content type is kept.
+///
+/// Authorisation (Write; Read as well when the patch inspects the document)
+/// and the `If-Match` precondition were checked by the caller, and the
+/// per-resource lock is held.
+async fn patch_stored_jsonld(
+    state: &AppState,
+    path: &str,
+    agent: Option<&str>,
+    current_body: &[u8],
+    content_type: &str,
+    dialect: ldp::PatchDialect,
+    body_str: &str,
+) -> Result<HttpResponse, ActixError> {
+    let refused = || Ok(HttpResponse::Conflict().body(JSONLD_PATCH_REFUSED));
+    if protected_resource_for_acl(path).is_some() {
+        return refused();
+    }
+    let Some(origin) = state.public_origin() else {
+        return refused();
+    };
+    let base = format!("{origin}{path}");
+    let Ok(doc) =
+        solid_pod_rs::jsonld_patch::StoredDocument::open(current_body, content_type, &base)
+    else {
+        return refused();
+    };
+    let graph = doc.graph().clone();
+    let outcome = match dialect {
+        ldp::PatchDialect::N3 => ldp::N3Patch::parse(body_str, Some(&base))
+            .and_then(|p| p.apply(graph))
+            .map_err(patch_parse_err)?,
+        ldp::PatchDialect::SparqlUpdate => {
+            ldp::apply_sparql_patch(graph, body_str).map_err(patch_parse_err)?
+        }
+        ldp::PatchDialect::JsonPatch => return refused(),
+    };
+    let Ok(bytes) = doc.write_back(&outcome.graph) else {
+        return refused();
+    };
+    let quota = reserve_quota_for_size(state, path, bytes.len() as u64).await?;
+    let write = state
+        .storage
+        .put(path, Bytes::from(bytes), content_type)
+        .await;
+    finish_quota_reservation(state, quota, write.is_ok()).await;
+    let _ = write.map_err(to_actix)?;
+    let provenance = git_mark_write(state, path, agent, "PATCH").await;
+    let mut rsp = HttpResponse::NoContent().finish();
+    set_provenance_headers(&mut rsp, &provenance);
+    Ok(rsp)
 }
 
 /// Map a PATCH body parse error to 400 Bad Request. Distinguishes
