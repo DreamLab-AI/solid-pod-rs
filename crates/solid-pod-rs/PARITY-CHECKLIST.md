@@ -227,7 +227,7 @@ so this tracker does not freeze a number that immediately becomes stale.
 | 70 | WebID-TLS | `src/auth/webid-tls.js:187-257` | Not implemented; JSS ships WebID-TLS off by default and no client certificate can reach the pod through the TLS-terminating nginx used by agentbox and VisionClaw | not-applicable | none | Deployment-inert, not merely deferred: the nginx configs have no `ssl_verify_client`. |
 | 71 | IdP-issued JWT verification | `src/auth/token.js:126-161` | `oidc::verify_access_token` | present | `src/oidc/mod.rs` | |
 | 72 | Auth dispatch precedence (DPoP → Nostr → Bearer → WebID-TLS) | `src/auth/token.js:215-269` | consumer-binder responsibility | semantic-difference | example server | Library exposes primitives; binder composes. |
-| 73 | `WWW-Authenticate: DPoP realm=…, Bearer realm=…` on 401 | `src/auth/middleware.js:173` | `solid-pod-rs-server::enforce_write` emits `DPoP realm="Solid", Bearer realm="Solid"` on unauthenticated WAC denials | present | `crates/solid-pod-rs-server/src/lib.rs::enforce_write`; `crates/solid-pod-rs/tests/server_security.rs` | |
+| 73 | `WWW-Authenticate: DPoP realm=…, Bearer realm=…` on 401 | `src/auth/middleware.js:173` | `acl_denial` emits `Nostr realm="Solid"` on unauthenticated WAC denials (plus `Bearer realm="Solid"` under `dev-bearer`). `DPoP` is not advertised because resource admission dispatches no OIDC/DPoP access token (SP-OIDC-02) | semantic-difference | `crates/solid-pod-rs-server/src/lib.rs::enforce_write`; `crates/solid-pod-rs/tests/server_security.rs` | Changed 2026-11-21: the challenge no longer names schemes the server does not honour. Test: `crates/solid-pod-rs-server/tests/auth_challenge.rs`. Dispatching DPoP-bound access tokens is the open row SP-OIDC-02 (ADR-2003 note).
 
 ## 6. IdP (identity provider — JSS runs its own; solid-pod-rs is a relying party)
 
@@ -690,9 +690,14 @@ reaches the behaviour, not just whether the library has it.
 > comparator does for `{not json` and `[]`; `text/plain` is `400` rather than
 > JSS's `415`. A well-formed ACL that would strip the caller's Control, or that
 > carries an unsupported condition, stays `409`. `PATCH` (the ACL is derived
-> from a patch) and `COPY` (stored bytes) kept the single `409` until 2026-11-21, when both
-> moved to `400` for an unparseable result (`AclRefusal::derived_response`). Test:
+> from a patch) and `COPY` (stored bytes) keep the single `409`. Test:
 > `put_refuses_unparseable_with_400_and_misdirected_policies_with_409`.
+>
+> Note 2026-11-21 (SP-PAR-266): `PATCH` (patched result) and `COPY` (stored
+> source bytes) of a body that is not an ACL document now also answer `400`
+> (`AclRefusal::derived_response`); a lockout stays `409`. Tests:
+> `json_patch_to_an_unparseable_acl_is_a_400_and_a_lockout_stays_a_409`,
+> `post_and_copy_refuse_invalid_acl_bodies_before_storage`.
 
 Rows 266–268 now have a scoped, unreleased server repair. Candidate policies
 must parse and grant effective Control on the destination through the same

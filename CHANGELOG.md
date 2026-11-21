@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The 401 challenge no longer advertises schemes the server does not honour** (SP-OIDC-02). Resource admission
+  dispatches NIP-98 only (and the `dev-bearer` HMAC token in those builds), so `WWW-Authenticate` is now
+  `Nostr realm="Solid"` (plus `Bearer realm="Solid"` under `dev-bearer`); `DPoP` and the unconditional `Bearer`
+  are gone. Dispatching DPoP-bound access tokens stays open: see the ADR-2003 note for the decisions it needs.
 - **PATCH and COPY of an unparseable ACL answer 400, like PUT and POST** (SP-PAR-266). The patched result (JSON
   Patch) or the stored source bytes (COPY) that are not an ACL document no longer share the lockout `409`; a
   well-formed ACL that would lock the caller out is still `409`.
@@ -21,7 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up). It recorded first, so an unauthenticated client holding any key could fill the global replay cache
   with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded`, which
   returns a `#[must_use]` `PendingDpopProof` whose only exit is `.record(cache)` (SP-DPOP-UNRECORDED-API: the
-  claims are unreachable without spending the `jti`, and `record_dpop_jti` is now private); a replayed `jti` after the code is consumed fails the exchange (the code stays
+  claims are unreachable without spending the `jti`, and `record_dpop_jti` is now private; both now sit behind the
+  `dpop-replay-cache` feature, as the cache type does); a replayed `jti` after the code is consumed fails the exchange (the code stays
   spent) and issues no token. `Provider::with_dpop_replay_cache` added.
 - **A full DPoP replay cache and a replayed proof give the same generic client message** (`DPoP proof rejected`);
   the capacity and lifetime stay in the server log.

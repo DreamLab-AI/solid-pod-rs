@@ -29,7 +29,7 @@ and the reusable LDP handlers in the core crate.
 | 201 Created | `PUT` (new resource) or `POST` (Slug → child) |
 | 204 No Content | `DELETE`, successful `PATCH` |
 | 400 Bad Request | Malformed body, invalid path, base64/hex/JSON decode error |
-| 401 Unauthorized | Missing or invalid NIP-98 / OIDC token (send `WWW-Authenticate`) |
+| 401 Unauthorized | Missing or invalid NIP-98 credential (the server sends `WWW-Authenticate: Nostr`; OIDC/DPoP access tokens are not dispatched on resource routes, ADR-2003) |
 | 403 Forbidden | ACL evaluator denied |
 | 404 Not Found | `PodError::NotFound` |
 | 405 Method Not Allowed | See matrix |
@@ -58,8 +58,7 @@ status mapping.
 ### `401`
 
 ```
-WWW-Authenticate: Nostr
-WWW-Authenticate: DPoP algs="ES256 RS256"
+WWW-Authenticate: Nostr realm="Solid"
 ```
 
 ## Request headers the server honours

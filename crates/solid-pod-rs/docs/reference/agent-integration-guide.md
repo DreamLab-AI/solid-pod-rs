@@ -254,7 +254,7 @@ crates/
 | WebID-TLS | n/a | deferred | `src/auth/webid-tls.js:187-257` | — | 70 (deferred) |
 | IdP-issued JWT verify | `src/oidc/mod.rs` | `verify_access_token`, `verify_access_token_hs256` | `src/auth/token.js:126-161` | `tests/oidc_integration.rs` | 71 |
 | Auth dispatch precedence | (consumer binder) | primitives only | `src/auth/token.js:215-269` | — | 72 |
-| `WWW-Authenticate` | `solid-pod-rs-server/src/lib.rs` | `enforce_write` emits DPoP + Bearer challenge on 401 | `src/auth/middleware.js:173` | `tests/server_security.rs` | 73 |
+| `WWW-Authenticate` | `solid-pod-rs-server/src/lib.rs` | `acl_denial` emits the `Nostr` challenge on 401 (plus `Bearer` under `dev-bearer`; no `DPoP`, ADR-2003) | `src/auth/middleware.js:173` | `tests/server_security.rs` | 73 |
 
 ### 6. WebID
 

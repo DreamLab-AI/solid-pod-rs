@@ -17,6 +17,28 @@ lineage: Distils archived ADR-057 (LWS10 OIDC delta, ten port tickets, partial-p
 
 # ADR-2003 — Hold the OIDC wire at Solid-OIDC 0.1 and defer the LWS10 delta
 
+> Note 2026-11-21 (SP-OIDC-02): the resource server does not dispatch OIDC/DPoP
+> access tokens. `extract_pubkey_with_body` (`crates/solid-pod-rs-server/src/lib.rs`)
+> treats every `Authorization: Bearer` as unauthenticated (honouring only the
+> `dev-bearer` HMAC token) and has no `DPoP` branch, so the 401 challenge
+> (`RESOURCE_AUTH_CHALLENGE`) now offers `Nostr` only, plus `Bearer` under
+> `dev-bearer`; it used to also offer `DPoP` and `Bearer`. Open decision before
+> access-token admission can be built, with the options: (1) which surfaces an
+> OIDC principal may reach. The WebID string would flow through
+> `extract_pubkey_with_body`, whose result `pay.rs:398` uses as a ledger account,
+> `prov.rs:387-389` formats as `did:nostr:{p}` and `mcp/mod.rs:179` uses as the MCP
+> caller; either keep OIDC to the LDP routes with a separate extractor, or
+> define a principal type for all of them. (2) Whether an OIDC principal gets
+> did:nostr cross-identity links. (3) Where the WebID profile is fetched from:
+> the library supplies `WebIdProfileSource` and the SSRF-guarded `CachedFetcher`
+> for issuer JWKS, but the server has no profile source, and WebIDs are commonly
+> hosted on the same pod or a private network, which the SSRF guard blocks;
+> options are an operator allow-list of WebID origins, or public WebIDs only.
+> (4) Trusted issuers must come from configuration only (`public_base_url` is
+> required so `htu` is never built from request headers) and the DPoP replay
+> cache must record only after the access token verifies. Test:
+> `crates/solid-pod-rs-server/tests/auth_challenge.rs`.
+
 ## Context
 
 The Solid OIDC profile is mid-migration from Solid-OIDC 0.1 to the W3C LWS10

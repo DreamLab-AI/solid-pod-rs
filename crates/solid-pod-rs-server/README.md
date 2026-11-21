@@ -137,8 +137,10 @@ spurious `401` URL mismatch. The authenticated pubkey resolves to a
 `did:nostr:{pubkey}` WebID that WAC evaluates against the effective ACL.
 
 On an unauthenticated write the `WWW-Authenticate` challenge advertises
-`Nostr realm="Solid", DPoP realm="Solid", Bearer realm="Solid"`, so an agent
-discovers the NIP-98 scheme the write path actually accepts. WAC denial of an
+`Nostr realm="Solid"` (plus `Bearer realm="Solid"` in `dev-bearer` builds), so
+an agent discovers only the schemes the write path actually accepts. OIDC/DPoP
+access tokens are not dispatched by resource admission and are not advertised
+(SP-OIDC-02, ADR-2003). WAC denial of an
 authenticated caller returns `403`; a missing credential returns `401`.
 
 Verification is hardened three ways (closeout 0.5.0-alpha.4):

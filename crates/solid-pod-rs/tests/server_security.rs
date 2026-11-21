@@ -229,10 +229,12 @@ async fn server_anonymous_put_to_protected_resource_returns_401() {
         .get("www-authenticate")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(
-        challenge,
-        "Nostr realm=\"Solid\", DPoP realm=\"Solid\", Bearer realm=\"Solid\""
-    );
+    // SP-OIDC-02: only the schemes admission honours are advertised.
+    assert_eq!(challenge, solid_pod_rs_server::RESOURCE_AUTH_CHALLENGE);
+    assert!(challenge.starts_with("Nostr realm=\"Solid\""), "{challenge}");
+    assert!(!challenge.contains("DPoP"), "{challenge}");
+    #[cfg(not(feature = "dev-bearer"))]
+    assert!(!challenge.contains("Bearer"), "{challenge}");
 }
 
 #[actix_web::test]

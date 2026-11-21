@@ -1260,6 +1260,16 @@ pub(crate) fn grant_for_identities<'a>(
         })
 }
 
+/// The `WWW-Authenticate` challenge on an unauthenticated resource denial:
+/// exactly the schemes `extract_pubkey` accepts.
+#[cfg(not(feature = "dev-bearer"))]
+pub const RESOURCE_AUTH_CHALLENGE: &str = "Nostr realm=\"Solid\"";
+/// The `WWW-Authenticate` challenge on an unauthenticated resource denial:
+/// exactly the schemes `extract_pubkey` accepts (the development bearer is
+/// compiled in).
+#[cfg(feature = "dev-bearer")]
+pub const RESOURCE_AUTH_CHALLENGE: &str = "Nostr realm=\"Solid\", Bearer realm=\"Solid\"";
+
 /// Build the WAC denial `actix_web::Error` shared by the read and write
 /// enforcement paths: `401` (with a `WWW-Authenticate` challenge) for an
 /// unauthenticated caller so a retry with credentials is signalled, or
@@ -1283,17 +1293,16 @@ fn acl_denial(
             .unwrap_or(header::HeaderValue::from_static("")),
     );
     if unauthenticated {
-        // Advertise every auth scheme the pod accepts so an
-        // unauthenticated agent knows how to retry. `extract_pubkey` verifies
-        // NIP-98 (`Authorization: Nostr <base64(kind-27235 event)>`), which is
-        // how a `did:nostr` agent authenticates against the pod — without the
-        // `Nostr` challenge an agent has no protocol signal that NIP-98 is
-        // accepted. DPoP/Bearer remain advertised for OIDC/DPoP clients.
+        // Advertise only the auth schemes resource admission honours, so an
+        // unauthenticated agent is not sent down a path that cannot succeed.
+        // `extract_pubkey` verifies NIP-98 (`Authorization: Nostr
+        // <base64(kind-27235 event)>`), which is how a `did:nostr` agent
+        // authenticates. It dispatches no OIDC/DPoP access token (SP-OIDC-02,
+        // ADR-2003), so `DPoP` is not advertised; `Bearer` is honoured only by
+        // the development HMAC bearer, compiled in with `dev-bearer`.
         rsp.headers_mut().insert(
             header::WWW_AUTHENTICATE,
-            header::HeaderValue::from_static(
-                "Nostr realm=\"Solid\", DPoP realm=\"Solid\", Bearer realm=\"Solid\"",
-            ),
+            header::HeaderValue::from_static(RESOURCE_AUTH_CHALLENGE),
         );
     }
     actix_web::error::InternalError::from_response(body, rsp).into()
