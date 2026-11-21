@@ -1039,6 +1039,21 @@ async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<
     Ok(raw)
 }
 
+/// A client that connects `host` to `addr`, the address the SSRF check
+/// approved (port 0 keeps the URL's port), with redirects off. Never via an
+/// environment proxy: a proxy connects for the client, so the pin would not be
+/// the address used.
+fn pinned_federation_client(
+    host: &str,
+    addr: std::net::SocketAddr,
+) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, addr)
+        .build()
+}
+
 async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value {
     let pod_url = match args.get("pod_url").and_then(Value::as_str) {
         Some(u) if !u.is_empty() => u,
@@ -1113,19 +1128,13 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     // Pin DNS to the vetted IP and disable redirect-following so the request
     // can't be bounced to an internal target after the SSRF check (port 0 ⇒
     // reqwest keeps the URL's port).
-    let client = match reqwest::Client::builder()
-        // Never via an environment proxy (it would bypass the pin).
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve(
-            &pod_host,
-            std::net::SocketAddr::new(
-                pinned_ip,
-                parsed_pod_url.port_or_known_default().unwrap_or(0),
-            ),
-        )
-        .build()
-    {
+    let client = match pinned_federation_client(
+        &pod_host,
+        std::net::SocketAddr::new(
+            pinned_ip,
+            parsed_pod_url.port_or_known_default().unwrap_or(0),
+        ),
+    ) {
         Ok(c) => c,
         Err(e) => return tool_error(format!("federation client build failed: {e}")),
     };
@@ -1407,6 +1416,13 @@ pub async fn handle_subscribe(msg: &Value, state: AppState, ctx: McpCtx) -> Http
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pinned_federation_client_uses_no_proxy() {
+        let c = super::pinned_federation_client("pod.example", "203.0.113.5:443".parse().unwrap())
+            .unwrap();
+        assert!(!format!("{c:?}").contains("proxies"), "{c:?}");
+    }
+
     use super::*;
 
     #[actix_web::test]

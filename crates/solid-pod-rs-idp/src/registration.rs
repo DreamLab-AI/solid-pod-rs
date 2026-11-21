@@ -286,13 +286,7 @@ impl ClientStore {
             let ip = resolve_and_check(host)
                 .await
                 .map_err(|e| RegError::Ssrf(e.to_string()))?;
-            let client = HttpClient::builder()
-                // Never via an environment proxy (it would bypass the pin).
-                .no_proxy()
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .resolve(host, SocketAddr::new(ip, port))
-                .build()
+            let client = pinned_client(host, SocketAddr::new(ip, port))
                 .map_err(|e| RegError::Fetch(e.to_string()))?;
             client
                 .get(url)
@@ -470,9 +464,27 @@ fn rand_base36(len: usize) -> String {
         .collect()
 }
 
+/// A client that connects `host` to `addr`, the address the SSRF check
+/// approved, with redirects off. Never via an environment proxy: a proxy
+/// connects for the client and the pin would not be the address used.
+fn pinned_client(host: &str, addr: SocketAddr) -> reqwest::Result<HttpClient> {
+    HttpClient::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, addr)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pinned_cid_client_uses_no_proxy() {
+        let c = pinned_client("app.example", "203.0.113.5:443".parse().unwrap()).unwrap();
+        assert!(!format!("{c:?}").contains("proxies"), "{c:?}");
+    }
 
     /// A client with a proxy matcher shows `proxies` in `Debug`; the guarded
     /// clients are built with `.no_proxy()` so a proxy cannot bypass the pin
