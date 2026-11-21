@@ -152,6 +152,33 @@ mod unix {
         assert!(!has_errors(&found));
     }
 
+    /// The filesystem backend follows a relative link beneath the root, so under
+    /// `inner` or `both` an ACL inside the link's target governs the link's path
+    /// too. The report does not descend into it, so it must say so and fail.
+    #[test]
+    fn a_symlinked_directory_is_reported_and_fails_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        write(r, "shared/.acl", "x");
+        symlink("shared", r.join("team")).unwrap();
+        // A link to a plain file is an ordinary resource and is not reported.
+        write(r, "note.txt", "x");
+        symlink("note.txt", r.join("alias.txt")).unwrap();
+        let found = scan(r);
+        assert!(
+            found.contains(&Finding::SymlinkedDirectory("/team/".into())),
+            "{found:?}"
+        );
+        assert!(found.contains(&Finding::Inner("/shared/".into())));
+        assert!(
+            has_errors(&found),
+            "an unscanned subtree makes the report incomplete"
+        );
+        let text = render(&found);
+        assert!(text.contains("symlinked-directory\t/team/"), "{text}");
+        assert!(!text.contains("alias.txt"), "{text}");
+    }
+
     /// What the server itself does with a symlinked ACL file, which the help
     /// text states: a relative link that stays inside the data root is read
     /// through (the filesystem backend resolves links beneath the root); an

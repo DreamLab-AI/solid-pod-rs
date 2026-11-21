@@ -26,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `acl:Control`; review the report before opting in.** It also lists symlinked ACL files (not followed by the report;
   the server reads a relative link that stays inside the data root and refuses an absolute or outside one), reports a
   read failure or a tree deeper than 64 levels as an error per path, and exits non-zero if anything could not be read.
+  A container that is a symbolic link to a directory is listed as `symlinked-directory` and also fails the report: the
+  report does not descend into it, but the server follows a relative link beneath the root, so an ACL inside the
+  target governs the link's path too.
 - **Two hardenings apply in every layout, including the default**: (1) nothing can be created beneath an ACL or meta
   document, by HTTP or MCP (`PUT /docs.acl/x`, `/docs/.acl/x`, `/x.meta/y`, and a container at those names: 400;
   before, the first was accepted and then every request under `/docs/` answered 503 to everyone); DELETE beneath

@@ -16,11 +16,17 @@
 //!   `<c>/.acl/`). The server reads a directory at an ACL key as absent, so
 //!   the subtree beneath it now inherits its parent's ACL; before that
 //!   hardening the read failed and everything beneath answered an error;
-//! * `symlink-not-followed`: an ACL key that is a symbolic link. The report
+//! * `acl-key-is-symlink`: an ACL key that is a symbolic link. The report
 //!   does not follow it and does not classify the container by it. The server
 //!   does read a relative link that stays inside the data root (the filesystem
 //!   backend resolves links beneath the root) and refuses an absolute target or
-//!   one that points outside it (an unreadable ACL denies);
+//!   one that points outside it (an unreadable ACL denies), so review the
+//!   link's target by hand;
+//! * `symlinked-directory`: a container that is a symbolic link to a
+//!   directory. The report does not descend into it, but the server follows a
+//!   relative link beneath the root, so an ACL inside the target also governs
+//!   the link's path. The report is incomplete for that subtree and the
+//!   command exits non-zero;
 //! * `error`: something could not be read (a directory, or an ACL file), or
 //!   the tree is deeper than [`MAX_DEPTH`]. The report is then incomplete and
 //!   the command exits non-zero.
@@ -52,6 +58,9 @@ pub enum Finding {
     DirectoryAtAclKey(String),
     /// An ACL key is a symbolic link (the key's path); not followed.
     SymlinkNotFollowed(String),
+    /// A container is a symbolic link to a directory (path ends with `/`); not
+    /// descended into, so the report is incomplete beneath it.
+    SymlinkedDirectory(String),
     /// A read failed or the depth bound was hit: the path and the reason.
     Error(String, String),
 }
@@ -117,6 +126,15 @@ fn walk(dir: &Path, rel: &str, depth: usize, out: &mut Vec<Finding>) {
         match kind(&path) {
             Kind::Symlink if is_acl_name(&name) => {
                 out.push(Finding::SymlinkNotFollowed(format!("{rel}{name}")));
+                continue;
+            }
+            Kind::Symlink => {
+                // Not descended into (a link can loop or leave the root), but
+                // the server follows a relative link beneath the root, so say
+                // that this subtree was not reviewed.
+                if fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
+                    out.push(Finding::SymlinkedDirectory(format!("{rel}{name}/")));
+                }
                 continue;
             }
             Kind::Failed(err) => {
@@ -195,11 +213,14 @@ pub fn scan(root: &Path) -> Vec<Finding> {
     out
 }
 
-/// True when the scan could not read something (or hit the depth bound), so
-/// the report is incomplete and the command must exit non-zero.
+/// True when the scan could not read something, hit the depth bound, or met a
+/// symlinked directory it did not descend into, so the report is incomplete
+/// and the command must exit non-zero.
 #[must_use]
 pub fn has_errors(findings: &[Finding]) -> bool {
-    findings.iter().any(|f| matches!(f, Finding::Error(..)))
+    findings
+        .iter()
+        .any(|f| matches!(f, Finding::Error(..) | Finding::SymlinkedDirectory(_)))
 }
 
 /// Render the findings as the text the `--acl-layout-report` flag prints.
@@ -213,7 +234,8 @@ pub fn render(findings: &[Finding]) -> String {
             Finding::BothDiffer(p) => writeln!(s, "both-differ\t{p}"),
             Finding::SidecarOnly(p) => writeln!(s, "sidecar-only\t{p}"),
             Finding::DirectoryAtAclKey(p) => writeln!(s, "directory-at-acl-key\t{p}"),
-            Finding::SymlinkNotFollowed(p) => writeln!(s, "symlink-not-followed\t{p}"),
+            Finding::SymlinkNotFollowed(p) => writeln!(s, "acl-key-is-symlink\t{p}"),
+            Finding::SymlinkedDirectory(p) => writeln!(s, "symlinked-directory\t{p}"),
             Finding::Error(p, why) => writeln!(s, "error\t{p}\t{why}"),
         }
         .ok();
