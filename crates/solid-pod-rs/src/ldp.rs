@@ -1285,6 +1285,12 @@ pub fn apply_n3_patch(target: Graph, patch: &str) -> Result<PatchOutcome, PodErr
 /// deeply nested SPARQL documents.
 pub const SPARQL_UPDATE_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
+/// Most operations (`;`-separated) one SPARQL Update in a PATCH may hold.
+/// Each operation that has a `WHERE` clause re-indexes the document, so the
+/// count is capped as well as the shared step budget; more is refused with
+/// 400 before anything is evaluated or written.
+pub const SPARQL_UPDATE_MAX_OPERATIONS: usize = 16;
+
 /// True when `update` parses as a SPARQL Update that can only add triples.
 ///
 /// Only a document made of `INSERT DATA` operations (and `DELETE DATA` blocks
@@ -1362,6 +1368,30 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
 
     let parsed = Update::parse(update, None)
         .map_err(|e| PodError::Unsupported(format!("SPARQL parse error: {e}")))?;
+
+    // Bounds first, before any operation runs: the operation count, and the
+    // pattern count of every WHERE clause (the cap an N3 `solid:where` has).
+    if parsed.operations.len() > SPARQL_UPDATE_MAX_OPERATIONS {
+        return Err(PodError::BadRequest(format!(
+            "a SPARQL Update in a PATCH may hold at most {SPARQL_UPDATE_MAX_OPERATIONS} operations, got {}",
+            parsed.operations.len()
+        )));
+    }
+    for op in &parsed.operations {
+        if let GraphUpdateOperation::DeleteInsert { pattern, .. } = op {
+            let GraphPattern::Bgp { patterns } = &**pattern else {
+                continue;
+            };
+            if patterns.len() > crate::n3_patch::MAX_WHERE_PATTERNS {
+                return Err(PodError::BadRequest(format!(
+                    "the WHERE clause has {} patterns, more than {}",
+                    patterns.len(),
+                    crate::n3_patch::MAX_WHERE_PATTERNS
+                )));
+            }
+        }
+    }
+    let mut budget = crate::n3_patch::StepBudget::new();
 
     // Our in-crate `Term::literal` helper stores plain literals with
     // `datatype: None`, matching the N-Triples fast path. spargebra,
@@ -1597,6 +1627,7 @@ pub fn apply_sparql_patch(target: Graph, update: &str) -> Result<PatchOutcome, P
                     &where_clause,
                     &deletes,
                     &inserts,
+                    &mut budget,
                 )?;
                 graph = out.graph;
                 inserted += out.inserted;

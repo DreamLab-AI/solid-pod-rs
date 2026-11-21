@@ -138,3 +138,24 @@ async fn an_unsupported_form_is_refused_not_answered_204() {
     }
     assert!(stored(&storage).await.contains("guess"));
 }
+
+#[actix_web::test]
+async fn an_update_with_thousands_of_patterns_or_many_operations_is_refused() {
+    let (storage, app) = setup("acl:Read, acl:Write").await;
+    let before = stored(&storage).await;
+    let many_patterns = format!(
+        "DELETE WHERE {{ {} }}",
+        (0..5000)
+            .map(|i| format!("?s{i} <http://e/none> ?o{i} ."))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let many_ops = (0..40)
+        .map(|i| format!("INSERT DATA {{ <http://e/s{i}> <http://e/p> \"v\" }}"))
+        .collect::<Vec<_>>()
+        .join(" ;\n");
+    for update in [many_patterns, many_ops] {
+        assert_eq!(sparql(&app, &update).await, 400);
+    }
+    assert_eq!(stored(&storage).await, before, "nothing was written");
+}

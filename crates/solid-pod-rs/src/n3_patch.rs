@@ -24,7 +24,7 @@ const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
 /// Most triple patterns a `solid:where` formula may hold. Solid clients send
 /// a handful; the bound keeps evaluation, a join over the document, small.
-const MAX_WHERE_PATTERNS: usize = 32;
+pub(crate) const MAX_WHERE_PATTERNS: usize = 32;
 
 /// Most partial bindings `where` evaluation keeps between patterns.
 /// Patterns are joined most-selective-first, so a selective clause stays far
@@ -36,6 +36,38 @@ const MAX_PARTIAL_BINDINGS: usize = 10_000;
 /// makes. Terms are interned to integer ids first, so each comparison is
 /// constant-time whatever the length of the IRIs and literals involved.
 const MAX_MATCH_STEPS: usize = 10_000_000;
+
+/// One step budget for one request. An N3 Patch holds one; a SPARQL Update
+/// shares one across all its operations, so splitting work into many
+/// operations cannot buy a fresh budget each. It counts the document
+/// indexing, the per-pattern count scans, the pattern-choice loop, the join
+/// comparisons and template instantiation, not only the join.
+pub(crate) struct StepBudget {
+    used: usize,
+    limit: usize,
+}
+
+impl StepBudget {
+    /// A fresh budget of [`MAX_MATCH_STEPS`].
+    pub(crate) fn new() -> Self {
+        Self {
+            used: 0,
+            limit: MAX_MATCH_STEPS,
+        }
+    }
+
+    /// Spend `n` steps, or refuse (409, too broad to evaluate).
+    pub(crate) fn charge(&mut self, n: usize) -> Result<(), PodError> {
+        self.used = self.used.saturating_add(n);
+        if self.used > self.limit {
+            Err(PodError::Conflict(
+                "the patch where clause is too broad to evaluate".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// A position in a patch triple: a concrete RDF term or a `?variable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +238,7 @@ impl N3Patch {
         let bindings = if self.where_clause.is_empty() {
             Vec::new()
         } else {
-            let found = solutions(&self.where_clause, &target, 2)?;
+            let found = solutions(&self.where_clause, &target, 2, &mut StepBudget::new())?;
             match found.as_slice() {
                 [only] => only
                     .iter()
@@ -366,8 +398,11 @@ fn solutions<'a>(
     patterns: &'a [PatchTriple],
     g: &'a Graph,
     stop_at: usize,
+    budget: &mut StepBudget,
 ) -> Result<Vec<BorrowedBindings<'a>>, PodError> {
     let too_broad = || PodError::Conflict("the patch where clause is too broad to evaluate".into());
+    // Indexing the document is linear in its size and happens once per call.
+    budget.charge(g.len())?;
 
     let mut ids: std::collections::HashMap<&'a Term, u32> = std::collections::HashMap::new();
     let mut terms: Vec<&'a Term> = Vec::new();
@@ -402,7 +437,8 @@ fn solutions<'a>(
         .collect();
     let empty = vec![UNBOUND; var_names.len()];
     // Matches per pattern on its own: one linear scan each, at most
-    // MAX_WHERE_PATTERNS of them, outside the join budget.
+    // MAX_WHERE_PATTERNS of them, charged to the budget before they run.
+    budget.charge(compiled.len().saturating_mul(triples.len()))?;
     let counts: Vec<usize> = compiled
         .iter()
         .map(|p| {
@@ -415,9 +451,9 @@ fn solutions<'a>(
 
     let mut remaining: Vec<usize> = (0..compiled.len()).collect();
     let mut bound = vec![false; var_names.len()];
-    let mut steps = 0usize;
     let mut partial: Vec<Vec<u32>> = vec![empty.clone()];
     while !remaining.is_empty() {
+        budget.charge(remaining.len())?;
         let pick = (0..remaining.len())
             .min_by_key(|&i| {
                 let p = &compiled[remaining[i]];
@@ -435,10 +471,7 @@ fn solutions<'a>(
         let mut next = Vec::new();
         'extend: for b in &partial {
             for t in &triples {
-                steps += 1;
-                if steps > MAX_MATCH_STEPS {
-                    return Err(too_broad());
-                }
+                budget.charge(1)?;
                 if let Some(nb) = extend(&p, t, b) {
                     next.push(nb);
                     if last && next.len() >= stop_at {
@@ -529,11 +562,17 @@ pub(crate) fn apply_sparql_where(
     where_clause: &[PatchTriple],
     deletes: &[PatchTriple],
     inserts: &[PatchTriple],
+    budget: &mut StepBudget,
 ) -> Result<PatchOutcome, PodError> {
     let mut removal = Graph::new();
     let mut addition = Graph::new();
     {
-        let found = solutions(where_clause, &target, usize::MAX)?;
+        let found = solutions(where_clause, &target, usize::MAX, budget)?;
+        budget.charge(
+            found
+                .len()
+                .saturating_mul(deletes.len().saturating_add(inserts.len())),
+        )?;
         for solution in &found {
             let bindings: Bindings = solution
                 .iter()
