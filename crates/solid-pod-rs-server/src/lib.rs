@@ -113,6 +113,7 @@ pub mod activitypub;
 /// CLI argument definitions (clap derive structs).
 pub mod cli;
 pub mod cross_identity;
+pub mod jsonld_patch;
 pub mod nostr_mount;
 pub mod notifications_ws;
 pub mod scheme;
@@ -2235,6 +2236,9 @@ async fn handle_patch(
         (Some(ldp::PatchDialect::N3), Ok(text)) => Some(ldp::N3Patch::parse(text, Some(&base_iri))),
         _ => None,
     };
+    // A SPARQL update is read against the resource URL only when a public
+    // origin is configured (the JSON-LD path); never against a request `Host`.
+    let sparql_base = state.public_origin().is_some().then(|| base_iri.clone());
     // A patch whose outcome depends on what the resource holds inspects it,
     // so it needs Read as well as Write (Solid Protocol §5.3.1): an N3 Patch
     // with deletes or a `where` clause (204 vs 409), any JSON Patch
@@ -2251,8 +2255,12 @@ async fn handle_patch(
         // A SPARQL Update with a `WHERE` clause is evaluated against the
         // resource (and may copy bound values into new triples), so it
         // reads it: Read as well as Write.
+        // Classified under the same bases the patch may be applied with
+        // (none, and the resource URL when a public origin is configured), so
+        // a body that parses only under one still counts.
         Some(ldp::PatchDialect::SparqlUpdate) => {
-            matches!(&body_str, Ok(text) if ldp::sparql_update_inspects(text))
+            matches!(&body_str, Ok(text) if ldp::sparql_update_inspects(text)
+                || sparql_base.as_deref().is_some_and(|b| ldp::sparql_update_inspects_with_base(text, Some(b))))
         }
         _ => false,
     };
@@ -2271,6 +2279,9 @@ async fn handle_patch(
         (Some(ldp::PatchDialect::N3), Some(Ok(p)), _) => p.is_insert_only(),
         (Some(ldp::PatchDialect::SparqlUpdate), _, Ok(text)) => {
             ldp::sparql_update_is_insert_only(text)
+                && sparql_base
+                    .as_deref()
+                    .is_none_or(|b| ldp::sparql_update_is_insert_only_with_base(text, Some(b)))
         }
         _ => false,
     };
@@ -2371,9 +2382,39 @@ async fn handle_patch(
             // `seed_graph_from_patch_target`); a body that is not readable
             // RDF is refused, not overwritten — fail closed rather than
             // destroy.
+            // SP-PAR-276: a stored JSON-LD document, or the JSON-LD island of
+            // a stored HTML page, is read against the resource's real URL from
+            // the configured public origin and written back in the form it was
+            // stored in. Without a configured origin it is refused rather than
+            // guessed at.
+            let stored_json = jsonld_patch::detect(&current_body, &meta.content_type);
+            if stored_json.is_some()
+                && state.public_origin().is_none()
+                && matches!(
+                    dialect,
+                    ldp::PatchDialect::N3 | ldp::PatchDialect::SparqlUpdate
+                )
+            {
+                return Ok(HttpResponse::Conflict().body(
+                    "refused: this resource is stored as JSON-LD, and patching it needs the \
+                     server's public origin (public_base_url) to be configured; relative IRIs \
+                     are never resolved against the request Host",
+                ));
+            }
+            let seed_for_patch = || -> Result<ldp::Graph, ActixError> {
+                match &stored_json {
+                    Some((_, json)) => solid_pod_rs::rdf_input::parse_jsonld(json, &base_iri)
+                        .map_err(|e| {
+                            actix_web::error::ErrorConflict(format!(
+                                "the stored JSON-LD cannot be read for patching: {e}"
+                            ))
+                        }),
+                    None => seed_graph_from_patch_target(&current_body, &base_iri),
+                }
+            };
             let out = match dialect {
                 ldp::PatchDialect::N3 => {
-                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
+                    let seed = seed_for_patch()?;
                     n3_patch
                         .as_ref()
                         .expect("parsed above for the N3 dialect")
@@ -2381,8 +2422,16 @@ async fn handle_patch(
                         .map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::SparqlUpdate => {
-                    let seed = seed_graph_from_patch_target(&current_body, &base_iri)?;
-                    ldp::apply_sparql_patch(seed, &body_str).map_err(patch_parse_err)
+                    let seed = seed_for_patch()?;
+                    // A JSON-LD resource is patched in one IRI space: the
+                    // update's relative IRIs resolve against the same URL the
+                    // stored body was read against. A delete naming a triple
+                    // the resource does not hold changes nothing and is still
+                    // a 204, as in SPARQL and in JSS; an N3 patch's missing
+                    // delete is a 409.
+                    let base = stored_json.as_ref().map(|_| base_iri.as_str());
+                    ldp::apply_sparql_patch_with_base(seed, &body_str, base)
+                        .map_err(patch_parse_err)
                 }
                 ldp::PatchDialect::JsonPatch => {
                     let mut json: serde_json::Value = match serde_json::from_slice(&current_body) {
@@ -2433,7 +2482,16 @@ async fn handle_patch(
             if acl_origin.is_some() && graph_has_acl_condition(&outcome.graph) {
                 return Ok(HttpResponse::Conflict().body(CONDITIONAL_ACL_PATCH_REFUSED));
             }
-            let serialised = graph_to_turtle(&outcome.graph);
+            let (serialised_bytes, stored_ct) = match &stored_json {
+                Some((form, _)) => {
+                    let (b, ct) = jsonld_patch::render(form, &outcome.graph);
+                    (b, ct)
+                }
+                None => (
+                    graph_to_turtle(&outcome.graph).into_bytes(),
+                    PATCHED_RDF_CONTENT_TYPE,
+                ),
+            };
             // F7: PATCHing an `.acl`/`.meta` sidecar already required Control
             // (enforced above), but — unlike PUT — the POST-patch result was
             // never checked against the lockout guard, so a Control holder
@@ -2444,8 +2502,8 @@ async fn handle_patch(
                     &state,
                     &req,
                     &path,
-                    serialised.as_bytes(),
-                    PATCHED_RDF_CONTENT_TYPE,
+                    &serialised_bytes,
+                    stored_ct,
                     agent.as_deref(),
                 )
                 .await
@@ -2456,14 +2514,11 @@ async fn handle_patch(
                     ));
                 }
             }
-            let quota = reserve_quota_for_size(&state, &path, serialised.len() as u64).await?;
+            let quota =
+                reserve_quota_for_size(&state, &path, serialised_bytes.len() as u64).await?;
             let write = state
                 .storage
-                .put(
-                    &path,
-                    Bytes::from(serialised.into_bytes()),
-                    PATCHED_RDF_CONTENT_TYPE,
-                )
+                .put(&path, Bytes::from(serialised_bytes), stored_ct)
                 .await;
             finish_quota_reservation(&state, quota, write.is_ok()).await;
             let _ = write.map_err(to_actix)?;
