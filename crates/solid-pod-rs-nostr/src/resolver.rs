@@ -82,6 +82,8 @@ impl NostrWebIdResolver {
     /// Build with a custom SSRF guard.
     pub fn with_ssrf(ssrf: Arc<dyn SsrfCheck>) -> Self {
         let http = Client::builder()
+            // Never via an environment proxy (it would bypass the pin).
+            .no_proxy()
             .timeout(Duration::from_secs(10))
             // Never auto-follow a 3xx: a public WebID/DID URL redirecting to
             // an internal target is the redirect leg of the SSRF chain. The
@@ -114,6 +116,8 @@ impl NostrWebIdResolver {
             Some(ip) => {
                 let port = url.port_or_known_default().unwrap_or(443);
                 Client::builder()
+                    // Never via an environment proxy (it would bypass the pin).
+                    .no_proxy()
                     .timeout(Duration::from_secs(10))
                     .redirect(reqwest::redirect::Policy::none())
                     .resolve(host, SocketAddr::new(ip, port))
@@ -414,6 +418,21 @@ fn extract_json_ld_island(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client with a proxy matcher shows `proxies` in `Debug`; the guarded
+    /// clients are built with `.no_proxy()` so a proxy cannot bypass the pin
+    /// (review A4).
+    #[test]
+    fn guarded_clients_use_no_proxy() {
+        let r = NostrWebIdResolver::with_ssrf(Arc::new(DefaultSsrfCheck));
+        let url = Url::parse("https://example.org/").unwrap();
+        let pinned = r
+            .client_for("example.org", &url, Some("203.0.113.5".parse().unwrap()))
+            .unwrap();
+        for c in [&r.http, &pinned] {
+            assert!(!format!("{c:?}").contains("proxies"), "{c:?}");
+        }
+    }
 
     const PK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 

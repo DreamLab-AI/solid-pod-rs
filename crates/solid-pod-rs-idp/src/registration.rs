@@ -170,6 +170,8 @@ impl ClientStore {
         Self {
             inner: Arc::new(RwLock::new(ClientStoreInner::default())),
             http: HttpClient::builder()
+                // Never via an environment proxy (it would bypass the pin).
+                .no_proxy()
                 .timeout(Duration::from_secs(10))
                 // CID documents are terminal JSON-LD resources — never a
                 // redirect. Disabling redirects closes the SSRF hole where
@@ -285,6 +287,8 @@ impl ClientStore {
                 .await
                 .map_err(|e| RegError::Ssrf(e.to_string()))?;
             let client = HttpClient::builder()
+                // Never via an environment proxy (it would bypass the pin).
+                .no_proxy()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve(host, SocketAddr::new(ip, port))
@@ -469,6 +473,16 @@ fn rand_base36(len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client with a proxy matcher shows `proxies` in `Debug`; the guarded
+    /// clients are built with `.no_proxy()` so a proxy cannot bypass the pin
+    /// (review A4).
+    #[test]
+    fn guarded_clients_use_no_proxy() {
+        let store = ClientStore::new();
+        let c = format!("{:?}", store.http);
+        assert!(!c.contains("proxies"), "{c}");
+    }
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

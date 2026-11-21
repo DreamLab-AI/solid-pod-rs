@@ -4280,6 +4280,9 @@ async fn validate_proxy_target(target: &str) -> Result<(url::Url, IpAddr), HttpR
 /// `ip` for `url`'s host — the connection targets exactly the vetted address.
 fn build_pinned_proxy_client(url: &url::Url, ip: IpAddr) -> Result<reqwest::Client, ActixError> {
     let mut builder = reqwest::Client::builder()
+        // Never via an environment proxy: it would connect for us and bypass
+        // the pinned address.
+        .no_proxy()
         // Never follow redirects automatically — each hop is re-validated and
         // re-pinned by the caller.
         .redirect(reqwest::redirect::Policy::none());
@@ -6729,6 +6732,16 @@ pub fn build_app(
 #[cfg(test)]
 mod payment_gating_tests {
     use super::*;
+
+    /// The pinned proxy client must carry no environment proxy matcher
+    /// (`Debug` shows `proxies` otherwise), or the pinned address would not be
+    /// the one connected to (review A4).
+    #[test]
+    fn the_pinned_proxy_client_uses_no_proxy() {
+        let url = url::Url::parse("https://example.org/").unwrap();
+        let client = build_pinned_proxy_client(&url, "203.0.113.5".parse().unwrap()).unwrap();
+        assert!(!format!("{client:?}").contains("proxies"), "{client:?}");
+    }
     use solid_pod_rs::payments::WebLedger;
     use solid_pod_rs::storage::memory::MemoryBackend;
 

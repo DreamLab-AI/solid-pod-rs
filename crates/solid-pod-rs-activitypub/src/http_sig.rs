@@ -286,6 +286,9 @@ impl HttpActorKeyResolver {
         let fail = |e: String| SigError::ActorFetch(url.to_string(), e);
         let (host, pinned) = resolve_ssrf_safe_with(url, self.guard).await?;
         let client = reqwest::Client::builder()
+            // Never via an environment proxy: a proxy resolves and connects
+            // itself, so the pinned address would not be the one used.
+            .no_proxy()
             .user_agent(self.user_agent.clone())
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(self.timeout)

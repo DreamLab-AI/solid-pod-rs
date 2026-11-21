@@ -190,6 +190,13 @@ fn is_remote_clone(s: &str) -> bool {
         && clean_url_chars(s)
 }
 
+/// git configuration for every fetch from an untrusted (non-operator) remote:
+/// no redirects, and no proxy. An empty `http.proxy` makes libcurl ignore
+/// `http_proxy`, `https_proxy` and `all_proxy` as well; a proxy would resolve
+/// and connect itself, so the pinned address (and the SSRF check that approved
+/// it) would not be the one used.
+const REMOTE_FETCH_CONFIG: [&str; 4] = ["-c", "http.followRedirects=false", "-c", "http.proxy="];
+
 /// A remote clone URL in the form git is given: `http`/`https` only, no
 /// userinfo, no backslash or non-ASCII (the `url` crate and libcurl can read
 /// those differently), a host present. Returns the *normalised* URL together
@@ -1816,7 +1823,7 @@ impl GitCli {
             "fetch.unpackLimit=1",
         ];
         if !operator {
-            args.extend(["-c", "http.followRedirects=false"]);
+            args.extend(REMOTE_FETCH_CONFIG);
         }
         let resolve;
         if let Some(p) = pin {
@@ -3381,6 +3388,15 @@ impl MirrorHandle {
 
 #[cfg(test)]
 mod tests {
+    /// Property: a fetch from an untrusted remote disables git's proxy (the
+    /// pinned address must be the one connected to) and redirects.
+    #[test]
+    fn remote_fetches_disable_the_proxy_and_redirects() {
+        let pairs: Vec<_> = REMOTE_FETCH_CONFIG.chunks(2).collect();
+        assert!(pairs.contains(&["-c", "http.proxy="].as_slice()));
+        assert!(pairs.contains(&["-c", "http.followRedirects=false"].as_slice()));
+    }
+
     use super::*;
     use k256::schnorr::SigningKey;
     use std::process::Command;

@@ -417,6 +417,8 @@ pub mod did_nostr {
             // vetted (JSS re-checks each hop and refuses cross-origin
             // redirects, `fetchWithRedirectGuard`).
             let client = Client::builder()
+                // Never via an environment proxy (it would bypass the pin).
+                .no_proxy()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -514,6 +516,8 @@ pub mod did_nostr {
             };
             let port = url.port_or_known_default().unwrap_or(80);
             Client::builder()
+                // Never via an environment proxy (it would bypass the pin).
+                .no_proxy()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve(host, std::net::SocketAddr::new(ip, port))
@@ -688,6 +692,20 @@ pub mod did_nostr {
     #[cfg(test)]
     mod pin_tests {
         use super::*;
+
+        /// A client that reads `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` carries a
+        /// proxy matcher, which reqwest's `Debug` shows as `proxies`; one built
+        /// with `.no_proxy()` does not. A pinned client must have none, or the
+        /// pinned address would not be the one connected to (review A4).
+        #[test]
+        fn the_pinned_client_uses_no_proxy() {
+            let r = DidNostrResolver::new(Arc::new(SsrfPolicy::new()));
+            let url = Url::parse("https://example.org/").unwrap();
+            let client = r.pinned_client(&url, "203.0.113.5".parse().unwrap());
+            let shared = format!("{:?}", r.client);
+            assert!(!shared.contains("proxies"), "shared client: {shared}");
+            assert!(!format!("{client:?}").contains("proxies"), "{client:?}");
+        }
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

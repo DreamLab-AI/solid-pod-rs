@@ -210,6 +210,8 @@ fn pinned_client(
     // settings (e.g. tls configuration) — we mirror its timeout.
     let _ = base; // reserved for future shared config
     reqwest::Client::builder()
+        // Never via an environment proxy (it would bypass the pin).
+        .no_proxy()
         .resolve(host, SocketAddr::new(ip, port))
         .redirect(reqwest::redirect::Policy::none())
         .timeout(FETCH_TIMEOUT)
@@ -482,6 +484,18 @@ impl CachedFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client that reads `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` carries a
+    /// proxy matcher, which reqwest's `Debug` shows as `proxies`; one built
+    /// with `.no_proxy()` does not. A pinned client must have none, or the
+    /// pinned address would not be the one connected to (review A4).
+    #[test]
+    fn the_pinned_client_uses_no_proxy() {
+        let base = Client::new();
+        let client =
+            pinned_client(&base, "op.example", "203.0.113.5".parse().unwrap(), 443).unwrap();
+        assert!(!format!("{client:?}").contains("proxies"), "{client:?}");
+    }
 
     #[test]
     fn canonical_issuer_strips_trailing_slash() {

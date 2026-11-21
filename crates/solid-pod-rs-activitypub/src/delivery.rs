@@ -110,6 +110,7 @@ impl DeliveryWorker {
             store,
             config,
             http: reqwest::Client::builder()
+                .no_proxy()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
                 .timeout(Duration::from_secs(30))
                 // Never auto-follow a 3xx from a target inbox: that is the
@@ -142,6 +143,7 @@ impl DeliveryWorker {
             store,
             config,
             http: reqwest::Client::builder()
+                .no_proxy()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
                 .timeout(Duration::from_secs(30))
                 .redirect(reqwest::redirect::Policy::none())
@@ -300,6 +302,7 @@ impl DeliveryWorker {
                 }
             };
             reqwest::Client::builder()
+                .no_proxy()
                 .user_agent("solid-pod-rs-activitypub/0.4.0")
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30))

@@ -1114,6 +1114,8 @@ async fn call_remote_pod(args: &Value, state: &AppState, ctx: &McpCtx) -> Value 
     // can't be bounced to an internal target after the SSRF check (port 0 ⇒
     // reqwest keeps the URL's port).
     let client = match reqwest::Client::builder()
+        // Never via an environment proxy (it would bypass the pin).
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .resolve(
             &pod_host,
