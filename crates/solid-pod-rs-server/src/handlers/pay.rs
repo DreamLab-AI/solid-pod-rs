@@ -135,7 +135,9 @@ pub struct StoragePaymentStore<'a> {
 impl<'a> StoragePaymentStore<'a> {
     /// Atomically charge the canonical ledger for a WAC payment grant.
     pub(crate) async fn charge_access(&self, did: &str, cost: u64) -> Result<(), PaymentError> {
-        let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+        let _transaction = crate::lock_payment_state(self.storage)
+            .await
+            .map_err(|e| PaymentError::Store(e.to_string()))?;
         let mut state = self.read_state().await?;
         state.ledger.charge(did, cost)?;
         self.commit_state(&mut state).await
@@ -499,7 +501,7 @@ async fn handle_deposit(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
 
     if body_is_mrc20(&body) {
         return handle_mrc20_deposit(&did, &state, &body).await;
@@ -918,7 +920,7 @@ async fn handle_sell(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let body: SellBody = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(_) => {
@@ -996,7 +998,7 @@ async fn handle_cancel(
             HttpResponse::BadRequest().json(serde_json::json!({"error":"Invalid JSON body"}))
         );
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let store = StoragePaymentStore::new(&*state.storage);
     let mut state = match store.read_state().await {
         Ok(state) => state,
@@ -1021,7 +1023,7 @@ async fn handle_swap(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let body: SwapBody = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(_) => {
@@ -1139,7 +1141,7 @@ async fn handle_pool_post(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let body: PoolOpBody = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(_) => {
@@ -1507,7 +1509,7 @@ async fn handle_buy(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let buyer_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
         None => {
@@ -1600,7 +1602,7 @@ async fn handle_withdraw(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
     let user_pubkey = match did.strip_prefix("did:nostr:") {
         Some(pk) => pk.to_string(),
         None => {
@@ -1707,7 +1709,7 @@ async fn handle_withdraw_sats(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
 
     let req_body: WithdrawSatsBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
@@ -2128,7 +2130,7 @@ mod intent_recovery_tests {
         let _held = crate::trail_store::lock_path(&crate::trail_store::trail_path("PAY")).await;
         let rsp = {
             // As the handlers do: the payment lock is held across the call.
-            let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+            let _transaction = crate::lock_payment_state(&*state.storage).await.unwrap();
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 execute_token_transfer(&state, "PAY", &"22".repeat(32), ACCOUNT, 1, 1),

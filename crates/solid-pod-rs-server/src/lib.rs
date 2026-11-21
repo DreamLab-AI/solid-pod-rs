@@ -201,13 +201,34 @@ const _: () = solid_pod_rs::auth::nip98::assert_schnorr_verification_enabled();
 static NIP98_REPLAY: std::sync::LazyLock<solid_pod_rs::auth::replay::Nip98ReplayCache> =
     std::sync::LazyLock::new(solid_pod_rs::auth::replay::Nip98ReplayCache::from_env);
 
-/// Serialises every local payment-state transition in this process. The
+/// Serialises every local payment-state transition in this process (the
+/// cross-process half is [`lock_payment_state`]). The
 /// storage API has no cross-resource CAS primitive, so handlers must hold
 /// this guard across replay checks, ledger/order/pool/trail mutation, and
 /// persistence. Durable intent records add crash recovery where an external
 /// broadcast is involved.
 pub(crate) static PAYMENT_STATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// The cross-process lock key of the payment state (see
+/// [`lock_payment_state`]). The `state:` prefix gives it a lock file of its
+/// own, never a resource stripe.
+const PAYMENT_STATE_LOCK_KEY: &str = "state:payments";
+
+/// Take the payment-state lock: [`PAYMENT_STATE_LOCK`] (this process), then the
+/// backend's cross-process lock, in the same order as a resource write. Every
+/// payment read-modify-write of the ledger documents holds the returned guard,
+/// so two server processes on one data root cannot overwrite each other's
+/// balance with a stale copy. Busy past the wait is `503`.
+pub(crate) async fn lock_payment_state(storage: &dyn Storage) -> Result<ResourceGuard, LockError> {
+    lock_pair(
+        &PAYMENT_STATE_LOCK,
+        storage,
+        PAYMENT_STATE_LOCK_KEY,
+        CROSS_PROCESS_LOCK_WAIT,
+    )
+    .await
+}
 
 /// Number of stripes in [`RESOURCE_WRITE_LOCKS`].
 const RESOURCE_WRITE_LOCK_STRIPES: usize = 256;
@@ -7390,5 +7411,46 @@ mod lock_tests {
         drop(got);
         drop(held);
         assert!(waiter.await.unwrap(), "the waiter proceeds once released");
+    }
+
+    #[actix_web::test]
+    async fn the_payment_ledger_read_modify_write_takes_the_cross_process_lock() {
+        use crate::handlers::pay::StoragePaymentStore;
+        let (_d, ours, other) = two_handles().await;
+        // Another process holds the payment-state lock (a second handle on
+        // the same data root stands in for it).
+        let held = other
+            .lock_exclusive(PAYMENT_STATE_LOCK_KEY, Duration::from_secs(1))
+            .await
+            .unwrap()
+            .expect("the filesystem backend locks");
+        let store = StoragePaymentStore::new(&*ours);
+        let charge = store.charge_access("did:nostr:probe", 1);
+        tokio::pin!(charge);
+        // The in-process lock is free, yet the charge must wait for the other
+        // process: it does not read or write the ledger until released.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut charge)
+                .await
+                .is_err(),
+            "the charge ran while another process held the payment state"
+        );
+        assert!(
+            !ours
+                .exists("/.well-known/webledgers/state.json")
+                .await
+                .unwrap(),
+            "nothing was read-modify-written under the other process's lock"
+        );
+        drop(held);
+        // Released: the charge proceeds (an unfunded account is an error, but
+        // it ran, which is the point).
+        let done = tokio::time::timeout(Duration::from_secs(3), &mut charge).await;
+        assert!(done.is_ok(), "the charge never proceeded after the release");
+        // And a state lock never queues behind a resource lock in one task.
+        let _r = lock_resource_pod_wait(&*ours, "/anything", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let _p = lock_payment_state(&*ours).await.unwrap();
     }
 }

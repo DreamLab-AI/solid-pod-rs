@@ -664,7 +664,9 @@ async fn debit(
     // Read, charge and write back under the one payment lock, so a concurrent
     // charge, refund or `/pay/*` transition is never overwritten with a stale
     // ledger. Held only for these storage calls, never across the anchor.
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage)
+        .await
+        .map_err(|e| prov_err(&format!("ledger lock failed: {e}"), 503))?;
     let store = StoragePaymentStore::new(&*state.storage);
     let mut ledger = store
         .read_ledger()
@@ -691,7 +693,9 @@ async fn refund(state: &AppState, charge: solid_pod_rs::payments::Charge) -> Res
     use crate::handlers::pay::StoragePaymentStore;
     use solid_pod_rs::payments::PaymentStore;
 
-    let _transaction = crate::PAYMENT_STATE_LOCK.lock().await;
+    let _transaction = crate::lock_payment_state(&*state.storage)
+        .await
+        .map_err(|e| e.to_string())?;
     let store = StoragePaymentStore::new(&*state.storage);
     let mut ledger = store.read_ledger().await.map_err(|e| e.to_string())?;
     ledger.refund(charge);
