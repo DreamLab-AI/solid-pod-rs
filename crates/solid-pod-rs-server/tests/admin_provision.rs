@@ -57,18 +57,20 @@ async fn fs_state() -> (AppState, tempfile::TempDir) {
 /// URL binding passes. Each token is a distinct event (unique `created_at`) so
 /// the process-global single-use replay guard never rejects a second mint.
 fn nip98_auth(sk_hex: &str, method: &str, path: &str, body: Option<&[u8]>) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::OnceLock;
-    static BASE: OnceLock<u64> = OnceLock::new();
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = *BASE.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(30)
-    });
-    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
+    // `created_at` must track the wall clock: the server refuses a NIP-98 event
+    // more than 60 s from its own time, so a base fixed at first use goes stale
+    // whenever the process runs slowly (coverage instrumentation). Distinct
+    // events need distinct seconds (replay protection), so never reuse one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = {
+        let mut last = LAST.lock().unwrap();
+        *last = wall.max(*last + 1);
+        *last
+    };
     let url = format!("http://localhost:8080{path}");
     let token = nip98::mint_with_payload(&url, method, body, sk_hex, now)
         .expect("nip98-schnorr is enabled in the workspace test build");

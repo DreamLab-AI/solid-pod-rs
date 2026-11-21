@@ -15,7 +15,6 @@
 #![cfg(feature = "activitypub")]
 
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,16 +32,20 @@ use solid_pod_rs_server::{build_app, AppState};
 const ACL: &str = "http://www.w3.org/ns/auth/acl#";
 
 fn token(url: &str, method: &str, body: Option<&[u8]>, sk: u8) -> String {
-    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = *BASE.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(30)
-    });
-    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
+    // `created_at` must track the wall clock: the server refuses a NIP-98 event
+    // more than 60 s from its own time, so a base fixed at first use goes stale
+    // whenever the process runs slowly (coverage instrumentation). Distinct
+    // events need distinct seconds (replay protection), so never reuse one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = {
+        let mut last = LAST.lock().unwrap();
+        *last = wall.max(*last + 1);
+        *last
+    };
     let hex_sk = hex::encode([sk; 32]);
     let t = nip98::mint_with_payload(url, method, body, &hex_sk, now).unwrap();
     format!("Nostr {t}")
