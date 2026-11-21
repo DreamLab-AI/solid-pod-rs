@@ -136,10 +136,7 @@ fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKin
     let tmp = PathBuf::from(LOCK_DIR).join(format!("{LOCK_KEY_FILE}.tmp-{}", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
-    let mut file = lock_step(
-        "create the key candidate",
-        dir.open_with(&tmp, &options).map_err(Into::into),
-    )?;
+    let mut file = lock_step("create the key candidate", dir.open_with(&tmp, &options))?;
     let written = file.write_all(&candidate).and_then(|()| file.sync_all());
     drop(file);
     let linked = match written {
