@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
+#[cfg(unix)]
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::sync::{mpsc, RwLock};
@@ -25,14 +27,74 @@ const META_SUFFIX: &str = ".meta.json";
 /// A dotfile, so no HTTP route reaches it, and hidden from listings.
 const LOCK_DIR: &str = ".solid-pod-locks";
 
-/// Lock files: a key hashes (SHA-256, so every process agrees) to one of this
-/// many files. Striping keeps the lock directory bounded whatever the number
-/// of resources and puts no file beside a resource.
+/// Lock files: a key maps to one of this many files by HMAC-SHA-256 under a
+/// per-data-root random key (see [`FsBackend::stripe_key`]), so every process on
+/// the data root agrees but a client cannot choose names that share a victim's
+/// stripe. Striping keeps the lock directory bounded whatever the number of
+/// resources and puts no file beside a resource.
 const LOCK_STRIPES: usize = 256;
+
+/// The stripe key's file in [`LOCK_DIR`]: 32 random bytes, mode 0600, created
+/// once (atomically, by hard link) and read by every later process.
+#[cfg(unix)]
+const LOCK_KEY_FILE: &str = "key";
+
+/// Lock keys that start with this name server-wide state (the payment
+/// ledger), not a resource. Each such name has its own lock file, never a
+/// resource stripe, so a task that holds a resource lock can take one without
+/// waiting on its own file description.
+const STATE_KEY_PREFIX: &str = "state:";
 
 /// How often a waiting locker retries (the lock is taken without blocking, so
 /// a waiting request never occupies a runtime thread).
 const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Read the stripe key, creating it if absent. The candidate is written to a
+/// private temporary file (mode 0600) and installed with a hard link, which
+/// fails if the key already exists, so exactly one creator wins and every
+/// other process reads the winner's key.
+#[cfg(unix)]
+fn load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], PodError> {
+    use cap_std::fs::OpenOptionsExt;
+    let key_rel = PathBuf::from(LOCK_DIR).join(LOCK_KEY_FILE);
+    dir.create_dir_all(LOCK_DIR)?;
+    for _ in 0..8 {
+        match dir.read(&key_rel) {
+            Ok(bytes) => {
+                return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                    PodError::Backend(format!(
+                        "the lock key file {LOCK_DIR}/{LOCK_KEY_FILE} holds {} bytes, expected 32; \
+                         refusing to replace it (that would split the stripes between processes)",
+                        bytes.len()
+                    ))
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let mut candidate = [0u8; 32];
+        getrandom::getrandom(&mut candidate).map_err(|e| {
+            PodError::Backend(format!("no system randomness for the lock key: {e}"))
+        })?;
+        let tmp =
+            PathBuf::from(LOCK_DIR).join(format!("{LOCK_KEY_FILE}.tmp-{}", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        let mut file = dir.open_with(&tmp, &options)?;
+        file.write_all(&candidate)?;
+        file.sync_all()?;
+        drop(file);
+        let linked = dir.hard_link(&tmp, dir, &key_rel);
+        let _ = dir.remove_file(&tmp);
+        match linked {
+            Ok(()) => return Ok(candidate),
+            // Another process installed its key first: read that one.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(PodError::Backend("could not settle on a lock key".into()))
+}
 
 /// Filesystem-rooted `Storage` implementation.
 #[derive(Clone)]
@@ -40,6 +102,9 @@ pub struct FsBackend {
     root: Arc<PathBuf>,
     dir: Arc<Dir>,
     operations: Arc<RwLock<()>>,
+    /// The data root's stripe key, loaded or created on first lock.
+    #[cfg(unix)]
+    lock_key: Arc<tokio::sync::OnceCell<[u8; 32]>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -71,12 +136,34 @@ impl FsBackend {
             root: Arc::new(root),
             dir: Arc::new(dir),
             operations: Arc::new(RwLock::new(())),
+            #[cfg(unix)]
+            lock_key: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
     /// Return the root directory.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The data root's stripe key: read from `.solid-pod-locks/key` or, when
+    /// no process has made one yet, generated and installed atomically. Every
+    /// process on the data root ends up with the same key. A key file of the
+    /// wrong length is an error, never regenerated: replacing it would put two
+    /// processes on different stripes and silently end their mutual exclusion.
+    #[cfg(unix)]
+    async fn stripe_key(&self) -> Result<[u8; 32], PodError> {
+        self.lock_key
+            .get_or_try_init(|| {
+                let dir = self.dir.clone();
+                async move {
+                    tokio::task::spawn_blocking(move || load_or_create_lock_key(&dir))
+                        .await
+                        .map_err(|e| PodError::Backend(format!("lock key task failed: {e}")))?
+                }
+            })
+            .await
+            .copied()
     }
 
     fn normalize(path: &str) -> Result<String, PodError> {
@@ -383,8 +470,17 @@ impl Storage for FsBackend {
         wait: std::time::Duration,
     ) -> Result<Option<crate::storage::StorageLock>, PodError> {
         use rustix::fs::{flock, FlockOperation};
-        let stripe = usize::from(Sha256::digest(key.as_bytes())[0]) % LOCK_STRIPES;
-        let rel = PathBuf::from(LOCK_DIR).join(format!("{stripe:02x}.lock"));
+        let mac_key = self.stripe_key().await?;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&mac_key)
+            .map_err(|e| PodError::Backend(format!("lock key: {e}")))?;
+        mac.update(key.as_bytes());
+        let digest = mac.finalize().into_bytes();
+        let name = if key.starts_with(STATE_KEY_PREFIX) {
+            format!("state-{}.lock", hex::encode(&digest[..4]))
+        } else {
+            format!("{:02x}.lock", usize::from(digest[0]) % LOCK_STRIPES)
+        };
+        let rel = PathBuf::from(LOCK_DIR).join(name);
         let dir = self.dir.clone();
         let file = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
             dir.create_dir_all(LOCK_DIR)?;

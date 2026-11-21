@@ -44,6 +44,10 @@ cap-std = { version = "3.4.4", optional = true }
 # Advisory `flock` for the cross-process resource lock (SP-PAR-275). Already in
 # the tree through cap-std; used directly rather than hand-rolling a lock file.
 rustix = { version = "1", default-features = false, features = ["fs", "std"], optional = true }
+# Keyed stripe selection for that lock (a per-data-root random key, HMAC-SHA-256
+# of the resource path). Both already in the tree.
+hmac = { version = "0.12", optional = true }
+getrandom = { version = "0.2", optional = true }
 
 # Extension → MIME resolution for sidecar-absent resources (e.g. files
 # extracted from a git push to /public/apps/). Pure-logic, wasm-safe,
@@ -139,7 +143,7 @@ embedded-docs = ["dep:include_dir"]
 # leave this off via `default-features = false, features = ["core"]`.
 tokio-runtime = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
 
-fs-backend = ["tokio-runtime", "dep:notify", "dep:cap-std", "dep:rustix"]
+fs-backend = ["tokio-runtime", "dep:notify", "dep:cap-std", "dep:rustix", "dep:hmac", "dep:getrandom"]
 memory-backend = ["tokio-runtime"]
 oidc = ["dep:openidconnect", "dep:jsonwebtoken", "tokio-runtime", "dep:reqwest"]
 nip98-schnorr = ["dep:k256"]
