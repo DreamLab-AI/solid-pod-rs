@@ -63,6 +63,8 @@ Status is partial and inactive. Verified at `4e97893` (base `f382039`). Evidence
 - Forge-held trail: row 260 is `present` (`trail.rs`).
 > Note 2026-11-20: `start_forge` now returns `Result` and a failure stops the boot (SP-PAR-293); `stop_forge` closes the mirror's relay sessions at shutdown (SP-PAR-292). The line numbers in this bullet have moved.
 
+> Note 2026-11-21 (row 247, open decision): the forge's issue state, retitle and comment rules compare against the JSS `plugins` repository, which is not in the reference clone, and the remaining piece is how a pod agent's hosted issue body is edited with a credential: forwarding the caller's bearer to the agent's pod would send a credential cross-origin. Options: (a) never forward; the agent's pod must accept the forge's own signed request (NIP-98 by the forge key) under a WAC grant the pod owner makes; (b) forward only to the same origin as the forge; (c) client-side edit only, as JSS does for its buttons (row 252 covers the hosted side). Not implemented; the choice is the operator's. Rule for any option: a credential is never forwarded to another origin.
+
 - Mirror started by the server: `crates/solid-pod-rs-server/src/lib.rs:5044` `start_forge` is called at boot from `main.rs:460`, and the mirror is built when `FORGE_MIRROR_RELAYS` and a valid `FORGE_MIRROR_FOLLOW` entry are present (`lib.rs:4964-4985`).
 - `bash scripts/parity-check.sh` → `Strict: 245/247 = 99.2%`, `PASS`.
 
