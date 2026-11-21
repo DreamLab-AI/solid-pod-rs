@@ -50,8 +50,8 @@ use serde_json::json;
 
 use solid_pod_rs::error::PodError;
 use solid_pod_rs::oidc::{
-    discovery_for, extract_webid, verify_access_token, DiscoveryDocument, Jwk, SolidOidcClaims,
-    TokenVerifyKey,
+    discovery_for, extract_webid, verify_access_token, verify_access_token_with_policy,
+    AccessTokenPolicy, DiscoveryDocument, Jwk, SolidOidcClaims, TokenVerifyKey,
 };
 
 // ---------------------------------------------------------------------------
@@ -725,7 +725,7 @@ fn d12_a_tampered_signature_is_refused() {
 
 #[test]
 fn e1_expired_token_is_refused() {
-    let token = mint_hs256(&base_claims("JKT-E1", NOW - 1));
+    let token = mint_hs256(&base_claims("JKT-E1", NOW - 61));
     let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E1", NOW)
         .expect_err("expired token must not verify");
     expect_nip98(err, "access token expired");
@@ -734,16 +734,44 @@ fn e1_expired_token_is_refused() {
 #[test]
 fn e2_expiry_boundary_is_exp_less_than_or_equal_to_now() {
     // RFC 7519 §4.1.4: the current time must be *before* `exp`, so
-    // `exp == now` is expired. There is no configurable leeway on the
-    // access-token path (unlike the DPoP `iat` skew parameter).
+    // `exp == now` is expired under a strict (zero-leeway) policy. The
+    // default policy allows the DPoP-sized skew (60 s) on top (SP-TOKEN-CLOCK-SKEW).
+    let strict = AccessTokenPolicy::default().with_clock_leeway_secs(0);
     let at_boundary = mint_hs256(&base_claims("JKT-E2", NOW));
-    let err = verify_access_token(&at_boundary, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
-        .expect_err("exp == now is expired");
+    let err = verify_access_token_with_policy(
+        &at_boundary,
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E2",
+        NOW,
+        &strict,
+    )
+    .expect_err("exp == now is expired");
     expect_nip98(err, "access token expired");
 
     let one_left = mint_hs256(&base_claims("JKT-E2", NOW + 1));
-    verify_access_token(&one_left, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
-        .expect("exp > now is inside the window");
+    verify_access_token_with_policy(
+        &one_left,
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E2",
+        NOW,
+        &strict,
+    )
+    .expect("exp > now is inside the window");
+
+    // Default policy: exp == now is inside the 60 s leeway; exp + 60 is not.
+    verify_access_token(&at_boundary, &symmetric_keyset(), ISSUER, "JKT-E2", NOW)
+        .expect("inside the default leeway");
+    let err = verify_access_token(
+        &at_boundary,
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E2",
+        NOW + 60,
+    )
+    .expect_err("past exp + leeway");
+    expect_nip98(err, "access token expired");
 }
 
 #[test]
@@ -752,18 +780,47 @@ fn e4_a_token_is_refused_before_its_nbf() {
     let mut claims = base_claims("JKT-E4", NOW + 3600);
     claims["nbf"] = json!(NOW + 30);
     let token = mint_hs256(&claims);
-    let err = verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E4", NOW)
-        .expect_err("nbf in the future is not yet valid");
+    let strict = AccessTokenPolicy::default().with_clock_leeway_secs(0);
+    let err = verify_access_token_with_policy(
+        &token,
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E4",
+        NOW,
+        &strict,
+    )
+    .expect_err("nbf in the future is not yet valid");
     expect_nip98(err, "not yet valid");
-    verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E4", NOW + 30)
-        .expect("nbf == now is valid");
+    verify_access_token_with_policy(
+        &token,
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E4",
+        NOW + 30,
+        &strict,
+    )
+    .expect("nbf == now is valid");
+    // The default leeway (60 s) admits an nbf 30 s ahead, but not 61 s ahead.
+    verify_access_token(&token, &symmetric_keyset(), ISSUER, "JKT-E4", NOW)
+        .expect("inside the default leeway");
+    let mut far = base_claims("JKT-E4", NOW + 3600);
+    far["nbf"] = json!(NOW + 61);
+    let err = verify_access_token(
+        &mint_hs256(&far),
+        &symmetric_keyset(),
+        ISSUER,
+        "JKT-E4",
+        NOW,
+    )
+    .expect_err("beyond the leeway");
+    expect_nip98(err, "not yet valid");
 }
 
 #[test]
 fn e3_expiry_is_checked_before_the_cnf_binding() {
     // Ordering matters for the error a caller surfaces: an expired
     // token reports expiry even when its `cnf` is also wrong.
-    let mut claims = base_claims("JKT-E3", NOW - 1);
+    let mut claims = base_claims("JKT-E3", NOW - 61);
     claims
         .as_object_mut()
         .expect("object")
@@ -895,6 +952,12 @@ mod dpop_stitch {
             Some(ath),
         );
 
+        // htm is case-sensitive: `get` is not `GET`.
+        let err = verify_dpop_proof(&proof, htu, "get", NOW, 60, None)
+            .await
+            .expect_err("htm is compared exactly");
+        expect_nip98(err, "DPoP htm mismatch");
+
         // htm mismatch.
         let err = verify_dpop_proof(&proof, htu, "POST", NOW, 60, None)
             .await
@@ -909,11 +972,12 @@ mod dpop_stitch {
 
         // RFC 9449 §4.3 / RFC 3986 §6.2.2-3: scheme and host compare
         // case-insensitively, the default port is implied, and the query
-        // and fragment are ignored; htm compares case-insensitively here.
+        // and fragment are ignored. `htm` is NOT normalised: the method is
+        // compared exactly as RFC 9449 §4.3 says (SP-TOKEN-CLOCK-SKEW).
         verify_dpop_proof(
             &proof,
             "HTTPS://POD.EXAMPLE:443/r?x=1#f",
-            "get",
+            "GET",
             NOW,
             60,
             None,

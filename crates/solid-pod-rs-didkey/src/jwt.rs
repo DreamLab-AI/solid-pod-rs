@@ -55,7 +55,7 @@ pub struct VerifiedJwt {
 /// - `jwt`: compact JWS string.
 /// - `expected_htu`: the absolute request URI the caller saw; compared
 ///   case-insensitively with a trailing-slash-tolerant match.
-/// - `expected_htm`: HTTP method, upper-cased before comparison.
+/// - `expected_htm`: HTTP method, compared exactly (RFC 9449: case-sensitive).
 /// - `now`: caller's current time in Unix seconds.
 /// - `skew`: acceptable drift in seconds for the `iat` check. Also
 ///   used when validating `exp` (proof is accepted up to `now + skew`).
@@ -129,7 +129,7 @@ pub fn verify_self_signed_jwt(
     verify_signature(&pubkey, &signing_input, &sig_bytes)?;
 
     // Claim checks: method, URI, time window.
-    if !claims.htm.eq_ignore_ascii_case(expected_htm) {
+    if !solid_pod_rs::auth::htu::htm_matches(&claims.htm, expected_htm) {
         return Err(DidKeyError::InvalidClaims(format!(
             "htm mismatch: got {}, expected {expected_htm}",
             claims.htm

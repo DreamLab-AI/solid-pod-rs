@@ -1,4 +1,4 @@
-//! The one `htu` comparison every self-signed or DPoP-style JWT verifier uses.
+//! The one `htu` (and `htm`) comparison every self-signed or DPoP-style JWT verifier uses.
 
 /// Compare an `htu` claim with the URI the server expects, per RFC 9449
 /// section 4.3: the query and fragment are ignored and the scheme and host
@@ -28,9 +28,34 @@ pub fn htu_matches(claimed: &str, expected: &str) -> bool {
     matches!((canonical(claimed), canonical(expected)), (Some(a), Some(b)) if a == b)
 }
 
+/// Compare an `htm` claim with the request method, per RFC 9449 section 4.2:
+/// the method is compared exactly as sent. HTTP methods are case-sensitive
+/// (RFC 9110 section 9.1), so `get` does not match `GET`.
+///
+/// # Examples
+///
+/// ```
+/// use solid_pod_rs::auth::htu::htm_matches;
+///
+/// assert!(htm_matches("GET", "GET"));
+/// assert!(!htm_matches("get", "GET"));
+/// ```
+#[must_use]
+pub fn htm_matches(claimed: &str, expected: &str) -> bool {
+    claimed == expected
+}
+
 #[cfg(test)]
 mod tests {
-    use super::htu_matches;
+    use super::{htm_matches, htu_matches};
+
+    #[test]
+    fn htm_is_case_sensitive() {
+        assert!(htm_matches("POST", "POST"));
+        assert!(!htm_matches("post", "POST"));
+        assert!(!htm_matches("POST", "post"));
+        assert!(!htm_matches("POST ", "POST"));
+    }
 
     #[test]
     fn rfc_9449_vectors() {

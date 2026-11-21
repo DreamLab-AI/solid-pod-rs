@@ -108,8 +108,8 @@ their guarantees are part of this contract:
 | Signature | Verified by `jsonwebtoken::decode` before any claim is trusted | Any tampered segment — `"access token decode failed: …"` |
 | **Issuer** | `Validation::set_issuer(&[expected_issuer])` — **exact string equality** | Any difference at all: trailing slash, host/scheme case, `https://op.example.evil`, a prefix, an empty expectation. There is no URL normalisation on this path — unlike `discovery_for`, which trims trailing slashes. Normalise once through `discovery_for(...).issuer` and use that string on both sides |
 | **Audience** | The default requires a string equal to `solid` or an array containing it. `verify_access_token_with_policy` accepts an explicit `AccessTokenPolicy::new(expected)`; the JWT library's audience check is disabled because this check runs afterwards | Missing `aud`, a nonmatching string/array, a number or null is refused. This supersedes the alpha.8 matrix's arbitrary-audience finding |
-| Expiry | Checked manually as `claims.exp <= now` → `"access token expired"`: `exp == now` is expired (RFC 7519 §4.1.4). A token whose `nbf` is after `now` is refused as `"access token not yet valid (nbf)"` (§4.1.5); an absent `nbf` is fine. Checked *before* `cnf` and before WebID extraction | — |
-| `nbf` | Refused when `nbf > now` (RFC 7519 §4.1.5); no leeway. Read beside `SolidOidcClaims`, which does not carry it | — |
+| Expiry | Checked manually as `claims.exp + leeway <= now` → `"access token expired"` (RFC 7519 §4.1.4); `leeway` is `AccessTokenPolicy::clock_leeway_secs`, default 60 s (the DPoP skew), `0` makes `exp == now` expired. A token whose `nbf` is after `now` is refused as `"access token not yet valid (nbf)"` (§4.1.5); an absent `nbf` is fine. Checked *before* `cnf` and before WebID extraction | — |
+| `nbf` | Refused when `nbf > now + leeway` (RFC 7519 §4.1.5), same configurable leeway as `exp`. Read beside `SolidOidcClaims`, which does not carry it | — |
 | `cnf` / `jkt` binding | `claims.cnf.jkt` must equal the caller-supplied `dpop_jkt` byte-for-byte | Absent `cnf` — `"access token missing cnf"`. Mismatch — `"cnf.jkt does not match DPoP thumbprint"`. Note the comparison here is a plain `!=`, not constant-time (unlike the `ath` check) |
 | Replay | Not applicable — access tokens are not replay-tracked; the `jti` replay cache guards DPoP proofs only | — |
 | Error type | Every failure above is `PodError::Nip98(String)`, which the [error-code reference](./error-codes.md) maps to HTTP 401 | — |
@@ -133,7 +133,7 @@ without it, they are synchronous and take no cache argument.
 | Key types (thumbprint) | `EC` (needs `crv`,`x`,`y`), `RSA` (`e`,`n`), `OKP` (`crv`,`x`), `oct` (`k`) | Any other `kty` — `PodError::Unsupported("unsupported JWK kty: …")`; a supported `kty` missing a required member — e.g. `"EC JWK missing y"` |
 | Signature | Verified against the embedded `jwk` — the proof is authenticated, not merely well-formed | `"DPoP proof signature verification failed: …"` |
 | `jkt` derivation | RFC 7638 over the header `jwk`, surfaced as `DpopVerified::jkt`; this is the value fed to `verify_access_token`'s `dpop_jkt` | — |
-| `htm` | Compared case-insensitively (`to_uppercase` on both sides) | `"DPoP htm mismatch: … vs …"` |
+| `htm` | Compared exactly, case-sensitively (RFC 9449 §4.3; HTTP methods are case-sensitive) | `"DPoP htm mismatch: … vs …"` |
 | `htu` | RFC 9449 §4.3 comparison via `auth::htu::htu_matches`: scheme and host case-insensitive, default port dropped, query and fragment ignored, path compared exactly (a trailing slash is a different resource). The same helper serves the LWS-CID and did:key JWT verifiers (2026-11-20) | `"DPoP htu mismatch: … vs …"` |
 | `iat` | Must be within `±skew` of `now` (bidirectional; a historic `&&` made this gate a no-op and is fixed) | `"DPoP iat outside tolerance"` |
 | `exp` | Not present and not checked — freshness is `iat` + replay cache | — |

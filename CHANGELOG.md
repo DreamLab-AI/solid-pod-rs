@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Access-token `exp` and `nbf` take a configurable leeway, and DPoP `htm` is compared case-sensitively**
+  (SP-TOKEN-CLOCK-SKEW). `AccessTokenPolicy::clock_leeway_secs` defaults to the DPoP skew (60 s);
+  `with_clock_leeway_secs(0)` restores strict comparison. `htm` follows RFC 9449 (`get` no longer matches `GET`).
+- **The forge mirror parses a relay URL once** and judges the `http`/`https` twin of the very URL it dials
+  (SP-MIRROR-WS-REWRITE); it had rewritten `ws` with a first-match `replacen`, so `WSS://ws.example/` was
+  judged as `http.example`. Non-`ws`/`wss` relay URLs are refused.
 - **The IdP token endpoint records a DPoP `jti` only after the authorisation code is accepted** (AW1-05
   follow-up). It recorded first, so an unauthenticated client holding any key could fill the global replay cache
   with valid proofs and lock out real code exchanges. New `oidc::verify_dpop_proof_unrecorded` and

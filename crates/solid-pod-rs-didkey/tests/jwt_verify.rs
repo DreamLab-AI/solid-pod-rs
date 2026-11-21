@@ -176,6 +176,17 @@ fn reject_wrong_htm() {
 }
 
 #[test]
+fn htm_is_compared_case_sensitively() {
+    // SP-TOKEN-CLOCK-SKEW: RFC 9449 compares the method as sent.
+    let now = 1_700_000_000u64;
+    let jwt = build_ed25519_jwt("https://pod.example/r", "GET", now, false);
+    let err =
+        verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "get", now, 60).unwrap_err();
+    assert!(matches!(err, DidKeyError::InvalidClaims(_)));
+    verify_self_signed_jwt(&jwt.compact, "https://pod.example/r", "GET", now, 60).unwrap();
+}
+
+#[test]
 fn reject_expired_iat() {
     // iat 10 minutes ago, skew only 60s.
     let now = 1_700_000_000u64;

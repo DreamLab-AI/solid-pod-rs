@@ -185,7 +185,7 @@ impl SelfSignedVerifier for LwsCidVerifier {
         }
 
         // Scope: htm + htu must match the request.
-        if !claims.htm.eq_ignore_ascii_case(envelope.method) {
+        if !crate::auth::htu::htm_matches(&claims.htm, envelope.method) {
             return Err(SelfSignedError::ScopeMismatch(format!(
                 "htm mismatch: got {}, expected {}",
                 claims.htm, envelope.method

@@ -632,7 +632,9 @@ fn verify_dpop_proof_core(
         .map_err(|e| PodError::Nip98(format!("DPoP proof signature verification failed: {e}")))?;
     let claims = data.claims;
 
-    if claims.htm.to_uppercase() != expected_htm.to_uppercase() {
+    // RFC 9449 §4.2 / §4.3: `htm` is the HTTP method as sent, and HTTP
+    // methods are case-sensitive (RFC 9110 §9.1): compare exactly.
+    if claims.htm != expected_htm {
         return Err(PodError::Nip98(format!(
             "DPoP htm mismatch: {} vs {}",
             claims.htm, expected_htm
@@ -799,6 +801,12 @@ pub const SOLID_OIDC_AUDIENCE: &str = "solid";
 pub struct AccessTokenPolicy {
     /// The audience value the token's `aud` claim must match.
     pub expected_audience: String,
+    /// Clock-skew leeway, in seconds, applied to `exp` and `nbf`
+    /// (RFC 7519 §4.1.4 and §4.1.5 allow "a small leeway"). A token is
+    /// refused once `now >= exp + leeway` and while `nbf > now + leeway`.
+    /// Defaults to [`replay::DPOP_DEFAULT_SKEW_SECS`], the same tolerance
+    /// DPoP `iat` gets; `0` restores strict comparison.
+    pub clock_leeway_secs: u64,
 }
 
 impl AccessTokenPolicy {
@@ -807,7 +815,15 @@ impl AccessTokenPolicy {
     pub fn new(expected_audience: impl Into<String>) -> Self {
         Self {
             expected_audience: expected_audience.into(),
+            clock_leeway_secs: replay::DPOP_DEFAULT_SKEW_SECS,
         }
+    }
+
+    /// The same policy with a different `exp`/`nbf` leeway in seconds.
+    #[must_use]
+    pub fn with_clock_leeway_secs(mut self, secs: u64) -> Self {
+        self.clock_leeway_secs = secs;
+        self
     }
 }
 
@@ -954,12 +970,14 @@ pub fn verify_access_token_with_policy(
         .map_err(|e| PodError::Nip98(format!("access token decode failed: {e}")))?;
     let Wire { claims, nbf } = data.claims;
 
-    // RFC 7519 §4.1.4: the token must not be accepted on or after `exp`.
-    if claims.exp <= now {
+    // RFC 7519 §4.1.4: the token must not be accepted on or after `exp`,
+    // allowing the policy's small clock-skew leeway (saturating: a huge
+    // `exp` or leeway cannot wrap into the past).
+    if claims.exp.saturating_add(policy.clock_leeway_secs) <= now {
         return Err(PodError::Nip98("access token expired".into()));
     }
-    // RFC 7519 §4.1.5: nor before `nbf`.
-    if nbf.is_some_and(|nbf| nbf > now) {
+    // RFC 7519 §4.1.5: nor before `nbf`, with the same leeway.
+    if nbf.is_some_and(|nbf| nbf > now.saturating_add(policy.clock_leeway_secs)) {
         return Err(PodError::Nip98("access token not yet valid (nbf)".into()));
     }
 
@@ -1316,12 +1334,49 @@ mod tests {
         let secret = b"test-secret";
         let ks = TokenVerifyKey::Symmetric(secret.to_vec());
         let token = hs256_token_from(secret, base_claims());
-        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_999).is_ok());
-        assert!(
-            verify_access_token(&token, &ks, "https://op", "T", 2_000).is_err(),
-            "exp == now is expired"
+        let strict = AccessTokenPolicy::default().with_clock_leeway_secs(0);
+        let at =
+            |now| verify_access_token_with_policy(&token, &ks, "https://op", "T", now, &strict);
+        assert!(at(1_999).is_ok());
+        assert!(at(2_000).is_err(), "exp == now is expired");
+        assert!(at(2_001).is_err());
+    }
+
+    #[test]
+    fn access_token_exp_and_nbf_take_a_configurable_leeway() {
+        // SP-TOKEN-CLOCK-SKEW: the default leeway equals the DPoP skew.
+        assert_eq!(
+            AccessTokenPolicy::default().clock_leeway_secs,
+            replay::DPOP_DEFAULT_SKEW_SECS
         );
-        assert!(verify_access_token(&token, &ks, "https://op", "T", 2_001).is_err());
+        let secret = b"test-secret";
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let mut claims = base_claims();
+        claims["nbf"] = serde_json::json!(1_500u64);
+        let token = hs256_token_from(secret, claims);
+        let run = |now, leeway| {
+            verify_access_token_with_policy(
+                &token,
+                &ks,
+                "https://op",
+                "T",
+                now,
+                &AccessTokenPolicy::default().with_clock_leeway_secs(leeway),
+            )
+        };
+        // exp = 2000, leeway 5: valid through 2004, expired at 2005.
+        assert!(run(2_004, 5).is_ok());
+        assert!(run(2_005, 5).is_err());
+        assert!(run(2_000, 0).is_err());
+        // nbf = 1500, leeway 5: valid from 1495.
+        assert!(run(1_495, 5).is_ok());
+        assert!(run(1_494, 5).is_err());
+        assert!(run(1_499, 0).is_err());
+        // The default (60 s) applies through `verify_access_token`.
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 2_059).is_ok());
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 2_060).is_err());
+        // A huge leeway saturates instead of wrapping.
+        assert!(run(u64::MAX, u64::MAX).is_err());
     }
 
     #[test]
@@ -1332,12 +1387,12 @@ mod tests {
         let mut claims = base_claims();
         claims["nbf"] = serde_json::json!(1_500u64);
         let token = hs256_token_from(secret, claims);
-        assert!(
-            verify_access_token(&token, &ks, "https://op", "T", 1_499).is_err(),
-            "now < nbf is not yet valid"
-        );
-        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_500).is_ok());
-        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_600).is_ok());
+        let strict = AccessTokenPolicy::default().with_clock_leeway_secs(0);
+        let at =
+            |now| verify_access_token_with_policy(&token, &ks, "https://op", "T", now, &strict);
+        assert!(at(1_499).is_err(), "now < nbf is not yet valid");
+        assert!(at(1_500).is_ok());
+        assert!(at(1_600).is_ok());
         // No `nbf` at all stays valid.
         let plain = hs256_token_from(secret, base_claims());
         assert!(verify_access_token(&plain, &ks, "https://op", "T", 1_100).is_ok());
