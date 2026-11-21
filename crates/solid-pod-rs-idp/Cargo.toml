@@ -93,6 +93,8 @@ provision-keys = [
 ]
 
 [dev-dependencies]
+# The tests use `storage::memory`, which the library dependency (default-features = false) does not enable.
+solid-pod-rs = { version = "0.5.0-alpha.22", path = "../solid-pod-rs", default-features = false, features = ["memory-backend"] }
 tokio = { version = "1", features = ["full"] }
 wiremock = "0.6"
 serde_urlencoded = "0.7"
