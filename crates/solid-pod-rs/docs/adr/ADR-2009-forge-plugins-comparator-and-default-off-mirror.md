@@ -61,6 +61,8 @@ Status is partial and inactive. Verified at `4e97893` (base `f382039`). Evidence
 - NIP-34 event builder and anchor tags: `PARITY-CHECKLIST.md` row 239 is `present` (`crates/solid-pod-rs-forge/src/nip34.rs` `gather_facts`, `gitmark.rs` `anchor_tags`).
 - Anchors tab: row 240 is `present` (`marks_ui.rs`, `trail.rs` `decorate_repo_page`).
 - Forge-held trail: row 260 is `present` (`trail.rs`).
+> Note 2026-11-20: `start_forge` now returns `Result` and a failure stops the boot (SP-PAR-293); `stop_forge` closes the mirror's relay sessions at shutdown (SP-PAR-292). The line numbers in this bullet have moved.
+
 - Mirror started by the server: `crates/solid-pod-rs-server/src/lib.rs:5044` `start_forge` is called at boot from `main.rs:460`, and the mirror is built when `FORGE_MIRROR_RELAYS` and a valid `FORGE_MIRROR_FOLLOW` entry are present (`lib.rs:4964-4985`).
 - `bash scripts/parity-check.sh` → `Strict: 245/247 = 99.2%`, `PASS`.
 

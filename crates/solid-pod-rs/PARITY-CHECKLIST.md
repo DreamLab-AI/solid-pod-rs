@@ -49,20 +49,20 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 89.6%** — 251/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 92.1%** |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 91.4%** — 256/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Half-credit (partial-parity counted 0.5) | **≤ 93.2%** |
 | Spec-normative surface | **partial** — ACL IRI resolution (288), JSON-LD ACL reading (265) and JSON-LD PATCH (276) are open |
 | Protocol-visible surface | **partial** — `/.notifications` advertised but not served (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — relay and AP inbox/outbox are not mounted by the server (278, 281) |
 
-> **Authoritative figure.** **89.6% strict** over 300 rows, and an **upper
+> **Authoritative figure.** **91.4% strict** over 300 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
 > in its scope (§26–§28 and the eleven rows it reclassified). The remaining
 > `present` rows have not been re-audited for server wiring, and some may be
 > library-only in the same way. The `0.0.224` delta adds 14 rows (§26); §27
-> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%.
+> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%.
 
 ### By status
 

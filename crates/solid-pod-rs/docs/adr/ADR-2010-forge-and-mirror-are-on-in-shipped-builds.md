@@ -38,6 +38,8 @@ The route's WAC check is pod-root only (`lib.rs:4785-4801`), which does not esta
 ## Decision
 
 - `solid-pod-rs-server` gains `forge-mirror` and `forge-full` (forge, anchoring, announce, mirror). Consumers that run the forge build with `forge-full`. The cargo defaults of the crates do not change: a library user who depends on `solid-pod-rs-forge` still gets nothing optional unless they ask.
+> Note 2026-11-20: with `forge` compiled in, `start_forge` now returns `Result` and `main.rs` refuses to boot when it fails (an invalid forge configuration, an unwritable data directory, an unusable token key), instead of logging and serving 500 on every `/forge` request (`crates/solid-pod-rs-server/src/lib.rs` `start_forge`, SP-PAR-293). An operator who ships the forge on must therefore keep its data directory and `FORGE_*` settings valid. Shutdown now closes the mirror's relay sessions through `stop_forge` (SP-PAR-292). The `lib.rs:5044` line references below have moved.
+
 - "On" means compiled in and started at boot (`start_forge`). It does not mean it acts on anything. The mirror follows nothing until `FORGE_MIRROR_RELAYS` and `FORGE_MIRROR_FOLLOW` name relays and `<pubkey>/<repo>` entries; the shipped default follow list is the operator's own key and nothing external.
 - Staying opt-in, each with an explicit setting:
   - `open_edit` (`FORGE_OPEN_EDIT`). JSS `openEdit` skips authorisation, so any caller may edit any repository. No shipped default sets it, and the forge logs a warning at boot when it is on.
