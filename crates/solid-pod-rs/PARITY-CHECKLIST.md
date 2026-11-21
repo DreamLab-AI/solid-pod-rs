@@ -49,13 +49,13 @@ and 104 were reclassified in place. Method and evidence:
 
 | Metric | Value |
 |---|---|
-| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 94.1%** — 269/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
+| Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 94.8%** — 271/286 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
 | Half-credit (partial-parity counted 0.5) | **≤ 95.8%** |
 | Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
-> **Authoritative figure.** **94.1% strict** over 306 rows, and an **upper
+> **Authoritative figure.** **94.8% strict** over 306 rows, and an **upper
 > bound**. The fall from 99.2% (264 rows, 2026-10-19) is mostly a correction,
 > not a regression in the code: the earlier figure counted library presence as
 > parity. The 2026-11-01 audit checked server-reached behaviour only for the rows
@@ -68,10 +68,10 @@ and 104 were reclassified in place. Method and evidence:
 
 | Status | Count |
 |---|---|
-| present (includes present-by-absence) | 241 |
+| present (includes present-by-absence) | 243 |
 | net-new (ours; not in JSS) | 19 |
 | semantic-difference | 9 |
-| partial-parity | 10 |
+| partial-parity | 8 |
 | missing | 7 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
@@ -267,7 +267,7 @@ Rows 89–90 live in `solid-pod-rs-nostr` (Sprint 10).
 
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
-| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` | `LegacyWebSocketSession` — full sub/ack/err/pub/unsub protocol, per-sub WAC Read re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container fanout | partial-parity | `src/notifications/legacy.rs` | Sprint 11. 11 integration tests. 2026-11-01: library-only; the server has no `/.notifications` route although it advertises one (row 279). |
+| 91 | Solid WebSocket `solid-0.1` legacy (SolidOS) | `src/notifications/websocket.js:1-102,110-147` | `LegacyWebSocketSession` — full sub/ack/err/pub/unsub protocol, per-sub WAC Read re-check, 100 subs/conn cap, 2 KiB URL cap, ancestor-container fanout | present | `crates/solid-pod-rs-server/src/notifications_ws.rs`; `src/notifications/legacy.rs`; tests `crates/solid-pod-rs-server/tests/notifications_ws.rs` (15) | Re-verified 2026-11-21 against the route table: `GET /.notifications` upgrades to the `solid-0.1` session (SP-PAR-279, row 279), with WAC Read on every `sub` and delivery. Sprint 11 library, 11 integration tests. |
 | 92 | WebSocketChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebSocketChannelManager` (broadcast + 30s heartbeat) | partial-parity | `src/notifications/mod.rs` | 2026-11-01: library-only; the server mounts no notifications endpoint (row 279). |
 | 93 | WebhookChannel2023 (Solid Notifications 0.2) | **not implemented** | `notifications::WebhookChannelManager` (AS2.0 POST, 3× retry) | partial-parity | `src/notifications/mod.rs` | 2026-11-01: library-only; the server mounts no notifications endpoint (row 279). |
 | 94 | Server-Sent Events | not implemented | not implemented | present (both absent) | — | Not in spec. |
@@ -285,7 +285,7 @@ Rows 100–108 land across `solid-pod-rs-git`, `solid-pod-rs-nostr`,
 | # | JSS feature | JSS path | solid-pod-rs | Status | Rust file:line | Notes |
 |---|---|---|---|---|---|---|
 | 100 | Git HTTP backend (`handleGit` CGI, path-traversal hardening, `receive.denyCurrentBranch=updateInstead`) | `src/handlers/git.js:11-268` + WAC hook `src/server.js:286-314` | `GitHttpService` spawns `git http-backend` CGI with full env plumbing, path-traversal guard, config mutator | present | `crates/solid-pod-rs-git/src/service.rs`, `guard.rs`, `config.rs` | Sprint 10. 29 unit + 8 integration tests. |
-| 101 | Nostr relay NIP-01/11/16 | `src/nostr/relay.js:95-286` | `Relay` with `EventStore` + `tokio::broadcast` dispatcher, BIP-340 Schnorr verify, NIP-11 info, NIP-16 replaceable/parameterised classifiers | partial-parity | `crates/solid-pod-rs-nostr/src/relay.rs`, `ws.rs` | Sprint 10. 2026-11-01: library-only; `solid-pod-rs-server` mounts no relay and serves no NIP-11 (rows 278, 280). |
+| 101 | Nostr relay NIP-01/11/16 | `src/nostr/relay.js:95-286` | `Relay` with `EventStore` + `tokio::broadcast` dispatcher, BIP-340 Schnorr verify, NIP-11 info, NIP-16 replaceable/parameterised classifiers | present | `crates/solid-pod-rs-server/src/nostr_mount.rs`; `crates/solid-pod-rs-nostr/src/relay.rs`, `ws.rs`; tests `crates/solid-pod-rs-server/tests/nostr_relay.rs` | Re-verified 2026-11-21: mounted behind `--nostr` (default off) with NIP-11 at the relay URL (rows 278, 280). |
 | 102 | ActivityPub Actor on `/profile/card` (Accept-negotiated) | `src/server.js:238-259` | `Actor` + `render_actor` with RSA-2048 publicKey, Mastodon-ordered JSON-LD | present | `crates/solid-pod-rs-activitypub/src/actor.rs` | Sprint 10. |
 | 103 | ActivityPub inbox with HTTP Signature verification | `src/ap/routes/inbox.js:57-248` | `handle_inbox` dispatcher + draft-cavage v12 `verify_request_signature` (Mastodon + RFC 9530 digest forms) | partial-parity | `crates/solid-pod-rs-activitypub/src/inbox.rs`, `http_sig.rs` | Sprint 10. 2026-11-01: library-only; the server routes only the actor document (row 281). |
 | 104 | ActivityPub outbox + delivery | `src/ap/routes/outbox.js:17-147` | `handle_outbox` + `DeliveryWorker` exp-backoff retry (30s→24h, 6 attempts; drops on 4xx) | partial-parity | `crates/solid-pod-rs-activitypub/src/outbox.rs`, `delivery.rs` | Sprint 10. 2026-11-01: library-only; no outbox route (row 281). |
