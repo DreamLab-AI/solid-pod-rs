@@ -393,27 +393,70 @@ pub async fn resolve_policy_from_storage_with_base(
     // ACLs honour only `acl:default` (WAC §4.2) — so tag the document.
     let mut inherited = false;
     loop {
-        let acl_key = acl_sidecar_key(&path);
-        // Keep the read alive for the whole iteration so `PolicyRead::Present`
-        // can borrow the body without an extra copy.
-        let got = storage.get(&acl_key).await;
-        let read = match &got {
-            Ok((body, meta)) => PolicyRead::Present {
-                body,
-                content_type: &meta.content_type,
-            },
-            Err(PodError::NotFound(_)) => PolicyRead::Absent,
-            Err(e) => PolicyRead::Failed(e.to_string()),
-        };
-        match classify_policy_read(&acl_key, read, inherited) {
-            PolicyStep::Settled(PolicyOutcome::Found(doc)) => {
-                return PolicyOutcome::Found(match base {
-                    Some(b) => b.resolve_document(&doc, &acl_key),
-                    None => doc,
-                });
+        // A container's ACL may live in either of two places: the sidecar
+        // `<container>.acl` (what this server writes and advertises) or
+        // `<container>/.acl` (the reference JavaScript server's layout). A
+        // resource's own ACL has one place. The root has one key, `/.acl`.
+        let keys = acl_candidate_keys(&path, inherited);
+        // Keep the reads alive for the whole iteration so `PolicyRead::Present`
+        // can borrow a body without an extra copy.
+        let mut reads = Vec::with_capacity(keys.len());
+        for key in &keys {
+            reads.push(storage.get(key).await);
+        }
+        // Any failure other than "not found" on either key ends the walk as
+        // `Unavailable`: it must never be read as "no ACL here" and ascend.
+        if let Some((key, Err(e))) = keys
+            .iter()
+            .zip(&reads)
+            .find(|(_, r)| matches!(r, Err(e) if !matches!(e, PodError::NotFound(_))))
+        {
+            if let PolicyStep::Settled(outcome) =
+                classify_policy_read(key, PolicyRead::Failed(e.to_string()), inherited)
+            {
+                return outcome;
             }
-            PolicyStep::Settled(outcome) => return outcome,
-            PolicyStep::Ascend => {}
+        }
+        let present: Vec<usize> = reads
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.is_ok())
+            .map(|(i, _)| i)
+            .collect();
+        match present.as_slice() {
+            [] => {}
+            [i] => {
+                let acl_key = keys[*i].clone();
+                let (body, meta) = reads[*i].as_ref().expect("present");
+                let read = PolicyRead::Present {
+                    body,
+                    content_type: &meta.content_type,
+                };
+                match classify_policy_read(&acl_key, read, inherited) {
+                    PolicyStep::Settled(PolicyOutcome::Found(doc)) => {
+                        // Resolve against the key that was actually read, so
+                        // `./` means `/docs/` in `/docs/.acl` and `/` in
+                        // `/docs.acl`.
+                        return PolicyOutcome::Found(match base {
+                            Some(b) => b.resolve_document(&doc, &acl_key),
+                            None => doc,
+                        });
+                    }
+                    PolicyStep::Settled(outcome) => return outcome,
+                    PolicyStep::Ascend => {}
+                }
+            }
+            // Both forms exist: neither is preferred and they are never
+            // merged. The policy is ambiguous, so it denies.
+            _ => {
+                return PolicyOutcome::Invalid {
+                    policy_path: keys[0].clone(),
+                    reason: InvalidPolicyReason::Malformed(format!(
+                        "both ACL forms exist ({} and {}); remove one",
+                        keys[0], keys[1]
+                    )),
+                };
+            }
         }
         match parent_container(&path) {
             Some(parent) => {
@@ -424,6 +467,40 @@ pub async fn resolve_policy_from_storage_with_base(
             None => return PolicyOutcome::Missing,
         }
     }
+}
+
+/// The storage keys that can hold the ACL consulted at one level of the walk.
+///
+/// `path` is a container when the walk has ascended to it (`inherited`) or it
+/// ends in `/`; a container has both the sidecar and the in-container key
+/// (deduplicated at the root, where they coincide). A plain resource has only
+/// its sidecar.
+#[must_use]
+pub fn acl_candidate_keys(path: &str, ascended: bool) -> Vec<String> {
+    let sidecar = acl_sidecar_key(path);
+    if !(ascended || path.ends_with('/')) {
+        return vec![sidecar];
+    }
+    let trimmed = path.trim_end_matches('/');
+    let inside = format!("{trimmed}/.acl");
+    if inside == sidecar {
+        vec![sidecar]
+    } else {
+        vec![sidecar, inside]
+    }
+}
+
+/// The other storage form of the container ACL at `acl_path`, if it has one:
+/// `/docs.acl` <-> `/docs/.acl`. The root (`/.acl`) has no twin.
+#[must_use]
+pub fn acl_twin_key(acl_path: &str) -> Option<String> {
+    if let Some(container) = acl_path.strip_suffix("/.acl") {
+        return (!container.is_empty()).then(|| format!("{container}.acl"));
+    }
+    acl_path
+        .strip_suffix(".acl")
+        .filter(|base| !base.is_empty())
+        .map(|base| format!("{}/.acl", base.trim_end_matches('/')))
 }
 
 /// Resolves the effective ACL document for a resource using the WAC walk-up-the-tree algorithm.

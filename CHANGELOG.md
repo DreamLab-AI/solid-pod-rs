@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A container ACL stored as `<container>/.acl` is no longer ignored** (SP-PAR-290). The resolver read only
+  `<container>.acl`, so with a public-read root ACL a private `/docs/.acl` left `/docs/a.txt` readable. It now
+  probes both forms at each container level: one present governs, none ascends, both deny everyone, a read error
+  on either is unavailable (no ascent). Writes that would create the second form are refused with 409; boot warns
+  about containers that already have both. Where the server writes ACLs (`<container>.acl`) is unchanged.
 - **The Nostr relay can be mounted: `--nostr`, `--nostr-path`, `--nostr-max-events`, off by default**
   (SP-PAR-278, SP-PAR-280). `solid-pod-rs-server` now depends on `solid-pod-rs-nostr`. The relay answers the NIP-11
   information document at its URL (`Accept: application/nostr+json`) and speaks NIP-01 over a WebSocket. Only its

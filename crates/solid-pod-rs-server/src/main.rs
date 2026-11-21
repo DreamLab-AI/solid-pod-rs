@@ -362,6 +362,20 @@ async fn main() -> anyhow::Result<()> {
     // MCP (#490): enabled by --mcp / JSS_MCP, but --no-mcp always wins so a
     // baked-in env value can be overridden at the command line.
     state.mcp_enabled = cli.mcp && !cli.no_mcp;
+    // Warn about containers whose ACL exists in both storage forms: the
+    // resolver denies them. Bounded scan (200 000 entries), so boot is not held.
+    if let Some(root) = &state.data_root {
+        let (dual, truncated) = solid_pod_rs_server::dual_form_acl_containers(root, 200_000);
+        if !dual.is_empty() {
+            warn!(
+                containers = ?dual,
+                "containers with both `<c>.acl` and `<c>/.acl`: access is denied until one is removed"
+            );
+        }
+        if truncated {
+            warn!("ACL layout scan stopped at 200000 entries; some containers were not checked");
+        }
+    }
     if cli.nostr {
         let mount = solid_pod_rs_server::nostr_mount::NostrMount::new(
             &cli.nostr_path,
