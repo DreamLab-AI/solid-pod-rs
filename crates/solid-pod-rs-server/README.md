@@ -240,8 +240,8 @@ The optional `export-jsonld` build adds `GET /api/exports/all`, an
 
 `POST /_admin/provision/{pubkey}` creates a new pod for a Nostr pubkey in one
 atomic step: pod directory, owner-only `.acl`, and a `git init` that sets
-`receive.denyCurrentBranch=updateInstead` so the pod is immediately pushable
-over HTTP via `/_git/{pubkey}/`.
+`receive.denyCurrentBranch=updateInstead`. The pod owner can clone it over HTTP;
+pushing is not served (every push is refused with `403 push_not_served`).
 
 ```bash
 curl -X POST https://pods.example.com/_admin/provision/<hex-pubkey> \

@@ -172,19 +172,21 @@ resources. See
 
 Present when built with `--features git`. The git smart-protocol routes
 are **WAC-gated** (ADR-059 D6 — closing the prior anonymous clone/push
-hole): `handle_git` resolves the caller's `did:nostr` from the git
-`Basic nostr:` / `Nostr` NIP-98 credential and enforces `acl:Read` for
-clone/fetch and `acl:Write` for push against the pod-root container ACL.
-A public pod clones anonymously; a private pod replies `401` so the git
-client retries with credentials; anonymous/unauthorised push is denied.
-A first push to a not-yet-initialised git-backed pod auto-runs
-`git init -b main` (replacing the prior 404-on-missing-repo).
+hole): `handle_git` refuses every push (`git-receive-pack` and its
+`info/refs` discovery) with `403 push_not_served` for every caller, before any
+credential is read (ER-28). Clone/fetch resolves the caller's `did:nostr` from
+the git `Basic nostr:` / `Nostr` NIP-98 credential, enforces `acl:Read` against
+the pod-root container ACL (a private pod replies `401` so the git client
+retries with credentials), and then serves only the pod owner, because git
+exports the whole history. A deployment that adds its own pod-push route must
+require the pod owner: a push writes working-tree files without passing
+`Storage`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET  | `/{tail}/info/refs`          | Smart-protocol ref advertisement (clone/fetch — Read). |
-| POST | `/{tail}/git-upload-pack`    | Fetch negotiation (clone/fetch — Read). |
-| POST | `/{tail}/git-receive-pack`   | Push (Write). |
+| GET  | `/{tail}/info/refs`          | Smart-protocol ref advertisement (clone/fetch — Read, pod owner). |
+| POST | `/{tail}/git-upload-pack`    | Fetch negotiation (clone/fetch — Read, pod owner). |
+| POST | `/{tail}/git-receive-pack`   | Push: always refused, `403 push_not_served`. |
 
 ## Admin / provisioning endpoints
 
@@ -213,9 +215,9 @@ Creates a new pod for the given owner public key.
 
 1. Creates the pod directory under the configured storage root.
 2. Writes an owner-only `.acl` granting full control to the pubkey.
-3. Runs `git init -b main` and sets `receive.denyCurrentBranch=updateInstead`
-   so the pod directory is a bare-ish working-tree repo that can receive
-   `git push` over HTTP via `/_git/{pubkey}/`.
+3. Runs `git init -b main` and sets `receive.denyCurrentBranch=updateInstead`,
+   so the pod directory is a working-tree repo the owner can clone and inspect
+   over HTTP. Pushing is not served (see "Git smart-HTTP endpoints").
 
 **Error responses:**
 

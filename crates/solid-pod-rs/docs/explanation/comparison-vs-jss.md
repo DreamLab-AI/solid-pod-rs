@@ -55,7 +55,7 @@ feature-level status table.
 | `.provision` / account scaffold         | full (IdP + multiuser) | full (`provision_pod`) |
 | `.well-known/solid`                     | full      | full          |
 | WebFinger / NIP-05                      | full (via ActivityPub + Nostr features) | full |
-| Git smart-HTTP clone/push               | full      | full (**WAC-gated** — Read for fetch, Write for push; auto-init on first push) |
+| Git smart-HTTP clone/push               | full      | clone/fetch only (**WAC-gated**, pod owner; push is refused for every caller, ER-28) |
 | HTTP 402 Web Ledger + `PaymentCondition`| full      | full          |
 | `/pay/.balance` `.deposit` `.address`   | full      | partial by design (mempool-verified MRC20 only; replay-guarded; JSS's TXO deposit is not mirrored, ADR-2008 D6) |
 | Order book (`/pay/.sell` `.swap` `.offers`) | full  | full (currency-pair model; routed) |

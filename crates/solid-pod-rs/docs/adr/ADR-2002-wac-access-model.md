@@ -79,8 +79,13 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > container (and whether they differ) and sidecar-only container for operator review before opting in. (c) The
 > refusal to create beneath an ACL or meta document lives in `Storage::put` and `create_container` of the
 > filesystem and memory backends (`wac::path_beneath_sidecar`), so HTTP, MCP and provisioning all pass it;
-> DELETE beneath stays allowed for repair. A `git push` into a pod working tree writes files directly and does not
-> pass `Storage`; it needs the git route's Write grant, not Control, so a pushed `.acl` is not covered by (c).
+> DELETE beneath stays allowed for repair. (Corrected 2026-11-21: this
+> sentence first said a `git push` into a pod working tree needed the git route's Write grant. That was wrong: `handle_git`
+> (`solid-pod-rs-server/src/lib.rs`, the `is_write()` refusal before any credential is read) refuses every
+> `git-receive-pack` and its `info/refs` discovery with 403 `push_not_served` for every caller, and the only route that
+> rewrites working-tree files, `POST /_git/{pubkey}/discard`, requires the pod owner. So no request reaches the
+> working tree without the owner, and a pushed `.acl` cannot arise through this server. A deployment that adds its own
+> pod-push route writes files without passing `Storage`, so it must require the pod owner, not a Write grant.)
 > (d) A directory at an ACL key reads as absent (`resolver::read_acl_key`); a read failure that is not a directory,
 > such as a permission error, still denies. Under `inner` and `both`, writing the sidecar form of a container
 > additionally requires Control on the container's inner form (`enforce_write_inner`), because that sidecar is, or
