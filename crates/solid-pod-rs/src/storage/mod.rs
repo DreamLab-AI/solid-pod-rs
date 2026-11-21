@@ -126,9 +126,16 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// A write that reads, decides and writes (PATCH, a conditional PUT or
     /// DELETE) holds this around the whole sequence so that two server
-    /// processes sharing one data root cannot interleave. The default returns
-    /// `Ok(None)`: the backend is not shared between processes, and the
-    /// caller's in-process lock is all there is. A backend that can be shared
+    /// processes sharing one data root cannot interleave.
+    ///
+    /// **The default gives no cross-process exclusion at all**: it returns
+    /// `Ok(None)` at once, and the caller's in-process lock is all there is. A
+    /// custom backend that two processes can share must override it, or those
+    /// processes can interleave a read-modify-write. Only [`FsBackend`](fs::FsBackend)
+    /// overrides it, and only **on Unix** (an advisory `flock`); on other
+    /// platforms the filesystem backend gives the default too. Keys beginning
+    /// `state:` name server-wide state, not a resource, and must not share a
+    /// lock with one. A backend that can be shared
     /// returns `Ok(Some(lock))`, or [`PodError::Conflict`] when the lock was
     /// not obtained within `wait`.
     async fn lock_exclusive(

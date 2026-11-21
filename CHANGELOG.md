@@ -148,8 +148,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Cross-process resource lock** (SP-PAR-275, ER-29): two server processes sharing one filesystem data root can no longer
   interleave a read-modify-write. `Storage::lock_exclusive` (new, defaulted) is taken by `FsBackend` as an OS `flock` on
   one of 256 stripe files under `.solid-pod-locks/` (hidden from listings), inside the in-process lock, for every write.
-  After 30 s the write answers `503` with `Retry-After: 1`. New direct dependency `rustix` (already in the tree).
+  After 30 s the write answers `503` with `Retry-After: 1`, on every write path (POST minting included; it answered
+  `409` in an earlier draft). Which stripe file a path uses is HMAC-SHA-256 under a per-data-root random key in
+  `.solid-pod-locks/key` (32 bytes, mode 0600, created atomically; a key file of the wrong length is refused), so a client
+  cannot pick names that share a victim's stripe. The payment ledger's read-modify-write takes the same lock on its own
+  file (`state:payments`). The in-process mutex is not held while waiting for another process. **Unix only**: elsewhere,
+  and for any custom `Storage` that does not override `lock_exclusive`, there is no cross-process exclusion. New direct
+  dependencies `rustix`, `hmac`, `getrandom` (all already in the tree).
   Also fixed: listing the filesystem root (`FsBackend::list("/")`) returned nothing.
+  **Source-breaking for library users**: `AppState` has a new public field `acl_layout` (code that builds it with a struct
+  literal must add it; `AppState::new` is unchanged); `Storage` has two new defaulted methods, `lock_exclusive` and
+  `is_directory` (existing implementations compile, and get the defaults: no cross-process lock, no directory
+  detection, so a custom backend gets neither the lock nor the directory-as-absent hardening).
 
 - **The twelve JSS #631 ACL fixtures run as Rust tests** (row 268): `crates/solid-pod-rs-server/tests/jss_wac_fixtures.rs`.
   No failing case: the four differences (remote `@context`, bare modes under `@id` coercion, 409 against 400, short
