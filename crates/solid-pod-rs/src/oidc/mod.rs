@@ -847,8 +847,8 @@ pub struct AccessTokenPolicy {
     /// Clock-skew leeway, in seconds, applied to `exp` and `nbf`
     /// (RFC 7519 §4.1.4 and §4.1.5 allow "a small leeway"). A token is
     /// refused once `now >= exp + leeway` and while `nbf > now + leeway`.
-    /// Defaults to [`replay::DPOP_DEFAULT_SKEW_SECS`], the same tolerance
-    /// DPoP `iat` gets; `0` restores strict comparison. Values above
+    /// Defaults to `replay::DPOP_DEFAULT_SKEW_SECS` (60 s; that module needs
+    /// the `dpop-replay-cache` feature), the same tolerance DPoP `iat` gets; `0` restores strict comparison. Values above
     /// [`MAX_CLOCK_LEEWAY_SECS`] are clamped, by the setter and again at the
     /// comparison (the field is public).
     pub clock_leeway_secs: u64,
