@@ -4549,22 +4549,6 @@ fn plugin_prefix_owns(path: &str) -> bool {
     })
 }
 
-/// `true` when a request path has a segment that is not the last and ends in
-/// `.acl` or `.meta`. An ACL or meta document has no children: a path beneath
-/// one (`/docs/.acl/x`, `/docs.acl/x`) would make the storage create a
-/// directory where the resolver reads an ACL key. Percent-encoded spellings
-/// are decoded first, and the check is on the decoded segments.
-fn has_sidecar_parent_segment(path: &str) -> bool {
-    let decoded = percent_decode_str(path).decode_utf8_lossy();
-    let mut segments: Vec<&str> = decoded.split('/').collect();
-    // The last segment is the resource itself (empty after a trailing slash,
-    // which makes the segment before it a parent).
-    segments.pop();
-    segments
-        .iter()
-        .any(|seg| seg.ends_with(".acl") || seg.ends_with(".meta"))
-}
-
 /// Actix middleware that blocks dotfile paths unless they appear on the allowlist.
 pub struct DotfileGuard {
     allow: Arc<DotfileAllowlist>,
@@ -4663,25 +4647,6 @@ where
             }
         }
         let path = req.path().to_string();
-        // No request may address something beneath an ACL or meta document, by
-        // any method, and no carve-out below (well-known, `/forge`,
-        // notifications) bypasses this. A COPY `Source` is a path too.
-        let source_beneath = req
-            .headers()
-            .get("source")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| {
-                let p = url::Url::parse(v)
-                    .map(|u| u.path().to_string())
-                    .unwrap_or_else(|_| v.split(['?', '#']).next().unwrap_or(v).to_string());
-                has_sidecar_parent_segment(&p)
-            })
-            .unwrap_or(false);
-        if has_sidecar_parent_segment(&path) || source_beneath {
-            let rsp = HttpResponse::Forbidden().body("dotfile path denied by allowlist");
-            let sr = req.into_response(rsp.map_into_boxed_body());
-            return Box::pin(async move { Ok(sr.map_into_right_body()) });
-        }
         // Whitelist the well-known discovery paths even though they
         // contain a dotfile component — they are part of Solid's stable
         // interop surface. `/pay/.*` is the same case: the payment control
