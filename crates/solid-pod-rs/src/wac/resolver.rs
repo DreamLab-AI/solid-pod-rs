@@ -406,10 +406,19 @@ pub async fn resolve_policy_from_storage_with_base(
         }
         // Any failure other than "not found" on either key ends the walk as
         // `Unavailable`: it must never be read as "no ACL here" and ascend.
+        // A key that exists but is a directory is ABSENT for that form (a
+        // directory can be created beneath an ACL key by other means, and a
+        // pre-existing `<c>.acl/` is possible); only a genuine failure reads as
+        // unavailable.
+        let is_absent = |r: &Result<_, PodError>| match r {
+            Err(PodError::NotFound(_)) => true,
+            Err(PodError::Io(e)) => e.kind() == std::io::ErrorKind::IsADirectory,
+            _ => false,
+        };
         if let Some((key, Err(e))) = keys
             .iter()
             .zip(&reads)
-            .find(|(_, r)| matches!(r, Err(e) if !matches!(e, PodError::NotFound(_))))
+            .find(|(_, r)| r.is_err() && !is_absent(r))
         {
             if let PolicyStep::Settled(outcome) =
                 classify_policy_read(key, PolicyRead::Failed(e.to_string()), inherited)
@@ -417,12 +426,24 @@ pub async fn resolve_policy_from_storage_with_base(
                 return outcome;
             }
         }
-        let present: Vec<usize> = reads
+        let mut present: Vec<usize> = reads
             .iter()
             .enumerate()
             .filter(|(_, r)| r.is_ok())
             .map(|(i, _)| i)
             .collect();
+        // Both forms with byte-identical bodies: the sidecar (`keys[0]`)
+        // governs, as it did in every release before both forms were read.
+        // Pods provisioned by v0.5.0-alpha.10..22 carry such a pair, and their
+        // effective access must not change on upgrade. A differing pair is
+        // ambiguous and still denies.
+        if let [0, 1] = present.as_slice() {
+            if let (Ok((a, _)), Ok((b, _))) = (&reads[0], &reads[1]) {
+                if a == b {
+                    present = vec![0];
+                }
+            }
+        }
         match present.as_slice() {
             [] => {}
             [i] => {
@@ -446,13 +467,13 @@ pub async fn resolve_policy_from_storage_with_base(
                     PolicyStep::Ascend => {}
                 }
             }
-            // Both forms exist: neither is preferred and they are never
-            // merged. The policy is ambiguous, so it denies.
+            // Both forms exist with different bodies: neither is preferred and
+            // they are never merged. The policy is ambiguous, so it denies.
             _ => {
                 return PolicyOutcome::Invalid {
                     policy_path: keys[0].clone(),
                     reason: InvalidPolicyReason::Malformed(format!(
-                        "both ACL forms exist ({} and {}); remove one",
+                        "both ACL forms exist with different contents ({} and {}); remove the wrong one",
                         keys[0], keys[1]
                     )),
                 };
