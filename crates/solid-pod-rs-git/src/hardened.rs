@@ -30,6 +30,15 @@ pub const HARDENED_CONFIG: [(&str, &str); 4] = [
     ("commit.gpgSign", "false"),
 ];
 
+/// Extra overrides that stop git starting its detached auto-maintenance
+/// (`git gc --auto`, `git maintenance`) after a command. Maintenance writes
+/// into the repository after the command has returned, which races with a
+/// caller that removes or replaces the directory straight afterwards. Kept
+/// apart from [`HARDENED_CONFIG`], which the fixed `receive-pack` command line
+/// mirrors exactly.
+pub const NO_AUTO_MAINTENANCE: [(&str, &str); 2] =
+    [("maintenance.auto", "false"), ("gc.auto", "0")];
+
 /// Environment variables applied to every hardened invocation.
 pub const HARDENED_ENV: [(&str, &str); 3] = [
     ("GIT_CONFIG_NOSYSTEM", "1"),
@@ -43,7 +52,7 @@ pub const HARDENED_ENV: [(&str, &str); 3] = [
 #[must_use]
 pub fn hardened_git() -> Command {
     let mut cmd = Command::new("git");
-    for (k, v) in HARDENED_CONFIG {
+    for (k, v) in HARDENED_CONFIG.iter().chain(NO_AUTO_MAINTENANCE.iter()) {
         cmd.arg("-c").arg(format!("{k}={v}"));
     }
     for (k, v) in HARDENED_ENV {
@@ -170,6 +179,21 @@ mod tests {
             .success());
         assert!(git_ok(repo, &["status"]));
         assert!(!marker.exists(), "repo-local fsmonitor fired");
+    }
+
+    #[test]
+    fn git_never_starts_detached_auto_maintenance() {
+        let cmd = hardened_git();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for want in ["maintenance.auto=false", "gc.auto=0"] {
+            assert!(
+                args.iter().any(|a| a == want),
+                "{want} missing from {args:?}"
+            );
+        }
     }
 
     #[test]
