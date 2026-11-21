@@ -50,6 +50,8 @@ const FOAF_NS: &str = "http://xmlns.com/foaf/0.1/";
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 /// Placeholder authority that relative references resolve against.
 const SENTINEL: &str = "https://acl-base.invalid";
+/// Its host, which no document may spell out.
+const SENTINEL_HOST: &str = "acl-base.invalid";
 /// Cap on the quads one ACL document may expand to.
 const MAX_QUADS: usize = 10_000;
 
@@ -91,6 +93,11 @@ enum Obj {
 /// document, needs a remote context, or holds an unreadable `acl:condition`.
 pub(crate) fn parse_expanded(body: &[u8], doc_path: &str) -> Result<AclDocument, PodError> {
     let err = |m: String| PodError::AclParse(format!("JSON-LD ACL: {m}"));
+    // The placeholder authority must be unnameable: a document that spells it
+    // out is refused, so nothing but a relative reference can resolve to it.
+    if std::str::from_utf8(body).is_ok_and(|t| t.contains(SENTINEL_HOST)) {
+        return Err(err("the reserved placeholder host may not appear".into()));
+    }
     let mut value: Value =
         serde_json::from_slice(body).map_err(|e| err(format!("not JSON: {e}")))?;
     let defaults = json!({ "acl": ACL_NS, "foaf": FOAF_NS });
@@ -203,12 +210,26 @@ pub(crate) fn parse_expanded(body: &[u8], doc_path: &str) -> Result<AclDocument,
 /// FOAF vocabularies to `acl:` / `foaf:`, a relative reference (placeholder
 /// authority) to its path, anything else verbatim.
 fn compact(iri: &str) -> String {
+    // Strip the placeholder only when the URL's host is exactly it, with no
+    // port or userinfo and a path that is empty or starts with `/`; a string
+    // prefix would also match `https://acl-base.invalid.evil.example/x`.
     if let Some(rest) = iri.strip_prefix(SENTINEL) {
-        return if rest.is_empty() {
-            "/".into()
-        } else {
-            rest.to_string()
-        };
+        if rest.is_empty() || rest.starts_with(['/', '?', '#']) {
+            if let Ok(u) = url::Url::parse(iri) {
+                if u.scheme() == "https"
+                    && u.host_str() == Some(SENTINEL_HOST)
+                    && u.port().is_none()
+                    && u.username().is_empty()
+                    && u.password().is_none()
+                {
+                    return if rest.starts_with('/') {
+                        rest.to_string()
+                    } else {
+                        format!("/{rest}")
+                    };
+                }
+            }
+        }
     }
     if let Some(local) = iri.strip_prefix(ACL_NS) {
         return format!("acl:{local}");
@@ -499,6 +520,41 @@ mod tests {
             "acl:agentClass": {"@id": "foaf:Agent"}, "acl:accessTo": {"@id": "/r"},
             "acl:mode": {"@id": "acl:Read"}}]});
         assert!(read(&doc, "/r", None, AccessMode::Read));
+    }
+
+    #[test]
+    fn a_foreign_iri_that_merely_starts_like_the_placeholder_never_becomes_a_local_path() {
+        // The placeholder host stands for "relative reference". These are
+        // other hosts (or carry a port or userinfo) and must never be read
+        // as this pod's paths: the document is refused outright.
+        for iri in [
+            "https://acl-base.invalid.evil.example/x",
+            "https://acl-base.invalid:8443/x",
+            "https://user@acl-base.invalid/x",
+            "https://acl-base.invalid@evil.example/x",
+            "https://acl-base.invalid/x",
+            "http://acl-base.invalid/x",
+        ] {
+            let doc = json!({"@context": {"acl": ACL_NS}, "@graph": [{
+                "@id": "#o", "@type": "acl:Authorization",
+                "acl:agentClass": {"@id": "foaf:Agent"},
+                "acl:accessTo": {"@id": iri}, "acl:mode": {"@id": "acl:Read"}}]});
+            assert!(
+                parse_expanded(doc.to_string().as_bytes(), "/r.acl").is_err(),
+                "{iri} must make the ACL unreadable"
+            );
+        }
+        // And `compact` itself, whatever reaches it, is URL-exact.
+        assert_eq!(compact("https://acl-base.invalid/x/y#f"), "/x/y#f");
+        assert_eq!(compact("https://acl-base.invalid"), "/");
+        for foreign in [
+            "https://acl-base.invalid.evil.example/x",
+            "https://acl-base.invalid:8443/x",
+            "https://u@acl-base.invalid/x",
+            "https://acl-base.invalid@evil.example/x",
+        ] {
+            assert_eq!(compact(foreign), foreign, "{foreign}");
+        }
     }
 
     #[test]
