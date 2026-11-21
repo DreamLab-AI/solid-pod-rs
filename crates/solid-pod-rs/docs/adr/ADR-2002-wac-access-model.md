@@ -17,6 +17,34 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 
 # ADR-2002 — Ground access control on Web Access Control, not ACP
 
+> Note 2026-11-21 (SP-PATCH-WRITE-REBASE, SP-PAR-276): a fixed-IRI-space design
+> for the Write path of PATCH (read the stored body and the patch against a
+> placeholder `https://patch-base.invalid/<path>`, write placeholder IRIs back
+> as relative references, write JSON-LD back as JSON-LD) was attempted and
+> withdrawn; PATCH is back at its previous behaviour (Host-derived base unless
+> `public_base_url` is set; Turtle and N-Triples bodies only; `acl_targets_as_paths`
+> for ACLs). Security review found four defects. (a) The stored body was read in
+> the placeholder space while SPARQL patches are read with no base, so a client
+> naming a triple by its real absolute URL matched nothing: an N3 patch got 409,
+> but a SPARQL delete that matches nothing is ignored, so "replace value"
+> returned 204 keeping the old triple and adding a duplicate, and a SPARQL
+> `DELETE DATA` revoking an `acl:agent` returned 204 and left the grant. (b)
+> Relativisation used `strip_prefix` on the origin string, so
+> `https://patch-base.invalid.other.example/x`, `...invalid@h/x` and
+> `...invalid:8443/x` became relative references, and literal datatypes were
+> never relativised, leaking the placeholder host into stored data (the JSON-LD
+> writer had the same flaw for `@type`). (c) An Append-only caller could append
+> an absolute placeholder IRI that the owner's next Write PATCH rewrote into a
+> same-pod reference. (d) With no origin configured a Turtle ACL's `<./a/>`
+> (which denies) became `</a/>` (which grants) after any PATCH. Requirements a
+> future design must meet: origin-equivalence when `public_base_url` is set; a
+> loud refusal of an absolute-IRI delete that cannot match; relativisation by
+> parsing URLs (origin compared as a whole), including literal datatypes; and a
+> base no caller can name. The Write-path rebase onto a request `Host` when
+> `public_base_url` is unset (SP-PATCH-WRITE-REBASE) and PATCH of JSON-LD and
+> HTML-island bodies (SP-PAR-276) therefore remain open; setting
+> `public_base_url` still closes the first for a deployment.
+
 > Note 2026-11-21 (SP-PAR-265, SP-PAR-288): relative `acl:accessTo` / `acl:default`
 > targets are read differently by the two ACL syntaxes while no pod origin
 > (`public_base_url`) is configured. A JSON-LD ACL is expanded

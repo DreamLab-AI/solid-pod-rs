@@ -50,8 +50,8 @@ and 104 were reclassified in place. Method and evidence:
 | Metric | Value |
 |---|---|
 | Strict (present + net-new + semantic-difference, excluding deferred/wontfix/not-applicable) | **≤ 93.9%** — 263/280 classified in-scope rows (`scripts/parity-check.sh`; below its 95% threshold). An upper bound: see below |
-| Half-credit (partial-parity counted 0.5) | **≤ 95.9%** |
-| Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of an HTML data island (276) is open, and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
+| Half-credit (partial-parity counted 0.5) | **≤ 95.7%** |
+| Spec-normative surface | **mostly closed** — ACL IRI resolution (288, 289) and JSON-LD ACL reading (265) are done; PATCH of JSON-LD and HTML data islands (276) is open (a fixed-IRI-space design was withdrawn, ADR-2002), and a JSON-LD ACL that needs a remote `@context` is unreadable by design |
 | Protocol-visible surface | **closed** — `/.notifications` is served and `Updates-Via` is sent only when it is (279) |
 | JSS-specific extras (AP / Git / IdP / Nostr relay / did:key) | **library-complete, partly unwired** — the relay is mounted behind `--nostr` (278, 280); AP inbox/outbox are not mounted by the server (281) |
 
@@ -62,7 +62,7 @@ and 104 were reclassified in place. Method and evidence:
 > in its scope (§26–§28 and the eleven rows it reclassified). The remaining
 > `present` rows have not been re-audited for server wiring, and some may be
 > library-only in the same way. The `0.0.224` delta adds 14 rows (§26); §27
-> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%; the 2026-11-21 second wave (rows 265, 266, 276 in part, 278, 279, 280, 288, 289 and the challenge of row 73) moved it to 93.9%.
+> records 12 older gaps. The same-day fixes moved it from 86.4% to 89.6%; the 2026-11-20 closeout (rows 273, 277, 291, 292, 293) moved it to 91.4%; the 2026-11-21 second wave (rows 265, 266, 278, 279, 280, 288, 289 and the challenge of row 73) moved it to 93.9%.
 
 ### By status
 
@@ -71,8 +71,8 @@ and 104 were reclassified in place. Method and evidence:
 | present (includes present-by-absence) | 235 |
 | net-new (ours; not in JSS) | 19 |
 | semantic-difference | 9 |
-| partial-parity | 11 |
-| missing | 6 |
+| partial-parity | 10 |
+| missing | 7 |
 | explicitly-deferred | 5 |
 | wontfix-in-crate | 3 |
 | other/unclassified (not applicable, architectural, test-meta) | 12 |
@@ -676,7 +676,7 @@ reaches the behaviour, not just whether the library has it.
 | 273 | Insert-only PATCH (no deletes, no `where`) authorised as `acl:Append` | `a6834e8` (`src/server.js:808-823`, `quads.js:91`) | `handle_patch` parses first: an N3 Patch with no `solid:deletes` and no `solid:where`, or a SPARQL Update made only of `INSERT DATA` (empty `DELETE DATA {}` allowed), asks for `acl:Append`; every other shape (any delete, any `where`, `INSERT ... WHERE`, JSON Patch, an unparseable body) still asks for `acl:Write`. Sidecars stay at Control | present | `crates/solid-pod-rs-server/src/lib.rs` (`handle_patch`); `ldp::sparql_update_is_insert_only`; `n3_patch.rs:193` | Fixed 2026-11-20. Tests: server `tests/patch_append_only.rs` (both directions, empty delete block, delete of an absent triple, `.acl` sidecar). JSS accepts `INSERT ... WHERE` with no delete as Append; we ask for Write, which is stricter. |
 | 274 | PATCH serialised per resource in-process: no lost updates under concurrent inserts | `a6834e8` (`src/handlers/resource.js:1191-1215`) | None: read at `:1948`, write at `:2019`, last writer wins | present | `crates/solid-pod-rs-server/src/lib.rs:1948`, `:2019` | **P1, runtime: 20 parallel inserts all returned 204, 3–4 survived** (four rounds). Temp-file-and-rename stops torn files (ahead of JSS) but not lost updates. PUT and MCP `write` race the same way. Fixed 2026-11-01: striped in-process lock over PUT, PATCH and MCP `write` (`lock_resource`); 20 concurrent inserts all kept (the test loses 19 of 20 without the lock). Extended 2026-11-03 to POST (minted name re-checked under its lock; 20 same-`Slug` POSTs previously shared one target), DELETE, COPY, container PUT, pod creation and MCP `create`/`delete`; server `tests/concurrent_writes.rs`. |
 | 275 | Cross-process `.<name>.lock` (O_EXCL, stale after 15 s, 30 s wait then 503 with `Retry-After`) | `2fd3454` (`src/storage/filesystem.js:135-179`) | None | missing | `src/storage/fs.rs:111-145` | P2. Matters only for several processes on one data root. If added, hide the lock file in listings (`fs.rs:306`). |
-| 276 | PATCH reads JSON-LD (`@graph`), HTML data islands and Turtle, and writes back in the stored form | `a6834e8` (`resource.js:1274-1378`) | PATCH reads a stored body as Turtle, N-Triples or JSON-LD (`rdf_input::parse_jsonld`: remote contexts never fetched, named graphs refused) and writes it back in the stored form: JSON-LD stays JSON-LD (`rdf_input::serialize_jsonld`: expanded, no `@context`; blank-node labels, key order, prefixes and compaction are not preserved), everything else as N-Triples served as `text/turtle`. HTML data islands are not patched: 409 | partial-parity | `crates/solid-pod-rs-server/src/lib.rs` (`seed_graph_for_patch`, `handle_patch`); `src/rdf_input.rs` | Fixed 2026-11-21 for JSON-LD and Turtle; HTML islands remain open (needs an island rewriter, no estate consumer). Tests: server `tests/patch_stored_form.rs`; doctest on `serialize_jsonld`.
+| 276 | PATCH reads JSON-LD (`@graph`), HTML data islands and Turtle, and writes back in the stored form | `a6834e8` (`resource.js:1274-1378`) | Only an N-Triples-stored body is patchable; anything else gives 409 | missing | `crates/solid-pod-rs-server/src/lib.rs:2182-2197` | P1, runtime: PATCH after a prefixed-Turtle or JSON-LD PUT gives 409. |
 | 277 | `jsonLdToQuads` reads every node of `@graph` (GET-as-Turtle of a `@graph` document no longer empty) | `a6834e8` (`src/rdf/turtle.js`) | GET conneg parses a stored `application/ld+json` body with `rdf_input::parse_jsonld` (`oxjsonld`; top-level `@graph` read in full, embedded contexts honoured, remote contexts never fetched) and serves it as Turtle (N-Triples, valid Turtle) or N-Triples; unreadable JSON-LD, or JSON-LD with a named graph, is served verbatim. JSON-LD output remains a bare array, not `@graph` | present | `crates/solid-pod-rs-server/src/lib.rs` (`rdf_content_negotiate`); `crates/solid-pod-rs/src/rdf_input.rs` (`parse_jsonld`) | Fixed 2026-11-20. Tests: server `tests/jsonld_graph_as_turtle.rs`; doctest on `parse_jsonld`. PATCH of a JSON-LD-stored body is still refused (row 276). |
 | 278 | NIP-11 relay information at the relay URL when `Accept` contains `application/nostr+json`: 200, `application/nostr+json`, `Access-Control-Allow-Origin: *`; a plain GET stays 404 | `c42cc13`, PR #635 (`src/nostr/relay.js:251-265`) | With `--nostr` the relay is mounted: `GET <path>` with `Accept: application/nostr+json` returns the NIP-11 document (200, `application/nostr+json`, `Access-Control-Allow-Origin: *`; the seven JSS fields, `supported_nips` `[1,11,16]`); a plain GET is 404; `OPTIONS` answers the preflight; `<path>/info` is an alias | present | `crates/solid-pod-rs-server/src/nostr_mount.rs`; `crates/solid-pod-rs-nostr/src/relay.rs` | Fixed 2026-11-21, default off. Tests: server `tests/nostr_relay.rs`.
 
