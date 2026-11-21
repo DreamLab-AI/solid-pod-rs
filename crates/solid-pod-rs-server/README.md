@@ -127,18 +127,6 @@ mutation is applied on top of pre-existing triples rather than replacing
 them; a body that is neither empty nor parseable N-Triples is refused with
 `409` rather than silently overwritten.
 
-## Container ACL layout (operations)
-
-A container's ACL is read from `<container>.acl` (what the server writes and
-advertises) or `<container>/.acl` (the reference JavaScript server's layout).
-If both exist with identical bytes, the sidecar governs (pods provisioned by
-v0.5.0-alpha.10 to .22 have such a pair, and access is unchanged). If both exist
-and **differ**, every request under the container is denied and there is **no
-HTTP repair**: delete whichever copy is wrong from the data directory. At boot
-the server logs identical pairs at info and differing pairs as a warning; it
-never deletes or rewrites a file, and the scan skips `.git` directories. A path
-beneath an ACL or meta document (`/docs/.acl/x`) is refused with 403.
-
 ## Notifications (`/.notifications`)
 
 `GET /.notifications` upgrades to a WebSocket speaking the `solid-0.1` protocol

@@ -76,18 +76,8 @@ lineage: No dedicated legacy record; distils the implicit access-model substrate
 > applied; with a public root ACL a private `/docs/.acl` left `/docs/a.txt`
 > readable (verified). The resolver (`crates/solid-pod-rs/src/wac/resolver.rs`)
 > now probes both keys at every container level: neither, ascend; exactly one,
-> use it; both with byte-identical bodies, the sidecar governs (pods provisioned
-> by v0.5.0-alpha.10 to .22 carry such a pair and every earlier release read
-> only the sidecar, so their access does not change on upgrade); both with
-> different bodies, deny everyone (never prefer, never merge); a key that is a
-> directory is absent for that form; any other read error on either key is
-> `Unavailable` and does not ascend. No request may address a path beneath an
-> ACL or meta document (a non-final segment ending `.acl` or `.meta` is refused
-> 403 in the dotfile guard), so a write cannot create a directory at an ACL key.
-> A pair that differs has NO HTTP repair (every request under the container is
-> denied and the second form cannot be written): remove the wrong copy from the
-> data directory. Boot logs identical pairs at info and differing pairs as a
-> warning; it never deletes or rewrites a file. The key actually read
+> use it; both, deny everyone (never prefer, never merge); a read error on
+> either key is `Unavailable` and does not ascend. The key actually read
 > anchors relative IRIs. Writes that would create the second form while the
 > first exists are refused with 409 (PUT, PATCH, POST, COPY), and boot logs
 > containers that already have both. Where the server writes and advertises
