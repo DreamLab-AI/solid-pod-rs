@@ -70,7 +70,7 @@ pub const MIN_TTL_SECS: u64 = min_ttl_for_skew(DPOP_DEFAULT_SKEW_SECS);
 /// `skew` seconds of now: `2 * skew + 2`. Use it when an operator configures
 /// a skew wider than [`DPOP_DEFAULT_SKEW_SECS`].
 pub const fn min_ttl_for_skew(skew: u64) -> u64 {
-    2 * skew + 2
+    skew.saturating_mul(2).saturating_add(2)
 }
 
 /// Default TTL for a remembered `jti`: the [`MIN_TTL_SECS`] floor, 122 s.
@@ -174,6 +174,16 @@ impl DpopReplayCache {
             ttl,
             max_size: max_size.max(1),
         }
+    }
+
+    /// Raise the lifetime to at least `floor`, keeping the entries and
+    /// capacity. A TTL already at or above `floor` is left alone. Use it to
+    /// hold a cache built with [`Self::with_config`] to
+    /// [`min_ttl_for_skew`] for the verifier's acceptance window.
+    #[must_use]
+    pub fn with_min_ttl(mut self, floor: Duration) -> Self {
+        self.ttl = self.ttl.max(floor);
+        self
     }
 
     /// Configured TTL.
@@ -474,6 +484,24 @@ impl Default for JtiReplayCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn min_ttl_for_skew_saturates_instead_of_overflowing() {
+        assert_eq!(min_ttl_for_skew(60), 122);
+        assert_eq!(min_ttl_for_skew(std::hint::black_box(u64::MAX)), u64::MAX);
+        assert_eq!(min_ttl_for_skew(u64::MAX / 2 + 1), u64::MAX);
+    }
+
+    #[test]
+    fn with_min_ttl_only_raises() {
+        let low =
+            DpopReplayCache::with_config(Duration::ZERO, 4).with_min_ttl(Duration::from_secs(122));
+        assert_eq!(low.ttl(), Duration::from_secs(122));
+        assert_eq!(low.max_size(), 4);
+        let high = DpopReplayCache::with_config(Duration::from_secs(600), 4)
+            .with_min_ttl(Duration::from_secs(122));
+        assert_eq!(high.ttl(), Duration::from_secs(600));
+    }
 
     #[tokio::test]
     async fn first_seen_jti_is_accepted() {

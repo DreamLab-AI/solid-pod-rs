@@ -34,6 +34,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use solid_pod_rs::oidc::replay::min_ttl_for_skew;
 use solid_pod_rs::oidc::{record_dpop_jti, verify_dpop_proof_unrecorded, DpopReplayCache};
 
 use crate::error::ProviderError;
@@ -113,9 +114,23 @@ impl Provider {
 
     /// Replace the DPoP `jti` replay cache (the default is built from the
     /// environment). For deployments sizing the cache themselves, and tests.
+    ///
+    /// A cache whose lifetime is shorter than
+    /// [`min_ttl_for_skew`](solid_pod_rs::oidc::replay::min_ttl_for_skew) for this
+    /// provider's `dpop_skew_secs` would let a future-dated proof be replayed
+    /// after its entry expires, so it is raised to that floor (and the
+    /// change logged) rather than installed as given.
     #[must_use]
     pub fn with_dpop_replay_cache(mut self, cache: DpopReplayCache) -> Self {
-        self.dpop_replay = cache;
+        let floor = std::time::Duration::from_secs(min_ttl_for_skew(self.config.dpop_skew_secs));
+        if cache.ttl() < floor {
+            tracing::warn!(
+                requested_secs = cache.ttl().as_secs(),
+                floor_secs = floor.as_secs(),
+                "DPoP replay cache lifetime is below the proof acceptance window; raised to the floor"
+            );
+        }
+        self.dpop_replay = cache.with_min_ttl(floor);
         self
     }
 
@@ -511,6 +526,35 @@ mod tests {
 
     use crate::registration::{register_client, ClientDocument, RegistrationRequest};
     use crate::user_store::InMemoryUserStore;
+
+    #[test]
+    fn a_replay_cache_below_the_skew_floor_is_raised_to_it() {
+        use std::time::Duration;
+        let build = |skew: u64| {
+            let mut cfg = ProviderConfig::new("https://pod.example/");
+            cfg.dpop_skew_secs = skew;
+            Provider::new(
+                cfg,
+                ClientStore::new(),
+                SessionStore::new(),
+                Arc::new(InMemoryUserStore::new()),
+                Jwks::generate_es256().unwrap(),
+            )
+        };
+        let zero = DpopReplayCache::with_config(Duration::ZERO, 8);
+        let p = build(60).with_dpop_replay_cache(zero.clone());
+        assert_eq!(p.dpop_replay.ttl(), Duration::from_secs(122));
+        // A wider skew raises the floor with it.
+        let p = build(300).with_dpop_replay_cache(zero);
+        assert_eq!(p.dpop_replay.ttl(), Duration::from_secs(602));
+        // A longer lifetime is kept.
+        let long = DpopReplayCache::with_config(Duration::from_secs(900), 8);
+        let p = build(60).with_dpop_replay_cache(long);
+        assert_eq!(p.dpop_replay.ttl(), Duration::from_secs(900));
+        // An absurd skew saturates instead of overflowing.
+        let _ = build(u64::MAX)
+            .with_dpop_replay_cache(DpopReplayCache::with_config(Duration::from_secs(1), 8));
+    }
 
     async fn seed_provider() -> (Provider, InMemoryUserStore, ClientDocument, String) {
         let store = Arc::new(InMemoryUserStore::new());
