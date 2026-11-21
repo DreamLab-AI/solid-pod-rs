@@ -67,7 +67,8 @@ serves them without that policy, as earlier releases did; use it only when you
 host web apps from pod storage and every writer is trusted. It never applies
 under `/remotestorage/`, whose documents are always sandboxed, `nosniff` and a
 download. `--live-reload` injects a script, so it also needs this flag to take
-effect. Pages the binary generates (the Mashlib wrapper, the forge UI) are not
+effect. Apps deployed by a git push to `/public/apps/` are stored resources and
+are sandboxed like any other, so they need the flag to run. Pages the binary generates (the Mashlib wrapper, the forge UI) are not
 pod storage and are unchanged.
 
 The write-path authenticator also accepts JSS's two-part development bearer

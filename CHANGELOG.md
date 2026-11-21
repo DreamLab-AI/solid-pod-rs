@@ -163,7 +163,9 @@ WebRTC:
   without script, styles or images, and a web app hosted from pod storage stops working; `--live-reload` no longer
   reloads (its injected script is blocked). Operators who host web apps from pod storage set `--serve-active-content`
   (`JSS_SERVE_ACTIVE_CONTENT=true`) to restore the earlier headers. The flag never applies under `/remotestorage/`,
-  whose responses stay sandboxed, `nosniff` and a download. Mashlib and forge pages are unchanged.
+  whose responses stay sandboxed, `nosniff` and a download. Mashlib and forge pages are unchanged. Apps that a git push
+  deploys to `/public/apps/` (the `/.well-known/apps` feature) are stored resources like any other, so their HTML
+  entry points are sandboxed too and they need the flag to run.
 
 - **A SPARQL Update that deletes a triple the resource does not hold is now `409` and writes nothing** (row 41),
   as an N3 Patch already was and as JSS is for both dialects. Before, `DELETE DATA` of an absent triple (and an absent
