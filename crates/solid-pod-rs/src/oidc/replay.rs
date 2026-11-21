@@ -137,13 +137,22 @@ impl DpopReplayCache {
     /// overridden by environment variables
     /// `SOLID_POD_DPOP_REPLAY_TTL_SECS` / `SOLID_POD_DPOP_REPLAY_MAX_SIZE`.
     pub fn from_env() -> Self {
+        Self::from_env_for_skew(DPOP_DEFAULT_SKEW_SECS)
+    }
+
+    /// As [`Self::from_env`], for a verifier that accepts proofs within
+    /// `skew` seconds of now: the lifetime is raised to
+    /// [`min_ttl_for_skew`]`(skew)` when the environment (or the default)
+    /// would leave it shorter than the acceptance window.
+    pub fn from_env_for_skew(skew: u64) -> Self {
         let ttl_secs = std::env::var(ENV_TTL_SECS)
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(DEFAULT_TTL_SECS)
             // Never below the floor: a shorter (or zero) lifetime reopens the
             // replay window for a future-dated proof.
-            .max(MIN_TTL_SECS);
+            .max(MIN_TTL_SECS)
+            .max(min_ttl_for_skew(skew));
         let max_size = std::env::var(ENV_MAX_SIZE)
             .ok()
             .and_then(|s| s.parse::<usize>().ok())

@@ -99,13 +99,15 @@ impl Provider {
         user_store: Arc<dyn UserStore>,
         jwks: Jwks,
     ) -> Self {
+        // The replay lifetime must outlast the proof acceptance window.
+        let dpop_skew = config.dpop_skew_secs;
         Self {
             config,
             client_store,
             session_store,
             user_store,
             jwks,
-            dpop_replay: DpopReplayCache::from_env(),
+            dpop_replay: DpopReplayCache::from_env_for_skew(dpop_skew),
         }
     }
 

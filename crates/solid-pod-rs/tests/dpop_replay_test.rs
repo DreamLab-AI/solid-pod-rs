@@ -312,3 +312,44 @@ async fn defaults_match_ddd_contract() {
     assert_eq!(DEFAULT_TTL_SECS, 122);
     assert_eq!(DEFAULT_MAX_SIZE, 10_000);
 }
+
+// A proof is acceptable for `2 * skew` seconds (iat in `now +/- skew`), so the
+// replay entry must outlive that. Scaled to skew = 1 s so it runs in real
+// time: the window is 2 s, the floor 4 s; a TTL of half the window (the shape
+// of the old 60 s default against a 120 s window) lets the replay through.
+#[tokio::test]
+async fn future_dated_proof_cannot_be_replayed_after_a_ttl_inside_the_window() {
+    use solid_pod_rs::oidc::replay::min_ttl_for_skew;
+
+    let skew = 1u64;
+    let secret = b"future-dated-secret";
+    let jwk = test_jwk(secret);
+    let htu = "https://pod.example/r";
+    let now = 1_700_000_000u64;
+    // Future-dated by the full skew: first accepted at `now`, still
+    // acceptable (iat + skew) at `now + 2`.
+    let proof = build_dpop_proof(secret, &jwk, htu, "GET", now + skew, "jti-future");
+
+    let floored = DpopReplayCache::with_config(Duration::from_secs(min_ttl_for_skew(skew)), 16);
+    let too_short = DpopReplayCache::with_config(Duration::from_secs(1), 16);
+    for cache in [&floored, &too_short] {
+        verify_dpop_proof(&proof, htu, "GET", now, skew, Some(cache))
+            .await
+            .expect("first use accepted");
+    }
+
+    // Just past half the window: the proof is still acceptable by the clock
+    // check at `now + 2`.
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+
+    let admitted = verify_dpop_proof(&proof, htu, "GET", now + 2, skew, Some(&too_short)).await;
+    assert!(
+        admitted.is_ok(),
+        "control: a TTL inside the window lets the replay through"
+    );
+    let refused = verify_dpop_proof(&proof, htu, "GET", now + 2, skew, Some(&floored)).await;
+    assert!(
+        refused.is_err(),
+        "a TTL at the derived floor must still refuse the replay"
+    );
+}

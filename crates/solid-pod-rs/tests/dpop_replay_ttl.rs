@@ -50,4 +50,8 @@ async fn from_env_never_goes_below_the_floor() {
     std::env::set_var(ENV_TTL_SECS, "300");
     assert_eq!(DpopReplayCache::from_env().ttl(), Duration::from_secs(300));
     std::env::remove_var(ENV_TTL_SECS);
+
+    // A wider configured skew raises the floor with it.
+    let c = DpopReplayCache::from_env_for_skew(300);
+    assert_eq!(c.ttl(), Duration::from_secs(min_ttl_for_skew(300)));
 }
