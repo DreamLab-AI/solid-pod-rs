@@ -59,6 +59,11 @@ WebRTC:
 
 ### Security (review of the stored-content sandbox)
 
+- **PATCH of a stored JSON-LD document or HTML island needs Read as well as Write, for every patch.** An insert-only
+  patch needs no Read on a Turtle resource, but this arm opens the document, and a Write-only agent could tell from
+  `204` against `409` whether a subject existed. Without Read the generic `409` refusal is returned before the
+  document is opened. **Behaviour change:** a Write-only agent that inserted into a stored JSON-LD page now gets `409`.
+
 - **HTML locator bounded.** `html_island` (used by the WebID readers, NIP-98 elevation, the OIDC issuer check, the
   NIP-05 and `did:nostr` handlers and the PATCH writer) refuses, before html5ever sees it, a document over 1 MiB
   (was 4 MiB), nested deeper than 512 or with more than 10 000 start tags or end tags: html5ever's scope checks are

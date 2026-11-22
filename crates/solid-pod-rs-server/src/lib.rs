@@ -2610,10 +2610,19 @@ async fn handle_patch(
                 ldp::PatchDialect::N3 | ldp::PatchDialect::SparqlUpdate
             ) && is_jsonld_target(&meta.content_type) =>
         {
+            // The in-place writer inspects the document by construction (its
+            // refusals and its 204 against 409 say what the document holds),
+            // so this arm needs Read as well as Write for EVERY patch, not
+            // only those that name triples. Probed without charging.
+            let can_read =
+                enforce_read_inner(&state, &path, agent.as_deref(), req_origin(&req), false)
+                    .await
+                    .is_ok();
             patch_stored_jsonld(
                 &state,
                 &path,
                 agent.as_deref(),
+                can_read,
                 &current_body,
                 &meta.content_type,
                 dialect,
@@ -2826,20 +2835,23 @@ fn is_jsonld_target(content_type: &str) -> bool {
 ///   dialects (the patch engine);
 /// * the stored content type is kept.
 ///
-/// Authorisation (Write; Read as well when the patch inspects the document)
+/// Authorisation (Write, and `can_read`: this arm needs Read for every patch)
 /// and the `If-Match` precondition were checked by the caller, and the
-/// per-resource lock is held.
+/// per-resource lock is held. Without Read the generic refusal is returned
+/// before the stored document is opened, so a Write-only agent cannot tell
+/// whether a subject exists from the status.
 async fn patch_stored_jsonld(
     state: &AppState,
     path: &str,
     agent: Option<&str>,
+    can_read: bool,
     current_body: &[u8],
     content_type: &str,
     dialect: ldp::PatchDialect,
     body_str: &str,
 ) -> Result<HttpResponse, ActixError> {
     let refused = || Ok(HttpResponse::Conflict().body(JSONLD_PATCH_REFUSED));
-    if protected_resource_for_acl(path).is_some() {
+    if !can_read || protected_resource_for_acl(path).is_some() {
         return refused();
     }
     let Some(origin) = state.public_origin() else {

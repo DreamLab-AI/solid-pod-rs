@@ -11,7 +11,9 @@
 //!   over the bounds: 409 with one message, and the stored bytes untouched;
 //! * a remote `@context` is never fetched;
 //! * Append-only agents never reach this path; Write is required, and Read
-//!   when the patch inspects the document;
+//!   as well for every patch of a JSON-LD document or an HTML island (the
+//!   in-place writer inspects the document, so a Write-only agent would learn
+//!   what it holds from 204 against 409);
 //! * a WebID profile card keeps what the readers see (issuer, key) after a
 //!   rename, which is the regression for the withdrawn second attempt.
 
@@ -488,6 +490,44 @@ async fn write_is_required_and_read_too_when_the_patch_inspects_the_document() {
         sparql(&format!("{name} \"A\""), &format!("{name} \"B\""))
     );
     assert_eq!(st, 204);
+}
+
+#[actix_web::test]
+async fn a_write_only_agent_learns_nothing_about_a_stored_json_ld_document_from_a_patch() {
+    // Property: an agent holding Write but not Read gets one answer for every
+    // insert-only patch of a JSON-LD document or an HTML island, whether the
+    // subject exists, is new, or the shape would be refused, and the stored
+    // bytes are untouched. (Insert-only patches need no Read on the Turtle
+    // arm; the in-place writer inspects the document by construction.)
+    let json = format!(
+        "{{\"@context\": {{\"foaf\": \"{FOAF}\"}}, \"@id\": \"#me\", \"foaf:name\": \"A\"}}"
+    );
+    let page = island_page(&json);
+    for (path, ct, doc) in [
+        ("/doc", "application/ld+json", json.clone()),
+        ("/page", "text/html", page),
+    ] {
+        let p = pod("acl:Write").await;
+        put(&p, path, &doc, ct).await;
+        let app = test::init_service(build_app(state(&p, Some(ORIGIN)))).await;
+        let existing = format!("{} <{FOAF}name>", me(path));
+        let fresh = format!("<{ORIGIN}{path}#other> <{FOAF}name>");
+        let mut seen = Vec::new();
+        for (pct, make) in [
+            (SPARQL, sparql as fn(&str, &str) -> String),
+            (N3, n3 as fn(&str, &str) -> String),
+        ] {
+            for subject in [&existing, &fresh] {
+                let (st, msg) = patch!(&app, path, pct, make("", &format!("{subject} \"B\"")));
+                seen.push((st, msg));
+            }
+        }
+        for (st, msg) in &seen {
+            assert_eq!(*st, 409, "{path}: {msg}");
+            assert_eq!(msg, REFUSAL, "{path}");
+        }
+        assert_eq!(stored(&p, path).await, doc, "{path}: nothing was written");
+    }
 }
 
 #[actix_web::test]
