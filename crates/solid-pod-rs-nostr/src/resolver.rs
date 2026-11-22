@@ -31,6 +31,35 @@ use url::Url;
 use crate::did::NostrPubkey;
 use crate::error::ResolverError;
 
+/// Most bytes of a WebID profile the resolver reads. A larger body is
+/// refused while it streams in, whatever `Content-Length` says. Equal to the
+/// HTML locator's limit, since the profile may be an HTML page.
+pub const MAX_PROFILE_BYTES: usize = solid_pod_rs::html_island::MAX_HTML_BYTES;
+
+/// Read `resp`'s body as text, failing once it passes [`MAX_PROFILE_BYTES`].
+async fn read_capped(mut resp: reqwest::Response) -> Result<String, ResolverError> {
+    let too_big =
+        || ResolverError::Http(format!("webid profile exceeds {MAX_PROFILE_BYTES} bytes"));
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_PROFILE_BYTES as u64)
+    {
+        return Err(too_big());
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ResolverError::Http(e.to_string()))?
+    {
+        if body.len() + chunk.len() > MAX_PROFILE_BYTES {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// SSRF injection point — consumers pass their operator policy.
 #[async_trait]
 pub trait SsrfCheck: Send + Sync {
@@ -171,10 +200,7 @@ impl NostrWebIdResolver {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| ResolverError::Http(e.to_string()))?;
+        let body = read_capped(resp).await?;
 
         Ok(extract_nostr_pubkey_from_profile(&body, &content_type))
     }

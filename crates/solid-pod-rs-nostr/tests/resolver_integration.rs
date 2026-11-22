@@ -224,3 +224,55 @@ async fn resolver_rejects_metadata_hostname() {
     let msg = err.to_string();
     assert!(msg.contains("ssrf") || msg.contains("Reserved") || msg.contains("blocked"));
 }
+
+#[tokio::test]
+async fn an_oversized_profile_is_refused_not_buffered() {
+    // Property: the resolver never reads more than MAX_PROFILE_BYTES of a
+    // remote profile, whether or not the server declares a length.
+    use solid_pod_rs_nostr::resolver::MAX_PROFILE_BYTES;
+    let server = MockServer::start().await;
+    let pad = "x".repeat(MAX_PROFILE_BYTES + 1024);
+    let body = json!({
+        "@id": "http://alice.example/profile#me",
+        "sameAs": format!("did:nostr:{PK}"),
+        "pad": pad,
+    });
+    Mock::given(method("GET"))
+        .and(path("/big"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/ld+json")
+                .set_body_json(&body),
+        )
+        .mount(&server)
+        .await;
+    let resolver = NostrWebIdResolver::with_ssrf(Arc::new(AllowAllSsrf));
+    let got = resolver
+        .resolve_webid_to_nostr(&format!("{}/big", server.uri()))
+        .await;
+    assert!(
+        matches!(&got, Err(e) if e.to_string().contains("exceeds")),
+        "{got:?}"
+    );
+
+    // A profile just under the cap still resolves.
+    let body = json!({
+        "sameAs": format!("did:nostr:{PK}"),
+        "pad": "x".repeat(MAX_PROFILE_BYTES - 1024),
+    });
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/ld+json")
+                .set_body_json(&body),
+        )
+        .mount(&server)
+        .await;
+    let pk = resolver
+        .resolve_webid_to_nostr(&format!("{}/ok", server.uri()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pk.to_hex(), PK);
+}

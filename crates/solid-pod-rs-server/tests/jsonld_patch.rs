@@ -512,6 +512,51 @@ async fn a_patch_over_the_triple_bound_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[actix_web::test]
+async fn a_patch_that_would_grow_a_card_past_the_reader_bounds_is_409_and_writes_nothing() {
+    // Property: a PATCH can never produce a page the readers (WebID, NIP-98
+    // elevation, OIDC issuer check, NIP-05) would refuse to parse.
+    use solid_pod_rs::html_island::{first_jsonld_island, MAX_HTML_BYTES};
+    let json = format!(
+        "{{\"@context\": {{\"foaf\": \"{FOAF}\"}}, \"@id\": \"#me\", \"foaf:name\": \"A\"}}"
+    );
+    let shell = island_page(&json);
+    // Pad with a comment so the page sits just under the shared byte cap.
+    let pad = "p".repeat(MAX_HTML_BYTES - shell.len() - 64);
+    let page = shell.replace("<!-- keep me -->", &format!("<!-- {pad} -->"));
+    assert!(page.len() < MAX_HTML_BYTES, "{}", page.len());
+    assert!(first_jsonld_island(&page).unwrap().is_some());
+    let p = pod("acl:Read, acl:Write").await;
+    put(&p, "/card", &page, "text/html").await;
+    let app = test::init_service(build_app(state(&p, Some(ORIGIN)))).await;
+    let name = format!("{} <{FOAF}name>", me("/card"));
+    // A small edit that stays under the cap still works...
+    let (st, msg) = patch!(
+        &app,
+        "/card",
+        SPARQL,
+        sparql(&format!("{name} \"A\""), &format!("{name} \"B\""))
+    );
+    assert_eq!(st, 204, "{msg}");
+    let after_small = stored(&p, "/card").await;
+    assert!(after_small.len() < MAX_HTML_BYTES);
+    // ...one that would take the page over the cap is refused, untouched.
+    let big = "y".repeat(256);
+    let (st, msg) = patch!(
+        &app,
+        "/card",
+        SPARQL,
+        sparql("", &format!("{name} \"{big}\""))
+    );
+    assert_eq!(st, 409, "{msg}");
+    assert_eq!(msg, REFUSAL);
+    assert_eq!(
+        stored(&p, "/card").await,
+        after_small,
+        "nothing was written"
+    );
+}
+
+#[actix_web::test]
 async fn an_island_is_edited_and_the_page_is_otherwise_byte_identical() {
     let json = format!(
         "{{\n  \"@context\": {{\"foaf\": \"{FOAF}\"}},\n  \"@id\": \"#me\",\n  \"foaf:name\": \"A\"\n}}"

@@ -13,6 +13,22 @@
 //! matches when its essence is `application/ld+json`, ASCII case-insensitive,
 //! parameters (`; profile=...`) allowed.
 //!
+//! # Bounds
+//!
+//! html5ever's open-element scope checks walk the stack of open elements, so
+//! a deeply nested page costs time quadratic in its depth. Every entry point
+//! therefore refuses, before anything reaches the parser, a document over
+//! [`MAX_HTML_BYTES`] (1 MiB, [`IslandError::TooLarge`]), nested deeper than
+//! [`MAX_NESTING_DEPTH`] (512) or with more than [`MAX_START_TAGS`] start tags
+//! or end tags ([`IslandError::TooComplex`]). The pre-scan is one linear
+//! pass that never under-counts (see `check_bounds`); it over-counts
+//! only on odd pages, such as a single `<svg>` with 512 self-closed children.
+//! Readers and the PATCH writer share these limits, and the writer re-parses
+//! its own output, so a PATCH cannot grow a page past what a reader accepts.
+//! The worst case at both limits (a full-depth stack and `<p></p>` pairs up to
+//! the tag budget) parses in well under a second even in a debug build, so
+//! the callers parse inline rather than on a blocking thread.
+//!
 //! # Writing
 //!
 //! The parser reports no source offsets, so the writer does not trust a search:
@@ -43,10 +59,19 @@ use html5ever::tendril::TendrilSink;
 use html5ever::{parse_document, ParseOpts};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
-/// Largest HTML document this module will parse, in bytes. Matches
-/// [`crate::rdf_input::MAX_RDF_INPUT_BYTES`]: a document that cannot be read as
-/// RDF at that size is not parsed as HTML either.
-pub const MAX_HTML_BYTES: usize = crate::rdf_input::MAX_RDF_INPUT_BYTES;
+/// Largest HTML document this module will parse, in bytes. Proportionate for a
+/// profile page; every reader and the PATCH writer share it.
+pub const MAX_HTML_BYTES: usize = 1024 * 1024;
+
+/// Deepest element nesting a document may have (Blink's limit is also 512).
+/// html5ever's open-element scope checks walk the stack, so cost grows with
+/// depth times the number of start tags; both are bounded before parsing.
+pub const MAX_NESTING_DEPTH: usize = 512;
+
+/// Most start tags (and, separately, end tags) a document may have. With
+/// [`MAX_NESTING_DEPTH`] this keeps the parser's worst case near five million
+/// stack steps.
+pub const MAX_START_TAGS: usize = 10_000;
 
 /// Most places the island's text may occur as a script element's whole
 /// content before [`SoleIsland::replace`] refuses (each costs a full parse).
@@ -57,6 +82,9 @@ const MAX_SPLICE_CANDIDATES: usize = 8;
 pub enum IslandError {
     /// The document is larger than [`MAX_HTML_BYTES`].
     TooLarge,
+    /// The document nests deeper than [`MAX_NESTING_DEPTH`] or has more than
+    /// [`MAX_START_TAGS`] start (or end) tags.
+    TooComplex,
     /// The document has no JSON-LD data island.
     NoIsland,
     /// The document has more than one JSON-LD data island.
@@ -74,6 +102,7 @@ impl std::fmt::Display for IslandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::TooLarge => "HTML document is too large",
+            Self::TooComplex => "HTML document nests or tags too deeply",
             Self::NoIsland => "no JSON-LD data island",
             Self::SeveralIslands => "more than one JSON-LD data island",
             Self::Unlocatable => "the island cannot be located byte for byte",
@@ -88,9 +117,260 @@ fn parse(html: &str) -> Result<RcDom, IslandError> {
     if html.len() > MAX_HTML_BYTES {
         return Err(IslandError::TooLarge);
     }
+    check_bounds(html.as_bytes())?;
     Ok(parse_document(RcDom::default(), ParseOpts::default())
         .from_utf8()
         .one(html.as_bytes()))
+}
+
+/// Elements that never have children, so they open no nesting level.
+const VOID: &[&[u8]] = &[
+    b"area",
+    b"base",
+    b"basefont",
+    b"bgsound",
+    b"br",
+    b"col",
+    b"embed",
+    b"frame",
+    b"hr",
+    b"img",
+    b"input",
+    b"keygen",
+    b"link",
+    b"meta",
+    b"param",
+    b"source",
+    b"track",
+    b"wbr",
+];
+
+/// Elements whose start tag closes an open element of the same name that is
+/// the innermost one (`<li>a<li>b`), so they do not nest.
+const SIBLING_CLOSES: &[&[u8]] = &[b"p", b"li", b"dt", b"dd", b"tr", b"td", b"th", b"option"];
+
+/// Elements whose content the tokenizer reads as text (HTML namespace only).
+const TEXT_ELEMENTS: &[&[u8]] = &[
+    b"script",
+    b"style",
+    b"textarea",
+    b"title",
+    b"xmp",
+    b"iframe",
+    b"noembed",
+    b"noframes",
+];
+
+const NAME_KEEP: usize = 24;
+
+fn is_ws(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | 0x0c | b'\r' | b' ')
+}
+
+/// Index of the first `needle` (ASCII case-insensitive) in `hay[from..]`.
+fn find_ci(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if from >= hay.len() {
+        return None;
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+        .map(|i| from + i)
+}
+
+/// Read a tag's attributes from `i` (just after the name) to its `>`, with
+/// the tokenizer's quoting rules, and return the index after the `>`, or
+/// `None` at end of input (the tag is dropped).
+fn skip_attributes(b: &[u8], mut i: usize) -> Option<usize> {
+    // States: 0 between attributes, 1 in a name, 2 after a name,
+    // 3 before a value, 4 double-quoted, 5 single-quoted, 6 unquoted.
+    let mut state = 0u8;
+    while i < b.len() {
+        let c = b[i];
+        match state {
+            0 | 2 => {
+                if c == b'>' {
+                    return Some(i + 1);
+                } else if c == b'=' && state == 2 {
+                    state = 3;
+                } else if !is_ws(c) && c != b'/' {
+                    // A new attribute name; its first byte is consumed
+                    // whatever it is (`=` and quotes included).
+                    state = 1;
+                }
+            }
+            1 => {
+                if c == b'>' {
+                    return Some(i + 1);
+                } else if c == b'=' {
+                    state = 3;
+                } else if c == b'/' {
+                    state = 0;
+                } else if is_ws(c) {
+                    state = 2;
+                }
+            }
+            3 => {
+                if c == b'>' {
+                    return Some(i + 1);
+                } else if c == b'"' {
+                    state = 4;
+                } else if c == b'\'' {
+                    state = 5;
+                } else if !is_ws(c) {
+                    state = 6;
+                }
+            }
+            4 | 5 => {
+                // After a closing quote, `/`, `>` and whitespace are read as
+                // between attributes.
+                if c == if state == 4 { b'"' } else { b'\'' } {
+                    state = 0;
+                }
+            }
+            _ => {
+                if c == b'>' {
+                    return Some(i + 1);
+                } else if is_ws(c) {
+                    state = 0;
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Refuse a document the parser would take quadratic time on, before any of
+/// it reaches html5ever.
+///
+/// One linear pass that follows the tokenizer closely enough never to
+/// under-count: it skips only what the tokenizer reads as comments, bogus
+/// comments and the text of `script`/`style`/`textarea`/`title`-like elements
+/// outside `svg`/`math`, and where it is unsure it ends such a span early
+/// (which can only add tags). It keeps a stack of open element names, pops to
+/// the nearest matching end tag, treats `<x/>` as open unless `x` is void
+/// (HTML ignores the slash), and applies the sibling rule for `<li>`-like
+/// elements. Over-counting only ever refuses an odd page; the limits are
+/// [`MAX_NESTING_DEPTH`] and [`MAX_START_TAGS`] (start tags and end tags each).
+fn check_bounds(b: &[u8]) -> Result<(), IslandError> {
+    let too = Err(IslandError::TooComplex);
+    let mut stack: Vec<([u8; NAME_KEEP], u8)> = Vec::new();
+    let (mut starts, mut ends, mut foreign) = (0usize, 0usize, 0usize);
+    let mut i = 0;
+    while i < b.len() {
+        let Some(rel) = b[i..].iter().position(|&c| c == b'<') else {
+            break;
+        };
+        i += rel;
+        let rest = &b[i + 1..];
+        let Some(&c1) = rest.first() else { break };
+        if c1 == b'!' {
+            if rest[1..].starts_with(b"--") {
+                // Comment: ends at `-->` or `--!>`, searched from the
+                // first `-` of the opener so `<!-->` and `<!--->` close.
+                let from = i + 2;
+                let a = find_ci(b, from, b"-->");
+                let c = find_ci(b, from, b"--!>");
+                let end = match (a, c) {
+                    (Some(x), Some(y)) => Some(if x < y { x + 3 } else { y + 4 }),
+                    (Some(x), None) => Some(x + 3),
+                    (None, Some(y)) => Some(y + 4),
+                    (None, None) => None,
+                };
+                match end {
+                    Some(e) => i = e,
+                    None => break,
+                }
+            } else {
+                i = b[i..]
+                    .iter()
+                    .position(|&c| c == b'>')
+                    .map_or(b.len(), |p| i + p + 1);
+            }
+            continue;
+        }
+        if c1 == b'?' || (c1 == b'/' && !rest.get(1).is_some_and(u8::is_ascii_alphabetic)) {
+            // Bogus comment (or `</>`, which is dropped): to the next `>`.
+            i = b[i..]
+                .iter()
+                .position(|&c| c == b'>')
+                .map_or(b.len(), |p| i + p + 1);
+            continue;
+        }
+        let closing = c1 == b'/';
+        let name_at = i + 1 + usize::from(closing);
+        if !b.get(name_at).is_some_and(u8::is_ascii_alphabetic) {
+            i += 1;
+            continue;
+        }
+        let mut j = name_at;
+        while j < b.len() && !is_ws(b[j]) && b[j] != b'/' && b[j] != b'>' {
+            j += 1;
+        }
+        let mut name = [0u8; NAME_KEEP];
+        let len = (j - name_at).min(NAME_KEEP);
+        for (k, d) in name.iter_mut().take(len).enumerate() {
+            *d = b[name_at + k].to_ascii_lowercase();
+        }
+        let nm = &name[..len];
+        let full = j - name_at <= NAME_KEEP;
+        let Some(next) = skip_attributes(b, j) else {
+            break;
+        };
+        i = next;
+        if closing {
+            ends += 1;
+            if ends > MAX_START_TAGS {
+                return too;
+            }
+            if let Some(pos) = stack.iter().rposition(|(n, l)| &n[..usize::from(*l)] == nm) {
+                for (n, l) in stack.drain(pos..) {
+                    if matches!(&n[..usize::from(l)], b"svg" | b"math") {
+                        foreign -= 1;
+                    }
+                }
+            }
+            continue;
+        }
+        starts += 1;
+        if starts > MAX_START_TAGS {
+            return too;
+        }
+        if full && VOID.contains(&nm) {
+            continue;
+        }
+        if full && SIBLING_CLOSES.contains(&nm) {
+            if let Some((n, l)) = stack.last() {
+                if &n[..usize::from(*l)] == nm {
+                    stack.pop();
+                }
+            }
+        }
+        if stack.len() >= MAX_NESTING_DEPTH {
+            return too;
+        }
+        stack.push((name, u8::try_from(len).unwrap_or(0)));
+        if full && matches!(nm, b"svg" | b"math") {
+            foreign += 1;
+        }
+        if full && foreign == 0 {
+            if nm == b"plaintext" {
+                break;
+            }
+            if TEXT_ELEMENTS.contains(&nm) {
+                // The element's text runs to its end tag; pop it with it.
+                let mut close = Vec::with_capacity(nm.len() + 2);
+                close.extend_from_slice(b"</");
+                close.extend_from_slice(nm);
+                match find_ci(b, i, &close) {
+                    Some(at) => i = at,
+                    None => break,
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_island_type(value: &str) -> bool {
@@ -452,5 +732,128 @@ mod tests {
             "<!-- {} --><p title=\"{}\">{}</p>\
              <script type=\"application/ld+json\">{\"a\": 1}</script>"
         );
+    }
+
+    // ---- bounds (review item 3) ------------------------------------------
+
+    fn island_page(body: &str) -> String {
+        format!("<!DOCTYPE html><title>t</title>{body}<script type=\"application/ld+json\">{{}}</script>")
+    }
+
+    #[test]
+    fn a_deeply_nested_page_is_refused_quickly() {
+        let started = std::time::Instant::now();
+        let deep = island_page(&"<div>".repeat(40_000));
+        assert_eq!(first_jsonld_island(&deep), Err(IslandError::TooComplex));
+        assert_eq!(sole_jsonld_island(&deep), Err(IslandError::TooComplex));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "refusal took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn too_many_tags_are_refused_and_the_limits_are_inclusive() {
+        let ok = island_page(&"<p></p>".repeat(MAX_START_TAGS - 5));
+        assert!(first_jsonld_island(&ok).is_ok());
+        let many = island_page(&"<p></p>".repeat(MAX_START_TAGS + 1));
+        assert_eq!(first_jsonld_island(&many), Err(IslandError::TooComplex));
+        let ends = island_page(&"</p>".repeat(MAX_START_TAGS + 1));
+        assert_eq!(first_jsonld_island(&ends), Err(IslandError::TooComplex));
+        let deep_ok = island_page(&"<div>".repeat(MAX_NESTING_DEPTH - 2));
+        assert!(first_jsonld_island(&deep_ok).is_ok());
+        let deep_bad = island_page(&"<div>".repeat(MAX_NESTING_DEPTH + 1));
+        assert_eq!(first_jsonld_island(&deep_bad), Err(IslandError::TooComplex));
+    }
+
+    #[test]
+    fn a_page_at_both_limits_parses_in_bounded_time() {
+        // Worst case for the scope checks: a full-depth stack, then as many
+        // `<p></p>` pairs as the tag budget allows (each `<p>` walks the stack).
+        let depth = MAX_NESTING_DEPTH - 4;
+        let page = island_page(&format!(
+            "{}{}",
+            "<div>".repeat(depth),
+            "<p></p>".repeat(MAX_START_TAGS - depth - 8)
+        ));
+        let started = std::time::Instant::now();
+        assert_eq!(first_jsonld_island(&page).unwrap().as_deref(), Some("{}"));
+        let took = started.elapsed();
+        eprintln!("page at both limits parsed in {took:?}");
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    }
+
+    #[test]
+    fn a_normal_profile_still_parses() {
+        let card =
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Alice</title>\
+            <link rel=\"stylesheet\" href=\"s.css\"><style>p > b { color: red }</style></head>\
+            <body><main><h1>Alice</h1><ul><li>one<li>two<li>three</ul>\
+            <p>Hello <b>there</b> <a href=\"https://x.example/?a=1&amp;b=2\">me</a><br>\
+            <img src=\"a.png\" alt=\"a > b\"><svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>\
+            <table><tr><td>1<td>2</table><textarea><div><div></textarea>\
+            <script type=\"application/ld+json\">{\"@id\": \"#me\"}</script></main></body></html>";
+        assert_eq!(
+            first_jsonld_island(card).unwrap().as_deref(),
+            Some("{\"@id\": \"#me\"}")
+        );
+        assert!(sole_jsonld_island(card).is_ok());
+    }
+
+    #[test]
+    fn markup_the_parser_does_not_nest_is_not_counted_and_markup_it_does_is() {
+        let heavy = |unit: &str| unit.repeat(MAX_NESTING_DEPTH + 100);
+        // Not elements: comments, raw text, quoted attribute values.
+        for ok in [
+            format!("<!--{}-->", heavy("<div>")),
+            format!("<script>{}</script>", heavy("<div>")),
+            format!("<style>{}</style>", heavy("<div>")),
+            format!("<textarea>{}</textarea>", heavy("<div>")),
+            format!("<title>{}</title>", heavy("<div>")),
+            format!("<p title='{}'>x</p>", heavy("<div>")),
+            format!("<p title=\"{}\">x</p>", heavy("<div>")),
+            format!("{}", heavy("<br>")),
+            format!("{}", heavy("<div></div>")),
+            format!("<?pi {}?>", "x".repeat(MAX_START_TAGS * 4)),
+        ] {
+            assert!(
+                first_jsonld_island(&ok).is_ok(),
+                "{}",
+                &ok[..40.min(ok.len())]
+            );
+        }
+        // Elements, however they are spelled.
+        for bad in [
+            heavy("<DIV>"),
+            heavy("<div class=a>"),
+            heavy("<div/>"),
+            heavy("<div title=\"a>b\">"),
+            heavy("<div a=b/>"),
+            format!("<svg>{}</svg>", heavy("<title><div>")),
+            format!("<svg>{}", heavy("<style><div>")),
+            format!("<math>{}", heavy("<mi><textarea><div>")),
+            format!("<script>1</script>{}", heavy("<div>")),
+            format!("<!-- c -->{}", heavy("<div>")),
+            format!("<!-->{}", heavy("<div>")),
+            format!("<!--->{}", heavy("<div>")),
+            format!("<!-- a --!>{}", heavy("<div>")),
+            heavy("<a=b><div>"),
+            heavy("<div \"x\"='>'>"),
+        ] {
+            assert_eq!(
+                first_jsonld_island(&bad),
+                Err(IslandError::TooComplex),
+                "{}",
+                &bad[..40.min(bad.len())]
+            );
+        }
+    }
+
+    #[test]
+    fn a_replacement_that_would_exceed_the_bounds_is_refused() {
+        let isl = sole_jsonld_island(DOC).unwrap();
+        let filler = "x".repeat(MAX_HTML_BYTES);
+        assert!(isl.replace(DOC, &filler).is_err());
     }
 }

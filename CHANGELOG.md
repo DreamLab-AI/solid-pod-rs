@@ -59,6 +59,14 @@ WebRTC:
 
 ### Security (review of the stored-content sandbox)
 
+- **HTML locator bounded.** `html_island` (used by the WebID readers, NIP-98 elevation, the OIDC issuer check, the
+  NIP-05 and `did:nostr` handlers and the PATCH writer) refuses, before html5ever sees it, a document over 1 MiB
+  (was 4 MiB), nested deeper than 512 or with more than 10 000 start tags or end tags: html5ever's scope checks are
+  linear in depth, so a deep page cost quadratic time (a 200 KB page of `<div>` took over a minute). New
+  `IslandError::TooComplex`. **Behaviour change:** a profile card over 1 MiB, or with more than 10 000 tags, is no
+  longer read (login by that card fails closed) and cannot be patched. The nostr resolver reads at most 1 MiB of a
+  remote profile (`resolver::MAX_PROFILE_BYTES`, streamed, whatever `Content-Length` says).
+
 - **Forge pages no longer trust `'self'` for scripts.** `script-src` is `'nonce-<random>'` on every forge page and
   `'nonce-<random>' https://esm.sh` on a widget page (the vendored widget's dynamic imports); never `'self'` and never
   `'unsafe-inline'`, so a `.js` file a writer stored in a pod is not a valid script source. **Source break:**
