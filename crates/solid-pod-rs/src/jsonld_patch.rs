@@ -81,7 +81,7 @@
 //! assert_eq!(String::from_utf8(bytes).unwrap(), text.replace("Old", "New"));
 //! ```
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::ops::Range;
 
@@ -193,6 +193,7 @@ impl<'a> Scanner<'a> {
                 Some(b'{') => {
                     self.at += 1;
                     let mut members: Vec<Member> = Vec::new();
+                    let mut seen: HashSet<String> = HashSet::new();
                     loop {
                         self.ws();
                         if self.b.get(self.at) == Some(&b'}') {
@@ -207,7 +208,7 @@ impl<'a> Scanner<'a> {
                             self.ws();
                         }
                         let (key_span, key) = self.string()?;
-                        if members.iter().any(|m| m.key == key) {
+                        if !seen.insert(key.clone()) {
                             return no("duplicate key");
                         }
                         self.ws();
@@ -1811,6 +1812,27 @@ mod tests {
             terms.join(", ")
         );
         assert!(StoredDocument::open(doc.as_bytes(), "application/ld+json", BASE).is_err());
+    }
+
+    #[test]
+    fn an_object_of_very_many_keys_is_read_in_linear_time() {
+        // Property: the duplicate-key check is not quadratic in the number of
+        // keys, so it cannot be used to burn CPU before the term bound runs.
+        let members: Vec<String> = (0..100_000)
+            .map(|i| format!("\"key-with-a-shared-prefix-{i:06}\":1"))
+            .collect();
+        let doc = format!("{{\"@id\": \"#a\", {}}}", members.join(","));
+        assert!(doc.len() < MAX_RDF_INPUT_BYTES, "{}", doc.len());
+        let started = std::time::Instant::now();
+        assert!(StoredDocument::open(doc.as_bytes(), "application/ld+json", BASE).is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        // A duplicate is still caught, wherever it sits.
+        let dup = "{\"@id\": \"#a\", \"x\": 1, \"y\": 2, \"x\": 3}";
+        assert!(StoredDocument::open(dup.as_bytes(), "application/ld+json", BASE).is_err());
     }
 
     #[test]
