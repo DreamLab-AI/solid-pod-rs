@@ -6,6 +6,7 @@
 # bodies are capped, and reverse proxies should enforce connection frame/rate
 # limits. Remove this exception as soon as Actix migrates its TLS integration to
 # h2 >=0.4.16. Review no later than 2026-12-20.
+# Re-verified 2026-11-21 on actix-http 3.22.0: `cargo tree -i h2@0.3.27` still shows actix-http as the single path.
 ignore = [
     "RUSTSEC-2026-0258",
     # 2026-08-20: rsa 0.9 has no fixed release. It is used here for public-key

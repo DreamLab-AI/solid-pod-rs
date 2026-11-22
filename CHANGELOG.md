@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and name the failing step in the error. Regression: `first_use_survives_the_lock_directory_vanishing_underneath_it`.
 - Test helpers minted NIP-98 events from a base fixed at process start, so a slow run (the tarpaulin coverage build) made
   the server rightly refuse them as stale, failing `two_servers_follow_accept_and_deliver_a_note` with 401. The helpers in
-  six `solid-pod-rs-server` test files now use the wall clock. No server change.
+  eleven `solid-pod-rs-server` test files now use the wall clock. No server change.
 - Rustdoc: an intra-doc link in `AccessTokenPolicy::clock_leeway_secs` that resolved only with `dpop-replay-cache` broke
   `cargo doc` for the `oidc` feature set.
 

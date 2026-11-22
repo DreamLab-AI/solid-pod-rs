@@ -9,7 +9,6 @@
 //! * the relay is bounded: connection cap, frame size, idle timeout, rate.
 
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,16 +28,20 @@ fn did_of(sk: u8) -> String {
 }
 
 fn token(url: &str, sk: u8) -> String {
-    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = *BASE.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(30)
-    });
-    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
+    // `created_at` must track the wall clock: the server refuses a NIP-98 event
+    // more than 60 s from its own time, so a base fixed at first use goes stale
+    // whenever the process runs slowly (coverage instrumentation). Distinct
+    // events need distinct seconds (replay protection), so never reuse one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = {
+        let mut last = LAST.lock().unwrap();
+        *last = wall.max(*last + 1);
+        *last
+    };
     let t = nip98::mint(url, "GET", &hex::encode([sk; 32]), now).unwrap();
     format!("Nostr {t}")
 }

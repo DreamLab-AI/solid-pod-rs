@@ -56,8 +56,6 @@ fn state_with_issuer(mempool_url: Option<String>) -> AppState {
 }
 
 fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::OnceLock;
     // Each minted token MUST be a distinct NIP-98 event. The server's single-use
     // replay guard (`NIP98_REPLAY`) is a process-global `LazyLock`, so two tokens
     // sharing key/url/method/created_at collide on event_id and the second is
@@ -67,16 +65,20 @@ fn nip98_auth(method: &str, path: &str, body: Option<&[u8]>) -> (String, String)
     // regardless of wall-clock drift (so they never collide the way a
     // `now - counter` scheme can when the clock advances), and stay comfortably
     // inside the ±60s `TIMESTAMP_TOLERANCE` window.
-    static BASE: OnceLock<u64> = OnceLock::new();
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = *BASE.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(30)
-    });
-    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
+    // `created_at` must track the wall clock: the server refuses a NIP-98 event
+    // more than 60 s from its own time, so a base fixed at first use goes stale
+    // whenever the process runs slowly (coverage instrumentation). Distinct
+    // events need distinct seconds (replay protection), so never reuse one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = {
+        let mut last = LAST.lock().unwrap();
+        *last = wall.max(*last + 1);
+        *last
+    };
     let url = format!("http://localhost:8080{path}");
     let token = nip98::mint_with_payload(&url, method, body, SK_HEX, now).expect("nip98 mint");
     let sk = hex::decode(SK_HEX).unwrap();

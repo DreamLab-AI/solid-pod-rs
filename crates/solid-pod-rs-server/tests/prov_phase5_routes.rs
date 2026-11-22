@@ -55,24 +55,26 @@ fn owner_xonly() -> String {
 
 /// Mint a NIP-98 `Authorization` header for the owner over `method`+`path`.
 fn owner_nip98(method: &str, path: &str, body: Option<&[u8]>) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::OnceLock;
     // Each token MUST be a distinct NIP-98 event: the server's single-use replay
     // guard (`NIP98_REPLAY`, a process-global `LazyLock`) rejects a repeated
     // event_id with 401, and tokens minted in the same second with the same
     // key/url/method are otherwise identical. Anchor `created_at` to a base
     // captured once (30s in the past) + a monotonic per-call counter — strictly
     // unique regardless of wall-clock drift, within the ±60s tolerance window.
-    static BASE: OnceLock<u64> = OnceLock::new();
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let base = *BASE.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(30)
-    });
-    let now = base + SEQ.fetch_add(1, Ordering::Relaxed);
+    // `created_at` must track the wall clock: the server refuses a NIP-98 event
+    // more than 60 s from its own time, so a base fixed at first use goes stale
+    // whenever the process runs slowly (coverage instrumentation). Distinct
+    // events need distinct seconds (replay protection), so never reuse one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = {
+        let mut last = LAST.lock().unwrap();
+        *last = wall.max(*last + 1);
+        *last
+    };
     let url = format!("http://localhost:8080{path}");
     let token = nip98::mint_with_payload(&url, method, body, OWNER_SK, now).expect("nip98 mint");
     format!("Nostr {token}")
