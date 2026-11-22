@@ -830,8 +830,8 @@ mod tests {
             format!("<title>{}</title>", heavy("<div>")),
             format!("<p title='{}'>x</p>", heavy("<div>")),
             format!("<p title=\"{}\">x</p>", heavy("<div>")),
-            format!("{}", heavy("<br>")),
-            format!("{}", heavy("<div></div>")),
+            heavy("<br>"),
+            heavy("<div></div>"),
             format!("<?pi {}?>", "x".repeat(MAX_START_TAGS * 4)),
         ] {
             assert!(
