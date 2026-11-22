@@ -59,6 +59,11 @@ WebRTC:
 
 ### Security (review of the stored-content sandbox)
 
+- **Account CLI.** `account create` reads the password without echo when stdin is a terminal (`rpassword`; piped input
+  is read as before). The account store lock is now an advisory `flock` on a lock file that is never deleted, so a
+  lock file that merely looks old is no longer deleted out from under a live holder (the 30 s stale-lock removal is
+  gone). The invite store still uses a removable lock file with a stale timeout.
+
 - **PATCH of a stored JSON-LD document or HTML island needs Read as well as Write, for every patch.** An insert-only
   patch needs no Read on a Turtle resource, but this arm opens the document, and a Write-only agent could tell from
   `204` against `409` whether a subject existed. Without Read the generic `409` refusal is returned before the
@@ -204,7 +209,7 @@ WebRTC:
   implementing `solid_pod_rs_idp::UserStore`. `UserStore` gains `find_by_webid`, `update_last_login` and `last_login`
   (defaults keep existing stores compiling); `solid_pod_rs_idp::hash_password` is public.
 - CLI: `account create`, `account list`, `account export` (no password hash), and `account delete` now acts on the persisted
-  store. `account create` reads the password from stdin, and its username (also the pod name) must pass the same
+  store. `account create` reads the password from stdin (with echo off on a terminal), and its username (also the pod name) must pass the same
   reserved-name check as `POST /api/accounts/new`. **Behaviour change:** `account` takes `-r/--root` (`JSS_STORAGE_ROOT`,
   default `./data`) like `invite`, and `account delete` of an unknown id exits non-zero. Passkey persistence is still open.
 

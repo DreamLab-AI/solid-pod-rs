@@ -120,7 +120,8 @@ pub enum AccountCommand {
     /// Create an account. The username is also the pod name, so it must
     /// pass the registration name check (names the server serves itself,
     /// such as `remotestorage`, are refused). The password is read from
-    /// stdin, never from the command line.
+    /// stdin, never from the command line, with echo off when stdin is a
+    /// terminal.
     Create(AccountCreateArgs),
 
     /// Remove a user from the account store. (The pod's files are not
@@ -313,12 +314,31 @@ pub trait Prompt: Send {
     /// Emit a prompt line and read the user's answer. Returns
     /// `Ok(None)` when stdin is closed (EOF).
     fn ask(&mut self, prompt: &str) -> std::io::Result<Option<String>>;
+
+    /// Like [`Prompt::ask`], for a secret: an implementation that talks to a
+    /// person must not echo what is typed. The default is [`Prompt::ask`],
+    /// which suits scripted input.
+    fn ask_secret(&mut self, prompt: &str) -> std::io::Result<Option<String>> {
+        self.ask(prompt)
+    }
 }
 
 /// Stdin-backed [`Prompt`] used by the real binary.
 pub struct StdinPrompt;
 
 impl Prompt for StdinPrompt {
+    /// On a terminal, read with echo off (restored afterwards, also on error);
+    /// when stdin is piped or redirected there is nothing to hide, so read the
+    /// line as [`Prompt::ask`] does.
+    fn ask_secret(&mut self, prompt: &str) -> std::io::Result<Option<String>> {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            read_hidden(prompt, rpassword::ConfigBuilder::new().build()).map(Some)
+        } else {
+            self.ask(prompt)
+        }
+    }
+
     fn ask(&mut self, prompt: &str) -> std::io::Result<Option<String>> {
         use std::io::{BufRead, Write};
         let stderr = std::io::stderr();
@@ -333,6 +353,11 @@ impl Prompt for StdinPrompt {
             Err(e) => Err(e),
         }
     }
+}
+
+/// Print `prompt` and read one line with the terminal's echo switched off.
+fn read_hidden(prompt: &str, config: rpassword::Config) -> std::io::Result<String> {
+    rpassword::prompt_password_with_config(prompt, config)
 }
 
 /// Run `account delete`. Returns `Ok(true)` when a row was actually
@@ -387,7 +412,7 @@ pub async fn run_account_create<P: Prompt>(
         );
     }
     let password = prompt
-        .ask("Password (read from stdin): ")?
+        .ask_secret("Password: ")?
         .ok_or_else(|| anyhow::anyhow!("account create aborted: no password on stdin"))?;
     store
         .create(
@@ -576,5 +601,71 @@ pub async fn run_invite_command(root: &std::path::Path, cmd: InviteCommand) -> a
             println!("url: {url}");
             Ok(())
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use rustix::fs::{open, Mode, OFlags};
+    use rustix::pty::{grantpt, openpt, ptsname, unlockpt, OpenptFlags};
+    use rustix::termios::{tcgetattr, LocalModes};
+    use std::io::Write;
+
+    /// Property: a password typed at a terminal is never echoed. A real
+    /// pseudo-terminal stands in for the person: while the reader is waiting
+    /// the line discipline has ECHO off, the typed text comes back intact, and
+    /// ECHO is restored afterwards. (There is no fail-before for this test:
+    /// the previous code read stdin with echo on and had no entry point that
+    /// could be pointed at a pty.)
+    #[test]
+    fn a_secret_is_read_with_echo_off_and_the_terminal_is_restored() {
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let slave = open(
+            name.as_c_str(),
+            OFlags::RDWR | OFlags::NOCTTY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let echo = |fd: &rustix::fd::OwnedFd| {
+            tcgetattr(fd)
+                .unwrap()
+                .local_modes
+                .contains(LocalModes::ECHO)
+        };
+        assert!(echo(&slave), "a fresh terminal echoes");
+        let mut typist = std::fs::File::from(master);
+        let slave_for_typist = rustix::io::dup(&slave).unwrap();
+        let typed = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let echoing_while_waiting = echo(&slave_for_typist);
+            typist.write_all(b"hunter2\n").unwrap();
+            (echoing_while_waiting, typist)
+        });
+        let config = rpassword::ConfigBuilder::new()
+            .input_file_path(name.to_str().unwrap())
+            .output_discard()
+            .build();
+        let got = read_hidden("Password: ", config).unwrap();
+        let (echoing_while_waiting, _master) = typed.join().unwrap();
+        assert_eq!(got, "hunter2");
+        assert!(!echoing_while_waiting, "ECHO was on while reading a secret");
+        assert!(echo(&slave), "the terminal was left with echo off");
+    }
+
+    struct Scripted(Vec<&'static str>);
+    impl Prompt for Scripted {
+        fn ask(&mut self, _: &str) -> std::io::Result<Option<String>> {
+            Ok(self.0.pop().map(str::to_string))
+        }
+    }
+
+    #[test]
+    fn a_scripted_prompt_answers_a_secret_through_ask() {
+        let mut p = Scripted(vec!["pw"]);
+        assert_eq!(p.ask_secret("x").unwrap().as_deref(), Some("pw"));
     }
 }

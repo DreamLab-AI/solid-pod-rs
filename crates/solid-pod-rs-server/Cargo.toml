@@ -22,6 +22,8 @@ name = "solid-pod-rs-server"
 path = "src/main.rs"
 
 [dependencies]
+# Hidden password entry for `account create` on a terminal.
+rpassword = "7"
 # Library core — the binary's sole non-transport dependency.
 # `dpop-replay-cache` is enabled unconditionally so the deployed server
 # always has DPoP `jti` replay protection wired into `verify_dpop_proof`
@@ -194,6 +196,8 @@ solid-pod-rs-activitypub = { version = "0.5.0-alpha.22", path = "../solid-pod-rs
 actix-http = "3"
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+# A pseudo-terminal to show the password prompt does not echo.
+rustix = { version = "1", features = ["fs", "pty", "termios"] }
 parking_lot = "0.12"
 async-trait = "0.1"
 # Pay-route integration tests mint NIP-98 tokens and derive the signer's

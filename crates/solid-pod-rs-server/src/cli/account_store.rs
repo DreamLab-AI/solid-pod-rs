@@ -10,8 +10,8 @@
 //!
 //! One JSON file, `<root>/.server/accounts.json` (the directory the dotfile
 //! guard keeps off HTTP), written with mode 0600 through a uniquely named temp
-//! file and an atomic rename, and serialised across processes by a lock file
-//! as the invite store does. Passwords are stored only as Argon2id PHC strings
+//! file and an atomic rename, and serialised across processes by an advisory file
+//! lock (`flock`, held on a lock file that is never deleted). Passwords are stored only as Argon2id PHC strings
 //! ([`solid_pod_rs_idp::hash_password`]); [`FileUserStore::export`] never
 //! includes the hash.
 //!
@@ -41,7 +41,6 @@ use tokio::sync::Mutex;
 const DIR: &str = ".server";
 const FILE: &str = "accounts.json";
 const LOCK: &str = "accounts.json.lock";
-const STALE_LOCK: Duration = Duration::from_secs(30);
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,14 +116,12 @@ pub struct FileUserStore {
     lock: Mutex<()>,
 }
 
+/// The cross-process lock: an advisory `flock` on a lock file that is never
+/// deleted. The kernel releases it when the holder closes the file or dies, so
+/// there is no stale lock to detect and nothing to remove (removing a lock
+/// file one does not own races with its owner).
 struct FileLock {
-    path: PathBuf,
-}
-
-impl Drop for FileLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
+    _file: std::fs::File,
 }
 
 fn email_ok(e: &str) -> bool {
@@ -160,30 +157,21 @@ impl FileUserStore {
         let path = dir.join(LOCK);
         let started = std::time::Instant::now();
         loop {
-            match tokio::fs::OpenOptions::new()
+            let file = std::fs::OpenOptions::new()
                 .write(true)
-                .create_new(true)
+                .create(true)
+                .truncate(false)
                 .open(&path)
-                .await
-            {
-                Ok(_) => return Ok(FileLock { path }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = tokio::fs::metadata(&path)
-                        .await
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > STALE_LOCK);
-                    if stale {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        continue;
-                    }
+                .map_err(|e| self.backend(e))?;
+            match file.try_lock() {
+                Ok(()) => return Ok(FileLock { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if started.elapsed() > LOCK_WAIT {
                         return Err(self.backend("timed out waiting for the account store lock"));
                     }
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                Err(e) => return Err(self.backend(e)),
+                Err(std::fs::TryLockError::Error(e)) => return Err(self.backend(e)),
             }
         }
     }
@@ -430,6 +418,40 @@ mod tests {
             .create(user, email, "correct horse", Some("Al"), BASE)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_held_lock_is_never_stolen_or_deleted_however_old_its_file_looks() {
+        // Property: the store lock belongs to whoever holds it. A lock file
+        // that looks stale (old mtime) but is held by a live process is not
+        // removed or taken over, and the lock file is never deleted at all
+        // (deleting one you do not own races with its owner).
+        let d = tempfile::tempdir().unwrap();
+        let store = FileUserStore::new(d.path());
+        let dir = d.path().join(DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock_path = dir.join(LOCK);
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        held.lock().unwrap();
+        held.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        // Still waiting after 400 ms (not stolen), and the file is still there.
+        let waited = tokio::time::timeout(Duration::from_millis(400), store.lock_file()).await;
+        assert!(waited.is_err(), "a held lock was taken over");
+        assert!(lock_path.exists(), "a held lock file was deleted");
+        // Once the holder lets go the lock is granted, and dropping the guard
+        // leaves the file in place.
+        drop(held);
+        let guard = store.lock_file().await.unwrap();
+        drop(guard);
+        assert!(lock_path.exists(), "the lock file must never be removed");
+        // The store still works after all that.
+        make(d.path(), "alice", "a@example.com").await;
     }
 
     #[tokio::test]
