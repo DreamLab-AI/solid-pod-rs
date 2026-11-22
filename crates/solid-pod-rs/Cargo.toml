@@ -36,7 +36,7 @@ sha2 = "0.10"
 subtle = "2.6"
 hex = "0.4"
 js-sys = { version = "0.3", optional = true }
-url = "2"
+url = "2.5.9"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 notify = { version = "6", optional = true }

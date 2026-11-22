@@ -44,7 +44,7 @@ k256 = { version = "0.14", features = ["schnorr"], optional = true }
 # Mirror on kind-30618 (`mirror` feature): relay sockets and URL parsing.
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { version = "0.3", optional = true }
-url = { version = "2", optional = true }
+url = { version = "2.5.9", optional = true }
 # OS randomness for the NIP-34 announce key and BIP-340 aux nonce (`announce`).
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 [dev-dependencies]

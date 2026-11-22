@@ -98,7 +98,7 @@ anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 # URL parsing for proxy SSRF validation.
-url = "2"
+url = "2.5.9"
 
 # The embedded docs tree now comes from the owning crate via the
 # `embedded-docs` feature on solid-pod-rs (re-exporting include_dir), so
