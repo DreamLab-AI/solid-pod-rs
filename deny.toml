@@ -74,13 +74,21 @@ ignore = [
     # (separate change). Review no later than 2026-12-20.
     "RUSTSEC-2026-0459",
     # 2026-11-21: RUSTSEC-2026-0543 (chrono unmaintained, no fixed version; the
-    # advisory lists jiff and time as alternatives). chrono is a direct
-    # dependency of four workspace crates AND is mandatory transitively via
-    # oauth2 5.0 / openidconnect 4.1 and sqlx-core 0.8, neither of which can
-    # drop it, so a workspace-only migration would not remove it from the
-    # closure. Informational (no vulnerability). Revisit when openidconnect and
-    # sqlx drop chrono, or when a maintained chrono release appears; review no
-    # later than 2026-12-20.
+    # advisory lists jiff and time as alternatives). Informational (no
+    # vulnerability). Re-assessed 2026-11-22:
+    # - chrono types are public API, so removing it is a breaking release, not
+    #   housekeeping: `ResourceMeta::modified` (the Storage trait's metadata
+    #   type, built by every custom backend), `server_managed_triples` (crate
+    #   root, compiled under `core`), the `export` manifest types, the
+    #   activitypub Store row types and the idp/server invite types.
+    # - solid-pod-rs depends on chrono unconditionally, so it is the ONLY path
+    #   into a `--features core` (wasm32 / Workers) build; downstream exceptions
+    #   exist because of this crate alone.
+    # - In full builds chrono is also mandatory via oauth2 5.0 / openidconnect
+    #   4.1 (non-optional there) whenever OIDC is compiled in. sqlx's chrono
+    #   support is opt-in (the activitypub crate's `sqlx` "chrono" feature).
+    # Exit: a planned breaking release migrating the public types to `time`
+    # (see the dependency-housekeeping PR). Review no later than 2026-12-20.
     "RUSTSEC-2026-0543",
 ]
 

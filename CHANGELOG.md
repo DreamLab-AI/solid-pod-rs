@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `url` 2.5.8 to 2.5.9: RUSTSEC-2026-0592 (stack overflow in `Url::origin()` on nested `blob:` URLs). Every workspace
   crate that depends on `url` now requires `>= 2.5.9`, so a consumer's resolver cannot select a vulnerable release.
+- `RUSTSEC-2026-0543` (`chrono` unmaintained) re-assessed; the ignore stays. `chrono` types are public API
+  (`ResourceMeta::modified`, `server_managed_triples`, the `export` manifest, ActivityPub store rows, invites), so
+  replacing it is a breaking change for a later release. The rationale in `deny.toml` and `.cargo/audit.toml` now says
+  so, and corrects the earlier claim that `sqlx` makes `chrono` mandatory: it is opt-in there.
 
 ## [0.5.0-alpha.24] — 2026-11-22
 
