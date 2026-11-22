@@ -64,6 +64,11 @@ WebRTC:
   `204` against `409` whether a subject existed. Without Read the generic `409` refusal is returned before the
   document is opened. **Behaviour change:** a Write-only agent that inserted into a stored JSON-LD page now gets `409`.
 
+- **`markup5ever_rcdom` kept, risk recorded.** The HTML locator still builds its tree with `markup5ever_rcdom`, which
+  its README says is unsupported, test-grade and not fuzzed against hostile input. `scraper` is not available offline
+  and a purpose-built `TreeSink` is not a small change, so the dependency stays; the bounds below keep a hostile page
+  from building a large or deep tree, and the writer refuses any edit whose re-parsed tree differs. Replacing it is
+  open work (module doc of `html_island`).
 - **HTML locator bounded.** `html_island` (used by the WebID readers, NIP-98 elevation, the OIDC issuer check, the
   NIP-05 and `did:nostr` handlers and the PATCH writer) refuses, before html5ever sees it, a document over 1 MiB
   (was 4 MiB), nested deeper than 512 or with more than 10 000 start tags or end tags: html5ever's scope checks are

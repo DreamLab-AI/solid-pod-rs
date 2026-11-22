@@ -29,6 +29,23 @@
 //! the tag budget) parses in well under a second even in a debug build, so
 //! the callers parse inline rather than on a blocking thread.
 //!
+//! # Residual risk: `markup5ever_rcdom`
+//!
+//! The tree is built by `markup5ever_rcdom`, whose own README says it is not
+//! supported by the html5ever project, is meant for the parser's tests, is not
+//! production quality and has not been fuzzed against malicious input. It is
+//! kept, because no maintained tree builder is available offline (`scraper` is
+//! not in the registry cache) and a purpose-built `TreeSink` would have to
+//! reproduce the parser's reparenting, foster-parenting and text-merging
+//! hooks exactly, which is a larger and riskier change than this review item
+//! allows. What limits the exposure: the size, depth and tag bounds above are
+//! enforced before the parser sees a byte, so a hostile page cannot build a
+//! large or deep tree; the module walks the tree iteratively; and the writer
+//! accepts an edit only if the re-parsed tree equals the original with just the
+//! island's text changed, so a divergence in the tree builder refuses the edit
+//! rather than corrupting a page. Replacing it with a minimal sink is
+//! recorded as open work.
+//!
 //! # Writing
 //!
 //! The parser reports no source offsets, so the writer does not trust a search:
