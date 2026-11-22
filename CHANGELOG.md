@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.24] — 2026-11-22
+
 ### Security
 
 - `actix-http` 3.20.5 to 3.22.0: RUSTSEC-2026-0552, RUSTSEC-2026-0553 and RUSTSEC-2026-0554 (HTTP/1.1 chunked-trailer,

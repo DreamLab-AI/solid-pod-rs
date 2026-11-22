@@ -21,7 +21,7 @@ default = []
 test-loopback = []
 
 [dependencies]
-solid-pod-rs = { version = "0.5.0-alpha.23", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
+solid-pod-rs = { version = "0.5.0-alpha.24", path = "../solid-pod-rs", default-features = false, features = ["tokio-runtime"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "net"] }
 async-trait = "0.1"

@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # jsonwebtoken + openidconnect already. `rate-limit` gives us the
 # reference LruRateLimiter. `security-primitives` is implied by
 # `rate-limit`.
-solid-pod-rs = { version = "0.5.0-alpha.23", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
+solid-pod-rs = { version = "0.5.0-alpha.24", path = "../solid-pod-rs", default-features = false, features = ["oidc", "dpop-replay-cache", "rate-limit", "security-primitives", "nip98-schnorr"] }
 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -94,7 +94,7 @@ provision-keys = [
 
 [dev-dependencies]
 # The tests use `storage::memory`, which the library dependency (default-features = false) does not enable.
-solid-pod-rs = { version = "0.5.0-alpha.23", path = "../solid-pod-rs", default-features = false, features = ["memory-backend"] }
+solid-pod-rs = { version = "0.5.0-alpha.24", path = "../solid-pod-rs", default-features = false, features = ["memory-backend"] }
 tokio = { version = "1", features = ["full"] }
 wiremock = "0.6"
 serde_urlencoded = "0.7"
