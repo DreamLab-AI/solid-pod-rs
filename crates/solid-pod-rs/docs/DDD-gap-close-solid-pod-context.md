@@ -47,6 +47,8 @@ Local aggregates from the solid-pod-rs model, mapped to the Gap-Close aggregates
 | `ProvenanceLog` | `ProvenanceLog` | Composition of `GitMark` and `BlockTrailAnchor` on the LDP write path (`ProvenanceLog::record`, provenance.rs:517; `git_mark_write`, lib.rs:2838) | REC-11 `Commitment` → `ClosureEvidence` (provenance-wire canary) + the trace contract |
 | `DiagramSet` | `docs/diagrams/README.md` index | Rendered PNGs current against their `.mmd` sources | RES-c `Residual` → gated on RES-b, no canary |
 
+> **Note (2026-11-23):** the `DiagramSet` aggregate no longer exists in this repository. The `.mmd` sources, their renders and the staleness guard were removed; the diagrams live in the VisionFlow diagrams-as-code corpus ([solid-pod-rs area](https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs)). `docs/diagrams/README.md` is now a pointer with a map from each removed source to the corpus section that shows it.
+
 Members inherited from the canon's `GapRegister`, `SprintWave` and `RepoWorkPackage` aggregates are consumed unchanged; this slice adds none.
 
 ---

@@ -9,7 +9,8 @@ This page explains the model. For the decision record see
 for the full inheritance matrix and phased delivery see the
 [provenance upgrade master plan](../design/provenance-upgrade-master-plan.md);
 for the data-flow picture see
-[diagram 09 — provenance tiers](../diagrams/src/09-provenance-tiers.mmd).
+[SP-07 — provenance and payments](https://github.com/DreamLab-AI/VisionFlow/blob/main/docs/diagrams/solid-pod-rs/07-provenance-and-payments.md) in the VisionFlow diagram corpus
+(SP-07.1 draws the two provenance tiers).
 
 ## The thesis
 
@@ -227,4 +228,5 @@ available, not programmable money.
   — the decision record.
 - [Provenance upgrade master plan](../design/provenance-upgrade-master-plan.md)
   — the JSS inheritance matrix and phased delivery.
-- [diagram 09 — provenance tiers](../diagrams/src/09-provenance-tiers.mmd).
+- [SP-07 — provenance and payments](https://github.com/DreamLab-AI/VisionFlow/blob/main/docs/diagrams/solid-pod-rs/07-provenance-and-payments.md) — the provenance-tier diagrams,
+  in the VisionFlow diagram corpus.

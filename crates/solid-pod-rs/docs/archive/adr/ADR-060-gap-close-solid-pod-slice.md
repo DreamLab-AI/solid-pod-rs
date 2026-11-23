@@ -70,6 +70,8 @@ Provenance marks require `--features git`; the default build's `git_mark_write` 
 
 ## Decision 5 — Regenerate the RES-c diagrams under VisionFlow's RES-b render gate; declare the dependency, do not ship a local render claim
 
+> **Note (2026-11-23):** overtaken. The nine `.mmd` sources, their renders, `scripts/check-diagram-staleness.sh` and the `diagrams` CI job were removed in favour of the VisionFlow diagrams-as-code corpus ([solid-pod-rs area](https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs)). This decision is kept as history.
+
 Eight of nine PNGs are stale (`rendered/` at `3583a2b`, 2026-04-20; sources at `fa84a12`, 2026-06-12) and diagram 9 is unrendered. The decision is to regenerate all nine PNGs and add a local staleness check (fail when a `.mmd` commit is newer than its PNG), but to **declare RES-c blocked on RES-b's verified-render and visual-regression gate** rather than claim a local render verified. RES-b exists precisely because a local render shipped invisible text; solid-pod-rs does not reproduce that by self-certifying its own render.
 
 **Alternatives considered.**

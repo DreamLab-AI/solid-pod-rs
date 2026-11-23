@@ -123,6 +123,7 @@ tradeoffs?
   status against JSS.
 - [CHANGELOG.md](../CHANGELOG.md) — release history.
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — how to contribute.
-- [diagrams/](diagrams/) — architecture diagrams (Mermaid + rendered).
+- [diagrams/](diagrams/) — pointer to the architecture diagrams, which live in
+  the VisionFlow diagrams-as-code corpus ([solid-pod-rs area](https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs)).
 - [benchmarks.md](benchmarks.md) — performance numbers.
 - [examples-index.md](examples-index.md) — runnable examples.
