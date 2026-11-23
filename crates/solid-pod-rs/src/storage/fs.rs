@@ -74,23 +74,42 @@ fn lock_step<T>(op: &str, r: std::io::Result<T>) -> Result<T, (std::io::ErrorKin
     })
 }
 
-/// Whether `held`, a handle on the lock directory, is no longer the directory
-/// at [`LOCK_DIR`] under `dir`: the path is now absent, or names another
-/// directory. With no handle (the step that failed was the one opening it),
-/// only absence counts. Any other failure to tell reports `false`, so the
-/// caller surfaces its original error.
-///
-/// The handle keeps its inode alive, so the comparison cannot be fooled by the
-/// filesystem reusing a freed inode number for a recreated directory.
+/// The lock directory a setup step worked in, as far as the caller knows it.
 #[cfg(unix)]
-fn lock_dir_replaced(dir: &Dir, held: Option<&Dir>) -> bool {
+#[derive(Clone, Copy)]
+enum LockDirSeen<'a> {
+    /// A handle on it: the step ran relative to this directory. The handle
+    /// keeps its inode alive, so a recreated directory cannot reuse its number.
+    Held(&'a Dir),
+    /// Only the `(dev, ino)` observed at [`LOCK_DIR`] before the step, which
+    /// was the one opening the directory. A reused inode number can only make
+    /// a replaced directory look unchanged, which surfaces the error: it can
+    /// never hide a genuine one.
+    Snapshot((u64, u64)),
+}
+
+/// The `(dev, ino)` of a directory's metadata.
+#[cfg(unix)]
+fn dir_identity(m: &cap_std::fs::Metadata) -> (u64, u64) {
     use cap_std::fs::MetadataExt;
-    match dir.symlink_metadata(LOCK_DIR) {
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-        Ok(now) => held.is_some_and(|held| {
-            held.dir_metadata()
-                .is_ok_and(|was| (was.dev(), was.ino()) != (now.dev(), now.ino()))
-        }),
+    (m.dev(), m.ino())
+}
+
+/// Whether the lock directory `seen` is no longer the directory at
+/// [`LOCK_DIR`] under `dir`: the path is now absent, or names another
+/// directory. Any failure to tell reports `false`, so the caller surfaces its
+/// original error.
+#[cfg(unix)]
+fn lock_dir_replaced(dir: &Dir, seen: LockDirSeen<'_>) -> bool {
+    let now = match dir.symlink_metadata(LOCK_DIR) {
+        Ok(now) => dir_identity(&now),
+        Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
+    };
+    match seen {
+        LockDirSeen::Held(held) => held
+            .dir_metadata()
+            .is_ok_and(|was| dir_identity(&was) != now),
+        LockDirSeen::Snapshot(was) => was != now,
     }
 }
 
@@ -98,22 +117,24 @@ fn lock_dir_replaced(dir: &Dir, held: Option<&Dir>) -> bool {
 /// `NotFound` when the directory was removed or replaced during the step, so
 /// the setup loops retry it like any other vanished entry.
 ///
-/// macOS can fail `openat(dirfd, name, O_CREAT)` with `EINVAL` rather than
-/// `ENOENT` when the directory behind `dirfd` has just been removed: cap-std
-/// resolves `.solid-pod-locks/NN.lock` there by opening the directory and then
-/// the file relative to it, and the removal lands between the two. The errno
-/// comes from the filesystem, not from the open flags (which are valid), and
-/// APFS does not document it, so the decision rests on the directory's
-/// observed identity rather than on the errno: an `EINVAL` while the directory
-/// is still in place is a genuine invalid argument and is returned unchanged.
+/// macOS can fail with `EINVAL` rather than `ENOENT` when `.solid-pod-locks`
+/// is removed during an open. cap-std resolves `.solid-pod-locks/NN.lock`
+/// there with two `openat` calls (the directory, then the file relative to
+/// it), and the removal can land during either; a single error label could
+/// not tell them apart, so both are now separate steps and both are covered
+/// here. The errno comes from the kernel, not from the open flags (which are
+/// valid), and APFS does not document it, so the decision rests on the
+/// directory's observed identity rather than on the errno: an `EINVAL` while
+/// the same directory is still in place is a genuine invalid argument and is
+/// returned unchanged.
 #[cfg(unix)]
 fn vanished_lock_dir_as_not_found<T>(
     dir: &Dir,
-    held: Option<&Dir>,
+    seen: LockDirSeen<'_>,
     r: std::io::Result<T>,
 ) -> std::io::Result<T> {
     match r {
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput && lock_dir_replaced(dir, held) => {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput && lock_dir_replaced(dir, seen) => {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("{e}; the lock directory was removed during the call"),
@@ -128,9 +149,14 @@ fn vanished_lock_dir_as_not_found<T>(
 #[cfg(unix)]
 fn open_lock_dir(dir: &Dir) -> Result<Dir, (std::io::ErrorKind, PodError)> {
     lock_step("create the lock directory", dir.create_dir_all(LOCK_DIR))?;
+    let seen = lock_step("inspect the lock directory", dir.symlink_metadata(LOCK_DIR))?;
     lock_step(
         "open the lock directory",
-        vanished_lock_dir_as_not_found(dir, None, dir.open_dir(LOCK_DIR)),
+        vanished_lock_dir_as_not_found(
+            dir,
+            LockDirSeen::Snapshot(dir_identity(&seen)),
+            dir.open_dir(LOCK_DIR),
+        ),
     )
 }
 
@@ -152,7 +178,11 @@ fn open_lock_file(
         let opened = open_lock_dir(dir).and_then(|lock_dir| {
             lock_step(
                 "open the lock file",
-                vanished_lock_dir_as_not_found(dir, Some(&lock_dir), open(&lock_dir, name)),
+                vanished_lock_dir_as_not_found(
+                    dir,
+                    LockDirSeen::Held(&lock_dir),
+                    open(&lock_dir, name),
+                ),
             )
         });
         match opened {
@@ -205,7 +235,11 @@ fn load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], PodError> {
 fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKind, PodError)> {
     use cap_std::fs::OpenOptionsExt;
     let lock_dir = open_lock_dir(dir)?;
-    match vanished_lock_dir_as_not_found(dir, Some(&lock_dir), lock_dir.read(LOCK_KEY_FILE)) {
+    match vanished_lock_dir_as_not_found(
+        dir,
+        LockDirSeen::Held(&lock_dir),
+        lock_dir.read(LOCK_KEY_FILE),
+    ) {
         Ok(bytes) => {
             return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
                 (
@@ -233,14 +267,18 @@ fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKin
     options.write(true).create_new(true).mode(0o600);
     let mut file = lock_step(
         "create the key candidate",
-        vanished_lock_dir_as_not_found(dir, Some(&lock_dir), lock_dir.open_with(&tmp, &options)),
+        vanished_lock_dir_as_not_found(
+            dir,
+            LockDirSeen::Held(&lock_dir),
+            lock_dir.open_with(&tmp, &options),
+        ),
     )?;
     let written = file.write_all(&candidate).and_then(|()| file.sync_all());
     drop(file);
     let linked = match written {
         Ok(()) => vanished_lock_dir_as_not_found(
             dir,
-            Some(&lock_dir),
+            LockDirSeen::Held(&lock_dir),
             lock_dir.hard_link(&tmp, &lock_dir, LOCK_KEY_FILE),
         ),
         Err(e) => Err(e),
@@ -885,25 +923,50 @@ mod tests {
         let held = root.open_dir(LOCK_DIR).unwrap();
         // Intact: EINVAL passes through unchanged.
         let r: std::io::Result<()> =
-            vanished_lock_dir_as_not_found(&root, Some(&held), Err(einval()));
+            vanished_lock_dir_as_not_found(&root, LockDirSeen::Held(&held), Err(einval()));
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
         std::fs::remove_dir(tmp.path().join(LOCK_DIR)).unwrap();
         // Removed: EINVAL becomes NotFound; other errors pass through.
         let r: std::io::Result<()> =
-            vanished_lock_dir_as_not_found(&root, Some(&held), Err(einval()));
+            vanished_lock_dir_as_not_found(&root, LockDirSeen::Held(&held), Err(einval()));
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
         let r: std::io::Result<()> = vanished_lock_dir_as_not_found(
             &root,
-            Some(&held),
+            LockDirSeen::Held(&held),
             Err(std::io::ErrorKind::PermissionDenied.into()),
         );
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-        // No handle: absence alone decides.
-        let r: std::io::Result<()> = vanished_lock_dir_as_not_found(&root, None, Err(einval()));
-        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vanished_lock_dir_snapshot_detects_removal_and_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let root = open_root(&tmp);
+        root.create_dir_all(LOCK_DIR).unwrap();
+        // Hold the original open so its inode number cannot be reused by the
+        // recreated directory below, which would make the test meaningless.
+        let original = root.open_dir(LOCK_DIR).unwrap();
+        let seen = LockDirSeen::Snapshot(dir_identity(&original.dir_metadata().unwrap()));
+        let check = |r| vanished_lock_dir_as_not_found::<()>(&root, seen, r);
+        // Unchanged: EINVAL passes through.
+        assert_eq!(
+            check(Err(einval())).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        // Removed: EINVAL becomes NotFound.
+        std::fs::remove_dir(tmp.path().join(LOCK_DIR)).unwrap();
+        assert_eq!(
+            check(Err(einval())).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        // Replaced by a fresh directory: still the race, still NotFound.
         root.create_dir(LOCK_DIR).unwrap();
-        let r: std::io::Result<()> = vanished_lock_dir_as_not_found(&root, None, Err(einval()));
-        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            check(Err(einval())).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        drop(original);
     }
 
     #[tokio::test]
