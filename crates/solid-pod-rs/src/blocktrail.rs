@@ -899,6 +899,10 @@ mod walk {
     use crate::mrc20::{bt_base_point, bt_trail_outputs, MempoolLookup, TxInfo};
     use crate::payments::PaymentError;
 
+    /// How many inputs of one mark are read when looking for the one that
+    /// spends the previous mark.
+    const MAX_INPUTS_CHECKED: usize = 8;
+
     /// How a trail's `pubkeyBase` was read.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BaseReading {
@@ -1111,30 +1115,38 @@ mod walk {
             };
             let out = output_spk(&tx, vout);
             let commits = out.and_then(|(spk, _)| commits_to(spk, &expected[i]));
+            // The link is real: some input of this mark must spend an output
+            // that commits to the previous mark's key. An input list alone
+            // proves nothing, so each candidate's own transaction is read.
             let links = if i == 0 {
                 None
-            } else if tx.vin.is_empty() {
-                Some(false)
             } else {
                 let mut chosen = None;
-                if tx.vin.len() > 1 {
-                    for v in &tx.vin {
-                        if let Ok(prev) = mempool.tx(&v.txid).await {
-                            let hit = output_spk(&prev, v.vout)
-                                .and_then(|(spk, _)| commits_to(spk, &expected[i - 1]))
-                                == Some(true);
-                            if hit {
-                                chosen = Some((v.txid.clone(), v.vout));
-                                cached = Some(prev);
-                                break;
-                            }
+                for v in tx.vin.iter().take(MAX_INPUTS_CHECKED) {
+                    if let Ok(prev) = mempool.tx(&v.txid).await {
+                        let hit = output_spk(&prev, v.vout)
+                            .and_then(|(spk, _)| commits_to(spk, &expected[i - 1]))
+                            == Some(true);
+                        if hit {
+                            chosen = Some((v.txid.clone(), v.vout, prev));
+                            break;
                         }
                     }
                 }
-                let (ptxid, pvout) =
-                    chosen.unwrap_or_else(|| (tx.vin[0].txid.clone(), tx.vin[0].vout));
-                cursor = Some((ptxid, pvout));
-                Some(true)
+                match chosen {
+                    Some((ptxid, pvout, prev)) => {
+                        cursor = Some((ptxid, pvout));
+                        cached = Some(prev);
+                        Some(true)
+                    }
+                    None => {
+                        // No input commits to the previous key. Look one step
+                        // further down the first input so the report names
+                        // the mark that is wrong, then stop.
+                        cursor = tx.vin.first().map(|v| (v.txid.clone(), v.vout));
+                        Some(false)
+                    }
+                }
             };
             let mut report = blank(txid, vout);
             report.status = mark_status(true, tx.confirmed, true, commits, links);
@@ -1144,6 +1156,11 @@ mod walk {
             report.commits = commits;
             report.links_to_prev = links;
             marks[i] = Some(report);
+            // A mark that does not commit ends the walk: what lies below it
+            // is not worth the requests, and is reported as not reached.
+            if commits == Some(false) {
+                cursor = None;
+            }
         }
         Ok(TrailReport::new(
             marks

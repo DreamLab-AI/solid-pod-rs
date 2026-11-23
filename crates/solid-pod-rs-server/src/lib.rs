@@ -3597,7 +3597,7 @@ const RESERVED_POD_NAMES: &[&str] = &[
     "webrtc",
 ];
 
-fn valid_pod_name(name: &str) -> bool {
+pub(crate) fn valid_pod_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
@@ -3740,6 +3740,15 @@ async fn provisioning_gate(
         return Some(HttpResponse::Forbidden().json(serde_json::json!({
             "error": "pod registration is closed"
         })));
+    }
+    // A deleted pod's name stays reserved: a new owner of the same name would
+    // get the same WebID, and with it every ACL grant the old pod made.
+    if let Some(root) = &state.data_root {
+        if cli::pod_name_is_tombstoned(root, name) {
+            return Some(HttpResponse::Conflict().json(serde_json::json!({
+                "error": "This pod name belonged to a deleted pod and is reserved"
+            })));
+        }
     }
 
     if let Err(retry_after) = state.pod_create_limiter.check(request_ip(req)) {

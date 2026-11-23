@@ -150,6 +150,16 @@ async fn spawn_fixture_mempool(
 async fn spawn_fixture_mempool_with(
     utxos: Vec<(String, String)>,
 ) -> (String, actix_web::dev::ServerHandle) {
+    spawn_fixture_mempool_decoyed(utxos, Vec::new()).await
+}
+
+/// [`spawn_fixture_mempool_with`] where each `(address, txid)` in `decoys`
+/// also lists a coin at `address`, listed BEFORE the real one, whose
+/// transaction the mempool does not know: anyone can send dust to an address.
+async fn spawn_fixture_mempool_decoyed(
+    utxos: Vec<(String, String)>,
+    decoys: Vec<(String, String)>,
+) -> (String, actix_web::dev::ServerHandle) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let registry = chains().lock().unwrap().clone();
@@ -162,6 +172,18 @@ async fn spawn_fixture_mempool_with(
         heads.insert(address, chain.head.clone());
         txs.extend(chain.txs.iter().cloned());
     }
+    let heads: std::collections::HashMap<String, Vec<String>> = heads
+        .into_iter()
+        .map(|(address, head)| {
+            let mut coins: Vec<String> = decoys
+                .iter()
+                .filter(|(a, _)| *a == address)
+                .map(|(_, t)| t.clone())
+                .collect();
+            coins.push(head);
+            (address, coins)
+        })
+        .collect();
     let heads = web::Data::new(heads);
     let txs = web::Data::new(txs);
 
@@ -173,12 +195,19 @@ async fn spawn_fixture_mempool_with(
                 "/api/address/{addr}/utxo",
                 web::get().to(
                     |path: web::Path<String>,
-                     heads: web::Data<std::collections::HashMap<String, String>>| async move {
+                     heads: web::Data<std::collections::HashMap<String, Vec<String>>>| async move {
                         let body = match heads.get(&path.into_inner()) {
-                            Some(txid) => json!([{
-                                "txid": txid, "vout": 0, "value": 9700,
-                                "status": {"confirmed": true, "block_height": 42000},
-                            }])
+                            Some(coins) => Value::Array(
+                                coins
+                                    .iter()
+                                    .map(|txid| {
+                                        json!({
+                                            "txid": txid, "vout": 0, "value": 9700,
+                                            "status": {"confirmed": true, "block_height": 42000},
+                                        })
+                                    })
+                                    .collect(),
+                            )
                             .to_string(),
                             None => "[]".to_string(),
                         };
@@ -230,6 +259,45 @@ fn build_trail_fixture(
     ticker: &str,
     amount: u64,
 ) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
+    build_trail_fixture_ext(issuer, ticker, amount, amount, true)
+}
+
+/// [`build_trail_fixture`] with the knobs a forger turns: `op_amt` is what the
+/// transfer op claims, `balance_amt` what the state's balances actually move,
+/// and `full == false` ships only the tip's state string (a one-string proof).
+fn build_trail_fixture_ext(
+    issuer: &str,
+    ticker: &str,
+    op_amt: u64,
+    balance_amt: u64,
+    full: bool,
+) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
+    build_ops_fixture(issuer, ticker, full, |issuer, pod| {
+        (
+            vec![(issuer.to_string(), 1000)],
+            vec![Mrc20Op {
+                op: TRANSFER_OP.into(),
+                from: Some(issuer.to_string()),
+                to: Some(pod.to_string()),
+                amt: Some(op_amt),
+            }],
+            vec![
+                (issuer.to_string(), 1000 - balance_amt),
+                (pod.to_string(), balance_amt),
+            ],
+        )
+    })
+}
+
+/// A genesis and a tip whose balances and ops the caller writes, given the
+/// issuer key and the caller's pod address: `plan` returns
+/// `(genesis balances, tip ops, tip balances)`.
+fn build_ops_fixture(
+    issuer: &str,
+    ticker: &str,
+    full: bool,
+    plan: impl FnOnce(&str, &str) -> (Vec<(String, u64)>, Vec<Mrc20Op>, Vec<(String, u64)>),
+) -> (Mrc20State, Mrc20State, Vec<String>, String, String) {
     let issuer = issuer.to_string();
     // The transfer beneficiary is cryptographically bound to the caller DID.
     let sk = hex::decode(SK_HEX).unwrap();
@@ -239,6 +307,7 @@ fn build_trail_fixture(
         hex::encode(signer.verifying_key().to_bytes())
     );
     let pod_address = bt_address(&issuer_pubkey(), &[did], NETWORK).unwrap();
+    let (genesis_balances, tip_ops, tip_balances) = plan(&issuer, &pod_address);
 
     let genesis = Mrc20State {
         profile: solid_pod_rs::mrc20::MRC20_PROFILE.into(),
@@ -248,7 +317,7 @@ fn build_trail_fixture(
         name: Some("Test Token".into()),
         decimals: Some(0),
         supply: Some(1000),
-        balances: Some(std::collections::BTreeMap::from([(issuer.clone(), 1000)])),
+        balances: Some(genesis_balances.into_iter().collect()),
         ops: vec![],
         anchor: None,
     };
@@ -263,21 +332,17 @@ fn build_trail_fixture(
         name: Some("Test Token".into()),
         decimals: Some(0),
         supply: Some(1000),
-        balances: Some(std::collections::BTreeMap::from([
-            (issuer.clone(), 1000 - amount),
-            (pod_address.clone(), amount),
-        ])),
-        ops: vec![Mrc20Op {
-            op: TRANSFER_OP.into(),
-            from: Some(issuer.clone()),
-            to: Some(pod_address.clone()),
-            amt: Some(amount),
-        }],
+        balances: Some(tip_balances.into_iter().filter(|(_, v)| *v != 0).collect()),
+        ops: tip_ops,
         anchor: None,
     };
     let transfer_jcs = jcs(&serde_json::to_value(&transfer).unwrap());
 
-    let state_strings = vec![genesis_jcs, transfer_jcs];
+    let state_strings = if full {
+        vec![genesis_jcs, transfer_jcs]
+    } else {
+        vec![transfer_jcs]
+    };
     // Where the anchoring UTXO must live (full chain → derived address).
     let anchor_address = bt_address(&issuer, &state_strings, NETWORK).unwrap();
     register_chain(&issuer, &state_strings, &anchor_address);
@@ -779,4 +844,239 @@ async fn address_mainnet_chain_yields_bc1p() {
         "btc chain ⇒ mainnet P2TR"
     );
     assert_eq!(j["chain"], "btc");
+}
+
+// ---------------------------------------------------------------------------
+// SP-07.17 — the proof must be the full trail, and the credit the proven amount
+// ---------------------------------------------------------------------------
+
+#[actix_web::test]
+async fn mrc20_one_string_proof_is_rejected() {
+    // Anyone can derive the address of a one-string trail and fund it: with
+    // nothing before the mark there is nothing the issuer ever signed.
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_trail_fixture_ext(&issuer_pubkey(), "TEST", 100, 100, false);
+    assert_eq!(state_strings.len(), 1);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 400, "a k=1 proof must be refused: {j}");
+    assert!(
+        j["error"].as_str().unwrap().contains("at least 2"),
+        "refused for the short trail, not something else: {j}"
+    );
+    assert!(
+        storage
+            .get("/.well-known/webledgers/state.json")
+            .await
+            .is_err(),
+        "a refused proof must not touch the ledger"
+    );
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_inflated_amount_is_rejected_and_not_credited() {
+    // The op claims 500 tokens while the committed balances move only 100.
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_trail_fixture_ext(&issuer_pubkey(), "TEST", 500, 100, true);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 400, "an inflated claim must be refused: {j}");
+    assert!(
+        j["error"]
+            .as_str()
+            .unwrap()
+            .contains("do not reproduce its committed balances"),
+        "refused for the balance mismatch: {j}"
+    );
+    assert!(
+        storage
+            .get("/.well-known/webledgers/state.json")
+            .await
+            .is_err(),
+        "an inflated claim must not credit anything"
+    );
+    handle.stop(false).await;
+}
+
+/// Run a deposit built from `plan` and return `(status, body)` plus the
+/// storage, for the net-balance tests.
+async fn deposit_ops(
+    plan: impl FnOnce(&str, &str) -> (Vec<(String, u64)>, Vec<Mrc20Op>, Vec<(String, u64)>),
+) -> (u16, Value, Arc<dyn solid_pod_rs::storage::Storage>) {
+    let (genesis, transfer, state_strings, anchor_address, _pod) =
+        build_ops_fixture(&issuer_pubkey(), "TEST", true, plan);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    handle.stop(false).await;
+    (status, j, storage)
+}
+
+fn transfer(from: &str, to: &str, amt: u64) -> Mrc20Op {
+    Mrc20Op {
+        op: TRANSFER_OP.into(),
+        from: Some(from.into()),
+        to: Some(to.into()),
+        amt: Some(amt),
+    }
+}
+
+#[actix_web::test]
+async fn mrc20_self_transfer_credits_nothing() {
+    // The pod address already holds 100 and sends them to itself: gross 100,
+    // net 0.
+    let (status, j, storage) = deposit_ops(|issuer, pod| {
+        (
+            vec![(issuer.into(), 900), (pod.into(), 100)],
+            vec![transfer(pod, pod, 100)],
+            vec![(issuer.into(), 900), (pod.into(), 100)],
+        )
+    })
+    .await;
+    assert_eq!(status, 400, "a self-transfer is not a deposit: {j}");
+    assert!(j["error"].as_str().unwrap().contains("net"), "{j}");
+    assert!(storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .is_err());
+}
+
+#[actix_web::test]
+async fn mrc20_round_trip_credits_nothing() {
+    // issuer -> pod 100, then pod -> issuer 100: the pod ends where it began.
+    let (status, j, storage) = deposit_ops(|issuer, pod| {
+        (
+            vec![(issuer.into(), 1000)],
+            vec![transfer(issuer, pod, 100), transfer(pod, issuer, 100)],
+            vec![(issuer.into(), 1000)],
+        )
+    })
+    .await;
+    assert_eq!(status, 400, "a round trip is not a deposit: {j}");
+    assert!(j["error"].as_str().unwrap().contains("net"), "{j}");
+    assert!(storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .is_err());
+}
+
+#[actix_web::test]
+async fn mrc20_credit_is_the_net_balance_change() {
+    // Gross inbound 150, outbound 50: the pod gains 100 and is credited 100.
+    let (status, j, _s) = deposit_ops(|issuer, pod| {
+        (
+            vec![(issuer.into(), 1000)],
+            vec![transfer(issuer, pod, 150), transfer(pod, issuer, 50)],
+            vec![(issuer.into(), 900), (pod.into(), 100)],
+        )
+    })
+    .await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["deposited"], 100);
+}
+
+#[actix_web::test]
+async fn mrc20_receipt_is_the_verified_utxo_not_a_decoy() {
+    // Someone sends dust to the derived address; its txid sorts below the
+    // real head's. The credit's receipt must be the coin that was verified.
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let head = chains().lock().unwrap()[&anchor_address].head.clone();
+    let decoy = "00".repeat(32);
+    assert!(decoy < head);
+    let (mempool_url, handle) = spawn_fixture_mempool_decoyed(
+        vec![(anchor_address.clone(), anchor_address.clone())],
+        vec![(anchor_address, decoy.clone())],
+    )
+    .await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+    let body = mrc20_deposit_body(&transfer, &genesis, &state_strings);
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["outpoint"], format!("{head}:0"));
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(ledger.deposits().len(), 1);
+    assert_eq!(ledger.deposits()[0].outpoint, format!("{head}:0"));
+    handle.stop(false).await;
+}
+
+/// `body` with the depositor's named anchor outpoint added.
+fn with_outpoint(mut body: Value, outpoint: &str) -> Value {
+    body["anchor"]["outpoint"] = json!(outpoint);
+    body
+}
+
+#[actix_web::test]
+async fn mrc20_dust_cannot_crowd_out_the_named_anchor() {
+    // Six dust coins sit at the public address, all listed before the real
+    // head, which the depositor names. The walk reads that coin only.
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let head = chains().lock().unwrap()[&anchor_address].head.clone();
+    let decoys: Vec<(String, String)> = (0..6)
+        .map(|i| {
+            (
+                anchor_address.clone(),
+                solid_pod_rs::mrc20::sha256_hex(&format!("dust {i}")),
+            )
+        })
+        .collect();
+    let (mempool_url, handle) = spawn_fixture_mempool_decoyed(
+        vec![(anchor_address.clone(), anchor_address.clone())],
+        decoys,
+    )
+    .await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+    let body = with_outpoint(
+        mrc20_deposit_body(&transfer, &genesis, &state_strings),
+        &format!("{head}:0"),
+    );
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "a named anchor beats any amount of dust: {j}");
+    assert_eq!(j["outpoint"], format!("{head}:0"));
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(ledger.deposits()[0].outpoint, format!("{head}:0"));
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn mrc20_named_anchor_must_be_a_coin_at_the_address() {
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+    for bad in [
+        format!("{}:0", "ab".repeat(32)),
+        "not-an-outpoint".to_string(),
+    ] {
+        let body = with_outpoint(
+            mrc20_deposit_body(&transfer, &genesis, &state_strings),
+            &bad,
+        );
+        let (status, j, _did) = post_deposit(&app, &body).await;
+        assert_eq!(status, 400, "{bad}: {j}");
+        assert!(j["error"].as_str().unwrap().contains("outpoint"), "{j}");
+    }
+    assert!(storage
+        .get("/.well-known/webledgers/state.json")
+        .await
+        .is_err());
+    handle.stop(false).await;
 }

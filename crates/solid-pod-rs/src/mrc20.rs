@@ -249,12 +249,16 @@ pub fn extract_transfers_to<'a>(state: &'a Mrc20State, to_address: &str) -> Vec<
         .collect()
 }
 
-/// Total amount transferred to `to_address` in a given state.
-pub fn total_transferred_to(state: &Mrc20State, to_address: &str) -> u64 {
+/// Total gross amount of the transfer ops to `to_address` in a given state, or
+/// `None` if the sum overflows.
+///
+/// This is what the ops *say*. It is not what moved: a transfer out of the
+/// same address, or from it to itself, leaves its balance where it was.
+pub fn total_transferred_to(state: &Mrc20State, to_address: &str) -> Option<u64> {
     extract_transfers_to(state, to_address)
         .iter()
         .filter_map(|op| op.amt)
-        .sum()
+        .try_fold(0u64, u64::checked_add)
 }
 
 /// Verify an MRC20 deposit: validate state chain integrity and extract
@@ -268,7 +272,8 @@ pub fn verify_mrc20_deposit(
     validate_mrc20_state(prev_state)?;
     verify_state_link(state, prev_state)?;
 
-    let amount = total_transferred_to(state, to_address);
+    let amount = total_transferred_to(state, to_address)
+        .ok_or_else(|| PaymentError::InvalidState("transfer amounts overflow".into()))?;
     if amount == 0 {
         return Err(PaymentError::InvalidState(format!(
             "no transfers to {to_address} in state ops"
@@ -830,6 +835,143 @@ mod anchor {
         Ok(Address::p2tr_tweaked(output_key, hrp).to_string())
     }
 
+    /// The longest trail a deposit may carry: each state costs the verifier
+    /// one or two mempool requests, so an unbounded proof is a request
+    /// amplifier. Real trails grow one state per transfer.
+    pub const MAX_TRAIL_STATES: usize = 256;
+
+    /// How many UTXOs at the derived address are walked. Anyone can send dust
+    /// there, so the list is attacker-padded; the verified coin is the head
+    /// of the trail, which an honest sender leaves among the first few.
+    pub const MAX_UTXOS_WALKED: usize = 4;
+
+    /// What a fully checked trail establishes.
+    pub(crate) struct ProvenDeposit {
+        pub(crate) amount: u64,
+        pub(crate) ticker: String,
+    }
+
+    /// Check the whole trail of state strings, genesis to tip, and return the
+    /// deposit it proves.
+    ///
+    /// * at least two strings: a deposit is a transfer, and a trail of one has
+    ///   no mark before the first, so nothing the issuer signed (anyone can
+    ///   fund a derived address; only the issuer can spend from one);
+    /// * each string is the canonical JCS of an MRC20 state, so no stray bytes
+    ///   change the derived key while parsing the same;
+    /// * the first is a genesis (`seq` 0, `prev` all zeros), each later one
+    ///   has `seq` one more and `prev` the SHA-256 of the string before it, and
+    ///   the ticker never changes;
+    /// * the last two strings are exactly `state` and `prev_state`;
+    /// * applying the tip's transfer ops to the previous balances reproduces
+    ///   the tip's balances, so the amount credited is the one the committed
+    ///   balances moved, not what an op merely claims.
+    pub(crate) fn verify_trail_states(
+        state: &Mrc20State,
+        prev_state: &Mrc20State,
+        state_strings: &[String],
+        to_address: &str,
+    ) -> Result<ProvenDeposit, PaymentError> {
+        let bad = |m: String| PaymentError::InvalidState(m);
+        let k = state_strings.len();
+        if k < 2 {
+            return Err(bad(format!(
+                "stateStrings must carry the full trail from genesis to the deposit \
+                 (at least 2 states), got {k}"
+            )));
+        }
+        if k > MAX_TRAIL_STATES {
+            return Err(bad(format!(
+                "stateStrings carries {k} states, more than the {MAX_TRAIL_STATES} accepted"
+            )));
+        }
+        let mut parsed: Vec<Mrc20State> = Vec::with_capacity(k);
+        for (i, text) in state_strings.iter().enumerate() {
+            let s: Mrc20State = serde_json::from_str(text)
+                .map_err(|e| bad(format!("stateStrings[{i}] is not an MRC20 state: {e}")))?;
+            validate_mrc20_state(&s)?;
+            let value = serde_json::to_value(&s)
+                .map_err(|e| bad(format!("serialize stateStrings[{i}]: {e}")))?;
+            if jcs(&value) != *text {
+                return Err(bad(format!("stateStrings[{i}] is not canonical JCS")));
+            }
+            parsed.push(s);
+        }
+        let genesis = &parsed[0];
+        if genesis.seq != 0 || genesis.prev != "0".repeat(64) {
+            return Err(bad("the trail does not begin at a genesis state".into()));
+        }
+        for i in 1..k {
+            if parsed[i].seq != i as u64 || parsed[i].prev != sha256_hex(&state_strings[i - 1]) {
+                return Err(bad(format!("chain break at stateStrings[{i}]")));
+            }
+            if parsed[i].ticker != genesis.ticker {
+                return Err(bad(format!("ticker changes at stateStrings[{i}]")));
+            }
+        }
+        let jcs_of = |s: &Mrc20State| {
+            serde_json::to_value(s)
+                .map(|v| jcs(&v))
+                .map_err(|e| bad(format!("serialize: {e}")))
+        };
+        if state_strings[k - 1] != jcs_of(state)? {
+            return Err(bad("last stateString does not match JCS(state)".into()));
+        }
+        if state_strings[k - 2] != jcs_of(prev_state)? {
+            return Err(bad(
+                "second-to-last stateString does not match JCS(prevState)".into(),
+            ));
+        }
+
+        let tip = &parsed[k - 1];
+        let before = parsed[k - 2].balances.clone().unwrap_or_default();
+        let before_to = before.get(to_address).copied().unwrap_or(0);
+        let Some(after) = tip.balances.as_ref() else {
+            return Err(bad(
+                "the deposit state carries no balances to prove the amount".into(),
+            ));
+        };
+        let mut expected = before;
+        for op in tip.ops.iter().filter(|op| op.op == TRANSFER_OP) {
+            let (Some(from), Some(to), Some(amt)) = (&op.from, &op.to, op.amt) else {
+                return Err(bad("a transfer op lacks from, to or amt".into()));
+            };
+            let have = expected.get(from).copied().unwrap_or(0);
+            let left = have
+                .checked_sub(amt)
+                .ok_or_else(|| bad(format!("{from} cannot transfer {amt}: balance {have}")))?;
+            expected.insert(from.clone(), left);
+            let got = expected.entry(to.clone()).or_insert(0);
+            *got = got
+                .checked_add(amt)
+                .ok_or_else(|| bad("balance overflow".into()))?;
+        }
+        expected.retain(|_, v| *v != 0);
+        let mut committed = after.clone();
+        committed.retain(|_, v| *v != 0);
+        if expected != committed {
+            return Err(bad(
+                "the deposit state's ops do not reproduce its committed balances".into(),
+            ));
+        }
+
+        // Credit what the committed balances moved, never what the ops add up
+        // to: `to -> to`, or in and straight back out, nets to nothing.
+        let after_to = committed.get(to_address).copied().unwrap_or(0);
+        let amount = after_to
+            .checked_sub(before_to)
+            .filter(|n| *n > 0)
+            .ok_or_else(|| {
+                bad(format!(
+                    "no net increase of {to_address} in the deposit state"
+                ))
+            })?;
+        Ok(ProvenDeposit {
+            amount,
+            ticker: tip.ticker.clone().unwrap_or_else(|| "UNKNOWN".into()),
+        })
+    }
+
     /// Verify an MRC20 deposit is anchored on Bitcoin, every link of its trail
     /// checked.
     ///
@@ -875,7 +1017,46 @@ mod anchor {
         network: &str,
         mempool: &dyn MempoolLookup,
     ) -> Result<Mrc20AnchorResult, PaymentError> {
-        let deposit = verify_mrc20_deposit(state, prev_state, to_address)?;
+        verify_mrc20_anchor_at(
+            state,
+            prev_state,
+            to_address,
+            pubkey_hex,
+            state_strings,
+            network,
+            None,
+            mempool,
+        )
+        .await
+    }
+
+    /// [`verify_mrc20_anchor`] with the depositor's own choice of anchor.
+    ///
+    /// The derived address is public, so anyone can send dust there, and the
+    /// backend lists its coins in no useful order. With `outpoint` (`txid`,
+    /// `vout`) named, that coin must be among those at the address and is the
+    /// only one walked, so no number of decoys can crowd it out. Without it,
+    /// the coins are ordered deterministically (confirmed first, then lowest
+    /// block height, then `(txid, vout)`) and the first
+    /// [`MAX_UTXOS_WALKED`] are tried, which dust that confirmed earlier can
+    /// still outrank: name the outpoint.
+    ///
+    /// # Errors
+    ///
+    /// As [`verify_mrc20_anchor`], and [`PaymentError::InvalidState`] when the
+    /// named outpoint is not a coin at the derived address.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn verify_mrc20_anchor_at(
+        state: &Mrc20State,
+        prev_state: &Mrc20State,
+        to_address: &str,
+        pubkey_hex: &str,
+        state_strings: &[String],
+        network: &str,
+        outpoint: Option<(&str, u32)>,
+        mempool: &dyn MempoolLookup,
+    ) -> Result<Mrc20AnchorResult, PaymentError> {
+        verify_mrc20_deposit(state, prev_state, to_address)?;
 
         if state_strings.is_empty() {
             return Err(PaymentError::InvalidState(
@@ -888,17 +1069,9 @@ mod anchor {
             ));
         }
 
-        // Verify last state string matches current state JCS
-        let current_value = serde_json::to_value(state)
-            .map_err(|e| PaymentError::InvalidState(format!("serialize: {e}")))?;
-        let current_jcs = jcs(&current_value);
-        if let Some(last) = state_strings.last() {
-            if *last != current_jcs {
-                return Err(PaymentError::InvalidState(
-                    "last stateString does not match JCS(state)".into(),
-                ));
-            }
-        }
+        // The whole trail, genesis to tip, and the amount it proves. Nothing
+        // the caller asserted outside `state_strings` is credited.
+        let proven = verify_trail_states(state, prev_state, state_strings, to_address)?;
 
         let address = bt_address(pubkey_hex, state_strings, network)?;
 
@@ -914,7 +1087,37 @@ mod anchor {
         // Every link: walk back from a UTXO at the head address. Any one whose
         // whole chain holds anchors the deposit.
         let mut failure = None;
-        for utxo in &utxos {
+        let candidates: Vec<Utxo> = match outpoint {
+            Some((txid, vout)) => {
+                let named = utxos
+                    .iter()
+                    .find(|u| u.txid.eq_ignore_ascii_case(txid) && u.vout == vout)
+                    .ok_or_else(|| {
+                        PaymentError::InvalidState(format!(
+                            "anchor outpoint {txid}:{vout} is not a coin at {address}"
+                        ))
+                    })?;
+                vec![named.clone()]
+            }
+            None => {
+                let mut ordered = utxos.clone();
+                ordered.sort_by(|a, b| {
+                    // Confirmed first, then the lowest block height, then the
+                    // outpoint: the same list whatever order the backend used.
+                    b.confirmed
+                        .cmp(&a.confirmed)
+                        .then(
+                            a.block_height
+                                .unwrap_or(u64::MAX)
+                                .cmp(&b.block_height.unwrap_or(u64::MAX)),
+                        )
+                        .then_with(|| (&a.txid, a.vout).cmp(&(&b.txid, b.vout)))
+                });
+                ordered.truncate(MAX_UTXOS_WALKED);
+                ordered
+            }
+        };
+        for utxo in &candidates {
             let report = crate::blocktrail::verify_anchor_chain(
                 pubkey_hex,
                 state_strings,
@@ -925,26 +1128,35 @@ mod anchor {
             .await?;
             if report.is_intact() {
                 return Ok(Mrc20AnchorResult {
-                    amount: deposit.amount,
-                    ticker: deposit.ticker,
+                    amount: proven.amount,
+                    ticker: proven.ticker,
                     address,
+                    anchor: utxo.clone(),
                     utxos,
                     report,
                 });
             }
             if failure.is_none() {
-                failure = report.first_failure().map(|m| {
-                    format!(
-                        "mark {} ({}): {}",
-                        m.index,
-                        if m.txid.is_empty() {
-                            "unreached"
-                        } else {
-                            &m.txid
-                        },
-                        m.status
-                    )
-                });
+                // The walk stops at a mark that does not commit, so name the
+                // lowest bad mark it actually reached (a broken link above it
+                // is only the symptom).
+                failure = report
+                    .marks
+                    .iter()
+                    .find(|m| !m.status.is_ok() && !m.txid.is_empty())
+                    .or_else(|| report.first_failure())
+                    .map(|m| {
+                        format!(
+                            "mark {} ({}): {}",
+                            m.index,
+                            if m.txid.is_empty() {
+                                "unreached"
+                            } else {
+                                &m.txid
+                            },
+                            m.status
+                        )
+                    });
             }
         }
         Err(PaymentError::InvalidState(format!(
@@ -961,12 +1173,19 @@ mod anchor {
     /// every mark's confirmation without a second round-trip).
     #[derive(Debug, Clone)]
     pub struct Mrc20AnchorResult {
-        /// Total amount transferred to the deposit address.
+        /// Token amount credited to the deposit address: the net increase of
+        /// its balance from the committed previous state to the committed tip
+        /// state, taken from the verified trail itself. The tip's transfer ops
+        /// must reproduce its balances exactly, so a self-transfer or a round
+        /// trip nets to nothing and is refused. Never a value the caller
+        /// asserted.
         pub amount: u64,
         /// Ticker of the token transferred.
         pub ticker: String,
         /// Taproot address re-derived from the portable proof.
         pub address: String,
+        /// The UTXO at `address` whose trail was walked and verified.
+        pub anchor: Utxo,
         /// UTXOs found at `address`.
         pub utxos: Vec<Utxo>,
         /// The trail, mark by mark, walked back from the head UTXO.
@@ -1384,7 +1603,7 @@ mod tests {
             ],
             anchor: None,
         };
-        assert_eq!(total_transferred_to(&state, "pod"), 80);
+        assert_eq!(total_transferred_to(&state, "pod"), Some(80));
     }
 
     // ── Full deposit verification ────────────────────────────────────
@@ -1903,6 +2122,213 @@ mod tests {
                 &mp,
             ));
             assert!(result.is_err());
+        }
+
+        fn jcs_str(s: &Mrc20State) -> String {
+            jcs(&serde_json::to_value(s).unwrap())
+        }
+
+        fn trail_err(
+            state: &Mrc20State,
+            prev: &Mrc20State,
+            strings: &[String],
+            to: &str,
+        ) -> String {
+            match verify_trail_states(state, prev, strings, to) {
+                Ok(p) => panic!("expected a refusal, credited {}", p.amount),
+                Err(e) => e.to_string(),
+            }
+        }
+
+        #[test]
+        fn trail_states_accept_the_valid_chain_and_prove_the_net_amount() {
+            let (genesis, next, strings) = valid_chain();
+            let proven = verify_trail_states(&next, &genesis, &strings, "recipient").unwrap();
+            assert_eq!(proven.amount, 100);
+            assert_eq!(proven.ticker, "TEST");
+        }
+
+        #[test]
+        fn trail_states_refuse_a_trail_that_does_not_start_at_genesis() {
+            let (genesis, next, strings) = valid_chain();
+            // [next, next2]: a well-linked pair that begins at seq 1.
+            let mut next2 = next.clone();
+            next2.seq = 2;
+            next2.prev = sha256_hex(&strings[1]);
+            let tail = vec![strings[1].clone(), jcs_str(&next2)];
+            let err = trail_err(&next2, &next, &tail, "recipient");
+            assert!(err.contains("genesis"), "{err}");
+            // And a genesis that is not seq 0 / zero prev.
+            let mut odd = genesis.clone();
+            odd.prev = "1".repeat(64);
+            let odd_jcs = jcs_str(&odd);
+            let mut after = next.clone();
+            after.prev = sha256_hex(&odd_jcs);
+            let err = trail_err(&after, &odd, &[odd_jcs, jcs_str(&after)], "recipient");
+            assert!(err.contains("genesis"), "{err}");
+        }
+
+        #[test]
+        fn trail_states_refuse_a_ticker_change() {
+            let (genesis, mut next, strings) = valid_chain();
+            next.ticker = Some("OTHER".into());
+            next.prev = sha256_hex(&strings[0]);
+            let both = vec![strings[0].clone(), jcs_str(&next)];
+            let err = trail_err(&next, &genesis, &both, "recipient");
+            assert!(err.contains("ticker changes"), "{err}");
+        }
+
+        #[test]
+        fn trail_states_refuse_non_canonical_strings() {
+            let (genesis, next, strings) = valid_chain();
+            for mangled in [
+                format!(" {}", strings[1]),
+                format!("{} ", strings[1]),
+                strings[1].replacen(',', ", ", 1),
+            ] {
+                let both = vec![strings[0].clone(), mangled];
+                let err = trail_err(&next, &genesis, &both, "recipient");
+                assert!(err.contains("not canonical JCS"), "{err}");
+            }
+            let junk = vec![strings[0].clone(), "{\"profile\":1}".to_string()];
+            assert!(trail_err(&next, &genesis, &junk, "recipient").contains("not an MRC20 state"));
+        }
+
+        #[test]
+        fn trail_states_refuse_short_and_over_long_trails_and_a_broken_link() {
+            let (genesis, next, strings) = valid_chain();
+            let err = trail_err(&next, &genesis, &strings[1..], "recipient");
+            assert!(err.contains("at least 2"), "{err}");
+            let long = vec![strings[0].clone(); MAX_TRAIL_STATES + 1];
+            assert!(trail_err(&next, &genesis, &long, "recipient").contains("more than"));
+            let mut bent = next.clone();
+            bent.prev = "ab".repeat(32);
+            let both = vec![strings[0].clone(), jcs_str(&bent)];
+            assert!(trail_err(&bent, &genesis, &both, "recipient").contains("chain break"));
+        }
+
+        #[test]
+        fn trail_states_credit_only_the_net_change() {
+            let (genesis, next, strings) = valid_chain();
+            // recipient -> recipient: gross 100, net nothing.
+            let mut selfie = next.clone();
+            selfie.ops = vec![Mrc20Op {
+                op: TRANSFER_OP.into(),
+                from: Some("issuer".into()),
+                to: Some("issuer".into()),
+                amt: Some(100),
+            }];
+            selfie.balances = genesis.balances.clone();
+            let both = vec![strings[0].clone(), jcs_str(&selfie)];
+            let err = trail_err(&selfie, &genesis, &both, "issuer");
+            assert!(err.contains("no net increase"), "{err}");
+        }
+
+        /// A head whose only input spends a coin that is not the previous
+        /// mark's key output is a fake head: refused, though it has inputs
+        /// and its own output is right.
+        #[test]
+        fn verify_anchor_false_when_the_head_does_not_spend_the_previous_key() {
+            let (genesis, next, strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mut mp = FixtureMempool::with_chain(&pubkey, &strings);
+            // Mark 0 gains a second, wrong-key output; the head spends that.
+            let m0 = sha256_hex("mark 0");
+            let mut wrong = mp.txs[&m0].vout[0].clone();
+            wrong.scriptpubkey = Some(format!("5120{}", "33".repeat(32)));
+            mp.txs.get_mut(&m0).unwrap().vout.push(wrong);
+            let head = sha256_hex("mark 1");
+            mp.txs.get_mut(&head).unwrap().vin = vec![TxIn { txid: m0, vout: 1 }];
+            let err = block_on(verify_mrc20_anchor(
+                &next,
+                &genesis,
+                "recipient",
+                &pubkey,
+                &strings,
+                "testnet4",
+                &mp,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("link by link"), "{err}");
+        }
+
+        /// The honest input may sit among others, but only so far down the
+        /// list: past the cap the head is not walked, which bounds the
+        /// requests one proof can cost.
+        #[test]
+        fn verify_anchor_reads_a_bounded_number_of_inputs_per_mark() {
+            let (genesis, next, strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let m0 = sha256_hex("mark 0");
+            let head = sha256_hex("mark 1");
+            let padded = |honest_at: usize| {
+                let mut mp = FixtureMempool::with_chain(&pubkey, &strings);
+                let mut vin: Vec<TxIn> = (0..honest_at)
+                    .map(|i| TxIn {
+                        txid: sha256_hex(&format!("filler {i}")),
+                        vout: 0,
+                    })
+                    .collect();
+                vin.push(TxIn {
+                    txid: m0.clone(),
+                    vout: 0,
+                });
+                mp.txs.get_mut(&head).unwrap().vin = vin;
+                mp
+            };
+            let run = |mp: &FixtureMempool| {
+                block_on(verify_mrc20_anchor(
+                    &next,
+                    &genesis,
+                    "recipient",
+                    &pubkey,
+                    &strings,
+                    "testnet4",
+                    mp,
+                ))
+            };
+            assert!(run(&padded(3)).is_ok(), "within the cap");
+            assert!(run(&padded(20)).is_err(), "past the cap");
+        }
+
+        /// Unnamed, coins are ordered deterministically before the cap, so
+        /// unconfirmed dust listed ahead of the confirmed head cannot push it
+        /// out; named, no ordering matters at all.
+        #[test]
+        fn verify_anchor_orders_coins_and_honours_a_named_outpoint() {
+            let (genesis, next, strings) = valid_chain();
+            let pubkey = test_pubkey_compressed();
+            let mut mp = FixtureMempool::with_chain(&pubkey, &strings);
+            let address = bt_address(&pubkey, &strings, "testnet4").unwrap();
+            let real = mp.utxos[&address][0].clone();
+            let mut listed: Vec<Utxo> = (0..6)
+                .map(|i| Utxo {
+                    txid: format!("{i:02x}").repeat(32),
+                    vout: 0,
+                    value: 546,
+                    confirmed: false,
+                    block_height: None,
+                })
+                .collect();
+            listed.push(real.clone());
+            mp.utxos.insert(address, listed);
+            let run = |outpoint: Option<(&str, u32)>| {
+                block_on(verify_mrc20_anchor_at(
+                    &next,
+                    &genesis,
+                    "recipient",
+                    &pubkey,
+                    &strings,
+                    "testnet4",
+                    outpoint,
+                    &mp,
+                ))
+            };
+            assert_eq!(run(None).unwrap().anchor, real);
+            assert_eq!(run(Some((&real.txid, 0))).unwrap().anchor, real);
+            let err = run(Some((&"ab".repeat(32), 0))).unwrap_err().to_string();
+            assert!(err.contains("not a coin"), "{err}");
         }
 
         #[test]

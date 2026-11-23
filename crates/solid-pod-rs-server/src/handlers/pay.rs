@@ -49,7 +49,7 @@ use solid_pod_rs::bitcoin_tx::{
     anchor_proof_json, build_withdraw_voucher, parse_txo_voucher, transfer_token_with_key,
     MempoolBroadcast, DEFAULT_FEE_SATS,
 };
-use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor, Mrc20State};
+use solid_pod_rs::mrc20::{bt_address, verify_mrc20_anchor_at, Mrc20State};
 use solid_pod_rs::payments::{
     balance_response, payment_required_body, PaymentError, PaymentStore, ReceiptOutcome, WebLedger,
 };
@@ -466,6 +466,10 @@ struct Mrc20AnchorBody {
     state_strings: Vec<String>,
     #[serde(default)]
     network: Option<String>,
+    /// The anchor coin, `txid:vout`. Named, it is the only coin walked, so
+    /// dust at the public address cannot crowd it out.
+    #[serde(default)]
+    outpoint: Option<String>,
 }
 
 /// An MRC20 token deposit body: `{type:"mrc20", state, prevState, anchor}`
@@ -501,8 +505,8 @@ async fn handle_deposit(
         Ok(d) => d,
         Err(rsp) => return Ok(rsp),
     };
-    let _transaction = crate::lock_payment_state(&*state.storage).await?;
-
+    // No payment lock here: the MRC20 path verifies against the network first
+    // and takes the lock only for its read-check-credit-commit.
     if body_is_mrc20(&body) {
         return handle_mrc20_deposit(&did, &state, &body).await;
     }
@@ -635,33 +639,41 @@ async fn handle_mrc20_deposit(
     let state_hash = solid_pod_rs::mrc20::sha256_hex(&solid_pod_rs::mrc20::jcs(&state_value));
     let replay_key = format!("mrc20:{state_hash}");
     let store = StoragePaymentStore::new(&*state.storage);
-    let mut payment_state = match store.read_state().await {
-        Ok(state) => state,
+    // An unlocked look, only to turn away a replayed or misconfigured request
+    // before it costs mempool requests. The authoritative check is repeated
+    // under the lock below.
+    match store.read_state().await {
+        Ok(snapshot) => {
+            if let Some(response) =
+                deposit_refusal(&snapshot, &token.ticker, &replay_key, &state_hash)
+            {
+                return Ok(response);
+            }
+        }
         Err(e) => return Ok(payment_error_response(e)),
-    };
-    if payment_state.ledger.is_sats_unit(&token.ticker) {
-        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "pay-token ticker names the satoshi balance; refusing to credit it"
-        })));
-    }
-    if payment_state.replay.iter().any(|key| key == &replay_key) {
-        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Replay: this state has already been used for a deposit",
-            "state_hash": state_hash,
-        })));
     }
 
     // (5) Anchor verification against live mempool state. An explicit
     // `mempool_url` (tests → local fixture server) overrides the env-driven
     // default so the route never reaches mempool.space in CI.
     let mempool = mempool_client(state);
-    let result = match verify_mrc20_anchor(
+    let named = match deposit.anchor.outpoint.as_deref().map(parse_outpoint) {
+        None => None,
+        Some(Some(outpoint)) => Some(outpoint),
+        Some(None) => {
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "anchor outpoint must be `<64-hex txid>:<vout>`"
+            })))
+        }
+    };
+    let result = match verify_mrc20_anchor_at(
         &deposit.state,
         &deposit.prev_state,
         &to_address,
         &deposit.anchor.pubkey,
         &deposit.anchor.state_strings,
         &network,
+        named.as_ref().map(|(t, v)| (t.as_str(), *v)),
         &mempool,
     )
     .await
@@ -670,9 +682,21 @@ async fn handle_mrc20_deposit(
         Err(e) => return Ok(payment_error_response(e)),
     };
 
+    // Verified against the network without the payment lock; now take it, read
+    // the ledger as it is, and repeat every replay check before crediting.
+    let _transaction = crate::lock_payment_state(&*state.storage).await?;
+    let mut payment_state = match store.read_state().await {
+        Ok(state) => state,
+        Err(e) => return Ok(payment_error_response(e)),
+    };
+    if let Some(response) = deposit_refusal(&payment_state, &token.ticker, &replay_key, &state_hash)
+    {
+        return Ok(response);
+    }
+
     // (6) Replay guard on the anchor outpoint. Every UTXO at the derived
     // address is checked, so adding a second coin there cannot dodge the
-    // guard; the lowest outpoint is the deposit's receipt.
+    // guard; the verified UTXO is the deposit's receipt.
     if let Some(used) = result
         .utxos
         .iter()
@@ -683,14 +707,9 @@ async fn handle_mrc20_deposit(
             "outpoint": format!("{}:{}", used.txid, used.vout),
         })));
     }
-    let Some(anchor) = result
-        .utxos
-        .iter()
-        .min_by(|a, b| (&a.txid, a.vout).cmp(&(&b.txid, b.vout)))
-    else {
-        return Ok(HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": "no UTXO at the derived anchor address" })));
-    };
+    // The receipt is the UTXO whose trail was walked and verified, never an
+    // arbitrary coin found at the address.
+    let anchor = &result.anchor;
 
     // A fresh ledger is born with teller's genesis identity, its operator
     // the pod's issuer. A ledger that already holds anything keeps the
@@ -738,6 +757,41 @@ async fn handle_mrc20_deposit(
             "anchor": result.address,
             "outpoint": format!("{}:{}", anchor.txid, anchor.vout),
         })))
+}
+
+/// The refusal for a deposit the ledger cannot take: the ticker names the
+/// satoshi balance, or this state hash was already used. `None` when it may
+/// proceed.
+fn deposit_refusal(
+    payment_state: &PaymentState,
+    ticker: &str,
+    replay_key: &str,
+    state_hash: &str,
+) -> Option<HttpResponse> {
+    if payment_state.ledger.is_sats_unit(ticker) {
+        return Some(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "pay-token ticker names the satoshi balance; refusing to credit it"
+        })));
+    }
+    if payment_state.replay.iter().any(|key| key == replay_key) {
+        return Some(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Replay: this state has already been used for a deposit",
+            "state_hash": state_hash,
+        })));
+    }
+    None
+}
+
+/// Read `txid:vout`, the txid 64 hex digits.
+fn parse_outpoint(text: &str) -> Option<(String, u32)> {
+    let (txid, vout) = text.split_once(':')?;
+    (txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| {
+            vout.parse::<u32>()
+                .ok()
+                .map(|v| (txid.to_ascii_lowercase(), v))
+        })
+        .flatten()
 }
 
 /// Whether a ledger holds nothing at all: no balances, deposits or payouts.

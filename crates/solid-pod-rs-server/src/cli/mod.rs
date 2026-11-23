@@ -5,12 +5,12 @@
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|
 //! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::QuotaPolicy::reconcile`] |
-//! | `account delete <user-id>`           | JSS #292 (`d9e56d8`)   | [`solid_pod_rs_idp::UserStore::delete`] |
+//! | `account delete <pod>`               | JSS #292 (`d9e56d8`)   | [`run_account_delete`] (removes the pod tree under `--root`) |
 //! | `invite create -u N [--expires-in]`  | JSS #304 (`6578ab9`)   | [`solid_pod_rs_idp::InviteStore`]  |
 //!
-//! Every runner is async and takes an already-constructed store so
-//! the test harness can drive them with an in-memory double rather
-//! than a real filesystem / database.
+//! Every runner is async and takes its inputs explicitly (a directory root,
+//! a prompt, a store) so the test harness can drive it with a temporary
+//! directory and a scripted prompt.
 
 use clap::{Args, Subcommand};
 
@@ -102,15 +102,25 @@ pub struct QuotaReconcileArgs {
 /// `account` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
-    /// Remove a user, their pods, and their WebID profile.
+    /// Delete a pod account: the pod directory under `--root`, with its WebID
+    /// profile (`profile/card`), ACLs and every resource in it. Irreversible.
+    /// The pod name stays reserved afterwards (registration refuses it) so a
+    /// new owner cannot inherit the old WebID's ACL grants; delete its file
+    /// under `<root>/.server/deleted-pods/` to release it.
     Delete(AccountDeleteArgs),
 }
 
 /// Arguments for `account delete`.
 #[derive(Debug, Args, Clone)]
 pub struct AccountDeleteArgs {
-    /// Stable internal user id (the one stored on the `User` row).
+    /// Name of the pod to delete: the single path segment `POST /.pods` created
+    /// under the storage root (`<root>/<name>/profile/card` is its WebID).
     pub user_id: String,
+
+    /// Filesystem storage root the server runs on. Falls back to the
+    /// `JSS_STORAGE_ROOT` env var, then `./data`.
+    #[arg(long, env = "JSS_STORAGE_ROOT", default_value = "./data")]
+    pub root: std::path::PathBuf,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
@@ -280,22 +290,88 @@ impl Prompt for StdinPrompt {
     }
 }
 
-/// Run `account delete`. Returns `Ok(true)` when a row was actually
-/// removed, `Ok(false)` when the user id was unknown, and `Err(..)`
-/// when the caller skipped confirmation without `--yes`.
-pub async fn run_account_delete<S, P>(
+/// Where the tombstone that reserves a deleted pod's name lives.
+fn tombstone_path(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    root.join(".server")
+        .join("deleted-pods")
+        .join(name.to_ascii_lowercase())
+}
+
+/// Whether `name` belongs to a pod that `account delete` removed, so that
+/// registration must refuse it. Operators release a name by deleting its
+/// file under `<root>/.server/deleted-pods/`.
+///
+/// Fails closed: only a clean "not found" frees a name, so a tombstone that
+/// cannot be read (permissions, a file where the directory should be, an I/O
+/// error) reserves it.
+#[must_use]
+pub fn pod_name_is_tombstoned(root: &std::path::Path, name: &str) -> bool {
+    match std::fs::symlink_metadata(tombstone_path(root, name)) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Resolve the directory of pod `name` under `root`, refusing anything that is
+/// not exactly a pod this server created.
+///
+/// The name must be one `POST /.pods` could have accepted (the server's own
+/// `valid_pod_name`: ASCII alphanumerics, `-` and `_`, minus the names the
+/// server reserves for itself, which also rules out `..`, dotfiles, separators
+/// and Windows drive or stream syntax). The directory must be a real
+/// directory (a symlink is refused, never followed) and must hold a WebID
+/// profile at `profile/card`, which keeps `account delete` from wiping
+/// anything that merely shares a name with a pod.
+fn resolve_pod_dir(root: &std::path::Path, name: &str) -> anyhow::Result<std::path::PathBuf> {
+    if !crate::valid_pod_name(name) {
+        anyhow::bail!("invalid pod name {name:?}: not a pod name this server can create");
+    }
+    if !root.is_dir() {
+        anyhow::bail!("storage root does not exist: {}", root.display());
+    }
+    let dir = root.join(name);
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|_| anyhow::anyhow!("no such pod {name:?} under {}", root.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        anyhow::bail!("{} is not a pod directory", dir.display());
+    }
+    if !dir.join("profile").join("card").is_file() {
+        anyhow::bail!(
+            "{} has no profile/card: not a pod created by this server",
+            dir.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// Run `account delete`: remove pod `args.user_id` from the storage root.
+///
+/// The exact inverse of `POST /.pods`: the pod directory (WebID profile at
+/// `profile/card`, containers, inner ACLs, quota sidecar and every resource in
+/// it) and the root-level siblings the server writes for it
+/// (`<name>.acl`, `<name>.meta` and their `.meta.json` sidecars). Returns the
+/// removed pod directory. An unknown or non-pod name is an error, so the
+/// binary exits non-zero; so is skipping the confirmation without `--yes`.
+///
+/// The name is **not** freed: a tombstone under `<root>/.server/deleted-pods/`
+/// makes registration refuse it, because a new pod of the same name would have
+/// the same WebID and so inherit every ACL grant the old pod ever made (in
+/// other pods too). Remove the tombstone file to release the name on purpose.
+///
+/// Stop the server first: deleting a pod it is serving races with its open
+/// handles.
+pub async fn run_account_delete<P>(
     args: &AccountDeleteArgs,
-    store: &S,
     prompt: &mut P,
-) -> anyhow::Result<bool>
+) -> anyhow::Result<std::path::PathBuf>
 where
-    S: solid_pod_rs_idp::UserStore + ?Sized,
     P: Prompt,
 {
+    let dir = resolve_pod_dir(&args.root, &args.user_id)?;
     if !args.yes {
         let banner = format!(
-            "About to delete user {user} and every associated pod + WebID profile.\n\
-             Type the user id to confirm: ",
+            "About to delete pod {user} and everything in it, including its WebID profile.\n\
+             Type the pod name to confirm: ",
             user = args.user_id
         );
         let answer = prompt
@@ -308,11 +384,33 @@ where
             );
         }
     }
-    let deleted = store
-        .delete(&args.user_id)
+    // Reserve the name first, so a crash part-way never frees it.
+    let tombstone = tombstone_path(&args.root, &args.user_id);
+    if let Some(parent) = tombstone.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| anyhow::anyhow!("create {}: {e}", parent.display()))?;
+    }
+    tokio::fs::write(&tombstone, b"deleted\n")
         .await
-        .map_err(|e| anyhow::anyhow!("user store delete: {e}"))?;
-    Ok(deleted)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", tombstone.display()))?;
+    tokio::fs::remove_dir_all(&dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("remove {}: {e}", dir.display()))?;
+    for sibling in ["acl", "meta"] {
+        let file = args.root.join(format!("{}.{sibling}", args.user_id));
+        for path in [
+            file.clone(),
+            std::path::PathBuf::from(format!("{}.meta.json", file.display())),
+        ] {
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                tokio::fs::remove_file(&path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("remove {}: {e}", path.display()))?;
+            }
+        }
+    }
+    Ok(dir)
 }
 
 /// Run `invite create`. Returns the minted invite *and* the final
@@ -373,18 +471,9 @@ pub async fn dispatch(cmd: OperatorCommand) -> anyhow::Result<()> {
             Ok(())
         }
         OperatorCommand::Account(AccountCommand::Delete(args)) => {
-            // The binary ships with the in-memory UserStore by default;
-            // operators wiring a persistent store plug their own
-            // dispatch in place of this one. The default keeps the
-            // subcommand callable in dev without a configured DB.
-            let store = solid_pod_rs_idp::InMemoryUserStore::new();
             let mut prompt = StdinPrompt;
-            let deleted = run_account_delete(&args, &store, &mut prompt).await?;
-            if deleted {
-                println!("deleted user {}", args.user_id);
-            } else {
-                println!("no such user {}", args.user_id);
-            }
+            let dir = run_account_delete(&args, &mut prompt).await?;
+            println!("deleted pod {} ({})", args.user_id, dir.display());
             Ok(())
         }
         OperatorCommand::Invite { root, cmd } => run_invite_command(&root, cmd).await,

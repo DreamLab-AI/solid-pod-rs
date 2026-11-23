@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- MRC20 deposits (`POST /pay/.deposit` with an MRC20 anchor proof) no longer accept a one-string proof or credit a
+  caller-asserted amount. The proof must be the full canonical state trail from genesis to tip (at least two states,
+  `seq`/`prev` hash-linked, constant ticker, at most 256 states), and the credited amount is the net balance increase
+  at the deposit address between the last two committed states (`after - before`, checked, above zero). Self-transfers
+  and round trips credit nothing. The anchor walk now records a real link (an input of each mark must spend an output
+  committing to the previous chained key) and stops at the first mark that does not commit. The depositor may name
+  the anchor coin as `anchor.outpoint` (`txid:vout`); it must be a coin at the address and only it is walked. Without
+  it, at most four coins are walked in a deterministic order (confirmed first, then block height, then outpoint), so
+  dust cannot crowd out the anchor. Network verification runs outside the payment lock; every replay and outpoint
+  check is repeated under it before crediting.
+
+### Changed
+
+- `mrc20::total_transferred_to` now returns `Option<u64>` (checked addition) instead of `u64`.
+- New `blocktrail`/`mrc20` entry point `verify_mrc20_anchor_at(.., outpoint: Option<(&str, u32)>, ..)`;
+  `verify_mrc20_anchor` keeps its signature and passes `None`.
+- `solid-pod-rs-server account delete` now removes the real pod directory under `--root` (it previously operated on an
+  empty in-memory store). It accepts exactly the names pod creation accepts and refuses non-pods. Deleting writes a
+  tombstone at `<root>/.server/deleted-pods/<name>`, and provisioning returns 409 for a tombstoned name so a new owner
+  cannot inherit the old WebID's grants; remove the tombstone file to release the name. Unreadable tombstone state
+  counts as reserved.
+
+### Security (dependencies)
+
 - RUSTSEC-2026-0594 (`cookie` 0.16.2, private cookie nonces can repeat after `fork()`): `cookie` is no longer
   in the dependency graph. It arrived only through the `actix-web` dev-dependency of `solid-pod-rs`, which used
   the default features; that dev-dependency now uses `default-features = false, features = ["macros"]`, matching
