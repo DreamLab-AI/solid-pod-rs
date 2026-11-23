@@ -40,8 +40,17 @@ const META_SUFFIX: &str = ".meta.json";
 /// files themselves are created without the exclusive lock (they are created
 /// lazily, and a holder may take a state lock while holding a resource lock),
 /// so deleting an individual lock file, rather than the directory, while it is
-/// held is not guarded against. Nothing in this crate removes any of these
+/// held is not guarded against. The guard covers only what this crate creates:
+/// a directory put back from outside (say, restored from a backup with its key)
+/// while a lock is held is not. Nothing in this crate removes any of these
 /// files.
+///
+/// The root lock needs `flock` on a read-only directory descriptor, which local
+/// filesystems on Linux and macOS provide. Where the exclusive form is
+/// unavailable (Linux NFS emulates `flock` with POSIX locks, which refuse an
+/// exclusive lock on a read-only descriptor), creating the lock directory is
+/// expected to fail with `lock setup: lock the data root: …` rather than
+/// proceed unguarded, so the first lock on such a data root fails.
 const LOCK_DIR: &str = ".solid-pod-locks";
 
 /// Lock files: a key maps to one of this many files by HMAC-SHA-256 under a
@@ -386,11 +395,14 @@ fn attempt_lock(
     use rustix::fs::{flock, FlockOperation};
     use std::io::ErrorKind::{NotFound, WouldBlock};
     use LockDirSeen::{Held, Snapshot, Unknown};
-    // Look before taking the root lock, so that once the directory is gone
-    // newcomers stop taking (and briefly holding) the shared lock, and only
-    // real holders stand between the repair and its exclusive lock.
+    // Look (for the directory and its key) before taking the root lock, so
+    // that once either is gone newcomers stop taking (and briefly holding) the
+    // shared lock, and only real holders stand between the repair and its
+    // exclusive lock.
     let seen = match lock_dir_step(dir, Unknown, LockStep::InspectDir, faults, || {
-        dir.symlink_metadata(LOCK_DIR)
+        let found = dir.symlink_metadata(LOCK_DIR)?;
+        dir.symlink_metadata(Path::new(LOCK_DIR).join(LOCK_KEY_FILE))?;
+        Ok(found)
     }) {
         Ok(m) => Snapshot(dir_identity(&m)),
         Err((NotFound, e)) => return Ok(Attempt::Repair(e)),

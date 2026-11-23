@@ -40,12 +40,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The stripe key is read on every acquisition rather than cached for the life of the handle, so every process agrees on
   the stripe after a recreation. Two new error labels: `lock setup: open the data root` and `lock setup: lock the data
   root`. Two further labels name steps that previously reported only as raw I/O errors: `lock the lock file` and
-  `verify the lock file`. Existing labels are unchanged. Not covered: deleting a single lock file, as opposed to the
-  directory or key, while it is held. Lock files are still created lazily without the exclusive lock, because a task
-  may take a state lock while it holds a resource lock. Requires `flock` on a directory, which Linux and macOS
-  local filesystems support. Regression tests: `deleting_the_lock_directory_while_held_does_not_admit_a_second_holder`
-  and `deleting_the_lock_key_while_held_does_not_admit_a_second_holder` (both fail on the previous code), plus unit
-  tests for a lock taken on an unlinked or replaced file.
+  `verify the lock file`. Existing labels are unchanged. A `flock` failure other than "would block" is now
+  `PodError::Backend` with one of those labels, not `PodError::Io`. Not covered: deleting a single lock file, as opposed
+  to the directory or key, while it is held. Lock files are still created lazily without the exclusive lock, because a
+  task may take a state lock while it holds a resource lock. Also not covered: a lock directory put back from outside
+  (for example, restored from a backup together with its key) while a lock is held. The root lock needs `flock` on a
+  read-only directory descriptor. Linux and macOS local filesystems support this. Where the exclusive form is refused
+  (expected on Linux NFS, which emulates `flock` with POSIX locks), creating the lock directory, and therefore the first
+  lock on a data root, fails with `lock setup: lock the data root: …`. Regression tests:
+  `deleting_the_lock_directory_while_held_does_not_admit_a_second_holder` and
+  `deleting_the_lock_key_while_held_does_not_admit_a_second_holder` both fail on the previous code. The key test fails
+  whenever the new key moves `/doc` to another stripe, which is 255 times in 256. Unit tests cover a lock taken on an
+  unlinked or replaced file, and a removed directory not being recreated while a lock is held.
 
 ### Removed
 
