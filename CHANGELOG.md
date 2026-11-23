@@ -16,16 +16,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `FsBackend::lock_exclusive` and first-use lock-key creation no longer fail with `lock setup: open the lock file:
-  Invalid argument (os error 22)` when `.solid-pod-locks` is removed while a lock is being set up. On macOS, cap-std
-  resolves `.solid-pod-locks/NN.lock` with two `openat` calls (the directory, then the file relative to it), and the
-  kernel can report `EINVAL` rather than `ENOENT` when the directory is removed during either; the old error label did
-  not say which. Each setup attempt now opens the lock directory as its own step (checked against a `dev`/`ino`
-  snapshot) and holds a handle on it for the steps inside it. An `EINVAL` is retried (bounded, with the existing
-  backoff) only when `.solid-pod-locks` is then gone or is no longer the directory the step used. An `EINVAL` while the
-  same directory is in place is still returned unchanged. Seen as an intermittent
-  `first_use_survives_the_lock_directory_vanishing_underneath_it` failure on macOS CI; unit tests now inject the error
-  so Linux CI covers the retry and the pass-through.
+- `FsBackend::lock_exclusive` and first-use lock-key creation no longer fail with `lock setup: …: Invalid argument (os
+  error 22)` when `.solid-pod-locks` is removed while a lock is being set up. macOS CI has reported `EINVAL` rather
+  than `ENOENT` from three different calls in that directory during such a removal: `open the lock file`, `create the
+  key candidate` and `install the lock key`. Every filesystem call in lock setup (creating, inspecting and opening the
+  directory; reading the key; creating, writing and linking the candidate; opening the lock file) now goes through one
+  step helper. An `EINVAL` from any of them is retried (bounded, with the existing backoff) only when `.solid-pod-locks`
+  is then gone, or is no longer the directory the step used. That is judged against a handle held for the attempt, or a
+  `dev`/`ino` snapshot for the open of the directory itself. An `EINVAL` while the same directory is in place is still
+  returned unchanged. Seen as an intermittent `first_use_survives_the_lock_directory_vanishing_underneath_it` failure
+  on macOS CI. The helper takes a fault-injection hook, and unit tests use it to drive every step through removal,
+  replacement and the intact case, so Linux CI covers each retry and pass-through.
 
 ### Removed
 

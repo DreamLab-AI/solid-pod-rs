@@ -74,18 +74,75 @@ fn lock_step<T>(op: &str, r: std::io::Result<T>) -> Result<T, (std::io::ErrorKin
     })
 }
 
+/// Every filesystem call in lock setup. Each runs through [`lock_dir_step`],
+/// which names it in errors and decides whether its failure is the lock
+/// directory vanishing (retried) or a real error (returned).
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockStep {
+    /// `mkdir` of [`LOCK_DIR`] (and the root, if absent) under the data root.
+    CreateDir,
+    /// `stat` of [`LOCK_DIR`], recording its identity before it is opened.
+    InspectDir,
+    /// `openat` of [`LOCK_DIR`], giving the attempt its directory handle.
+    OpenDir,
+    /// Read of the stripe key file.
+    ReadKey,
+    /// `openat(O_CREAT | O_EXCL)` of the key candidate.
+    CreateCandidate,
+    /// Write and `fsync` of the key candidate.
+    WriteCandidate,
+    /// `linkat` of the candidate to the key file name.
+    InstallKey,
+    /// `openat(O_CREAT)` of a stripe or state lock file.
+    OpenFile,
+}
+
+#[cfg(unix)]
+impl LockStep {
+    /// The step's name in `lock setup: {name}: {error}` messages.
+    fn label(self) -> &'static str {
+        match self {
+            Self::CreateDir => "create the lock directory",
+            Self::InspectDir => "inspect the lock directory",
+            Self::OpenDir => "open the lock directory",
+            Self::ReadKey => "read the lock key",
+            Self::CreateCandidate => "create the key candidate",
+            Self::WriteCandidate => "write the key candidate",
+            Self::InstallKey => "install the lock key",
+            Self::OpenFile => "open the lock file",
+        }
+    }
+}
+
+/// Fault injection for lock setup: called before each step, and an error it
+/// returns stands in for the step's own result. Production passes
+/// [`no_lock_faults`]; tests use it to reproduce the macOS race on any
+/// platform.
+#[cfg(unix)]
+type LockFaults<'a> = &'a mut dyn FnMut(LockStep) -> Option<std::io::Error>;
+
+/// The production [`LockFaults`]: never injects anything.
+#[cfg(unix)]
+fn no_lock_faults(_: LockStep) -> Option<std::io::Error> {
+    None
+}
+
 /// The lock directory a setup step worked in, as far as the caller knows it.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum LockDirSeen<'a> {
-    /// A handle on it: the step ran relative to this directory. The handle
-    /// keeps its inode alive, so a recreated directory cannot reuse its number.
-    Held(&'a Dir),
+    /// Nothing yet (the step creates or inspects it): only the path being
+    /// absent afterwards counts as the directory vanishing.
+    Unknown,
     /// Only the `(dev, ino)` observed at [`LOCK_DIR`] before the step, which
     /// was the one opening the directory. A reused inode number can only make
     /// a replaced directory look unchanged, which surfaces the error: it can
     /// never hide a genuine one.
     Snapshot((u64, u64)),
+    /// A handle on it: the step ran relative to this directory. The handle
+    /// keeps its inode alive, so a recreated directory cannot reuse its number.
+    Held(&'a Dir),
 }
 
 /// The `(dev, ino)` of a directory's metadata.
@@ -106,10 +163,11 @@ fn lock_dir_replaced(dir: &Dir, seen: LockDirSeen<'_>) -> bool {
         Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
     };
     match seen {
+        LockDirSeen::Unknown => false,
+        LockDirSeen::Snapshot(was) => was != now,
         LockDirSeen::Held(held) => held
             .dir_metadata()
             .is_ok_and(|was| dir_identity(&was) != now),
-        LockDirSeen::Snapshot(was) => was != now,
     }
 }
 
@@ -117,16 +175,15 @@ fn lock_dir_replaced(dir: &Dir, seen: LockDirSeen<'_>) -> bool {
 /// `NotFound` when the directory was removed or replaced during the step, so
 /// the setup loops retry it like any other vanished entry.
 ///
-/// macOS can fail with `EINVAL` rather than `ENOENT` when `.solid-pod-locks`
-/// is removed during an open. cap-std resolves `.solid-pod-locks/NN.lock`
-/// there with two `openat` calls (the directory, then the file relative to
-/// it), and the removal can land during either; a single error label could
-/// not tell them apart, so both are now separate steps and both are covered
-/// here. The errno comes from the kernel, not from the open flags (which are
-/// valid), and APFS does not document it, so the decision rests on the
-/// directory's observed identity rather than on the errno: an `EINVAL` while
-/// the same directory is still in place is a genuine invalid argument and is
-/// returned unchanged.
+/// macOS can fail calls in `.solid-pod-locks` with `EINVAL` rather than
+/// `ENOENT` when the directory is removed during them. It has been seen from
+/// the lock-file create, the key-candidate create and the key `linkat`; cap-std
+/// resolves each of those with two `openat`-relative calls (the directory, then
+/// the entry), and the removal can land during either. The errno comes from
+/// the kernel, not from the open flags (which are valid), and APFS does not
+/// document it, so the decision rests on the directory's observed identity
+/// rather than on the errno: an `EINVAL` while the same directory is still in
+/// place is a genuine invalid argument and is returned unchanged.
 #[cfg(unix)]
 fn vanished_lock_dir_as_not_found<T>(
     dir: &Dir,
@@ -144,46 +201,62 @@ fn vanished_lock_dir_as_not_found<T>(
     }
 }
 
+/// Run one lock-setup step: consult `faults`, run `op` if nothing was
+/// injected, treat an `EINVAL` caused by the lock directory vanishing as
+/// `NotFound` (see [`vanished_lock_dir_as_not_found`]), and label the error.
+/// Every filesystem call in lock setup goes through here.
+#[cfg(unix)]
+fn lock_dir_step<T>(
+    dir: &Dir,
+    seen: LockDirSeen<'_>,
+    step: LockStep,
+    faults: LockFaults<'_>,
+    op: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, (std::io::ErrorKind, PodError)> {
+    let r = match faults(step) {
+        Some(e) => Err(e),
+        None => op(),
+    };
+    lock_step(step.label(), vanished_lock_dir_as_not_found(dir, seen, r))
+}
+
 /// Create the lock directory if absent and open a handle on it, for one setup
 /// attempt. Every later step of the attempt works relative to this handle.
 #[cfg(unix)]
-fn open_lock_dir(dir: &Dir) -> Result<Dir, (std::io::ErrorKind, PodError)> {
-    lock_step("create the lock directory", dir.create_dir_all(LOCK_DIR))?;
-    let seen = lock_step("inspect the lock directory", dir.symlink_metadata(LOCK_DIR))?;
-    lock_step(
-        "open the lock directory",
-        vanished_lock_dir_as_not_found(
-            dir,
-            LockDirSeen::Snapshot(dir_identity(&seen)),
-            dir.open_dir(LOCK_DIR),
-        ),
-    )
+fn open_lock_dir(dir: &Dir, faults: LockFaults<'_>) -> Result<Dir, (std::io::ErrorKind, PodError)> {
+    use LockDirSeen::{Snapshot, Unknown};
+    lock_dir_step(dir, Unknown, LockStep::CreateDir, faults, || {
+        dir.create_dir_all(LOCK_DIR)
+    })?;
+    let seen = lock_dir_step(dir, Unknown, LockStep::InspectDir, faults, || {
+        dir.symlink_metadata(LOCK_DIR)
+    })?;
+    let seen = Snapshot(dir_identity(&seen));
+    lock_dir_step(dir, seen, LockStep::OpenDir, faults, || {
+        dir.open_dir(LOCK_DIR)
+    })
 }
 
 /// Open (creating if absent) the lock file `name` in the lock directory,
 /// recreating the directory and retrying when it vanishes underneath the open.
-/// `open` performs the open relative to the lock directory's handle; it is a
-/// parameter so tests can inject the failures the race produces.
 #[cfg(unix)]
 fn open_lock_file(
     dir: &Dir,
     name: &str,
-    mut open: impl FnMut(&Dir, &str) -> std::io::Result<cap_std::fs::File>,
+    faults: LockFaults<'_>,
 ) -> Result<std::fs::File, PodError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
     let mut last = PodError::Backend("could not open the lock file".into());
     for attempt in 0..LOCK_SETUP_ATTEMPTS {
         if attempt > 0 {
             std::thread::sleep(lock_setup_backoff(attempt - 1));
         }
-        let opened = open_lock_dir(dir).and_then(|lock_dir| {
-            lock_step(
-                "open the lock file",
-                vanished_lock_dir_as_not_found(
-                    dir,
-                    LockDirSeen::Held(&lock_dir),
-                    open(&lock_dir, name),
-                ),
-            )
+        let opened = open_lock_dir(dir, faults).and_then(|lock_dir| {
+            let seen = LockDirSeen::Held(&lock_dir);
+            lock_dir_step(dir, seen, LockStep::OpenFile, faults, || {
+                lock_dir.open_with(name, &options)
+            })
         });
         match opened {
             Ok(f) => return Ok(f.into_std()),
@@ -214,13 +287,13 @@ fn open_lock_file(
 /// `create_dir_all`, so a genuinely missing directory is recreated rather than
 /// looped on, and an attempt never leaves its temporary file behind.
 #[cfg(unix)]
-fn load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], PodError> {
+fn load_or_create_lock_key(dir: &Dir, faults: LockFaults<'_>) -> Result<[u8; 32], PodError> {
     let mut last = PodError::Backend("could not settle on a lock key".into());
     for attempt in 0..LOCK_SETUP_ATTEMPTS {
         if attempt > 0 {
             std::thread::sleep(lock_setup_backoff(attempt - 1));
         }
-        match try_load_or_create_lock_key(dir) {
+        match try_load_or_create_lock_key(dir, faults) {
             Ok(key) => return Ok(key),
             Err((std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists, e)) => last = e,
             Err((_, e)) => return Err(e),
@@ -232,14 +305,16 @@ fn load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], PodError> {
 /// One attempt at [`load_or_create_lock_key`]. The error carries the
 /// `io::ErrorKind` that decides whether the caller retries.
 #[cfg(unix)]
-fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKind, PodError)> {
+fn try_load_or_create_lock_key(
+    dir: &Dir,
+    faults: LockFaults<'_>,
+) -> Result<[u8; 32], (std::io::ErrorKind, PodError)> {
     use cap_std::fs::OpenOptionsExt;
-    let lock_dir = open_lock_dir(dir)?;
-    match vanished_lock_dir_as_not_found(
-        dir,
-        LockDirSeen::Held(&lock_dir),
-        lock_dir.read(LOCK_KEY_FILE),
-    ) {
+    let lock_dir = open_lock_dir(dir, faults)?;
+    let seen = LockDirSeen::Held(&lock_dir);
+    match lock_dir_step(dir, seen, LockStep::ReadKey, faults, || {
+        lock_dir.read(LOCK_KEY_FILE)
+    }) {
         Ok(bytes) => {
             return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
                 (
@@ -252,8 +327,8 @@ fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKin
                 )
             });
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return lock_step("read the lock key", Err(e)),
+        Err((std::io::ErrorKind::NotFound, _)) => {}
+        Err(e) => return Err(e),
     }
     let mut candidate = [0u8; 32];
     getrandom::getrandom(&mut candidate).map_err(|e| {
@@ -265,35 +340,29 @@ fn try_load_or_create_lock_key(dir: &Dir) -> Result<[u8; 32], (std::io::ErrorKin
     let tmp = format!("{LOCK_KEY_FILE}.tmp-{}", uuid::Uuid::new_v4());
     let mut options = OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
-    let mut file = lock_step(
-        "create the key candidate",
-        vanished_lock_dir_as_not_found(
-            dir,
-            LockDirSeen::Held(&lock_dir),
-            lock_dir.open_with(&tmp, &options),
-        ),
-    )?;
-    let written = file.write_all(&candidate).and_then(|()| file.sync_all());
-    drop(file);
-    let linked = match written {
-        Ok(()) => vanished_lock_dir_as_not_found(
-            dir,
-            LockDirSeen::Held(&lock_dir),
-            lock_dir.hard_link(&tmp, &lock_dir, LOCK_KEY_FILE),
-        ),
-        Err(e) => Err(e),
-    };
+    let mut file = lock_dir_step(dir, seen, LockStep::CreateCandidate, faults, || {
+        lock_dir.open_with(&tmp, &options)
+    })?;
+    let linked = lock_dir_step(dir, seen, LockStep::WriteCandidate, faults, || {
+        file.write_all(&candidate).and_then(|()| file.sync_all())
+    })
+    .and_then(|()| {
+        drop(file);
+        lock_dir_step(dir, seen, LockStep::InstallKey, faults, || {
+            lock_dir.hard_link(&tmp, &lock_dir, LOCK_KEY_FILE)
+        })
+    });
     // The candidate is private to this attempt: removing it cannot disturb a
     // concurrent creator, and its absence is not an error.
     let _ = lock_dir.remove_file(&tmp);
     match linked {
         Ok(()) => Ok(candidate),
         // Another process installed its key first: the next attempt reads it.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err((
+        Err((std::io::ErrorKind::AlreadyExists, _)) => Err((
             std::io::ErrorKind::AlreadyExists,
             PodError::Backend("lock key installed concurrently".into()),
         )),
-        Err(e) => lock_step("install the lock key", Err(e)),
+        Err(e) => Err(e),
     }
 }
 
@@ -358,9 +427,11 @@ impl FsBackend {
             .get_or_try_init(|| {
                 let dir = self.dir.clone();
                 async move {
-                    tokio::task::spawn_blocking(move || load_or_create_lock_key(&dir))
-                        .await
-                        .map_err(|e| PodError::Backend(format!("lock key task failed: {e}")))?
+                    tokio::task::spawn_blocking(move || {
+                        load_or_create_lock_key(&dir, &mut no_lock_faults)
+                    })
+                    .await
+                    .map_err(|e| PodError::Backend(format!("lock key task failed: {e}")))?
                 }
             })
             .await
@@ -682,15 +753,10 @@ impl Storage for FsBackend {
             format!("{:02x}.lock", usize::from(digest[0]) % LOCK_STRIPES)
         };
         let dir = self.dir.clone();
-        let file = tokio::task::spawn_blocking(move || {
-            let mut options = OpenOptions::new();
-            options.read(true).write(true).create(true);
-            open_lock_file(&dir, &name, |lock_dir, name| {
-                lock_dir.open_with(name, &options)
-            })
-        })
-        .await
-        .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
+        let file =
+            tokio::task::spawn_blocking(move || open_lock_file(&dir, &name, &mut no_lock_faults))
+                .await
+                .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
         let deadline = std::time::Instant::now() + wait;
         loop {
             match flock(&file, FlockOperation::NonBlockingLockExclusive) {
@@ -800,8 +866,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// The error macOS returns when the lock directory is removed between
-    /// cap-std opening it and creating the lock file inside it.
+    /// The error macOS returns when the lock directory is removed during a
+    /// call in it.
     #[cfg(unix)]
     fn einval() -> std::io::Error {
         std::io::Error::from(rustix::io::Errno::INVAL)
@@ -812,105 +878,149 @@ mod tests {
         Dir::open_ambient_dir(dir.path(), ambient_authority()).unwrap()
     }
 
+    /// The steps the stripe-key path runs on a fresh data root, in order.
     #[cfg(unix)]
-    fn create_lock_file(lock_dir: &Dir, name: &str) -> std::io::Result<cap_std::fs::File> {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true);
-        lock_dir.open_with(name, &options)
+    const KEY_STEPS: [LockStep; 7] = [
+        LockStep::CreateDir,
+        LockStep::InspectDir,
+        LockStep::OpenDir,
+        LockStep::ReadKey,
+        LockStep::CreateCandidate,
+        LockStep::WriteCandidate,
+        LockStep::InstallKey,
+    ];
+
+    /// The steps the lock-file path runs, in order.
+    #[cfg(unix)]
+    const FILE_STEPS: [LockStep; 4] = [
+        LockStep::CreateDir,
+        LockStep::InspectDir,
+        LockStep::OpenDir,
+        LockStep::OpenFile,
+    ];
+
+    /// Every (path, step) pair: `true` is the stripe-key path.
+    #[cfg(unix)]
+    fn all_steps() -> impl Iterator<Item = (bool, LockStep)> {
+        let key = KEY_STEPS.into_iter().map(|s| (true, s));
+        key.chain(FILE_STEPS.into_iter().map(|s| (false, s)))
     }
 
+    /// How the injected `EINVAL` relates to the lock directory.
     #[cfg(unix)]
-    #[test]
-    fn lock_file_open_retries_einval_when_the_directory_was_removed() {
+    #[derive(Clone, Copy, Debug)]
+    enum Race {
+        /// The directory is removed, then the step fails.
+        Removed,
+        /// The directory is removed and recreated, then the step fails.
+        Replaced,
+        /// The step fails while the directory is untouched.
+        Intact,
+    }
+
+    /// Run one setup path (`key` selects the stripe-key path, else the lock
+    /// file path) on a fresh root, failing the first run of `step` with
+    /// `EINVAL` after applying `race` to the lock directory. Returns the
+    /// outcome and how many times `step` ran.
+    #[cfg(unix)]
+    fn run_with_einval(key: bool, step: LockStep, race: Race) -> (Result<(), PodError>, u32) {
         let tmp = TempDir::new().unwrap();
         let root = open_root(&tmp);
         let locks = tmp.path().join(LOCK_DIR);
-        let mut calls = 0;
-        let file = open_lock_file(&root, "00.lock", |lock_dir, name| {
-            calls += 1;
-            if calls == 1 {
-                std::fs::remove_dir_all(&locks).unwrap();
-                return Err(einval());
+        let mut runs = 0;
+        let mut faults = |s: LockStep| {
+            if s != step {
+                return None;
             }
-            create_lock_file(lock_dir, name)
-        });
-        assert!(file.is_ok(), "{file:?}");
-        assert_eq!(calls, 2);
-        assert!(locks.join("00.lock").is_file());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn lock_file_open_retries_einval_when_the_directory_was_replaced() {
-        let tmp = TempDir::new().unwrap();
-        let root = open_root(&tmp);
-        let locks = tmp.path().join(LOCK_DIR);
-        let mut calls = 0;
-        let file = open_lock_file(&root, "00.lock", |lock_dir, name| {
-            calls += 1;
-            if calls == 1 {
-                // Another directory now stands at the path: the open used the
-                // removed one, so this is the race, not a bad argument.
-                std::fs::remove_dir_all(&locks).unwrap();
-                std::fs::create_dir(&locks).unwrap();
-                return Err(einval());
+            runs += 1;
+            if runs > 1 {
+                return None;
             }
-            create_lock_file(lock_dir, name)
-        });
-        assert!(file.is_ok(), "{file:?}");
-        assert_eq!(calls, 2);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn lock_file_open_surfaces_einval_while_the_directory_is_intact() {
-        let tmp = TempDir::new().unwrap();
-        let root = open_root(&tmp);
-        let mut calls = 0;
-        let err = open_lock_file(&root, "00.lock", |_, _| {
-            calls += 1;
-            Err(einval())
-        })
-        .unwrap_err();
-        assert_eq!(calls, 1, "a genuine EINVAL must not be retried");
-        let msg = err.to_string();
-        assert!(matches!(err, PodError::Backend(_)), "{err:?}");
-        assert!(
-            msg.contains("open the lock file: Invalid argument"),
-            "{msg}"
-        );
-        assert!(!msg.contains("removed"), "{msg}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn lock_file_open_retries_not_found() {
-        let tmp = TempDir::new().unwrap();
-        let root = open_root(&tmp);
-        let mut calls = 0;
-        let file = open_lock_file(&root, "00.lock", |lock_dir, name| {
-            calls += 1;
-            if calls < 3 {
-                return Err(std::io::ErrorKind::NotFound.into());
+            match race {
+                Race::Removed => {
+                    let _ = std::fs::remove_dir_all(&locks);
+                }
+                Race::Replaced => {
+                    let _ = std::fs::remove_dir_all(&locks);
+                    std::fs::create_dir(&locks).unwrap();
+                }
+                Race::Intact => {}
             }
-            create_lock_file(lock_dir, name)
-        });
-        assert!(file.is_ok(), "{file:?}");
-        assert_eq!(calls, 3);
+            Some(einval())
+        };
+        let r = if key {
+            load_or_create_lock_key(&root, &mut faults).map(drop)
+        } else {
+            open_lock_file(&root, "00.lock", &mut faults).map(drop)
+        };
+        (r, runs)
     }
 
     #[cfg(unix)]
     #[test]
-    fn lock_file_open_gives_up_after_the_bounded_attempts() {
+    fn every_lock_setup_step_retries_einval_when_the_directory_was_removed() {
+        for (key, step) in all_steps() {
+            let (r, runs) = run_with_einval(key, step, Race::Removed);
+            assert!(r.is_ok(), "{step:?} (key path: {key}): {r:?}");
+            assert_eq!(runs, 2, "{step:?} (key path: {key}) must be retried once");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn steps_holding_the_directory_retry_einval_when_it_was_replaced() {
+        // Steps after `OpenDir` compare against the held handle, whose inode
+        // stays allocated, so replacement is detected on every filesystem.
+        // The snapshot taken for `OpenDir` is covered by
+        // `vanished_lock_dir_snapshot_detects_removal_and_replacement`, which
+        // pins the original inode so the comparison is meaningful.
+        let held = all_steps().filter(|(_, s)| {
+            !matches!(
+                s,
+                LockStep::CreateDir | LockStep::InspectDir | LockStep::OpenDir
+            )
+        });
+        for (key, step) in held {
+            let (r, runs) = run_with_einval(key, step, Race::Replaced);
+            assert!(r.is_ok(), "{step:?} (key path: {key}): {r:?}");
+            assert_eq!(runs, 2, "{step:?} (key path: {key}) must be retried once");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_lock_setup_step_surfaces_einval_while_the_directory_is_intact() {
+        // `CreateDir` runs before the directory exists, so an injected failure
+        // there leaves it absent, which is indistinguishable from vanishing.
+        for (key, step) in all_steps().filter(|(_, s)| *s != LockStep::CreateDir) {
+            let (r, runs) = run_with_einval(key, step, Race::Intact);
+            assert_eq!(
+                runs, 1,
+                "{step:?} (key path: {key}): a genuine EINVAL must not be retried"
+            );
+            let err = r.unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, PodError::Backend(_)), "{err:?}");
+            let want = format!("lock setup: {}: Invalid argument", step.label());
+            assert!(msg.contains(&want), "{step:?}: {msg}");
+            assert!(!msg.contains("removed"), "{step:?}: {msg}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_setup_retries_not_found_and_gives_up_after_the_bounded_attempts() {
         let tmp = TempDir::new().unwrap();
         let root = open_root(&tmp);
-        let mut calls = 0;
-        let err = open_lock_file(&root, "00.lock", |_, _| {
-            calls += 1;
-            Err(std::io::ErrorKind::NotFound.into())
-        })
-        .unwrap_err();
-        assert_eq!(calls, LOCK_SETUP_ATTEMPTS);
+        let mut runs = 0;
+        let r = open_lock_file(&root, "00.lock", &mut |s| {
+            (s == LockStep::OpenFile).then(|| {
+                runs += 1;
+                std::io::ErrorKind::NotFound.into()
+            })
+        });
+        assert_eq!(runs, LOCK_SETUP_ATTEMPTS);
+        let err = r.unwrap_err();
         assert!(err.to_string().contains("open the lock file"), "{err}");
     }
 
@@ -921,20 +1031,20 @@ mod tests {
         let root = open_root(&tmp);
         root.create_dir_all(LOCK_DIR).unwrap();
         let held = root.open_dir(LOCK_DIR).unwrap();
+        let check = |seen, r| vanished_lock_dir_as_not_found::<()>(&root, seen, r);
         // Intact: EINVAL passes through unchanged.
-        let r: std::io::Result<()> =
-            vanished_lock_dir_as_not_found(&root, LockDirSeen::Held(&held), Err(einval()));
+        let r = check(LockDirSeen::Held(&held), Err(einval()));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        let r = check(LockDirSeen::Unknown, Err(einval()));
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
         std::fs::remove_dir(tmp.path().join(LOCK_DIR)).unwrap();
         // Removed: EINVAL becomes NotFound; other errors pass through.
-        let r: std::io::Result<()> =
-            vanished_lock_dir_as_not_found(&root, LockDirSeen::Held(&held), Err(einval()));
+        let r = check(LockDirSeen::Held(&held), Err(einval()));
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
-        let r: std::io::Result<()> = vanished_lock_dir_as_not_found(
-            &root,
-            LockDirSeen::Held(&held),
-            Err(std::io::ErrorKind::PermissionDenied.into()),
-        );
+        let r = check(LockDirSeen::Unknown, Err(einval()));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        let denied = Err(std::io::ErrorKind::PermissionDenied.into());
+        let r = check(LockDirSeen::Held(&held), denied);
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
     }
 
@@ -950,22 +1060,16 @@ mod tests {
         let seen = LockDirSeen::Snapshot(dir_identity(&original.dir_metadata().unwrap()));
         let check = |r| vanished_lock_dir_as_not_found::<()>(&root, seen, r);
         // Unchanged: EINVAL passes through.
-        assert_eq!(
-            check(Err(einval())).unwrap_err().kind(),
-            std::io::ErrorKind::InvalidInput
-        );
+        let r = check(Err(einval()));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
         // Removed: EINVAL becomes NotFound.
         std::fs::remove_dir(tmp.path().join(LOCK_DIR)).unwrap();
-        assert_eq!(
-            check(Err(einval())).unwrap_err().kind(),
-            std::io::ErrorKind::NotFound
-        );
+        let r = check(Err(einval()));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
         // Replaced by a fresh directory: still the race, still NotFound.
         root.create_dir(LOCK_DIR).unwrap();
-        assert_eq!(
-            check(Err(einval())).unwrap_err().kind(),
-            std::io::ErrorKind::NotFound
-        );
+        let r = check(Err(einval()));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
         drop(original);
     }
 
