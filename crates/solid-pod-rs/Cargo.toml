@@ -305,7 +305,7 @@ uuid = { version = "1", features = ["js"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
-actix-web = "4"
+actix-web = { version = "4", default-features = false, features = ["macros"] }
 wiremock = "0.6"
 criterion = { version = "0.5", features = ["html_reports"] }
 # Sprint 7 D: integration tests drive the server binary's actix `App`
