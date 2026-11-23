@@ -299,3 +299,85 @@ async fn first_use_survives_the_lock_directory_vanishing_underneath_it() {
         j.await.unwrap();
     }
 }
+
+// ---- the lock survives its directory being deleted while held --------------
+
+/// Removing `.solid-pod-locks` while a lock is held must not let a second
+/// contender take the same key: the holder's lock file is now unlinked, and a
+/// contender that recreated the directory would otherwise lock a new file at
+/// the same path, so both would proceed.
+#[tokio::test]
+async fn deleting_the_lock_directory_while_held_does_not_admit_a_second_holder() {
+    let (d, a, b) = two_handles().await;
+    // `b` caches the stripe key now, as a long-running process would.
+    drop(
+        b.lock_exclusive("/warm", Duration::from_secs(1))
+            .await
+            .unwrap(),
+    );
+    let held = a
+        .lock_exclusive("/doc", Duration::from_secs(1))
+        .await
+        .unwrap()
+        .expect("the filesystem backend locks");
+    std::fs::remove_dir_all(d.path().join(".solid-pod-locks")).unwrap();
+    // A handle that cached the old key, and a fresh one (a process started
+    // after the deletion, which would generate a new key).
+    let fresh = FsBackend::new(d.path()).await.unwrap();
+    for (who, s) in [("cached", &*b), ("fresh", &fresh)] {
+        match s.lock_exclusive("/doc", Duration::from_millis(150)).await {
+            Err(PodError::Conflict(_)) => {}
+            other => panic!("{who} handle was admitted while the lock is held: {other:?}"),
+        }
+    }
+    drop(held);
+    // Released: the directory is recreated with a new key, and the handle that
+    // cached nothing and the long-running one agree on it, so they exclude
+    // each other again, in both directions.
+    for (first, second) in [(&*b, &fresh), (&fresh, &*b)] {
+        let held = first
+            .lock_exclusive("/doc", Duration::from_secs(1))
+            .await
+            .unwrap()
+            .expect("locks");
+        assert!(matches!(
+            second
+                .lock_exclusive("/doc", Duration::from_millis(100))
+                .await,
+            Err(PodError::Conflict(_))
+        ));
+        drop(held);
+    }
+}
+
+/// The same for the stripe key alone: a contender that found it missing would
+/// otherwise generate a new one, hash the key to a different stripe and
+/// proceed beside the holder.
+#[tokio::test]
+async fn deleting_the_lock_key_while_held_does_not_admit_a_second_holder() {
+    let (d, a, _b) = two_handles().await;
+    let held = a
+        .lock_exclusive("/doc", Duration::from_secs(1))
+        .await
+        .unwrap()
+        .expect("locks");
+    std::fs::remove_file(d.path().join(".solid-pod-locks/key")).unwrap();
+    let fresh = FsBackend::new(d.path()).await.unwrap();
+    assert!(matches!(
+        fresh
+            .lock_exclusive("/doc", Duration::from_millis(150))
+            .await,
+        Err(PodError::Conflict(_))
+    ));
+    drop(held);
+    let held = fresh
+        .lock_exclusive("/doc", Duration::from_secs(1))
+        .await
+        .unwrap()
+        .expect("locks");
+    assert!(matches!(
+        a.lock_exclusive("/doc", Duration::from_millis(100)).await,
+        Err(PodError::Conflict(_))
+    ));
+    drop(held);
+}
