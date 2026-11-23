@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- RUSTSEC-2026-0594 (`cookie` 0.16.2, private cookie nonces can repeat after `fork()`): `cookie` is no longer
+  in the dependency graph. It arrived only through the `actix-web` dev-dependency of `solid-pod-rs`, which used
+  the default features; that dev-dependency now uses `default-features = false, features = ["macros"]`, matching
+  `solid-pod-rs-server`. This also drops 14 compression and HTTP/2 crates the test client never used. No shipped
+  crate depended on `cookie`, and nothing called actix's cookie API.
+
 ### Removed
 
 - The in-repo diagram set (`crates/solid-pod-rs/docs/diagrams/src/*.mmd`, the rendered SVG and PNG files and
