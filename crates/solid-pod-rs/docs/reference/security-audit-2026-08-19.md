@@ -52,7 +52,7 @@ threat modelling and external conformance testing remain operator duties.
 | `scripts/parity-check.sh` | pass: 206/211 (97.6%); zero rows classified as missing |
 | `cargo deny --manifest-path Cargo.toml --config crates/solid-pod-rs/deny.toml check` | pass: advisories, bans, licences, and sources |
 | `actionlint .github/workflows/ci.yml .github/workflows/release.yml` | pass with actionlint 1.7.12 |
-| `scripts/check-diagram-staleness.sh` | pass: all nine Mermaid sources current against SVG and PNG outputs |
+| `scripts/check-diagram-staleness.sh` | pass: all nine Mermaid sources current against SVG and PNG outputs (note, 2026-11-23: the script and the diagram set were later removed in favour of the VisionFlow diagram corpus) |
 | External CTH Docker suite | not run locally; `scripts/test-cth.sh` supplies the discovery preflight and runner integration, but requires a deployed Solid-OIDC test server |
 
 The tests include all workspace targets and feature combinations requested by

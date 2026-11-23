@@ -9,6 +9,16 @@ wired into CI.
 "verified render" claim remains gated on VisionFlow's RES-b visual-regression
 gate (declared dependency, not self-certified).
 
+> **Note (2026-11-23):** this evidence is a historical record. The diagram set it
+> describes (`docs/diagrams/src/*.mmd`, `docs/diagrams/rendered/*.svg|*.png`,
+> `puppeteer.config.json`), the staleness guard `scripts/check-diagram-staleness.sh`
+> and the `diagrams` CI job were removed by PR #18 (`docs/diagrams-to-visionflow`)
+> in favour of the VisionFlow diagrams-as-code corpus
+> ([solid-pod-rs area](https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs)).
+> `docs/diagrams/README.md` is now a pointer mapping each removed source to the
+> corpus section that shows it. The table, commands and receipts below are kept
+> unchanged as the record of the 2026-07-08 work; the files they name are gone.
+
 ## What changed
 
 | File | Change |

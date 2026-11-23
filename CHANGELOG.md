@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- The in-repo diagram set (`crates/solid-pod-rs/docs/diagrams/src/*.mmd`, the rendered SVG and PNG files and
+  `puppeteer.config.json`), the RES-c staleness guard `scripts/check-diagram-staleness.sh`, and the `diagrams` CI
+  job, which `ci-required` no longer waits for. The diagrams now live in the VisionFlow diagrams-as-code corpus
+  (https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs), cited to the code at a stamped commit.
+  `crates/solid-pod-rs/docs/diagrams/README.md` remains as a pointer with a map from each removed source to the
+  section that now shows it. The rendered images were inside the `solid-pod-rs` crate directory, so the published
+  package no longer carries them. No code changed.
+
 ### Security
 
 - `url` 2.5.8 to 2.5.9: RUSTSEC-2026-0592 (stack overflow in `Url::origin()` on nested `blob:` URLs). Every workspace

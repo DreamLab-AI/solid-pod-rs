@@ -6,6 +6,8 @@
 **Governed by:** [PRD-gap-close-solid-pod](PRD-gap-close-solid-pod.md), [ADR-060](archive/adr/ADR-060-gap-close-solid-pod-slice.md)
 **Conformist to:** [DDD Gap-Close Context](../../../../VisionFlow/docs/DDD-gap-close-context.md), ADR-002 Ecosystem Alignment
 
+> **Note (2026-11-23):** the RES-c diagram set and its staleness guard were removed by PR #18 in favour of the VisionFlow diagrams-as-code corpus. Every RES-c mention below (scope, the `DiagramSet` aggregate, maturity, wave and invariant 6) is the record of the slice as planned; see the note under the aggregates table.
+
 **Naming note.** This repository carries no numbered DDD series; for this sprint it adopts the canon's unnumbered child-document convention, matching `PRD-gap-close-solid-pod.md`.
 
 ---
@@ -45,7 +47,9 @@ Local aggregates from the solid-pod-rs model, mapped to the Gap-Close aggregates
 | `PatchOperation` over an LDP `Resource` | `Resource` | Non-destructive merge: the working graph is seeded from the stored resource before the patch applies (`seed_graph_from_patch_target`, lib.rs:1467) | REC-1 `Gap` → `ClosureEvidence` (the three regression tests) |
 | `Nip98Verification` | `Nip98Verified` | One canonical verifier (`auth/nip98.rs`) and a replay cache (`Nip98ReplayCache`, replay.rs:73) every tier shares | NIP-98 `Commitment` → `ClosureEvidence` (delegation grep + replay-reject canary) |
 | `ProvenanceLog` | `ProvenanceLog` | Composition of `GitMark` and `BlockTrailAnchor` on the LDP write path (`ProvenanceLog::record`, provenance.rs:517; `git_mark_write`, lib.rs:2838) | REC-11 `Commitment` → `ClosureEvidence` (provenance-wire canary) + the trace contract |
-| `DiagramSet` | `docs/diagrams/README.md` index | Rendered PNGs current against their `.mmd` sources | RES-c `Residual` → gated on RES-b, no canary |
+| `DiagramSet` (removed 2026-11-23 by PR #18, see the note below) | `docs/diagrams/README.md` index | Rendered PNGs current against their `.mmd` sources | RES-c `Residual` → gated on RES-b, no canary |
+
+> **Note (2026-11-23):** the `DiagramSet` aggregate no longer exists in this repository. The `.mmd` sources, their renders and the staleness guard were removed by PR #18 (`docs/diagrams-to-visionflow`); the diagrams live in the VisionFlow diagrams-as-code corpus ([solid-pod-rs area](https://github.com/DreamLab-AI/VisionFlow/tree/main/docs/diagrams/solid-pod-rs)). `docs/diagrams/README.md` is now a pointer with a map from each removed source to the corpus section that shows it.
 
 Members inherited from the canon's `GapRegister`, `SprintWave` and `RepoWorkPackage` aggregates are consumed unchanged; this slice adds none.
 
