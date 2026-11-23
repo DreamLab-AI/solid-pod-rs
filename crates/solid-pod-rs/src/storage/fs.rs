@@ -25,10 +25,27 @@ const META_SUFFIX: &str = ".meta.json";
 
 /// Directory under the data root that holds the cross-process lock files.
 /// A dotfile, so no HTTP route reaches it, and hidden from listings.
+///
+/// A lock is an exclusive `flock` on a file in here, so if the directory were
+/// deleted and recreated while a lock is held, a contender would lock a new
+/// file at the same path and both would proceed. To prevent that, every holder
+/// also holds a shared `flock` on the data root itself (which cannot be removed
+/// while the data is in use), and the directory and its key are only ever
+/// created under an exclusive `flock` on the data root, which waits until no
+/// lock is held by any process. Deleting the directory while locks are held
+/// therefore makes contenders wait (and time out with
+/// [`PodError::Conflict`]) until the holders release, after which the next
+/// contender recreates it. After acquiring, a holder checks that its locked
+/// file is still the one at the path, and starts over if it is not. Stripe
+/// files themselves are created without the exclusive lock (they are created
+/// lazily, and a holder may take a state lock while holding a resource lock),
+/// so deleting an individual lock file, rather than the directory, while it is
+/// held is not guarded against. Nothing in this crate removes any of these
+/// files.
 const LOCK_DIR: &str = ".solid-pod-locks";
 
 /// Lock files: a key maps to one of this many files by HMAC-SHA-256 under a
-/// per-data-root random key (see [`FsBackend::stripe_key`]), so every process on
+/// per-data-root random key ([`LOCK_KEY_FILE`]), so every process on
 /// the data root agrees but a client cannot choose names that share a victim's
 /// stripe. Striping keeps the lock directory bounded whatever the number of
 /// resources and puts no file beside a resource.
@@ -96,6 +113,16 @@ enum LockStep {
     InstallKey,
     /// `openat(O_CREAT)` of a stripe or state lock file.
     OpenFile,
+    /// `openat` of the data root, giving the attempt its own descriptor to
+    /// `flock` (see [`lock_data_root`]).
+    OpenRoot,
+    /// `flock` of that descriptor: shared to hold a lock, exclusive to repair.
+    LockRoot,
+    /// `flock` of the stripe or state lock file.
+    LockFile,
+    /// `fstat` of the locked file and `stat` of its path, to check that the
+    /// lock is on the file every contender opens.
+    VerifyFile,
 }
 
 #[cfg(unix)]
@@ -111,6 +138,10 @@ impl LockStep {
             Self::WriteCandidate => "write the key candidate",
             Self::InstallKey => "install the lock key",
             Self::OpenFile => "open the lock file",
+            Self::OpenRoot => "open the data root",
+            Self::LockRoot => "lock the data root",
+            Self::LockFile => "lock the lock file",
+            Self::VerifyFile => "verify the lock file",
         }
     }
 }
@@ -237,32 +268,234 @@ fn open_lock_dir(dir: &Dir, faults: LockFaults<'_>) -> Result<Dir, (std::io::Err
     })
 }
 
-/// Open (creating if absent) the lock file `name` in the lock directory,
-/// recreating the directory and retrying when it vanishes underneath the open.
+/// A held cross-process lock: the stripe's `flock`, and the shared `flock` on
+/// the data root that keeps the lock directory from being recreated while it
+/// is held (see [`LOCK_DIR`]). Fields drop in order, so the stripe is released
+/// before the root.
 #[cfg(unix)]
-fn open_lock_file(
-    dir: &Dir,
-    name: &str,
+#[derive(Debug)]
+struct HeldLock {
+    _stripe: std::fs::File,
+    _anchor: std::fs::File,
+}
+
+/// What one acquisition attempt found.
+#[cfg(unix)]
+enum Attempt {
+    /// The lock is held and verified.
+    Held(HeldLock),
+    /// Another holder has the stripe, or the data root is being repaired.
+    Busy,
+    /// The lock directory or its key is missing; the error says which.
+    Repair(PodError),
+}
+
+/// The `(dev, ino)` of an open file.
+#[cfg(unix)]
+fn file_identity(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
+}
+
+/// Parse the stripe key file's contents. A file of the wrong length is an
+/// error, never regenerated: replacing it would put two processes on different
+/// stripes and silently end their mutual exclusion.
+#[cfg(unix)]
+fn parse_lock_key(bytes: &[u8]) -> Result<[u8; 32], (std::io::ErrorKind, PodError)> {
+    <[u8; 32]>::try_from(bytes).map_err(|_| {
+        (
+            std::io::ErrorKind::InvalidData,
+            PodError::Backend(format!(
+                "the lock key file {LOCK_DIR}/{LOCK_KEY_FILE} holds {} bytes, expected 32; \
+                 refusing to replace it (that would split the stripes between processes)",
+                bytes.len()
+            )),
+        )
+    })
+}
+
+/// The lock file name of `key` under the data root's stripe key.
+#[cfg(unix)]
+fn lock_file_name(stripe_key: &[u8; 32], key: &str) -> Result<String, PodError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(stripe_key)
+        .map_err(|e| PodError::Backend(format!("lock key: {e}")))?;
+    mac.update(key.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    Ok(if key.starts_with(STATE_KEY_PREFIX) {
+        format!("state-{}.lock", hex::encode(&digest[..4]))
+    } else {
+        format!("{:02x}.lock", usize::from(digest[0]) % LOCK_STRIPES)
+    })
+}
+
+/// Run one lock step on the data root itself: like [`lock_dir_step`], but an
+/// `EINVAL` is never read as the lock directory vanishing, since the step does
+/// not touch it.
+#[cfg(unix)]
+fn root_step<T>(
+    step: LockStep,
     faults: LockFaults<'_>,
-) -> Result<std::fs::File, PodError> {
+    op: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, (std::io::ErrorKind, PodError)> {
+    lock_step(step.label(), faults(step).map_or_else(op, Err))
+}
+
+/// Open a new descriptor on the data root and `flock` it without waiting:
+/// shared for a holder, exclusive for a repair. Each call must have its own
+/// open file description (never `dir` itself or a `dup` of it): `flock` on a
+/// shared description converts the lock instead of conflicting with it.
+/// `Ok(None)` is "held the other way by someone else".
+#[cfg(unix)]
+fn lock_data_root(
+    dir: &Dir,
+    exclusive: bool,
+    faults: LockFaults<'_>,
+) -> Result<Option<std::fs::File>, (std::io::ErrorKind, PodError)> {
+    use rustix::fs::{flock, FlockOperation};
+    // A plain read-only open: `Dir::open_dir` gives an `O_PATH` descriptor on
+    // Linux, which `flock` rejects with `EBADF`.
+    let anchor = root_step(LockStep::OpenRoot, faults, || {
+        dir.open(".").map(cap_std::fs::File::into_std)
+    })?;
+    let op = if exclusive {
+        FlockOperation::NonBlockingLockExclusive
+    } else {
+        FlockOperation::NonBlockingLockShared
+    };
+    match root_step(LockStep::LockRoot, faults, || {
+        flock(&anchor, op).map_err(std::io::Error::from)
+    }) {
+        Ok(()) => Ok(Some(anchor)),
+        Err((std::io::ErrorKind::WouldBlock, _)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// One attempt to take the lock on `key`. It creates nothing but the stripe
+/// file: a missing lock directory or key is reported as [`Attempt::Repair`],
+/// because those may only be created under the exclusive root lock (see
+/// [`repair_lock_dir`]). A `NotFound` error means the directory vanished
+/// during the attempt, or the lock turned out to be on a file no longer at
+/// its path; the caller retries.
+#[cfg(unix)]
+fn attempt_lock(
+    dir: &Dir,
+    key: &str,
+    faults: LockFaults<'_>,
+) -> Result<Attempt, (std::io::ErrorKind, PodError)> {
+    use rustix::fs::{flock, FlockOperation};
+    use std::io::ErrorKind::{NotFound, WouldBlock};
+    use LockDirSeen::{Held, Snapshot, Unknown};
+    // Look before taking the root lock, so that once the directory is gone
+    // newcomers stop taking (and briefly holding) the shared lock, and only
+    // real holders stand between the repair and its exclusive lock.
+    let seen = match lock_dir_step(dir, Unknown, LockStep::InspectDir, faults, || {
+        dir.symlink_metadata(LOCK_DIR)
+    }) {
+        Ok(m) => Snapshot(dir_identity(&m)),
+        Err((NotFound, e)) => return Ok(Attempt::Repair(e)),
+        Err(e) => return Err(e),
+    };
+    let Some(anchor) = lock_data_root(dir, false, faults)? else {
+        return Ok(Attempt::Busy);
+    };
+    let lock_dir = match lock_dir_step(dir, seen, LockStep::OpenDir, faults, || {
+        dir.open_dir(LOCK_DIR)
+    }) {
+        Ok(d) => d,
+        Err((NotFound, e)) => return Ok(Attempt::Repair(e)),
+        Err(e) => return Err(e),
+    };
+    let held = Held(&lock_dir);
+    let stripe_key = match lock_dir_step(dir, held, LockStep::ReadKey, faults, || {
+        lock_dir.read(LOCK_KEY_FILE)
+    }) {
+        Ok(bytes) => parse_lock_key(&bytes)?,
+        Err((NotFound, e)) => return Ok(Attempt::Repair(e)),
+        Err(e) => return Err(e),
+    };
+    let name = lock_file_name(&stripe_key, key).map_err(|e| (std::io::ErrorKind::Other, e))?;
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
+    let stripe = lock_dir_step(dir, held, LockStep::OpenFile, faults, || {
+        lock_dir.open_with(&name, &options)
+    })?
+    .into_std();
+    match lock_dir_step(dir, held, LockStep::LockFile, faults, || {
+        flock(&stripe, FlockOperation::NonBlockingLockExclusive).map_err(std::io::Error::from)
+    }) {
+        Ok(()) => {}
+        Err((WouldBlock, _)) => return Ok(Attempt::Busy),
+        Err(e) => return Err(e),
+    }
+    // The flock is on the file we opened; make sure that file is still the one
+    // every other contender will open. It may have been unlinked (alone or
+    // with its directory) between the open and the flock, in which case a
+    // contender would create a new file at the path and lock that.
+    let verified = lock_dir_step(dir, held, LockStep::VerifyFile, faults, || {
+        use std::os::unix::fs::MetadataExt;
+        let ours = stripe.metadata()?;
+        let at_path = lock_dir.symlink_metadata(&name)?;
+        let dir_now = dir.symlink_metadata(LOCK_DIR)?;
+        Ok(ours.nlink() > 0
+            && file_identity(&ours) == dir_identity(&at_path)
+            && dir_identity(&lock_dir.dir_metadata()?) == dir_identity(&dir_now))
+    })?;
+    if !verified {
+        return Err((
+            NotFound,
+            PodError::Backend(format!(
+                "lock setup: {}: the lock file was replaced while it was being locked",
+                LockStep::VerifyFile.label()
+            )),
+        ));
+    }
+    Ok(Attempt::Held(HeldLock {
+        _stripe: stripe,
+        _anchor: anchor,
+    }))
+}
+
+/// Create the lock directory and its key, holding the data root's exclusive
+/// lock, which is granted only while no lock is held on the data root by any
+/// process. `Ok(false)` is "a lock is held": the caller treats it as busy.
+///
+/// This is what keeps a deleted lock directory from ending mutual exclusion:
+/// a holder whose lock file was unlinked with the directory still holds its
+/// shared root lock, so no contender can recreate the directory (or the key)
+/// and lock a new file at the same path until that holder releases.
+#[cfg(unix)]
+fn repair_lock_dir(dir: &Dir, faults: LockFaults<'_>) -> Result<bool, PodError> {
+    let Some(_anchor) = lock_data_root(dir, true, faults).map_err(|(_, e)| e)? else {
+        return Ok(false);
+    };
+    load_or_create_lock_key(dir, faults)?;
+    Ok(true)
+}
+
+/// Take the lock on `key` without waiting for another holder: `Ok(None)` when
+/// it is held elsewhere (the caller polls). Repairs a missing lock directory
+/// or key, and retries a directory that vanishes mid-attempt or a lock that
+/// lands on a replaced file, a bounded number of times with backoff.
+#[cfg(unix)]
+fn try_lock(dir: &Dir, key: &str, faults: LockFaults<'_>) -> Result<Option<HeldLock>, PodError> {
     let mut last = PodError::Backend("could not open the lock file".into());
     for attempt in 0..LOCK_SETUP_ATTEMPTS {
         if attempt > 0 {
             std::thread::sleep(lock_setup_backoff(attempt - 1));
         }
-        let opened = open_lock_dir(dir, faults).and_then(|lock_dir| {
-            let seen = LockDirSeen::Held(&lock_dir);
-            lock_dir_step(dir, seen, LockStep::OpenFile, faults, || {
-                lock_dir.open_with(name, &options)
-            })
-        });
-        match opened {
-            Ok(f) => return Ok(f.into_std()),
-            // `NotFound` after `create_dir_all` and `O_CREAT` is a creation
-            // race or a removed directory (see `load_or_create_lock_key` and
-            // `vanished_lock_dir_as_not_found`); the next attempt recreates it.
+        match attempt_lock(dir, key, faults) {
+            Ok(Attempt::Held(held)) => return Ok(Some(held)),
+            Ok(Attempt::Busy) => return Ok(None),
+            Ok(Attempt::Repair(e)) => {
+                if !repair_lock_dir(dir, faults)? {
+                    return Ok(None);
+                }
+                last = e;
+            }
+            // `NotFound` after the directory was seen is the directory
+            // vanishing during the attempt (see `vanished_lock_dir_as_not_found`)
+            // or a lock on a replaced file; the next attempt starts over.
             Err((std::io::ErrorKind::NotFound, e)) => last = e,
             Err((_, e)) => return Err(e),
         }
@@ -315,18 +548,7 @@ fn try_load_or_create_lock_key(
     match lock_dir_step(dir, seen, LockStep::ReadKey, faults, || {
         lock_dir.read(LOCK_KEY_FILE)
     }) {
-        Ok(bytes) => {
-            return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
-                (
-                    std::io::ErrorKind::InvalidData,
-                    PodError::Backend(format!(
-                        "the lock key file {LOCK_DIR}/{LOCK_KEY_FILE} holds {} bytes, expected 32; \
-                         refusing to replace it (that would split the stripes between processes)",
-                        bytes.len()
-                    )),
-                )
-            });
-        }
+        Ok(bytes) => return parse_lock_key(&bytes),
         Err((std::io::ErrorKind::NotFound, _)) => {}
         Err(e) => return Err(e),
     }
@@ -372,9 +594,6 @@ pub struct FsBackend {
     root: Arc<PathBuf>,
     dir: Arc<Dir>,
     operations: Arc<RwLock<()>>,
-    /// The data root's stripe key, loaded or created on first lock.
-    #[cfg(unix)]
-    lock_key: Arc<tokio::sync::OnceCell<[u8; 32]>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -406,36 +625,12 @@ impl FsBackend {
             root: Arc::new(root),
             dir: Arc::new(dir),
             operations: Arc::new(RwLock::new(())),
-            #[cfg(unix)]
-            lock_key: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
     /// Return the root directory.
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    /// The data root's stripe key: read from `.solid-pod-locks/key` or, when
-    /// no process has made one yet, generated and installed atomically. Every
-    /// process on the data root ends up with the same key. A key file of the
-    /// wrong length is an error, never regenerated: replacing it would put two
-    /// processes on different stripes and silently end their mutual exclusion.
-    #[cfg(unix)]
-    async fn stripe_key(&self) -> Result<[u8; 32], PodError> {
-        self.lock_key
-            .get_or_try_init(|| {
-                let dir = self.dir.clone();
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        load_or_create_lock_key(&dir, &mut no_lock_faults)
-                    })
-                    .await
-                    .map_err(|e| PodError::Backend(format!("lock key task failed: {e}")))?
-                }
-            })
-            .await
-            .copied()
     }
 
     fn normalize(path: &str) -> Result<String, PodError> {
@@ -735,42 +930,37 @@ impl Storage for FsBackend {
             .map_err(|e| PodError::Backend(format!("filesystem exists task failed: {e}")))?
     }
 
+    /// Takes an advisory `flock` on the key's stripe file in
+    /// `.solid-pod-locks`, together with a shared `flock` on the data root.
+    /// Deleting `.solid-pod-locks` (or its key) while a lock is held does not
+    /// end the exclusion: the directory and key are only ever recreated under
+    /// an exclusive lock on the data root, so a contender gets
+    /// [`PodError::Conflict`] until every holder has released. The stripe key
+    /// is read under the shared lock on every acquisition, so every process
+    /// agrees on the stripe even after the directory was recreated.
     #[cfg(unix)]
     async fn lock_exclusive(
         &self,
         key: &str,
         wait: std::time::Duration,
     ) -> Result<Option<crate::storage::StorageLock>, PodError> {
-        use rustix::fs::{flock, FlockOperation};
-        let mac_key = self.stripe_key().await?;
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&mac_key)
-            .map_err(|e| PodError::Backend(format!("lock key: {e}")))?;
-        mac.update(key.as_bytes());
-        let digest = mac.finalize().into_bytes();
-        let name = if key.starts_with(STATE_KEY_PREFIX) {
-            format!("state-{}.lock", hex::encode(&digest[..4]))
-        } else {
-            format!("{:02x}.lock", usize::from(digest[0]) % LOCK_STRIPES)
-        };
-        let dir = self.dir.clone();
-        let file =
-            tokio::task::spawn_blocking(move || open_lock_file(&dir, &name, &mut no_lock_faults))
-                .await
-                .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
         let deadline = std::time::Instant::now() + wait;
         loop {
-            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => return Ok(Some(crate::storage::StorageLock::new(file))),
-                Err(rustix::io::Errno::WOULDBLOCK) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(PodError::Conflict(format!(
-                            "the resource is being written by another process: {key}"
-                        )));
-                    }
-                    tokio::time::sleep(LOCK_POLL).await;
-                }
-                Err(e) => return Err(PodError::Io(std::io::Error::from(e))),
+            let dir = self.dir.clone();
+            let lock_key = key.to_string();
+            let held =
+                tokio::task::spawn_blocking(move || try_lock(&dir, &lock_key, &mut no_lock_faults))
+                    .await
+                    .map_err(|e| PodError::Backend(format!("lock task failed: {e}")))??;
+            if let Some(held) = held {
+                return Ok(Some(crate::storage::StorageLock::new(held)));
             }
+            if std::time::Instant::now() >= deadline {
+                return Err(PodError::Conflict(format!(
+                    "the resource is being written by another process: {key}"
+                )));
+            }
+            tokio::time::sleep(LOCK_POLL).await;
         }
     }
 
@@ -890,14 +1080,35 @@ mod tests {
         LockStep::InstallKey,
     ];
 
-    /// The steps the lock-file path runs, in order.
+    /// The steps an acquisition runs on a data root whose lock directory and
+    /// key exist, in order.
     #[cfg(unix)]
-    const FILE_STEPS: [LockStep; 4] = [
-        LockStep::CreateDir,
+    const FILE_STEPS: [LockStep; 8] = [
         LockStep::InspectDir,
+        LockStep::OpenRoot,
+        LockStep::LockRoot,
         LockStep::OpenDir,
+        LockStep::ReadKey,
         LockStep::OpenFile,
+        LockStep::LockFile,
+        LockStep::VerifyFile,
     ];
+
+    /// Steps on the data root rather than in the lock directory: an `EINVAL`
+    /// from them is never retried.
+    #[cfg(unix)]
+    fn on_root(step: LockStep) -> bool {
+        matches!(step, LockStep::OpenRoot | LockStep::LockRoot)
+    }
+
+    /// A data root whose lock directory and key already exist, as after first
+    /// use.
+    #[cfg(unix)]
+    fn set_up_root(dir: &TempDir) -> Dir {
+        let root = open_root(dir);
+        load_or_create_lock_key(&root, &mut no_lock_faults).unwrap();
+        root
+    }
 
     /// Every (path, step) pair: `true` is the stripe-key path.
     #[cfg(unix)]
@@ -918,14 +1129,20 @@ mod tests {
         Intact,
     }
 
-    /// Run one setup path (`key` selects the stripe-key path, else the lock
-    /// file path) on a fresh root, failing the first run of `step` with
-    /// `EINVAL` after applying `race` to the lock directory. Returns the
-    /// outcome and how many times `step` ran.
+    /// Run one setup path on a root, failing the first run of `step` with
+    /// `EINVAL` after applying `race` to the lock directory: `key` selects
+    /// stripe-key creation on a fresh root, otherwise an acquisition on a root
+    /// set up by [`set_up_root`]. Returns the outcome and how many times `step`
+    /// ran (an acquisition that repairs the directory runs some steps again
+    /// inside the repair).
     #[cfg(unix)]
     fn run_with_einval(key: bool, step: LockStep, race: Race) -> (Result<(), PodError>, u32) {
         let tmp = TempDir::new().unwrap();
-        let root = open_root(&tmp);
+        let root = if key {
+            open_root(&tmp)
+        } else {
+            set_up_root(&tmp)
+        };
         let locks = tmp.path().join(LOCK_DIR);
         let mut runs = 0;
         let mut faults = |s: LockStep| {
@@ -951,7 +1168,8 @@ mod tests {
         let r = if key {
             load_or_create_lock_key(&root, &mut faults).map(drop)
         } else {
-            open_lock_file(&root, "00.lock", &mut faults).map(drop)
+            try_lock(&root, "/doc", &mut faults)
+                .map(|held| assert!(held.is_some(), "nothing else holds a lock"))
         };
         (r, runs)
     }
@@ -959,10 +1177,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn every_lock_setup_step_retries_einval_when_the_directory_was_removed() {
-        for (key, step) in all_steps() {
+        for (key, step) in all_steps().filter(|(_, s)| !on_root(*s)) {
             let (r, runs) = run_with_einval(key, step, Race::Removed);
             assert!(r.is_ok(), "{step:?} (key path: {key}): {r:?}");
-            assert_eq!(runs, 2, "{step:?} (key path: {key}) must be retried once");
+            if key {
+                assert_eq!(runs, 2, "{step:?} (key path) must be retried once");
+            } else {
+                assert!(runs >= 2, "{step:?} (lock path) must be retried");
+            }
         }
     }
 
@@ -980,10 +1202,14 @@ mod tests {
                 LockStep::CreateDir | LockStep::InspectDir | LockStep::OpenDir
             )
         });
-        for (key, step) in held {
+        for (key, step) in held.filter(|(_, s)| !on_root(*s)) {
             let (r, runs) = run_with_einval(key, step, Race::Replaced);
             assert!(r.is_ok(), "{step:?} (key path: {key}): {r:?}");
-            assert_eq!(runs, 2, "{step:?} (key path: {key}) must be retried once");
+            if key {
+                assert_eq!(runs, 2, "{step:?} (key path) must be retried once");
+            } else {
+                assert!(runs >= 2, "{step:?} (lock path) must be retried");
+            }
         }
     }
 
@@ -1011,9 +1237,9 @@ mod tests {
     #[test]
     fn lock_setup_retries_not_found_and_gives_up_after_the_bounded_attempts() {
         let tmp = TempDir::new().unwrap();
-        let root = open_root(&tmp);
+        let root = set_up_root(&tmp);
         let mut runs = 0;
-        let r = open_lock_file(&root, "00.lock", &mut |s| {
+        let r = try_lock(&root, "/doc", &mut |s| {
             (s == LockStep::OpenFile).then(|| {
                 runs += 1;
                 std::io::ErrorKind::NotFound.into()
@@ -1022,6 +1248,104 @@ mod tests {
         assert_eq!(runs, LOCK_SETUP_ATTEMPTS);
         let err = r.unwrap_err();
         assert!(err.to_string().contains("open the lock file"), "{err}");
+    }
+
+    /// How the lock file is disturbed between its open and its `flock`.
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug)]
+    enum Unlink {
+        /// The whole lock directory is removed.
+        Dir,
+        /// Only the lock file is removed.
+        File,
+        /// The lock file is removed and a new one created at its path.
+        Replaced,
+    }
+
+    /// The lock must end up on the file at the path, never on one unlinked
+    /// between the open and the `flock`: otherwise a contender would create a
+    /// new file there, lock it, and proceed beside the holder.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_taken_on_an_unlinked_file_is_retaken_on_the_file_at_the_path() {
+        use std::os::unix::fs::MetadataExt;
+        for how in [Unlink::Dir, Unlink::File, Unlink::Replaced] {
+            let tmp = TempDir::new().unwrap();
+            let root = set_up_root(&tmp);
+            let locks = tmp.path().join(LOCK_DIR);
+            let (mut flocks, mut verified) = (0, 0);
+            let held = try_lock(&root, "/doc", &mut |s| {
+                match s {
+                    LockStep::LockFile => {
+                        flocks += 1;
+                        if flocks == 1 {
+                            let file = std::fs::read_dir(&locks)
+                                .unwrap()
+                                .flatten()
+                                .map(|e| e.path())
+                                .find(|p| p.extension().is_some_and(|x| x == "lock"))
+                                .unwrap();
+                            match how {
+                                Unlink::Dir => std::fs::remove_dir_all(&locks).unwrap(),
+                                Unlink::File => std::fs::remove_file(&file).unwrap(),
+                                Unlink::Replaced => {
+                                    std::fs::remove_file(&file).unwrap();
+                                    std::fs::write(&file, b"").unwrap();
+                                }
+                            }
+                        }
+                    }
+                    LockStep::VerifyFile => verified += 1,
+                    _ => {}
+                }
+                None
+            })
+            .unwrap()
+            .expect("nothing else holds a lock");
+            assert_eq!(
+                flocks, 2,
+                "{how:?}: the first lock must be dropped and retaken"
+            );
+            assert_eq!(verified, 2, "{how:?}");
+            let ours = held._stripe.metadata().unwrap();
+            let lock_file = std::fs::read_dir(&locks)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "lock"))
+                .unwrap();
+            let at_path = std::fs::metadata(lock_file).unwrap();
+            assert!(ours.nlink() > 0, "{how:?}");
+            assert_eq!(
+                (ours.dev(), ours.ino()),
+                (at_path.dev(), at_path.ino()),
+                "{how:?}"
+            );
+        }
+    }
+
+    /// While a lock is held, its directory cannot be recreated: removing it
+    /// leaves a contender busy (not admitted) until the holder releases.
+    #[cfg(unix)]
+    #[test]
+    fn a_removed_lock_directory_is_not_recreated_while_a_lock_is_held() {
+        let tmp = TempDir::new().unwrap();
+        let root = set_up_root(&tmp);
+        let held = try_lock(&root, "/doc", &mut no_lock_faults)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(tmp.path().join(LOCK_DIR)).unwrap();
+        // Any key, not only the held one: the directory is shared.
+        for key in ["/doc", "/other", "state:payments"] {
+            let r = try_lock(&root, key, &mut no_lock_faults).unwrap();
+            assert!(r.is_none(), "{key} was admitted while a lock is held");
+        }
+        assert!(!tmp.path().join(LOCK_DIR).exists());
+        drop(held);
+        assert!(try_lock(&root, "/doc", &mut no_lock_faults)
+            .unwrap()
+            .is_some());
+        assert!(tmp.path().join(LOCK_DIR).join(LOCK_KEY_FILE).exists());
     }
 
     #[cfg(unix)]

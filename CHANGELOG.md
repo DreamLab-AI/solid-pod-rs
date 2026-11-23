@@ -27,6 +27,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   returned unchanged. Seen as an intermittent `first_use_survives_the_lock_directory_vanishing_underneath_it` failure
   on macOS CI. The helper takes a fault-injection hook, and unit tests use it to drive every step through removal,
   replacement and the intact case, so Linux CI covers each retry and pass-through.
+- `FsBackend::lock_exclusive` no longer admits a second holder when `.solid-pod-locks` (or its `key`) is deleted while
+  a lock is held. Before, the holder kept its `flock` on the now-unlinked file, and a contender recreated the directory
+  and locked a new file at the same path, so both proceeded. A contender started after the deletion also generated a
+  new stripe key, which put it on a different stripe from every process that had cached the old one, for good. This
+  happened on every platform. Every holder now also holds a shared `flock` on the data root, which cannot be removed
+  while its data is in use. The lock directory and key are only created under an exclusive `flock` on the data root,
+  and that is granted only while no process holds a lock there. After a deletion, contenders get `PodError::Conflict`
+  until every holder has released, and the next contender then recreates the directory. Each acquisition also checks
+  that the file it locked is still the file at the path (`fstat` against `stat`, same `dev`/`ino`, `nlink > 0`), and the
+  directory still the one it opened. If not, it drops the lock and starts again, within the existing bounded retries.
+  The stripe key is read on every acquisition rather than cached for the life of the handle, so every process agrees on
+  the stripe after a recreation. Two new error labels: `lock setup: open the data root` and `lock setup: lock the data
+  root`. Two further labels name steps that previously reported only as raw I/O errors: `lock the lock file` and
+  `verify the lock file`. Existing labels are unchanged. Not covered: deleting a single lock file, as opposed to the
+  directory or key, while it is held. Lock files are still created lazily without the exclusive lock, because a task
+  may take a state lock while it holds a resource lock. Requires `flock` on a directory, which Linux and macOS
+  local filesystems support. Regression tests: `deleting_the_lock_directory_while_held_does_not_admit_a_second_holder`
+  and `deleting_the_lock_key_while_held_does_not_admit_a_second_holder` (both fail on the previous code), plus unit
+  tests for a lock taken on an unlinked or replaced file.
 
 ### Removed
 
