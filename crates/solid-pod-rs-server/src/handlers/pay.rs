@@ -2219,4 +2219,37 @@ mod intent_recovery_tests {
         assert_eq!(state.intents.len(), 1);
         handle.stop(false).await;
     }
+
+    #[test]
+    fn transfer_proof_names_the_transfers_head_coin() {
+        let txid = "cd".repeat(32);
+        let trail = solid_pod_rs::mrc20::Mrc20Trail {
+            ticker: "TEST".into(),
+            name: "Test".into(),
+            supply: 1,
+            pubkey_base: format!("02{}", "ab".repeat(32)),
+            states: vec![],
+            state_strings: vec!["{}".into()],
+            current_txid: txid.clone(),
+            current_vout: 0,
+            current_amount: 1,
+            network: "testnet4".into(),
+            date_created: String::new(),
+        };
+        let state = Mrc20State {
+            profile: solid_pod_rs::mrc20::MRC20_PROFILE.into(),
+            prev: "0".repeat(64),
+            seq: 0,
+            ticker: None,
+            name: None,
+            decimals: None,
+            supply: None,
+            balances: None,
+            ops: vec![],
+            anchor: None,
+        };
+        let proof = transfer_proof_json(&state, &state, &trail);
+        assert_eq!(proof["anchor"]["outpoint"], format!("{txid}:0"));
+        assert!(parse_outpoint(proof["anchor"]["outpoint"].as_str().unwrap()).is_some());
+    }
 }

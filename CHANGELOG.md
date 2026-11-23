@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `anchor_proof_json` (the `anchor` block of the proof `.buy` and `.withdraw` return) now names the head coin as
+  `outpoint` (`txid:vout`, the transfer's single output) once the transfer txid is known, so a recipient who deposits
+  the proof unchanged verifies that coin alone and dust at the address cannot crowd it out. Without a known head
+  txid the field is omitted and verification falls back to the bounded walk.
 - `mrc20::total_transferred_to` now returns `Option<u64>` (checked addition) instead of `u64`.
 - New `blocktrail`/`mrc20` entry point `verify_mrc20_anchor_at(.., outpoint: Option<(&str, u32)>, ..)`;
   `verify_mrc20_anchor` keeps its signature and passes `None`.

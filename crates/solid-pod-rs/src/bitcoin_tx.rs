@@ -1196,12 +1196,31 @@ pub fn build_withdraw_voucher(
 
 /// Build the proof JSON a route returns alongside a transfer/anchor — the
 /// portable, independently-verifiable anchor (JSS `pay.js:647-656`).
+///
+/// When the trail names its head coin (`current_txid` is a 64-digit hex txid,
+/// as it is once the transfer's txid is known), the proof also carries
+/// `outpoint` as `<txid>:<vout>`. That is the coin holding the head mark: the
+/// single output of the transfer or anchor transaction, at the address the
+/// chained key derives from `stateStrings`. A depositor who submits the proof
+/// unchanged names that coin, so a deposit verifies it alone and dust sent to
+/// the public address cannot crowd it out. A trail whose head is not yet
+/// known (empty `current_txid`) omits `outpoint`, and the verifier falls back
+/// to its bounded walk of the coins at the address.
 pub fn anchor_proof_json(trail: &Mrc20Trail) -> serde_json::Value {
-    json!({
+    let mut proof = json!({
         "pubkey": trail.pubkey_base,
         "stateStrings": trail.state_strings,
         "network": trail.network,
-    })
+    });
+    let txid = &trail.current_txid;
+    if txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        proof["outpoint"] = json!(format!(
+            "{}:{}",
+            txid.to_ascii_lowercase(),
+            trail.current_vout
+        ));
+    }
+    proof
 }
 
 #[cfg(test)]
@@ -1761,5 +1780,40 @@ mod tests {
         assert!(checked_output(800, 300).is_err()); // 500 <= 546 dust
         assert!(checked_output(200, 300).is_err()); // underflow
         assert_eq!(checked_output(10_000, 300).unwrap(), 9_700);
+    }
+
+    // ── anchor_proof_json ────────────────────────────────────────────────
+
+    fn proof_trail(txid: &str, vout: u32) -> Mrc20Trail {
+        Mrc20Trail {
+            ticker: "TEST".into(),
+            name: "Test".into(),
+            supply: 1000,
+            pubkey_base: format!("02{}", "ab".repeat(32)),
+            states: vec![],
+            state_strings: vec!["{}".into()],
+            current_txid: txid.into(),
+            current_vout: vout,
+            current_amount: 9700,
+            network: "testnet4".into(),
+            date_created: String::new(),
+        }
+    }
+
+    #[test]
+    fn anchor_proof_names_the_head_outpoint() {
+        let txid = "AB".repeat(32);
+        let proof = anchor_proof_json(&proof_trail(&txid, 0));
+        assert_eq!(proof["outpoint"], format!("{}:0", "ab".repeat(32)));
+        assert_eq!(proof["network"], "testnet4");
+        assert_eq!(proof["stateStrings"][0], "{}");
+    }
+
+    #[test]
+    fn anchor_proof_omits_an_unknown_or_malformed_head() {
+        for txid in ["", "not-a-txid", &"a".repeat(63)] {
+            let proof = anchor_proof_json(&proof_trail(txid, 0));
+            assert!(proof.get("outpoint").is_none(), "{txid:?}: {proof}");
+        }
     }
 }

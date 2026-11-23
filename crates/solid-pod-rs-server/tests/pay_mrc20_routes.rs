@@ -1080,3 +1080,101 @@ async fn mrc20_named_anchor_must_be_a_coin_at_the_address() {
         .is_err());
     handle.stop(false).await;
 }
+
+/// The trail a `.buy`/`.withdraw` leaves behind once its transfer has a txid:
+/// the full state strings, the head coin as output 0 of the transfer.
+fn served_trail(
+    transfer_state: &Mrc20State,
+    state_strings: &[String],
+    head: &str,
+) -> solid_pod_rs::mrc20::Mrc20Trail {
+    solid_pod_rs::mrc20::Mrc20Trail {
+        ticker: "TEST".into(),
+        name: "Test Token".into(),
+        supply: 1000,
+        pubkey_base: issuer_pubkey(),
+        states: vec![transfer_state.clone()],
+        state_strings: state_strings.to_vec(),
+        current_txid: head.to_string(),
+        current_vout: 0,
+        current_amount: 9700,
+        network: NETWORK.into(),
+        date_created: String::new(),
+    }
+}
+
+/// The deposit body a recipient builds from the proof the server returned,
+/// unchanged: `{state, prevState, anchor: <anchor_proof_json>}`.
+fn deposit_from_served_proof(
+    transfer: &Mrc20State,
+    genesis: &Mrc20State,
+    trail: &solid_pod_rs::mrc20::Mrc20Trail,
+) -> Value {
+    json!({
+        "type": "mrc20",
+        "state": transfer,
+        "prevState": genesis,
+        "anchor": solid_pod_rs::bitcoin_tx::anchor_proof_json(trail),
+    })
+}
+
+#[actix_web::test]
+async fn server_issued_proof_names_the_outpoint_and_round_trips_through_deposit() {
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let head = chains().lock().unwrap()[&anchor_address].head.clone();
+    let trail = served_trail(&transfer, &state_strings, &head);
+    let body = deposit_from_served_proof(&transfer, &genesis, &trail);
+    assert_eq!(
+        body["anchor"]["outpoint"],
+        format!("{head}:0"),
+        "the proof names its head coin"
+    );
+
+    // Six dust coins that sort ahead of the head (confirmed alike, same
+    // height, lower txid): the unnamed walk reads four of them and never
+    // reaches the anchor, so only the named path can verify this proof.
+    let decoys: Vec<(String, String)> = (0u32..)
+        .map(|i| solid_pod_rs::mrc20::sha256_hex(&format!("proof dust {i}")))
+        .filter(|txid| *txid < head)
+        .take(6)
+        .map(|txid| (anchor_address.clone(), txid))
+        .collect();
+    let (mempool_url, handle) = spawn_fixture_mempool_decoyed(
+        vec![(anchor_address.clone(), anchor_address.clone())],
+        decoys,
+    )
+    .await;
+    let st = state_with_issuer(Some(mempool_url));
+    let storage = st.storage.clone();
+    let app = test::init_service(build_app(st)).await;
+
+    // Without the outpoint the same proof is crowded out.
+    let mut unnamed = body.clone();
+    unnamed["anchor"]
+        .as_object_mut()
+        .unwrap()
+        .remove("outpoint");
+    let (status, j, _did) = post_deposit(&app, &unnamed).await;
+    assert_eq!(status, 400, "dust crowds out an unnamed proof: {j}");
+
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "the server's own proof must deposit: {j}");
+    assert_eq!(j["deposited"], 100);
+    assert_eq!(j["outpoint"], format!("{head}:0"));
+    let ledger = read_ledger(&storage).await;
+    assert_eq!(ledger.deposits()[0].outpoint, format!("{head}:0"));
+    handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn server_issued_proof_without_a_known_head_still_deposits_by_the_bounded_walk() {
+    let (genesis, transfer, state_strings, anchor_address, _pod) = build_mrc20_fixture(100);
+    let trail = served_trail(&transfer, &state_strings, "");
+    let body = deposit_from_served_proof(&transfer, &genesis, &trail);
+    assert!(body["anchor"].get("outpoint").is_none());
+    let (mempool_url, handle) = spawn_fixture_mempool(vec![anchor_address]).await;
+    let app = test::init_service(build_app(state_with_issuer(Some(mempool_url)))).await;
+    let (status, j, _did) = post_deposit(&app, &body).await;
+    assert_eq!(status, 200, "{j}");
+    handle.stop(false).await;
+}
