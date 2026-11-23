@@ -14,6 +14,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `solid-pod-rs-server`. This also drops 14 compression and HTTP/2 crates the test client never used. No shipped
   crate depended on `cookie`, and nothing called actix's cookie API.
 
+### Fixed
+
+- `FsBackend::lock_exclusive` and first-use lock-key creation no longer fail with `lock setup: open the lock file:
+  Invalid argument (os error 22)` when `.solid-pod-locks` is removed while a lock is being set up. On macOS, cap-std
+  opens the lock directory and then creates the file relative to it, and the kernel can report `EINVAL` rather than `ENOENT`
+  when the directory is removed between those two calls. Each setup attempt now holds a handle on the lock directory,
+  and an `EINVAL` from a step inside it is retried (bounded, with the existing backoff) only when the directory at
+  `.solid-pod-locks` is gone or is no longer the one the handle refers to. An `EINVAL` while the directory is intact is
+  still returned unchanged. Seen as an intermittent `first_use_survives_the_lock_directory_vanishing_underneath_it`
+  failure on macOS CI; unit tests now inject the error so Linux CI covers the retry and the pass-through.
+
 ### Removed
 
 - The in-repo diagram set (`crates/solid-pod-rs/docs/diagrams/src/*.mmd`, the rendered SVG and PNG files and
