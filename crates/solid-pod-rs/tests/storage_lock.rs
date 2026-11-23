@@ -262,7 +262,8 @@ async fn a_state_lock_does_not_collide_with_a_resource_lock_in_one_task() {
 /// made (or removed), and that must never surface as an error. Here a thread
 /// removes the whole lock directory repeatedly while eight handles take their
 /// first lock; every handle must still get a lock. (Linux reports `NotFound`
-/// for the removed directory; macOS can report it for a creation race.)
+/// for the removed directory; macOS can report it for a creation race, and
+/// can report `EINVAL` for a file created in a directory removed mid-open.)
 #[tokio::test]
 async fn first_use_survives_the_lock_directory_vanishing_underneath_it() {
     let dir = tempfile::tempdir().unwrap();
