@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0-alpha.25] — 2026-11-24
+
 ### Security
 
 - MRC20 deposits (`POST /pay/.deposit` with an MRC20 anchor proof) no longer accept a one-string proof or credit a
@@ -36,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security (dependencies)
 
+- `jsonwebtoken` 9 → 10.3 in `solid-pod-rs` (feature `oidc`) and `solid-pod-rs-idp`, with `default-features = false`
+  and the `rust_crypto` backend (`use_pem` added only for the idp tests). This clears the Dependabot alert on the 9.x
+  line. Access-token validation is unchanged: `exp` is still required and `iss` must still match, and a new test pins
+  both.
 - RUSTSEC-2026-0594 (`cookie` 0.16.2, private cookie nonces can repeat after `fork()`): `cookie` is no longer
   in the dependency graph. It arrived only through the `actix-web` dev-dependency of `solid-pod-rs`, which used
   the default features; that dev-dependency now uses `default-features = false, features = ["macros"]`, matching

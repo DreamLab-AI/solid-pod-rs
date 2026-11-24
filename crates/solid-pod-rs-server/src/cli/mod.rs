@@ -5,7 +5,7 @@
 //! | Subcommand                           | JSS ref                | Primitive                          |
 //! |--------------------------------------|------------------------|------------------------------------|
 //! | `quota reconcile <pod>` / `--all`    | `bin/jss.js quota reconcile` | [`solid_pod_rs::quota::QuotaPolicy::reconcile`] |
-//! | `account delete <pod>`               | JSS #292 (`d9e56d8`)   | [`run_account_delete`] (removes the pod tree under `--root`) |
+//! | `account delete <pod>`               | JSS #292 (`d9e56d8`)   | [`run_account_delete`](crate::cli::run_account_delete) (removes the pod tree under `--root`) |
 //! | `invite create -u N [--expires-in]`  | JSS #304 (`6578ab9`)   | [`solid_pod_rs_idp::InviteStore`]  |
 //!
 //! Every runner is async and takes its inputs explicitly (a directory root,

@@ -564,7 +564,7 @@ pub struct AppState {
     /// Held type-erased so the field exists in every build (and every struct
     /// literal stays valid whatever features are on); the `activitypub`
     /// feature's `activitypub::Federation` is what it holds, set through
-    /// [`AppState::set_ap_federation`].
+    /// `AppState::set_ap_federation` (feature `activitypub`).
     pub ap_federation: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// remoteStorage (SP-PAR-283): `GET|HEAD|PUT|DELETE /storage/<user>/...`
     /// over the pod subtree `/remotestorage/`, authorised by owner-minted
