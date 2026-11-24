@@ -170,6 +170,10 @@ pub(crate) fn parse_expanded(body: &[u8], doc_path: &str) -> Result<AclDocument,
                 value: l.value().to_string(),
                 datatype: l.datatype().as_str().to_string(),
             },
+            // `Term::Triple` exists when any crate in the build enables
+            // `oxrdf/rdf-star` (oxigraph does); quoted triples are not ACL terms.
+            #[allow(unreachable_patterns)]
+            _ => return Err(err("quoted triples are not supported".into())),
         };
         if !nodes.contains_key(&subject) {
             order.push(subject.clone());

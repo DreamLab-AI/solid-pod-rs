@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `solid-pod-rs` failed to compile in any build that also enables `oxrdf/rdf-star`, for example a consumer that
+  depends on `oxigraph`. Cargo unifies the feature, which adds `oxrdf::Term::Triple`, and the object match in
+  `wac::jsonld_acl` did not cover it. A quoted-triple object in a JSON-LD ACL is now rejected like a quoted-triple
+  subject. The crate's own tests now build with `rdf-star` on (dev-dependencies on `oxttl` and `spargebra` with that
+  feature), so a new non-exhaustive match fails CI instead of downstream builds. Introduced in 0.5.0-alpha.23.
+
 ## [0.5.0-alpha.25] — 2026-11-24
 
 ### Security

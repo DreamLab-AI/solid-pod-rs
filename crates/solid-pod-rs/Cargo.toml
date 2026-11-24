@@ -303,6 +303,11 @@ getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 uuid = { version = "1", features = ["js"] }
 
 [dev-dependencies]
+# Compile the library under test with `rdf-star` on (oxttl, spargebra and so oxrdf), as consumers that also
+# depend on oxigraph do: every match on `oxrdf::Term`/`Subject` must then cover
+# `Triple`, or such consumers fail to build.
+oxttl = { version = "0.1", features = ["rdf-star"] }
+spargebra = { version = "0.3", features = ["rdf-star"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 actix-web = { version = "4", default-features = false, features = ["macros"] }
