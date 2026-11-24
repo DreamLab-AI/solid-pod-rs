@@ -25,7 +25,7 @@ acceptance_boundary:
 
 ## Decision
 1. Add a `work-records` cargo feature (default off). It ships three JSON-LD resource types, validation and type-index registration helpers. The feature contains pure logic and compiles for `wasm32-unknown-unknown`, like `provenance.rs`.
-   - `PromptVersion`: `text` or a `body` reference, `status` ∈ {`testing`, `production`, `retired`}, `supersedes`, `step` (the process step it serves) and `sha256` of the canonical body. Only a holder of Control on the container may change `status`.
+   - `PromptVersion`: `text` or a `body` reference, `status` ∈ {`testing`, `production`, `retired`}, `supersedes`, `step` (the process step it serves) and `sha256` of the canonical body. Only a holder of Control on the container may change `status`. A `production` version must carry `reviewBy` (`xsd:date`). Past that date a consumer shows the version as stale; dispatch continues, because staleness is surfaced to people, not enforced. Setting a new `reviewBy` needs Control, as for `status`.
    - `RunRecord`: modelled as `prov:Activity`. It records `prov:used` (input and the PromptVersion URL with its hash), `prov:generated` (output URL with hash), `prov:wasAssociatedWith` (the agent's `did:nostr`), `prov:wasStartedBy` (the intent's signer), start and end times, an `outcome`, and the `ProvenanceMark` of its write.
    - `EvalCase`: `input`, `criteria`, and `judge` ∈ {`ai`, `code`, `human`}, linked to the PromptVersion `step` it tests.
 2. References between records carry the target's URL plus `#sha256=<hex>`. A consumer verifies the hash before relying on content, so a pod edit can't silently change what a past run cited.
@@ -37,6 +37,7 @@ acceptance_boundary:
 - A dispatcher (forum ADR-2035) can cite an exact prompt version, and a reviewer can open the run record behind any agent output and check its provenance.
 - Retiring a prompt version keeps its history. A past run still resolves the exact text it used.
 - Costs: three types with validation and tests; a vocabulary choice where PROV-O is reused and the remaining terms go in a small crate namespace; documentation in BASELINE-solid-pod-rs.md on acceptance. Proposed records don't amend the baseline.
+- Agent workflows decay as tools, data and policy change, and maintenance eats into what they save (Anthropic Economics, "Working with AI", 23 November 2026). `reviewBy` makes that cost a dated item on the board instead of a failure found later.
 - Worker-tier consumers without a git marker get type and hash integrity but no git-mark ordering. Their run records say so through a skipped provenance stage (`ProvenanceSkip`) instead of claiming a mark.
 
 ## Verification
