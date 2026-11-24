@@ -609,7 +609,7 @@ fn verify_dpop_proof_core(
     // assert it here too for defence in depth.
     //
     // RFC 9449 §5 lists ES256, ES384, ES512, PS256, PS384, PS512,
-    // RS256, RS384, RS512, EdDSA as permitted. jsonwebtoken 9.x
+    // RS256, RS384, RS512, EdDSA as permitted. jsonwebtoken 9.x and 10.x
     // exposes ES256, ES384, PS256, PS384, PS512, RS256, RS384, RS512,
     // EdDSA (it does not expose ES512). We allow the crate's full
     // asymmetric set so operators have the widest possible JWK
@@ -1513,6 +1513,25 @@ mod tests {
         // No `nbf` at all stays valid.
         let plain = hs256_token_from(secret, base_claims());
         assert!(verify_access_token(&plain, &ks, "https://op", "T", 1_100).is_ok());
+    }
+
+    #[test]
+    fn access_token_requires_exp_and_matching_iss_under_jsonwebtoken_10() {
+        // Pins the claims `jsonwebtoken` itself still enforces after the
+        // v9 -> v10 move: `iss` equality and presence of `exp` (the
+        // default `required_spec_claims`), even though the `exp` *value*
+        // is checked by hand against the caller-supplied `now`.
+        let secret = b"test-secret";
+        let ks = TokenVerifyKey::Symmetric(secret.to_vec());
+        let ok = hs256_token_from(secret, base_claims());
+        assert!(verify_access_token(&ok, &ks, "https://op", "T", 1_100).is_ok());
+
+        let mut no_exp = base_claims();
+        no_exp.as_object_mut().unwrap().remove("exp");
+        let token = hs256_token_from(secret, no_exp);
+        assert!(verify_access_token(&token, &ks, "https://op", "T", 1_100).is_err());
+
+        assert!(verify_access_token(&ok, &ks, "https://other-op", "T", 1_100).is_err());
     }
 
     #[test]

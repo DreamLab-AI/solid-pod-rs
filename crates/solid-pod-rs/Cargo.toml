@@ -78,7 +78,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # Solid-OIDC (0.1) — DPoP, dynamic client registration, discovery
 openidconnect = { version = "4", optional = true }
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"], optional = true }
 
 # NIP-98 Schnorr verification (Phase 3 close)
 # `ecdsa` added for LWS-CID ES256K verification.

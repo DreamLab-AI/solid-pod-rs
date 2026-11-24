@@ -28,7 +28,7 @@ solid-pod-rs = { version = "0.5.0-alpha.24", path = "../solid-pod-rs", default-f
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 argon2 = "0.5"
 rand = "0.8"
 thiserror = "1"
@@ -96,6 +96,8 @@ provision-keys = [
 # The tests use `storage::memory`, which the library dependency (default-features = false) does not enable.
 solid-pod-rs = { version = "0.5.0-alpha.24", path = "../solid-pod-rs", default-features = false, features = ["memory-backend"] }
 tokio = { version = "1", features = ["full"] }
+# The provider tests build an EncodingKey from an EC PEM; `use_pem` is a v10 opt-in (v9 had it built in).
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto", "use_pem"] }
 wiremock = "0.6"
 serde_urlencoded = "0.7"
 k256 = { version = "0.14", features = ["schnorr"] }
